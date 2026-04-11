@@ -739,6 +739,7 @@ class AIAgent:
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
+        self._execution_thread_id: int | None = None  # Set at run_conversation() start
         self._client_lock = threading.RLock()
         
         # Subagent delegation state
@@ -2832,8 +2833,10 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
-        # Signal all tools to abort any in-flight operations immediately
-        _set_interrupt(True)
+        # Signal all tools to abort any in-flight operations immediately.
+        # Scope the interrupt to this agent's execution thread so other
+        # agents running in the same process (gateway) are not affected.
+        _set_interrupt(True, self._execution_thread_id)
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -2846,10 +2849,10 @@ class AIAgent:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
     
     def clear_interrupt(self) -> None:
-        """Clear any pending interrupt request and the global tool interrupt signal."""
+        """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
-        _set_interrupt(False)
+        _set_interrupt(False, self._execution_thread_id)
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -7799,6 +7802,11 @@ class AIAgent:
         compression_attempts = 0
         _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
         
+        # Record the execution thread so interrupt()/clear_interrupt() can
+        # scope the tool-level interrupt signal to THIS agent's thread only.
+        # Must be set before clear_interrupt() which uses it.
+        self._execution_thread_id = threading.current_thread().ident
+
         # Clear any stale interrupt state at start
         self.clear_interrupt()
 

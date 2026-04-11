@@ -24,10 +24,10 @@ export class GatewayClient extends EventEmitter {
   private pending = new Map<string, Pending>()
 
   start() {
-    const root = process.env.HERMES_ROOT ?? resolve(import.meta.dirname, '../../')
+    const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
 
     this.proc = spawn(process.env.HERMES_PYTHON ?? resolve(root, 'venv/bin/python'), ['-m', 'tui_gateway.entry'], {
-      cwd: root,
+      cwd: process.env.HERMES_CWD || root,
       stdio: ['pipe', 'pipe', 'pipe']
     })
 

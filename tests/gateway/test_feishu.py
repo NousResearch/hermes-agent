@@ -2010,6 +2010,49 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(sleeps, [])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_infers_receive_id_type_from_id_prefix(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        cases = [
+            ("oc_group_chat", "chat_id"),
+            ("ou_user_open_id", "open_id"),
+            ("on_union_id", "union_id"),
+        ]
+
+        for chat_id, expected_type in cases:
+            captured = {}
+
+            class _MessageAPI:
+                def create(self, request):
+                    captured["request"] = request
+                    return SimpleNamespace(
+                        success=lambda: True,
+                        data=SimpleNamespace(message_id="om_test"),
+                    )
+
+            adapter._client = SimpleNamespace(
+                im=SimpleNamespace(
+                    v1=SimpleNamespace(
+                        message=_MessageAPI(),
+                    )
+                )
+            )
+
+            async def _direct(func, *args, **kwargs):
+                return func(*args, **kwargs)
+
+            with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+                asyncio.run(adapter.send(chat_id=chat_id, content="test"))
+
+            self.assertEqual(
+                captured["request"].receive_id_type, expected_type,
+                f"chat_id={chat_id!r} should use receive_id_type={expected_type!r}",
+            )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_document_reply_uses_thread_flag(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

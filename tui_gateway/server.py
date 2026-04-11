@@ -1824,6 +1824,109 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"plugins": []})
 
 
+@method("config.show")
+def _(rid, params: dict) -> dict:
+    try:
+        cfg = _load_cfg()
+        model = _resolve_model()
+        api_key = os.environ.get("HERMES_API_KEY", "") or cfg.get("api_key", "")
+        masked = f"****{api_key[-4:]}" if len(api_key) > 4 else "(not set)"
+        base_url = os.environ.get("HERMES_BASE_URL", "") or cfg.get("base_url", "")
+
+        sections = [{
+            "title": "Model",
+            "rows": [
+                ["Model", model],
+                ["Base URL", base_url or "(default)"],
+                ["API Key", masked],
+            ]
+        }, {
+            "title": "Agent",
+            "rows": [
+                ["Max Turns", str(cfg.get("max_turns", 25))],
+                ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
+                ["Verbose", str(cfg.get("verbose", False))],
+            ]
+        }, {
+            "title": "Environment",
+            "rows": [
+                ["Working Dir", os.getcwd()],
+                ["Config File", str(_hermes_home / "config.yaml")],
+            ]
+        }]
+        return _ok(rid, {"sections": sections})
+    except Exception as e:
+        return _err(rid, 5030, str(e))
+
+
+@method("tools.list")
+def _(rid, params: dict) -> dict:
+    try:
+        from toolsets import get_all_toolsets, get_toolset_info
+        session = _sessions.get(params.get("session_id", ""))
+        enabled = set()
+        if session:
+            enabled = set(getattr(session["agent"], "enabled_toolsets", []) or [])
+
+        items = []
+        for name in sorted(get_all_toolsets().keys()):
+            info = get_toolset_info(name)
+            if not info:
+                continue
+            items.append({
+                "name": name,
+                "description": info["description"],
+                "tool_count": info["tool_count"],
+                "enabled": name in enabled if enabled else True,
+                "tools": info["resolved_tools"],
+            })
+        return _ok(rid, {"toolsets": items})
+    except Exception as e:
+        return _err(rid, 5031, str(e))
+
+
+@method("toolsets.list")
+def _(rid, params: dict) -> dict:
+    try:
+        from toolsets import get_all_toolsets, get_toolset_info
+        session = _sessions.get(params.get("session_id", ""))
+        enabled = set()
+        if session:
+            enabled = set(getattr(session["agent"], "enabled_toolsets", []) or [])
+
+        items = []
+        for name in sorted(get_all_toolsets().keys()):
+            info = get_toolset_info(name)
+            if not info:
+                continue
+            items.append({
+                "name": name,
+                "description": info["description"],
+                "tool_count": info["tool_count"],
+                "enabled": name in enabled if enabled else True,
+            })
+        return _ok(rid, {"toolsets": items})
+    except Exception as e:
+        return _err(rid, 5032, str(e))
+
+
+@method("agents.list")
+def _(rid, params: dict) -> dict:
+    try:
+        from tools.process_registry import ProcessRegistry
+        procs = ProcessRegistry().list_sessions()
+        return _ok(rid, {
+            "processes": [{
+                "session_id": p["session_id"],
+                "command": p["command"][:80],
+                "status": p["status"],
+                "uptime": p["uptime_seconds"],
+            } for p in procs]
+        })
+    except Exception as e:
+        return _err(rid, 5033, str(e))
+
+
 @method("cron.manage")
 def _(rid, params: dict) -> dict:
     action, jid = params.get("action", "list"), params.get("name", "")

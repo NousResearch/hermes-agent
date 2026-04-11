@@ -348,6 +348,50 @@ class TestTwilioSignatureValidation:
             "https://b.com/webhooks/twilio", params, sig
         ) is False
 
+    def test_port_variant_443_matches_without_port(self):
+        """Signature for https URL with :443 validates against URL without port."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com:443/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://example.com/webhooks/twilio", params, sig
+        ) is True
+
+    def test_port_variant_without_port_matches_443(self):
+        """Signature for https URL without port validates against URL with :443."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://example.com:443/webhooks/twilio", params, sig
+        ) is True
+
+    def test_non_standard_port_no_variant(self):
+        """Non-standard port must NOT match URL without port."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "https://example.com:8080/webhooks/twilio", params, sig
+        ) is False
+
+    def test_port_variant_http_80(self):
+        """Port variant also works for http with port 80."""
+        adapter = self._make_adapter()
+        params = {"From": "+15551234567", "Body": "hello"}
+        sig = _compute_twilio_signature(
+            "test_token_secret", "http://example.com:80/webhooks/twilio", params
+        )
+        assert adapter._validate_twilio_signature(
+            "http://example.com/webhooks/twilio", params, sig
+        ) is True
+
 
 # ── Webhook signature enforcement (handler-level) ──────────────────
 
@@ -411,6 +455,25 @@ class TestWebhookSignatureEnforcement:
             "MessageSid": "SM123",
         }
         sig = _compute_twilio_signature("test_token_secret", webhook_url, params)
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={"X-Twilio-Signature": sig})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_port_variant_signature_returns_200(self):
+        """Signature computed with :443 should pass when URL configured without port."""
+        webhook_url = "https://example.com/webhooks/twilio"
+        adapter = self._make_adapter(webhook_url=webhook_url)
+        params = {
+            "From": "+15551234567",
+            "To": "+15550001111",
+            "Body": "hello",
+            "MessageSid": "SM123",
+        }
+        sig = _compute_twilio_signature(
+            "test_token_secret", "https://example.com:443/webhooks/twilio", params
+        )
         body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
         request = self._mock_request(body, headers={"X-Twilio-Signature": sig})
         resp = await adapter._handle_webhook(request)

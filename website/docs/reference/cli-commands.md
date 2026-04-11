@@ -586,11 +586,14 @@ See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../
 hermes plugins [subcommand]
 ```
 
-Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launches an interactive curses checklist to enable/disable installed plugins.
+Unified plugin management — general plugins, memory providers, and context engines in one place. Running `hermes plugins` with no subcommand opens a composite interactive screen with two sections:
+
+- **General Plugins** — multi-select checkboxes to enable/disable installed plugins
+- **Provider Plugins** — single-select configuration for Memory Provider and Context Engine. Press ENTER on a category to open a radio picker.
 
 | Subcommand | Description |
 |------------|-------------|
-| *(none)* | Interactive toggle UI — enable/disable plugins with arrow keys and space. |
+| *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
 | `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
 | `update <name>` | Pull latest changes for an installed plugin. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
@@ -598,7 +601,11 @@ Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launche
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
 
-Disabled plugins are stored in `config.yaml` under `plugins.disabled` and skipped during loading.
+Provider plugin selections are saved to `config.yaml`:
+- `memory.provider` — active memory provider (empty = built-in only)
+- `context.engine` — active context engine (`"compressor"` = built-in default)
+
+General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 

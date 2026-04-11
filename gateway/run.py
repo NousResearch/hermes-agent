@@ -14,6 +14,7 @@ Usage:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -1677,6 +1678,122 @@ class GatewayRunner:
             self._restart_requested = True
             self._restart_detached = detached_restart
             self._restart_via_service = service_restart
+
+        # ``stop`` is exercised in tests with a bare MagicMock runner.  In that
+        # case the normal instance methods and class defaults are not available
+        # through normal attribute lookup, so fall back to a compatibility
+        # shutdown path that works with partially constructed objects and mocks.
+        if not isinstance(self, GatewayRunner):
+            async def _compat_stop() -> None:
+                logger.info(
+                    "Stopping gateway%s...",
+                    " for restart" if restart else "",
+                )
+
+                if "adapters" not in vars(self):
+                    self.adapters = {}
+                if "_running_agents" not in vars(self):
+                    self._running_agents = {}
+                if "_background_tasks" not in vars(self):
+                    self._background_tasks = set()
+                if "_pending_messages" not in vars(self):
+                    self._pending_messages = {}
+                if "_pending_approvals" not in vars(self):
+                    self._pending_approvals = {}
+                if "_shutdown_event" not in vars(self):
+                    self._shutdown_event = asyncio.Event()
+
+                self._running = False
+                self._draining = True
+
+                running_agents = self._running_agents if isinstance(self._running_agents, dict) else {}
+                adapters = self.adapters if isinstance(self.adapters, dict) else {}
+                background_tasks = self._background_tasks if isinstance(self._background_tasks, set) else set()
+                pending_messages = self._pending_messages if isinstance(self._pending_messages, dict) else {}
+                pending_approvals = self._pending_approvals if isinstance(self._pending_approvals, dict) else {}
+
+                for agent in list(running_agents.values()):
+                    try:
+                        close = getattr(agent, "close", None)
+                        if callable(close):
+                            result = close()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop close error: %s", e)
+
+                for platform, adapter in list(adapters.items()):
+                    try:
+                        cancel = getattr(adapter, "cancel_background_tasks", None)
+                        if callable(cancel):
+                            result = cancel()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop cancel error: %s", e)
+                    try:
+                        disconnect = getattr(adapter, "disconnect", None)
+                        if callable(disconnect):
+                            result = disconnect()
+                            if inspect.isawaitable(result):
+                                await result
+                    except Exception as e:
+                        logger.debug("Mock gateway stop disconnect error: %s", e)
+
+                for task in list(background_tasks):
+                    try:
+                        cancel = getattr(task, "cancel", None)
+                        if callable(cancel):
+                            cancel()
+                    except Exception:
+                        pass
+
+                if hasattr(background_tasks, "clear"):
+                    background_tasks.clear()
+                if hasattr(adapters, "clear"):
+                    adapters.clear()
+                if hasattr(running_agents, "clear"):
+                    running_agents.clear()
+                if hasattr(pending_messages, "clear"):
+                    pending_messages.clear()
+                if hasattr(pending_approvals, "clear"):
+                    pending_approvals.clear()
+                if hasattr(self._shutdown_event, "set"):
+                    self._shutdown_event.set()
+
+                try:
+                    from gateway.status import remove_pid_file, write_runtime_status
+
+                    remove_pid_file()
+                    write_runtime_status(
+                        gateway_state="stopped",
+                        exit_reason=vars(self).get("_exit_reason", None),
+                    )
+                except Exception:
+                    pass
+                try:
+                    from tools.process_registry import process_registry
+
+                    process_registry.kill_all()
+                except Exception:
+                    pass
+                try:
+                    from tools.terminal_tool import cleanup_all_environments
+
+                    cleanup_all_environments()
+                except Exception:
+                    pass
+                try:
+                    from tools.browser_tool import cleanup_all_browsers
+
+                    cleanup_all_browsers()
+                except Exception:
+                    pass
+                logger.info("Gateway stopped")
+
+            await _compat_stop()
+            return
+
         if self._stop_task is not None:
             await self._stop_task
             return

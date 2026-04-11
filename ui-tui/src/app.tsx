@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Box, Text, useApp, useInput, useStdout } from 'ink'
+import { Box, Text, useApp, useInput, useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Banner, SessionPanel } from './components/branding.js'
@@ -1330,19 +1330,30 @@ export function App({ gw }: { gw: GatewayClient }) {
           const lines: string[] = []
 
           for (const { name: catName, pairs } of cats) {
-            if (lines.length) lines.push('')
+            if (lines.length) {
+              lines.push('')
+            }
+
             lines.push(`  ${catName}:`)
-            for (const [c, d] of pairs) lines.push(`    ${c.padEnd(18)} ${d}`)
+
+            for (const [c, d] of pairs) {
+              lines.push(`    ${c.padEnd(18)} ${d}`)
+            }
           }
 
-          if (!lines.length) lines.push('  (no commands loaded)')
+          if (!lines.length) {
+            lines.push('  (no commands loaded)')
+          }
 
           if (skills > 0) {
             lines.push('', `  ${skills} skill commands available — /skills to browse`)
           }
 
           lines.push('', '  Hotkeys:')
-          for (const [k, d] of HOTKEYS) lines.push(`    ${k.padEnd(14)} ${d}`)
+
+          for (const [k, d] of HOTKEYS) {
+            lines.push(`    ${k.padEnd(14)} ${d}`)
+          }
 
           sys(lines.join('\n'))
 
@@ -1371,8 +1382,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'resume':
-          if (arg) resumeById(arg)
-          else setPicker(true)
+          if (arg) {
+            resumeById(arg)
+          } else {
+            setPicker(true)
+          }
 
           return true
 
@@ -1779,7 +1793,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           })
 
           return true
-
         case 'skills': {
           const [sub, ...sArgs] = (arg || '').split(/\s+/).filter(Boolean)
 
@@ -1787,7 +1800,9 @@ export function App({ gw }: { gw: GatewayClient }) {
             rpc('skills.manage', { action: 'list' }).then((r: any) => {
               const sk = r.skills as Record<string, string[]> | undefined
 
-              if (!sk || !Object.keys(sk).length) return sys('no skills installed')
+              if (!sk || !Object.keys(sk).length) {
+                return sys('no skills installed')
+              }
 
               const lines: string[] = []
 
@@ -1804,18 +1819,26 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (sub === 'browse') {
             const page = parseInt(sArgs[0] ?? '1', 10) || 1
             rpc('skills.manage', { action: 'browse', page }).then((r: any) => {
-              if (!r.items?.length) return sys('no skills found in the hub')
+              if (!r.items?.length) {
+                return sys('no skills found in the hub')
+              }
 
               const lines = [
                 `  Skills Hub (page ${r.page}/${r.total_pages}, ${r.total} total)`,
                 '',
-                ...r.items.map((s: any) =>
-                  `    ${(s.name ?? '').padEnd(28)} ${(s.description ?? '').slice(0, 60)}${s.description?.length > 60 ? '…' : ''}`
-                ),
+                ...r.items.map(
+                  (s: any) =>
+                    `    ${(s.name ?? '').padEnd(28)} ${(s.description ?? '').slice(0, 60)}${s.description?.length > 60 ? '…' : ''}`
+                )
               ]
 
-              if (r.page < r.total_pages) lines.push('', `  /skills browse ${r.page + 1} → next page`)
-              if (r.page > 1) lines.push(`  /skills browse ${r.page - 1} → prev page`)
+              if (r.page < r.total_pages) {
+                lines.push('', `  /skills browse ${r.page + 1} → next page`)
+              }
+
+              if (r.page > 1) {
+                lines.push(`  /skills browse ${r.page - 1} → prev page`)
+              }
 
               sys(lines.join('\n'))
             })
@@ -1853,7 +1876,22 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
       }
     },
-    [catalog, compact, gw, lastUserMsg, messages, newSession, page, pastes, pushActivity, rpc, send, sid, statusBar, sys]
+    [
+      catalog,
+      compact,
+      gw,
+      lastUserMsg,
+      messages,
+      newSession,
+      page,
+      pastes,
+      pushActivity,
+      rpc,
+      send,
+      sid,
+      statusBar,
+      sys
+    ]
   )
 
   slashRef.current = slash
@@ -2037,12 +2075,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         {picker && (
           <PromptBox color={theme.color.bronze}>
-            <SessionPicker
-              gw={gw}
-              onCancel={() => setPicker(false)}
-              onSelect={resumeById}
-              t={theme}
-            />
+            <SessionPicker gw={gw} onCancel={() => setPicker(false)} onSelect={resumeById} t={theme} />
           </PromptBox>
         )}
 
@@ -2102,6 +2135,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               </Box>
 
               <TextInput
+                columns={Math.max(20, cols - 3)}
                 onChange={setInput}
                 onPaste={handleTextPaste}
                 onSubmit={submit}

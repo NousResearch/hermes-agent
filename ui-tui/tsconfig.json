@@ -14,6 +14,6 @@
     "sourceMap": false,
     "resolveJsonModule": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/**/*.d.ts", "src/**/*.ts", "src/**/*.tsx"],
   "exclude": ["src/__tests__", "node_modules", "dist"]
 }

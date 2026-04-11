@@ -1,4 +1,4 @@
-import { Box, Text } from 'ink'
+import { Box, Text } from '@hermes/ink'
 import type { ReactNode } from 'react'
 
 import type { Theme } from '../theme.js'

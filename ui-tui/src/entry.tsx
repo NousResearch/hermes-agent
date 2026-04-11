@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { render } from 'ink'
+import { render } from '@hermes/ink'
 import React from 'react'
 
 import { App } from './app.js'
@@ -13,7 +13,5 @@ if (!process.stdin.isTTY) {
 const gw = new GatewayClient()
 gw.start()
 render(<App gw={gw} />, {
-  exitOnCtrlC: false,
-  maxFps: 60,
-  kittyKeyboard: { mode: 'enabled', flags: ['disambiguateEscapeCodes'] },
+  exitOnCtrlC: false
 })

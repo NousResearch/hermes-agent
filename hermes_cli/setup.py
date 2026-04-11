@@ -1969,6 +1969,42 @@ def _setup_weixin():
     _gateway_setup_weixin()
 
 
+def _setup_signal():
+    """Configure Signal via gateway setup."""
+    from hermes_cli.gateway import _setup_signal as _gateway_setup_signal
+    _gateway_setup_signal()
+
+
+def _setup_email():
+    """Configure Email via gateway setup."""
+    from hermes_cli.gateway import _setup_email as _gateway_setup_email
+    _gateway_setup_email()
+
+
+def _setup_sms():
+    """Configure SMS (Twilio) via gateway setup."""
+    from hermes_cli.gateway import _setup_sms as _gateway_setup_sms
+    _gateway_setup_sms()
+
+
+def _setup_dingtalk():
+    """Configure DingTalk via gateway setup."""
+    from hermes_cli.gateway import _setup_dingtalk as _gateway_setup_dingtalk
+    _gateway_setup_dingtalk()
+
+
+def _setup_feishu():
+    """Configure Feishu / Lark via gateway setup."""
+    from hermes_cli.gateway import _setup_feishu as _gateway_setup_feishu
+    _gateway_setup_feishu()
+
+
+def _setup_wecom():
+    """Configure WeCom (Enterprise WeChat) via gateway setup."""
+    from hermes_cli.gateway import _setup_wecom as _gateway_setup_wecom
+    _gateway_setup_wecom()
+
+
 def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
@@ -2085,9 +2121,15 @@ _GATEWAY_PLATFORMS = [
     ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
     ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
     ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
+    ("Signal", "SIGNAL_HTTP_URL", _setup_signal),
+    ("Email", "EMAIL_ADDRESS", _setup_email),
+    ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
+    ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
+    ("WeCom (Enterprise WeChat)", "WECOM_BOT_ID", _setup_wecom),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
@@ -2129,10 +2171,17 @@ def setup_gateway(config: dict):
         get_env_value("TELEGRAM_BOT_TOKEN")
         or get_env_value("DISCORD_BOT_TOKEN")
         or get_env_value("SLACK_BOT_TOKEN")
+        or get_env_value("SIGNAL_HTTP_URL")
+        or get_env_value("EMAIL_ADDRESS")
+        or get_env_value("TWILIO_ACCOUNT_SID")
         or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("DINGTALK_CLIENT_ID")
+        or get_env_value("FEISHU_APP_ID")
+        or get_env_value("WECOM_BOT_ID")
+        or get_env_value("WEIXIN_ACCOUNT_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("WEBHOOK_ENABLED")
     )
@@ -2321,12 +2370,30 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN"):
             platforms.append("Slack")
-        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
-            platforms.append("WhatsApp")
         if get_env_value("SIGNAL_ACCOUNT"):
             platforms.append("Signal")
+        if get_env_value("EMAIL_ADDRESS"):
+            platforms.append("Email")
+        if get_env_value("TWILIO_ACCOUNT_SID"):
+            platforms.append("SMS")
+        if get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD"):
+            platforms.append("Matrix")
+        if get_env_value("MATTERMOST_TOKEN"):
+            platforms.append("Mattermost")
+        if get_env_value("WHATSAPP_PHONE_NUMBER_ID"):
+            platforms.append("WhatsApp")
+        if get_env_value("DINGTALK_CLIENT_ID"):
+            platforms.append("DingTalk")
+        if get_env_value("FEISHU_APP_ID"):
+            platforms.append("Feishu")
+        if get_env_value("WECOM_BOT_ID"):
+            platforms.append("WeCom")
+        if get_env_value("WEIXIN_ACCOUNT_ID"):
+            platforms.append("Weixin")
         if get_env_value("BLUEBUBBLES_SERVER_URL"):
             platforms.append("BlueBubbles")
+        if get_env_value("WEBHOOK_ENABLED"):
+            platforms.append("Webhooks")
         if platforms:
             return ", ".join(platforms)
         return None  # No platforms configured — section must run

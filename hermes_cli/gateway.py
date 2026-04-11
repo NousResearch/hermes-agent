@@ -2051,6 +2051,36 @@ def _setup_whatsapp():
     cmd_whatsapp(argparse.Namespace())
 
 
+def _setup_email():
+    """Configure Email via the standard platform setup."""
+    email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
+    _setup_standard_platform(email_platform)
+
+
+def _setup_sms():
+    """Configure SMS (Twilio) via the standard platform setup."""
+    sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
+    _setup_standard_platform(sms_platform)
+
+
+def _setup_dingtalk():
+    """Configure DingTalk via the standard platform setup."""
+    dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
+    _setup_standard_platform(dingtalk_platform)
+
+
+def _setup_feishu():
+    """Configure Feishu / Lark via the standard platform setup."""
+    feishu_platform = next(p for p in _PLATFORMS if p["key"] == "feishu")
+    _setup_standard_platform(feishu_platform)
+
+
+def _setup_wecom():
+    """Configure WeCom (Enterprise WeChat) via the standard platform setup."""
+    wecom_platform = next(p for p in _PLATFORMS if p["key"] == "wecom")
+    _setup_standard_platform(wecom_platform)
+
+
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():

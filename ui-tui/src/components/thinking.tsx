@@ -25,6 +25,12 @@ const activityGlyph = (item: ActivityItem) => (item.tone === 'error' ? '✗' : i
 
 const TreeFork = ({ last }: { last: boolean }) => <Text dimColor>{last ? '└─ ' : '├─ '}</Text>
 
+const fmtElapsed = (ms: number) => {
+  const sec = Math.max(0, ms) / 1000
+
+  return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
+}
+
 export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
   const [spin] = useState(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
@@ -48,16 +54,26 @@ export const ToolTrail = memo(function ToolTrail({
   tools = [],
   trail = [],
   activity = [],
-  animateCot = false,
-  padAfter = false
+  animateCot = false
 }: {
   t: Theme
   tools?: ActiveTool[]
   trail?: string[]
   activity?: ActivityItem[]
   animateCot?: boolean
-  padAfter?: boolean
 }) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!tools.length) {
+      return
+    }
+
+    const id = setInterval(() => setNow(Date.now()), 200)
+
+    return () => clearInterval(id)
+  }, [tools.length])
+
   if (!trail.length && !tools.length && !activity.length) {
     return null
   }
@@ -70,7 +86,6 @@ export const ToolTrail = memo(function ToolTrail({
     <>
       {trail.map((line, i) => {
         const lastInBlock = i === rowCount - 1
-        const suffix = padAfter && lastInBlock ? '\n' : ''
 
         if (isToolTrailResultLine(line)) {
           return (
@@ -81,7 +96,6 @@ export const ToolTrail = memo(function ToolTrail({
             >
               <TreeFork last={lastInBlock} />
               {line}
-              {suffix}
             </Text>
           )
         }
@@ -91,7 +105,6 @@ export const ToolTrail = memo(function ToolTrail({
             <Text color={t.color.dim} key={`c-${i}`}>
               <TreeFork last={lastInBlock} />
               <Spinner color={t.color.amber} variant="think" /> {line}
-              {suffix}
             </Text>
           )
         }
@@ -100,34 +113,30 @@ export const ToolTrail = memo(function ToolTrail({
           <Text color={t.color.dim} dimColor key={`c-${i}`}>
             <TreeFork last={lastInBlock} />
             {line}
-            {suffix}
           </Text>
         )
       })}
 
       {tools.map((tool, j) => {
         const lastInBlock = trail.length + j === rowCount - 1
-        const suffix = padAfter && lastInBlock ? '\n' : ''
 
         return (
           <Text color={t.color.dim} key={tool.id}>
             <TreeFork last={lastInBlock} />
             <Spinner color={t.color.amber} variant="tool" /> {TOOL_VERBS[tool.name] ?? tool.name}
             {tool.context ? `: ${tool.context}` : ''}
-            {suffix}
+            {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
           </Text>
         )
       })}
 
       {act.map((item, k) => {
         const lastInBlock = trail.length + tools.length + k === rowCount - 1
-        const suffix = padAfter && lastInBlock ? '\n' : ''
 
         return (
           <Text color={tone(item, t)} dimColor={item.tone === 'info'} key={`a-${item.id}`}>
             <TreeFork last={lastInBlock} />
             {activityGlyph(item)} {item.text}
-            {suffix}
           </Text>
         )
       })}

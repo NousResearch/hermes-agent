@@ -189,6 +189,23 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+function fmtDuration(ms: number) {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(total / 3600)
+  const mins = Math.floor((total % 3600) / 60)
+  const secs = total % 60
+
+  if (hours > 0) {
+    return `${hours}h ${mins}m`
+  }
+
+  if (mins > 0) {
+    return `${mins}m ${secs}s`
+  }
+
+  return `${secs}s`
+}
+
 function StatusRule({
   cols,
   status,
@@ -196,6 +213,8 @@ function StatusRule({
   model,
   usage,
   bgCount,
+  durationLabel,
+  voiceLabel,
   t
 }: {
   cols: number
@@ -204,6 +223,8 @@ function StatusRule({
   model: string
   usage: Usage
   bgCount: number
+  durationLabel?: string
+  voiceLabel?: string
   t: Theme
 }) {
   const pct = usage.context_percent
@@ -218,9 +239,16 @@ function StatusRule({
   const pctLabel = pct != null ? `${pct}%` : ''
   const bar = usage.context_max ? ctxBar(pct) : ''
 
-  const segs = [status, model, ctxLabel, bar ? `[${bar}]` : '', pctLabel, bgCount > 0 ? `${bgCount} bg` : ''].filter(
-    Boolean
-  )
+  const segs = [
+    status,
+    model,
+    ctxLabel,
+    bar ? `[${bar}]` : '',
+    pctLabel,
+    durationLabel || '',
+    voiceLabel || '',
+    bgCount > 0 ? `${bgCount} bg` : ''
+  ].filter(Boolean)
 
   const inner = segs.join(' │ ')
   const pad = Math.max(0, cols - inner.length - 5)
@@ -237,6 +265,8 @@ function StatusRule({
           <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
         </Text>
       ) : null}
+      {durationLabel ? <Text color={t.color.dim}> │ {durationLabel}</Text> : null}
+      {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
       {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
       {' ' + '─'.repeat(pad)}
     </Text>
@@ -314,6 +344,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
   const [pager, setPager] = useState<{ lines: string[]; offset: number } | null>(null)
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceRecording, setVoiceRecording] = useState(false)
+  const [voiceProcessing, setVoiceProcessing] = useState(false)
+  const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [clockNow, setClockNow] = useState(() => Date.now())
 
   // ── Refs ─────────────────────────────────────────────────────────
 
@@ -333,6 +369,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
+  const configMtimeRef = useRef(0)
   colsRef.current = cols
   busyRef.current = busy
   reasoningRef.current = reasoning
@@ -366,6 +403,12 @@ export function App({ gw }: { gw: GatewayClient }) {
       stdout.off('resize', onResize)
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const id = setInterval(() => setClockNow(Date.now()), 1000)
+
+    return () => clearInterval(id)
+  }, [])
 
   // ── Core actions ─────────────────────────────────────────────────
 
@@ -423,6 +466,44 @@ export function App({ gw }: { gw: GatewayClient }) {
     [gw, sys]
   )
 
+  useEffect(() => {
+    if (!sid) {
+      return
+    }
+
+    rpc('voice.toggle', { action: 'status' }).then((r: any) => setVoiceEnabled(!!r?.enabled))
+    rpc('config.get', { key: 'mtime' }).then((r: any) => {
+      configMtimeRef.current = Number(r?.mtime ?? 0)
+    })
+    rpc('config.get', { key: 'full' }).then((r: any) => {
+      setBellOnComplete(!!r?.config?.display?.bell_on_complete)
+    })
+  }, [rpc, sid])
+
+  useEffect(() => {
+    if (!sid) {
+      return
+    }
+
+    const id = setInterval(() => {
+      rpc('config.get', { key: 'mtime' }).then((r: any) => {
+        const next = Number(r?.mtime ?? 0)
+
+        if (configMtimeRef.current && next && next !== configMtimeRef.current) {
+          configMtimeRef.current = next
+          rpc('reload.mcp', { session_id: sid }).then(() => pushActivity('MCP reloaded after config change'))
+          rpc('config.get', { key: 'full' }).then((cfg: any) => {
+            setBellOnComplete(!!cfg?.config?.display?.bell_on_complete)
+          })
+        } else if (!configMtimeRef.current && next) {
+          configMtimeRef.current = next
+        }
+      })
+    }, 5000)
+
+    return () => clearInterval(id)
+  }, [pushActivity, rpc, sid])
+
   const idle = () => {
     setThinking(false)
     setTools([])
@@ -454,6 +535,8 @@ export function App({ gw }: { gw: GatewayClient }) {
   const resetSession = () => {
     idle()
     setReasoning('')
+    setVoiceRecording(false)
+    setVoiceProcessing(false)
     setSid(null as any) // will be set by caller
     setHistoryItems([])
     setMessages([])
@@ -477,6 +560,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         resetSession()
         setSid(r.session_id)
+        setSessionStartedAt(Date.now())
         setStatus('ready')
 
         if (r.info) {
@@ -506,6 +590,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         .then((r: any) => {
           resetSession()
           setSid(r.session_id)
+          setSessionStartedAt(Date.now())
           setInfo(r.info ?? null)
           const resumed = toTranscriptMessages(r.messages)
 
@@ -667,25 +752,45 @@ export function App({ gw }: { gw: GatewayClient }) {
       pushActivity(`redacted ${payload.redactions} secret-like value(s)`, 'warn')
     }
 
-    if (statusTimerRef.current) {
-      clearTimeout(statusTimerRef.current)
-      statusTimerRef.current = null
+    const startSubmit = (displayText: string, submitText: string) => {
+      if (statusTimerRef.current) {
+        clearTimeout(statusTimerRef.current)
+        statusTimerRef.current = null
+      }
+
+      inflightPasteIdsRef.current = payload.usedIds
+      setLastUserMsg(text)
+      appendMessage({ role: 'user', text: displayText })
+      setBusy(true)
+      setStatus('running…')
+      buf.current = ''
+      interruptedRef.current = false
+
+      gw.request('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
+        inflightPasteIdsRef.current = []
+        sys(`error: ${e.message}`)
+        setStatus('ready')
+        setBusy(false)
+      })
     }
 
-    inflightPasteIdsRef.current = payload.usedIds
-    setLastUserMsg(text)
-    appendMessage({ role: 'user', text })
-    setBusy(true)
-    setStatus('running…')
-    buf.current = ''
-    interruptedRef.current = false
+    gw.request('input.detect_drop', { session_id: sid, text: payload.text })
+      .then((r: any) => {
+        if (r?.matched) {
+          if (r.is_image) {
+            pushActivity(`attached image: ${r.name}`)
+          } else {
+            pushActivity(`detected file: ${r.name}`)
+          }
 
-    gw.request('prompt.submit', { session_id: sid, text: payload.text }).catch((e: Error) => {
-      inflightPasteIdsRef.current = []
-      sys(`error: ${e.message}`)
-      setStatus('ready')
-      setBusy(false)
-    })
+          startSubmit(r.text || text, r.text || payload.text)
+
+          return
+        }
+
+        startSubmit(text, payload.text)
+      })
+      .catch(() => startSubmit(text, payload.text))
   }
 
   const shellExec = (cmd: string) => {
@@ -1027,6 +1132,37 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
+    if (ctrl(key, ch, 'b')) {
+      if (voiceRecording) {
+        setVoiceRecording(false)
+        setVoiceProcessing(true)
+        rpc('voice.record', { action: 'stop' })
+          .then((r: any) => {
+            const transcript = String(r?.text || '').trim()
+
+            if (transcript) {
+              setInput(prev => (prev ? `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}` : transcript))
+            } else {
+              sys('voice: no speech detected')
+            }
+          })
+          .catch((e: Error) => sys(`voice error: ${e.message}`))
+          .finally(() => {
+            setVoiceProcessing(false)
+            setStatus('ready')
+          })
+      } else {
+        rpc('voice.record', { action: 'start' })
+          .then(() => {
+            setVoiceRecording(true)
+            setStatus('recording…')
+          })
+          .catch((e: Error) => sys(`voice error: ${e.message}`))
+      }
+
+      return
+    }
+
     if (ctrl(key, ch, 'g')) {
       return openEditor()
     }
@@ -1184,7 +1320,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'tool.start':
-          setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: (p.context as string) || '' }])
+          setTools(prev => [
+            ...prev,
+            { id: p.tool_id, name: p.name, context: (p.context as string) || '', startedAt: Date.now() }
+          ])
 
           break
         case 'tool.complete': {
@@ -1210,6 +1349,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             return remaining
           })
+
+          if (p?.inline_diff) {
+            sys(p.inline_diff as string)
+          }
 
           break
         }
@@ -1262,7 +1405,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'message.delta':
           if (p?.text && !interruptedRef.current) {
-            buf.current += p.rendered ?? p.text
+            buf.current = p.rendered ?? buf.current + p.text
             setStreaming(buf.current.trimStart())
           }
 
@@ -1289,6 +1432,10 @@ export function App({ gw }: { gw: GatewayClient }) {
               thinking: savedReasoning || undefined,
               tools: savedTools.length ? savedTools : undefined
             })
+
+            if (bellOnComplete && stdout?.isTTY) {
+              stdout.write('\x07')
+            }
           }
 
           turnToolsRef.current = []
@@ -1624,11 +1771,28 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (!arg) {
             rpc('config.get', { key: 'provider' }).then((r: any) => sys(`${r.model} (${r.provider})`))
           } else {
-            rpc('config.set', { key: 'model', value: arg.replace('--global', '').trim() }).then((r: any) => {
-              sys(`model → ${r.value}`)
-              setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
-            })
+            rpc('config.set', { session_id: sid, key: 'model', value: arg.replace('--global', '').trim() }).then(
+              (r: any) => {
+                sys(`model → ${r.value}`)
+                setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
+              }
+            )
           }
+
+          return true
+
+        case 'image':
+          rpc('image.attach', { session_id: sid, path: arg }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
+            sys(`attached image: ${r.name}`)
+
+            if (r?.remainder) {
+              setInput(r.remainder)
+            }
+          })
 
           return true
 
@@ -1649,17 +1813,23 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'yolo':
-          rpc('config.set', { key: 'yolo' }).then((r: any) => sys(`yolo ${r.value === '1' ? 'on' : 'off'}`))
+          rpc('config.set', { session_id: sid, key: 'yolo' }).then((r: any) =>
+            sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)
+          )
 
           return true
 
         case 'reasoning':
-          rpc('config.set', { key: 'reasoning', value: arg || 'medium' }).then((r: any) => sys(`reasoning: ${r.value}`))
+          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg || 'medium' }).then((r: any) =>
+            sys(`reasoning: ${r.value}`)
+          )
 
           return true
 
         case 'verbose':
-          rpc('config.set', { key: 'verbose', value: arg || 'cycle' }).then((r: any) => sys(`verbose: ${r.value}`))
+          rpc('config.set', { session_id: sid, key: 'verbose', value: arg || 'cycle' }).then((r: any) =>
+            sys(`verbose: ${r.value}`)
+          )
 
           return true
 
@@ -1694,6 +1864,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
             if (r?.session_id) {
               setSid(r.session_id)
+              setSessionStartedAt(Date.now())
               setHistoryItems([])
               setMessages([])
               sys(`branched → ${r.title}`)
@@ -1773,9 +1944,14 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'voice':
-          rpc('voice.toggle', { action: arg === 'on' || arg === 'off' ? arg : 'status' }).then((r: any) =>
+          rpc('voice.toggle', { action: arg === 'on' || arg === 'off' ? arg : 'status' }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
+            setVoiceEnabled(!!r?.enabled)
             sys(`voice${arg === 'on' || arg === 'off' ? '' : ':'} ${r.enabled ? 'on' : 'off'}`)
-          )
+          })
 
           return true
 
@@ -1794,13 +1970,19 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return sys('no checkpoints')
               }
 
-              sys(r.checkpoints.map((c: any, i: number) => `  ${i} ${c.hash?.slice(0, 8)} ${c.message}`).join('\n'))
+              sys(r.checkpoints.map((c: any, i: number) => `  ${i + 1} ${c.hash?.slice(0, 8)} ${c.message}`).join('\n'))
             })
           } else {
             const hash = sub === 'restore' || sub === 'diff' ? rArgs[0] : sub
-            rpc(sub === 'diff' ? 'rollback.diff' : 'rollback.restore', { session_id: sid, hash }).then((r: any) =>
-              sys(r.rendered || r.diff || r.message || 'done')
-            )
+
+            const filePath =
+              sub === 'restore' || sub === 'diff' ? rArgs.slice(1).join(' ').trim() : rArgs.join(' ').trim()
+
+            rpc(sub === 'diff' ? 'rollback.diff' : 'rollback.restore', {
+              session_id: sid,
+              hash,
+              ...(sub === 'diff' || !filePath ? {} : { file_path: filePath })
+            }).then((r: any) => sys(r.rendered || r.diff || r.message || 'done'))
           }
 
           return true
@@ -2003,6 +2185,9 @@ export function App({ gw }: { gw: GatewayClient }) {
           ? theme.color.warn
           : theme.color.dim
 
+  const durationLabel = sid ? fmtDuration(clockNow - sessionStartedAt) : ''
+  const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+
   // ── Render ───────────────────────────────────────────────────────
 
   return (
@@ -2024,7 +2209,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         <ToolTrail
           activity={busy ? activity : []}
           animateCot={busy && !streaming}
-          padAfter={!!streaming}
           t={theme}
           tools={tools}
           trail={turnTrail}
@@ -2126,11 +2310,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           <StatusRule
             bgCount={bgTasks.size}
             cols={cols}
+            durationLabel={durationLabel}
             model={info?.model?.split('/').pop() ?? ''}
             status={status}
             statusColor={statusColor}
             t={theme}
             usage={usage}
+            voiceLabel={voiceLabel}
           />
         )}
 

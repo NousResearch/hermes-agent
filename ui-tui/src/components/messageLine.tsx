@@ -39,8 +39,12 @@ export const MessageLine = memo(function MessageLine({
       return <Text color={t.color.dim}>{msg.text}</Text>
     }
 
+    if (msg.role !== 'user' && hasAnsi(msg.text)) {
+      return <Text wrap="wrap">{msg.text}</Text>
+    }
+
     if (msg.role === 'assistant') {
-      return hasAnsi(msg.text) ? <Text wrap="wrap">{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
+      return <Md compact={compact} t={t} text={msg.text} />
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
@@ -63,7 +67,11 @@ export const MessageLine = memo(function MessageLine({
   })()
 
   return (
-    <Box flexDirection="column" marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}>
+    <Box
+      flexDirection="column"
+      marginBottom={msg.role === 'user' ? 1 : 0}
+      marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}
+    >
       {msg.thinking && (
         <Text color={t.color.dim} dimColor wrap="truncate-end">
           💭 {msg.thinking.replace(/\n/g, ' ').slice(0, 200)}

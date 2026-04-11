@@ -348,7 +348,7 @@ word word
             result = _patch_skill("my-skill", "old text", "new text", file_path="references/evil.md")
 
         assert result["success"] is False
-        assert "boundary" in result["error"].lower()
+        assert "escapes" in result["error"].lower()
         assert outside_file.read_text() == "old text here"
 
 
@@ -412,7 +412,7 @@ class TestWriteFile:
             result = _write_file("my-skill", "references/escape/owned.md", "malicious")
 
         assert result["success"] is False
-        assert "boundary" in result["error"].lower()
+        assert "escapes" in result["error"].lower()
         assert not (outside_dir / "owned.md").exists()
 
 
@@ -449,7 +449,7 @@ class TestRemoveFile:
             result = _remove_file("my-skill", "references/escape/keep.txt")
 
         assert result["success"] is False
-        assert "boundary" in result["error"].lower()
+        assert "escapes" in result["error"].lower()
         assert outside_file.exists()
 
 

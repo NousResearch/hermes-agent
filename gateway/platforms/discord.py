@@ -45,6 +45,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -450,18 +451,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # Track threads where the bot has participated so follow-up messages
         # in those threads don't require @mention.  Persisted to disk so the
         # set survives gateway restarts.
-        self._bot_participated_threads: set = self._load_participated_threads()
+        self._threads = ThreadParticipationTracker("discord")
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
-        # Cap to prevent unbounded growth (Discord threads get archived).
-        self._MAX_TRACKED_THREADS = 500
-        # Dedup cache: message_id → timestamp.  Prevents duplicate bot
-        # responses when Discord RESUME replays events after reconnects.
-        self._seen_messages: Dict[str, float] = {}
-        self._SEEN_TTL = 300   # 5 minutes
-        self._SEEN_MAX = 2000  # prune threshold
+        # Dedup cache: prevents duplicate bot responses when Discord
+        # RESUME replays events after reconnects.
+        self._dedup = MessageDeduplicator()
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -502,17 +499,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         try:
-            # Acquire scoped lock to prevent duplicate bot token usage
-            from gateway.status import acquire_scoped_lock
-            self._token_lock_identity = self.config.token
-            acquired, existing = acquire_scoped_lock('discord-bot-token', self._token_lock_identity, metadata={'platform': 'discord'})
-            if not acquired:
-                owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-                message = f'Discord bot token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
-                logger.error('[%s] %s', self.name, message)
-                self._set_fatal_error('discord_token_lock', message, retryable=False)
+            if not self._acquire_platform_lock('discord-bot-token', self.config.token, 'Discord bot token'):
                 return False
-
 
             # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
@@ -569,17 +557,8 @@ class DiscordAdapter(BasePlatformAdapter):
             @self._client.event
             async def on_message(message: DiscordMessage):
                 # Dedup: Discord RESUME replays events after reconnects (#4777)
-                msg_id = str(message.id)
-                now = time.time()
-                if msg_id in adapter_self._seen_messages:
+                if adapter_self._dedup.is_duplicate(str(message.id)):
                     return
-                adapter_self._seen_messages[msg_id] = now
-                if len(adapter_self._seen_messages) > adapter_self._SEEN_MAX:
-                    cutoff = now - adapter_self._SEEN_TTL
-                    adapter_self._seen_messages = {
-                        k: v for k, v in adapter_self._seen_messages.items()
-                        if v > cutoff
-                    }
 
                 # Always ignore our own messages
                 if message.author == self._client.user:
@@ -685,23 +664,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
-            try:
-                from gateway.status import release_scoped_lock
-                if getattr(self, '_token_lock_identity', None):
-                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
-                    self._token_lock_identity = None
-            except Exception:
-                pass
+            self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
-            try:
-                from gateway.status import release_scoped_lock
-                if getattr(self, '_token_lock_identity', None):
-                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
-                    self._token_lock_identity = None
-            except Exception:
-                pass
+            self._release_platform_lock()
             return False
 
     async def disconnect(self) -> None:
@@ -723,14 +690,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client = None
         self._ready_event.clear()
 
-        # Release the token lock
-        try:
-            from gateway.status import release_scoped_lock
-            if getattr(self, '_token_lock_identity', None):
-                release_scoped_lock('discord-bot-token', self._token_lock_identity)
-                self._token_lock_identity = None
-        except Exception:
-            pass
+        self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
 
@@ -1870,7 +1830,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         # If a message was provided, kick off a new Hermes session in the thread
         starter = (message or "").strip()
@@ -2241,49 +2201,6 @@ class DiscordAdapter(BasePlatformAdapter):
             return f"{parent_name} / {thread_name}"
         return thread_name
 
-    # ------------------------------------------------------------------
-    # Thread participation persistence
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _thread_state_path() -> Path:
-        """Path to the persisted thread participation set."""
-        from hermes_cli.config import get_hermes_home
-        return get_hermes_home() / "discord_threads.json"
-
-    @classmethod
-    def _load_participated_threads(cls) -> set:
-        """Load persisted thread IDs from disk."""
-        path = cls._thread_state_path()
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as e:
-            logger.debug("Could not load discord thread state: %s", e)
-        return set()
-
-    def _save_participated_threads(self) -> None:
-        """Persist the current thread set to disk (best-effort)."""
-        path = self._thread_state_path()
-        try:
-            # Trim to most recent entries if over cap
-            thread_list = list(self._bot_participated_threads)
-            if len(thread_list) > self._MAX_TRACKED_THREADS:
-                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
-                self._bot_participated_threads = set(thread_list)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Could not save discord thread state: %s", e)
-
-    def _track_thread(self, thread_id: str) -> None:
-        """Add a thread to the participation set and persist."""
-        if thread_id not in self._bot_participated_threads:
-            self._bot_participated_threads.add(thread_id)
-            self._save_participated_threads()
-
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -2335,7 +2252,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
-            in_bot_thread = is_thread and thread_id in self._bot_participated_threads
+            in_bot_thread = is_thread and thread_id in self._threads
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions:
@@ -2361,7 +2278,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
-                    self._track_thread(thread_id)
+                    self._threads.mark(thread_id)
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -2545,7 +2462,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Track thread participation so the bot won't require @mention for
         # follow-up messages in threads it has already engaged in.
         if thread_id:
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         # Only batch plain text messages — commands, media, etc. dispatch
         # immediately since they won't be split by the Discord client.

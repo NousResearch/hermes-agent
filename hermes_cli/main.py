@@ -4447,7 +4447,7 @@ For more help on a command:
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
+    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
@@ -4456,7 +4456,7 @@ For more help on a command:
                              help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
-    gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
+    gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway stop
@@ -4474,7 +4474,7 @@ For more help on a command:
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway install
-    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
+    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")

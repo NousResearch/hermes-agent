@@ -375,6 +375,42 @@ lsof -i :8080
 hermes config show
 ```
 
+#### WSL: Gateway keeps disconnecting or `hermes gateway start` fails
+
+**Cause:** WSL's systemd support is unreliable. Many WSL2 installations don't have systemd enabled, and even when enabled, services may not survive WSL restarts or Windows idle shutdowns.
+
+**Solution:** Use foreground mode instead of the systemd service:
+
+```bash
+# Option 1: Direct foreground (simplest)
+hermes gateway run
+
+# Option 2: Persistent via tmux (survives terminal close)
+tmux new -s hermes 'hermes gateway run'
+# Reattach later: tmux attach -t hermes
+
+# Option 3: Background via nohup
+nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &
+```
+
+If you want to try systemd anyway, make sure it's enabled:
+
+1. Open `/etc/wsl.conf` (create it if it doesn't exist)
+2. Add:
+   ```ini
+   [boot]
+   systemd=true
+   ```
+3. From PowerShell: `wsl --shutdown`
+4. Reopen your WSL terminal
+5. Verify: `systemctl is-system-running` should say "running" or "degraded"
+
+:::tip Auto-start on Windows boot
+For reliable auto-start, use Windows Task Scheduler to launch WSL + the gateway on login:
+1. Create a task that runs `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
+2. Set it to trigger on user logon
+:::
+
 #### macOS: Node.js / ffmpeg / other tools not found by gateway
 
 **Cause:** launchd services inherit a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that doesn't include Homebrew, nvm, cargo, or other user-installed tool directories. This commonly breaks the WhatsApp bridge (`node not found`) or voice transcription (`ffmpeg not found`).

@@ -168,6 +168,27 @@ def is_termux() -> bool:
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
 
 
+_wsl_detected: bool | None = None
+
+
+def is_wsl() -> bool:
+    """Return True when running inside WSL (Windows Subsystem for Linux).
+
+    Checks ``/proc/version`` for the ``microsoft`` marker that both WSL1
+    and WSL2 inject.  Result is cached for the process lifetime.
+    Import-safe — no heavy deps.
+    """
+    global _wsl_detected
+    if _wsl_detected is not None:
+        return _wsl_detected
+    try:
+        with open("/proc/version", "r") as f:
+            _wsl_detected = "microsoft" in f.read().lower()
+    except Exception:
+        _wsl_detected = False
+    return _wsl_detected
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 

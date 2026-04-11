@@ -1,0 +1,6 @@
+name: everos
+version: 1.0.0
+description: "EverOS — structured memory extraction with episodic, profile, and foresight memory. Multi-method retrieval (keyword, vector, hybrid, agentic). 93% accuracy on LoCoMo benchmark."
+hooks:
+  - on_session_end
+  - on_memory_write

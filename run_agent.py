@@ -4288,6 +4288,20 @@ class AIAgent:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
 
+        # Copilot credential pool stores raw GitHub tokens (ghu_/gho_/github_pat_).
+        # These must be exchanged for a short-lived Copilot JWT before use, which
+        # also derives the correct API base URL (individual vs enterprise).
+        if self.provider == "copilot" and runtime_key:
+            try:
+                from hermes_cli.copilot_auth import resolve_copilot_api_token
+                exchanged_token, derived_base_url = resolve_copilot_api_token(runtime_key)
+                if exchanged_token:
+                    runtime_key = exchanged_token
+                if derived_base_url:
+                    runtime_base = derived_base_url
+            except Exception as exc:
+                logger.debug("Copilot token exchange failed during credential swap: %s", exc)
+
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token
 

@@ -381,6 +381,11 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
         assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
 
+    def test_xai_provider_prefixes_are_stripped(self):
+        assert _strip_provider_prefix("xai:grok-4") == "grok-4"
+        assert _strip_provider_prefix("x-ai:grok-4") == "grok-4"
+        assert _strip_provider_prefix("x.ai:grok-4") == "grok-4"
+
     def test_ollama_model_tag_preserved(self):
         """Ollama model:tag format must NOT be stripped."""
         assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"

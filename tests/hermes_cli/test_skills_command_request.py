@@ -72,6 +72,13 @@ def test_parse_skills_slash_command_tap_defaults_to_list():
     assert request.tap_action == "list"
 
 
+def test_parse_skills_slash_command_help_flag_returns_help_request():
+    request = parse_skills_slash_command("/skills search --help")
+
+    assert request.action == "help"
+    assert request.help_text
+
+
 def test_parse_skills_slash_command_returns_error_request_on_invalid_input():
     request = parse_skills_slash_command("/skills install")
 

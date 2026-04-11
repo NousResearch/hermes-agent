@@ -1027,7 +1027,10 @@ def _dispatch_skills_request(request: SkillsCommandRequest, console: Optional[Co
         else:
             c.print("[bold red]/skills config is not available in chat. Use `hermes skills config` in the terminal.[/]")
     elif request.action in {"help", "", None}:
-        _print_skills_help(c)
+        if request.help_text:
+            c.print(request.help_text)
+        else:
+            _print_skills_help(c)
     elif request.action == "error":
         c.print(f"[bold red]Error:[/] {request.error}")
         _print_skills_help(c)

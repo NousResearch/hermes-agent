@@ -29,6 +29,11 @@ except ImportError:  # pragma: no cover
     Suggestion = None     # type: ignore[assignment]
     Completion = None     # type: ignore[assignment]
 
+try:
+    from hermes_cli.skills_command_request import skills_subcommand_names as _shared_skills_subcommand_names
+except Exception:  # pragma: no cover
+    _shared_skills_subcommand_names = None
+
 
 # ---------------------------------------------------------------------------
 # CommandDef dataclass
@@ -224,6 +229,11 @@ def rebuild_lookups() -> None:
         m = _PIPE_SUBS_RE.search(cmd.args_hint)
         if m:
             SUBCOMMANDS[key] = m.group(0).split("|")
+    if _shared_skills_subcommand_names is not None:
+        try:
+            SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names()
+        except Exception:
+            pass
 
     GATEWAY_KNOWN_COMMANDS = frozenset(
         name
@@ -276,6 +286,11 @@ for _cmd in COMMAND_REGISTRY:
     m = _PIPE_SUBS_RE.search(_cmd.args_hint)
     if m:
         SUBCOMMANDS[key] = m.group(0).split("|")
+if _shared_skills_subcommand_names is not None:
+    try:
+        SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names()
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

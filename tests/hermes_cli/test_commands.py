@@ -452,6 +452,10 @@ class TestSubcommands:
         """Commands with explicit subcommands on CommandDef are extracted."""
         assert "/skills" in SUBCOMMANDS
         assert "install" in SUBCOMMANDS["/skills"]
+        assert "list" in SUBCOMMANDS["/skills"]
+        assert "tap" in SUBCOMMANDS["/skills"]
+        assert "list" in SUBCOMMANDS["/skills"]
+        assert "tap" in SUBCOMMANDS["/skills"]
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS

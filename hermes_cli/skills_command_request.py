@@ -44,6 +44,7 @@ class SkillsCommandRequest:
     tap_action: str = ""
     config_available: bool = True
     error: str = ""
+    help_text: str = ""
 
 
 def register_skills_subcommands(skills_parser: argparse.ArgumentParser) -> None:
@@ -112,6 +113,17 @@ def register_skills_subcommands(skills_parser: argparse.ArgumentParser) -> None:
     skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
 
 
+def skills_subcommand_names() -> list[str]:
+    parser = _SkillsArgumentParser(prog="skills", add_help=False)
+    register_skills_subcommands(parser)
+    action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return sorted(action.choices.keys())
+
+
 def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest:
     action = getattr(args, "skills_action", None) or "help"
     skip_confirm = getattr(args, "yes", False)
@@ -165,6 +177,15 @@ def parse_skills_slash_command(cmd: str) -> SkillsCommandRequest:
         parts = parts[1:]
     if not parts:
         return SkillsCommandRequest(action="help", command_source="slash")
+
+    if any(part in {"--help", "-h"} for part in parts):
+        parser = _SkillsArgumentParser(prog="/skills", add_help=True)
+        register_skills_subcommands(parser)
+        return SkillsCommandRequest(
+            action="help",
+            command_source="slash",
+            help_text=parser.format_help(),
+        )
 
     parser = _SkillsArgumentParser(prog="/skills", add_help=False)
     register_skills_subcommands(parser)

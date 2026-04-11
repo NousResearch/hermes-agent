@@ -934,11 +934,21 @@ def do_snapshot_import(input_path: str, force: bool = False,
         c.print(f"[bold red]Error:[/] Invalid JSON in {inp}\n")
         return
 
+    if not isinstance(snapshot, dict):
+        c.print(f"[bold red]Error:[/] Invalid snapshot format in {inp}\n")
+        return
+
     # Restore taps first
     taps = snapshot.get("taps", [])
+    if not isinstance(taps, list):
+        c.print(f"[bold red]Error:[/] Invalid snapshot format in {inp}\n")
+        return
     if taps:
         mgr = TapsManager()
         for tap in taps:
+            if not isinstance(tap, dict):
+                c.print(f"[yellow]Skipping malformed tap entry in {inp}[/]")
+                continue
             repo = tap.get("repo", "")
             if repo:
                 mgr.add(repo, tap.get("path", "skills/"))
@@ -946,12 +956,18 @@ def do_snapshot_import(input_path: str, force: bool = False,
 
     # Install skills
     skills = snapshot.get("skills", [])
+    if not isinstance(skills, list):
+        c.print(f"[bold red]Error:[/] Invalid snapshot format in {inp}\n")
+        return
     if not skills:
         c.print("[dim]No skills in snapshot to install.[/]\n")
         return
 
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
     for entry in skills:
+        if not isinstance(entry, dict):
+            c.print(f"[yellow]Skipping malformed skill entry in {inp}[/]")
+            continue
         identifier = entry.get("identifier", "")
         category = entry.get("category", "")
         if not identifier:

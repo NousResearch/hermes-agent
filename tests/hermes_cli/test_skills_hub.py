@@ -1,9 +1,17 @@
+import json
 from io import StringIO
 
 import pytest
 from rich.console import Console
 
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_snapshot_import,
+    do_update,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -231,3 +239,46 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
 
     assert scanned["source"] == canonical_identifier
+
+
+def test_do_snapshot_import_rejects_non_object_snapshot(tmp_path):
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text("[]", encoding="utf-8")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    do_snapshot_import(str(snapshot), console=console)
+
+    assert "Invalid snapshot format" in sink.getvalue()
+
+
+def test_do_snapshot_import_skips_malformed_skill_entries(monkeypatch, tmp_path):
+    import hermes_cli.skills_hub as cli_hub
+
+    snapshot = tmp_path / "snapshot.json"
+    snapshot.write_text(json.dumps({
+        "skills": [
+            "bad-entry",
+            {"name": "missing-id"},
+            {"name": "ok-skill", "identifier": "github/example/ok-skill", "category": "tools"},
+        ],
+        "taps": [],
+    }), encoding="utf-8")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    installs = []
+
+    monkeypatch.setattr(
+        cli_hub,
+        "do_install",
+        lambda identifier, category="", force=False, console=None: installs.append((identifier, category, force)),
+    )
+
+    do_snapshot_import(str(snapshot), force=True, console=console)
+
+    output = sink.getvalue()
+    assert "Skipping malformed skill entry" in output
+    assert "Skipping entry with no identifier: missing-id" in output
+    assert installs == [("github/example/ok-skill", "tools", True)]

@@ -14,6 +14,7 @@ WORKDIR /opt/hermes
 
 # Install Python and Node dependencies in one layer, no cache
 RUN pip install --no-cache-dir uv --break-system-packages && \
+    npm install -g npm@11 --no-audit --no-fund && \
     uv pip install --system --break-system-packages --no-cache -e ".[all]" && \
     npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \

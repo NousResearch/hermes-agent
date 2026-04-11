@@ -414,6 +414,7 @@ class TestVisionSafetyGuards:
 
         class FakeResponse:
             url = "https://blocked.test/final.png"
+            headers = {"content-length": "24"}
             content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
             def raise_for_status(self):

@@ -226,7 +226,8 @@ After each turn:
 |------|---------|
 | `run_agent.py` | AIAgent class — the complete agent loop (~9,200 lines) |
 | `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
-| `agent/context_compressor.py` | Conversation compression algorithm |
+| `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
+| `agent/context_compressor.py` | Default engine — lossy summarization algorithm |
 | `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
 | `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
 | `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |

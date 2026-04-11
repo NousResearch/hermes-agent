@@ -20,6 +20,7 @@ from agent.prompt_builder import (
     build_context_files_prompt,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    drain_truncation_warnings,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -113,6 +114,18 @@ class TestScanContextContent:
 
 
 class TestTruncateContent:
+    @pytest.fixture(autouse=True)
+    def _reset_truncation_state(self, monkeypatch):
+        drain_truncation_warnings()
+
+        def default_load_config():
+            return {}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", default_load_config)
+
+    def test_context_file_max_chars_default_matches_upstream_limit(self):
+        assert CONTEXT_FILE_MAX_CHARS == 20_000
+
     def test_short_content_unchanged(self):
         content = "Short content"
         result = _truncate_content(content, "test.md")
@@ -137,6 +150,45 @@ class TestTruncateContent:
         content = "x" * CONTEXT_FILE_MAX_CHARS
         result = _truncate_content(content, "exact.md")
         assert result == content
+
+    def test_configured_context_file_max_chars_controls_truncation(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "HEAD" + "x" * 160 + "TAIL"
+
+        result = _truncate_content(content, "config.md")
+
+        assert result != content
+        assert "truncated config.md" in result
+        assert "kept 84+24" in result
+        assert "HEAD" in result
+        assert "TAIL" in result
+
+    def test_explicit_max_chars_overrides_config(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+        content = "x" * 180
+
+        result = _truncate_content(content, "explicit.md", max_chars=200)
+
+        assert result == content
+
+    def test_truncation_warning_points_to_config_key(self, monkeypatch):
+        def fake_load_config():
+            return {"context_file_max_chars": 120}
+
+        monkeypatch.setattr("hermes_cli.config.load_config", fake_load_config)
+
+        _truncate_content("x" * 180, "warning.md")
+
+        warnings = drain_truncation_warnings()
+        assert len(warnings) == 1
+        assert "context_file_max_chars" in warnings[0]
+        assert "CONTEXT_FILE_MAX_CHARS" not in warnings[0]
 
 
 # =========================================================================

@@ -1043,20 +1043,28 @@ class TestMatrixSyncLoop:
             call_count += 1
             if call_count >= 1:
                 adapter._closing = True
-            return {"rooms": {"join": {"!room:example.org": {}}}}
+            return {"rooms": {"join": {"!room:example.org": {}}}, "next_batch": "s1234"}
 
         mock_crypto = MagicMock()
         mock_crypto.share_keys = AsyncMock()
 
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
         fake_client = MagicMock()
         fake_client.sync = AsyncMock(side_effect=_sync_once)
         fake_client.crypto = mock_crypto
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
         adapter._client = fake_client
 
         await adapter._sync_loop()
 
         fake_client.sync.assert_awaited_once()
         mock_crypto.share_keys.assert_awaited_once()
+        fake_client.handle_sync.assert_called_once()
+        mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
 
 class TestMatrixEncryptedSendFallback:

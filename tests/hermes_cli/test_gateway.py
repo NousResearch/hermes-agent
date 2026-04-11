@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
+import gateway.run as gateway_run_module
 import hermes_cli.gateway as gateway
 
 
@@ -177,6 +178,39 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 
     assert (scope, did_install) == ("system", True)
     assert calls == [(True, True, "alice")]
+
+
+def test_foreground_stderr_verbosity_promotes_info_for_tty(monkeypatch):
+    monkeypatch.setattr(gateway.sys.stderr, "isatty", lambda: True, raising=False)
+
+    assert gateway._foreground_stderr_verbosity(verbose=0, quiet=False) == 1
+
+
+def test_foreground_stderr_verbosity_keeps_default_for_non_tty(monkeypatch):
+    monkeypatch.setattr(gateway.sys.stderr, "isatty", lambda: False, raising=False)
+
+    assert gateway._foreground_stderr_verbosity(verbose=0, quiet=False) == 0
+
+
+def test_foreground_stderr_verbosity_respects_quiet(monkeypatch):
+    monkeypatch.setattr(gateway.sys.stderr, "isatty", lambda: True, raising=False)
+
+    assert gateway._foreground_stderr_verbosity(verbose=0, quiet=True) is None
+
+
+def test_run_gateway_promotes_default_stderr_verbosity_for_tty(monkeypatch):
+    seen = []
+
+    async def fake_start_gateway(config=None, replace=False, verbosity=0):
+        seen.append((replace, verbosity))
+        return True
+
+    monkeypatch.setattr(gateway.sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(gateway_run_module, "start_gateway", fake_start_gateway)
+
+    gateway.run_gateway(verbose=0, quiet=False, replace=True)
+
+    assert seen == [(True, 1)]
 
 
 # ---------------------------------------------------------------------------

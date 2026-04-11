@@ -1313,11 +1313,29 @@ def launchd_status(deep: bool = False):
 # Gateway Runner
 # =============================================================================
 
+def _foreground_stderr_verbosity(verbose: int = 0, quiet: bool = False):
+    """Return the effective stderr verbosity for manual foreground runs.
+
+    Manual foreground gateway runs should surface INFO-level startup progress by
+    default so the terminal does not appear hung after the startup banner.
+    Service-mode launches are unaffected because they are not attached to a TTY.
+    """
+    if quiet:
+        return None
+    try:
+        if verbose == 0 and sys.stderr.isatty():
+            return 1
+    except Exception:
+        pass
+    return verbose
+
+
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
     
     Args:
-        verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
+        verbose: Stderr log verbosity count added on top of the foreground default
+                 (TTY foreground defaults to INFO; -v/-vv promote to DEBUG).
         quiet: Suppress all stderr log output.
         replace: If True, kill any existing gateway instance before starting.
                  This prevents systemd restart loops when the old process
@@ -1336,8 +1354,11 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     print()
     
     # Exit with code 1 if gateway fails to connect any platform,
-    # so systemd Restart=on-failure will retry on transient errors
-    verbosity = None if quiet else verbose
+    # so systemd Restart=on-failure will retry on transient errors.
+    # Foreground TTY runs promote the default stderr level to INFO so startup
+    # milestones remain visible; non-interactive/service-style launches keep the
+    # existing WARNING default.
+    verbosity = _foreground_stderr_verbosity(verbose=verbose, quiet=quiet)
     success = asyncio.run(start_gateway(replace=replace, verbosity=verbosity))
     if not success:
         sys.exit(1)

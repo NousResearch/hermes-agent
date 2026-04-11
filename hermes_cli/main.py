@@ -4449,7 +4449,7 @@ For more help on a command:
     # gateway run (default)
     gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
-                             help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
+                             help="Increase stderr log verbosity (foreground TTY defaults to INFO; -v/-vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
                              help="Suppress all stderr log output")
     gateway_run.add_argument("--replace", action="store_true",

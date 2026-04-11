@@ -5939,7 +5939,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
         if context.source.thread_id:
             os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
-    
+
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
         for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
@@ -6129,6 +6129,24 @@ class GatewayRunner:
         logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
                       session_id, interval, notify_mode, agent_notify)
 
+        # Suppress redundant agent_notify when the process already exited
+        # before the watcher started polling. The watcher only spins up
+        # AFTER the agent's turn ends (see _run_process_watcher caller in
+        # the agent:end hook), so if the process is already done at this
+        # point the agent had a chance to call process_poll and report the
+        # result in its first reply. Firing the synthetic completion event
+        # would cause a double-notification.
+        if agent_notify:
+            _initial = process_registry.get(session_id)
+            if _initial is not None and _initial.exited:
+                logger.info(
+                    "Process %s already exited before watcher started — "
+                    "skipping redundant agent notification (agent had access "
+                    "to output during its turn)",
+                    session_id,
+                )
+                return
+
         if notify_mode == "off" and not agent_notify:
             # Still wait for the process to exit so we can log it, but don't
             # push any messages to the user.
@@ -6156,12 +6174,17 @@ class GatewayRunner:
                 # --- Agent-triggered completion: inject synthetic message ---
                 if agent_notify:
                     from tools.ansi_strip import strip_ansi
-                    _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    # Flatten + truncate so smart_model_routing can route
+                    # this reactive turn to the cheap model. The router
+                    # rejects multi-line and long messages — see
+                    # agent/smart_model_routing.py.
+                    _out_raw = strip_ansi(session.output_buffer[-300:]) if session.output_buffer else ""
+                    _out = " | ".join(line.strip() for line in _out_raw.splitlines() if line.strip())[:200]
+                    _cmd = session.command.replace("\n", " ").strip()[:120]
                     synth_text = (
                         f"[SYSTEM: Background process {session_id} completed "
-                        f"(exit code {session.exit_code}).\n"
-                        f"Command: {session.command}\n"
-                        f"Output:\n{_out}]"
+                        f"(exit code {session.exit_code}). "
+                        f"Command: {_cmd}. Output: {_out}]"
                     )
                     adapter = None
                     for p, a in self.adapters.items():
@@ -6174,6 +6197,7 @@ class GatewayRunner:
                             from gateway.session import SessionSource
                             from gateway.config import Platform
                             _platform_enum = Platform(platform_name)
+
                             _source = SessionSource(
                                 platform=_platform_enum,
                                 chat_id=chat_id,
@@ -6693,6 +6717,12 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            logger.info(
+                "turn route: model=%s label=%s msg_preview=%r",
+                turn_route.get("model"),
+                turn_route.get("label") or "primary",
+                (message or "")[:80],
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

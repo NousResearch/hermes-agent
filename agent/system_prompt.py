@@ -40,6 +40,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -400,7 +401,14 @@ def build_system_prompt(agent: Any, system_message: Optional[str] = None) -> str
     warm across turns.
     """
     parts = build_system_prompt_parts(agent, system_message=system_message)
-    return "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+    joined = "\n\n".join(p for p in (parts["stable"], parts["context"], parts["volatile"]) if p)
+
+    # Surface context-file truncation warnings through the normal agent status
+    # channel so gateway/CLI users see them in chat instead of only in logs.
+    for warning in drain_truncation_warnings():
+        agent._emit_status(warning)
+
+    return joined
 
 
 def invalidate_system_prompt(agent: Any) -> None:

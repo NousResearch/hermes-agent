@@ -1104,6 +1104,11 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
+    # Maximum characters loaded from a single automatic context file such as
+    # SOUL.md, AGENTS.md, CLAUDE.md, .hermes.md, or .cursorrules before Hermes
+    # applies head/tail truncation. This is separate from read_file tool limits.
+    "context_file_max_chars": 20_000,
+
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.

@@ -373,6 +373,50 @@ def _resolve_alias_fallback(
     return None
 
 
+def _extract_unambiguous_provider_prefix(
+    raw_input: str,
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+) -> tuple[str, str] | None:
+    """Extract ``provider/model`` for unambiguous non-aggregator provider slugs.
+
+    ``/model`` historically only treated ``--provider`` as an explicit provider
+    selector. That made inputs such as ``minimax-cn/MiniMax-M2.7`` fall through to
+    generic model detection, which could incorrectly route them to aggregators like
+    OpenRouter. To avoid breaking common aggregator slugs like
+    ``anthropic/claude-sonnet-*``, this helper only accepts provider prefixes that
+    are unambiguous in practice: hyphenated/built-in non-aggregator slugs and
+    user-defined/custom provider slugs.
+    """
+    stripped = (raw_input or "").strip()
+    if not stripped or "/" not in stripped:
+        return None
+    if stripped.startswith(("http://", "https://")):
+        return None
+
+    left, right = stripped.split("/", 1)
+    provider_part = left.strip().lower()
+    model_part = right.strip()
+    if not provider_part or not model_part:
+        return None
+
+    pdef = resolve_provider_full(provider_part, user_providers, custom_providers)
+    if pdef is None:
+        return None
+    if is_aggregator(pdef.id):
+        return None
+
+    is_unambiguous_prefix = (
+        "-" in provider_part
+        or ":" in provider_part
+        or getattr(pdef, "source", "") == "user-config"
+    )
+    if not is_unambiguous_prefix:
+        return None
+
+    return (pdef.id, model_part)
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -435,6 +479,18 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+
+    # Support unambiguous provider/model prefixes for non-aggregator slugs such
+    # as ``minimax-cn/MiniMax-M2.7`` without stealing common OpenRouter-style
+    # vendor/model IDs like ``anthropic/claude-sonnet-*``.
+    if not explicit_provider:
+        prefixed = _extract_unambiguous_provider_prefix(
+            raw_input,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+        )
+        if prefixed is not None:
+            explicit_provider, new_model = prefixed
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -940,5 +996,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

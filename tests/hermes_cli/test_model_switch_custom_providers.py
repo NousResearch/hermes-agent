@@ -102,3 +102,34 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+
+
+def test_switch_model_accepts_unambiguous_provider_prefix(monkeypatch):
+    """Hyphenated provider/model prefixes should not fall through to OpenRouter."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "mm-key",
+            "base_url": "https://api.minimaxi.com/anthropic",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="minimax-cn/MiniMax-M2.7",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="or-key",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "minimax-cn"
+    assert result.new_model == "MiniMax-M2.7"
+    assert result.base_url == "https://api.minimaxi.com/anthropic"
+    assert result.api_mode == "anthropic_messages"

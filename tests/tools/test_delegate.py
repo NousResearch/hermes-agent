@@ -1310,9 +1310,9 @@ class TestDelegationProviderIntegration(_DelegateConfigIsolatedTestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
-    def test_delegate_task_clamps_low_config_max_iterations_for_child_summary_turn(self, mock_creds, mock_cfg):
+    def test_delegate_task_clamps_low_max_iterations_for_child_summary_turn(self, mock_creds, mock_cfg):
         """Subagents need at least one tool turn plus one summary turn."""
-        mock_cfg.return_value = {"max_iterations": 1, "model": "", "provider": ""}
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
         mock_creds.return_value = {
             "model": None,
             "provider": None,
@@ -1332,6 +1332,7 @@ class TestDelegationProviderIntegration(_DelegateConfigIsolatedTestCase):
             delegate_task(
                 goal="Use the terminal tool to print the current working directory.",
                 toolsets=["terminal"],
+                max_iterations=1,
                 parent_agent=parent,
             )
 

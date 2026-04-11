@@ -143,7 +143,6 @@ def _tts_label(current_provider: str) -> str:
         "openai": "OpenAI TTS",
         "elevenlabs": "ElevenLabs",
         "edge": "Edge TTS",
-        "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
     }
     return mapping.get(current_provider or "edge", current_provider or "Edge TTS")
@@ -292,7 +291,7 @@ def get_nous_subscription_features(
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily
+        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or bool(os.getenv("SEARXNG_BASE_URL", ""))
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -310,7 +309,6 @@ def get_nous_subscription_features(
         tts_current_provider in {"edge", "neutts"}
         or (tts_current_provider == "openai" and (managed_tts_available or direct_openai_tts))
         or (tts_current_provider == "elevenlabs" and direct_elevenlabs)
-        or (tts_current_provider == "mistral" and bool(get_env_value("MISTRAL_API_KEY")))
     )
     tts_active = bool(tts_tool_enabled and tts_available)
 

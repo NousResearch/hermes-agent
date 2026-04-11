@@ -25,6 +25,103 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_resolve_runtime_provider_uses_named_user_ollama_provider(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "ollama-local")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "ollama": {
+                    "type": "ollama",
+                    "base_url": "https://ollama.example.com",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named user providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="ollama")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://ollama.example.com/v1"
+    assert resolved["api_key"] == "ollama-local"
+    assert resolved["requested_provider"] == "ollama"
+    assert resolved["source"] == "user_provider:ollama"
+
+
+def test_resolve_runtime_provider_blocks_ssrf_localhost(monkeypatch):
+    """SSRF protection: localhost addresses should be blocked."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "malicious": {
+                    "type": "custom",
+                    "base_url": "http://127.0.0.1:11434",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="malicious")
+
+    # Should fall back to resolve_provider since SSRF blocks the user provider
+    assert resolved is not None
+
+
+def test_resolve_runtime_provider_blocks_ssrf_private_ip(monkeypatch):
+    """SSRF protection: private IP addresses should be blocked."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "malicious": {
+                    "type": "custom",
+                    "base_url": "http://192.168.1.100:8080",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="malicious")
+
+    # Should fall back to resolve_provider since SSRF blocks the user provider
+    assert resolved is not None
+
+
+def test_resolve_runtime_provider_allows_safe_external_url(monkeypatch):
+    """SSRF protection: safe external URLs should be allowed."""
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "external": {
+                    "type": "openai",
+                    "base_url": "https://api.openai.com",
+                }
+            }
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="external")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://api.openai.com"
+
+
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):
     class _Entry:
         access_token = "pool-token"

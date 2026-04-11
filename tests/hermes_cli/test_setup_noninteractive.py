@@ -144,6 +144,20 @@ class TestNonInteractiveSetup:
         out = capsys.readouterr().out
         assert "hermes config set model.provider custom" in out
 
+    def test_offer_launch_chat_skips_when_stdin_is_not_interactive(self, capsys):
+        """Setup should not try to enter the prompt_toolkit chat UI without a TTY."""
+        from hermes_cli import setup as setup_mod
+
+        with (
+            patch.object(setup_mod, "is_interactive_stdin", return_value=False),
+            patch("hermes_cli.main.cmd_chat") as mock_cmd_chat,
+        ):
+            setup_mod._offer_launch_chat()
+
+        mock_cmd_chat.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Skipping chat launch because stdin is not an interactive TTY." in out
+
     def test_returning_user_terminal_menu_choice_dispatches_terminal_section(self, tmp_path):
         """Returning-user menu should map Terminal Backend to the terminal setup, not TTS."""
         from hermes_cli import setup as setup_mod

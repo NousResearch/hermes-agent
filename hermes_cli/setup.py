@@ -2924,6 +2924,10 @@ def run_setup_wizard(args):
 
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
+    if not is_interactive_stdin():
+        print_info("Skipping chat launch because stdin is not an interactive TTY.")
+        return
+
     print()
     if prompt_yes_no("Launch hermes chat now?", True):
         from hermes_cli.main import cmd_chat

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import re
+import urllib.parse
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,72 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
+
+
+# SSRF 防护：禁止访问的内部网络地址
+_SSRF_BLOCKED_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "[::1]",
+}
+
+_SSRF_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local
+    ipaddress.ip_network("fc00::/7"),  # IPv6 private
+]
+
+# 允许访问本地地址的 provider 类型（如 Ollama）
+_SSRF_ALLOWED_LOCAL_PROVIDERS = {"ollama"}
+
+
+def _is_ssrf_safe_url(url: str, provider_type: str = "") -> bool:
+    """Validate that a URL does not point to internal/private networks (SSRF protection).
+
+    Returns True if the URL is safe to request (not an internal address).
+    For certain provider types like 'ollama', local addresses are allowed.
+    """
+    if not url:
+        return False
+
+    # 允许本地 provider 类型访问本地地址
+    if provider_type.lower() in _SSRF_ALLOWED_LOCAL_PROVIDERS:
+        return True
+
+    try:
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+
+        if not hostname:
+            return False
+
+        # 检查明确禁止的主机名
+        hostname_lower = hostname.lower()
+        if hostname_lower in _SSRF_BLOCKED_HOSTS:
+            logger.warning(f"SSRF protection: blocked access to {hostname}")
+            return False
+
+        # 检查是否是 IP 地址
+        try:
+            ip = ipaddress.ip_address(hostname)
+            # 检查是否在禁止的网络范围内
+            for network in _SSRF_BLOCKED_NETWORKS:
+                if ip in network:
+                    logger.warning(f"SSRF protection: blocked access to private IP {ip}")
+                    return False
+        except ValueError:
+            # 不是 IP 地址，是域名，允许通过
+            pass
+
+        return True
+    except Exception as e:
+        logger.warning(f"SSRF validation error for URL {url}: {e}")
+        return False
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -307,6 +375,108 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return result
 
     return None
+
+
+def _get_named_user_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+    """Resolve an entry from config.yaml ``providers:`` for runtime use.
+
+    Unlike ``custom_providers``, these entries can be keyed directly by the
+    provider name the user wants to select in ``model.provider``.
+    """
+    requested_norm = (requested_provider or "").strip().lower()
+    if not requested_norm or requested_norm in {"auto", "custom"}:
+        return None
+
+    config = load_config()
+    user_providers = config.get("providers")
+    if not isinstance(user_providers, dict):
+        return None
+
+    entry = user_providers.get(requested_norm)
+    if not isinstance(entry, dict):
+        return None
+
+    provider_type = str(entry.get("type", "") or "").strip().lower()
+    base_url = str(
+        entry.get("base_url", "")
+        or entry.get("api", "")
+        or entry.get("url", "")
+        or ""
+    ).strip().rstrip("/")
+
+    # SSRF 安全检查：验证 base_url 不指向内部网络（Ollama 等本地 provider 除外）
+    if base_url and not _is_ssrf_safe_url(base_url, provider_type):
+        logger.error(f"SSRF protection: provider '{requested_provider}' has unsafe base_url '{base_url}'")
+        return None
+
+    if provider_type == "ollama" and base_url and not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+
+    result = {
+        "name": str(entry.get("name", "") or requested_provider).strip(),
+        "base_url": base_url,
+        "api_key": str(entry.get("api_key", "") or "").strip(),
+        "key_env": str(entry.get("key_env", "") or "").strip(),
+        "type": provider_type,
+    }
+    api_mode = _parse_api_mode(entry.get("api_mode"))
+    if api_mode:
+        result["api_mode"] = api_mode
+    elif provider_type == "ollama":
+        result["api_mode"] = "chat_completions"
+    return result
+
+
+def _resolve_named_user_runtime(
+    *,
+    requested_provider: str,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    user_provider = _get_named_user_provider(requested_provider)
+    if not user_provider:
+        return None
+
+    base_url = (
+        (explicit_base_url or "").strip()
+        or user_provider.get("base_url", "")
+    ).rstrip("/")
+    if not base_url:
+        return None
+
+    provider_type = user_provider.get("type", "")
+
+    # SSRF 安全检查：验证 explicit_base_url 不指向内部网络（Ollama 等本地 provider 除外）
+    if explicit_base_url and not _is_ssrf_safe_url(explicit_base_url, provider_type):
+        logger.error(f"SSRF protection: explicit base_url '{explicit_base_url}' is unsafe")
+        return None
+
+    pool_result = _try_resolve_from_custom_pool(
+        base_url, "custom", user_provider.get("api_mode")
+    )
+    if pool_result:
+        return pool_result
+
+    key_env = user_provider.get("key_env", "")
+    api_key_candidates = [
+        (explicit_api_key or "").strip(),
+        str(user_provider.get("api_key", "") or "").strip(),
+        (os.getenv(key_env, "").strip() if key_env else ""),
+        (os.getenv("OLLAMA_API_KEY", "").strip() if provider_type == "ollama" else ""),
+        os.getenv("OPENAI_API_KEY", "").strip(),
+        os.getenv("OPENROUTER_API_KEY", "").strip(),
+    ]
+    api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
+
+    return {
+        "provider": "custom",
+        "api_mode": user_provider.get("api_mode")
+        or _detect_api_mode_for_url(base_url)
+        or "chat_completions",
+        "base_url": base_url,
+        "api_key": api_key or "no-key-required",
+        "source": f"user_provider:{user_provider.get('name', requested_provider)}",
+    }
 
 
 def _resolve_named_custom_runtime(
@@ -587,6 +757,15 @@ def resolve_runtime_provider(
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
     requested_provider = resolve_requested_provider(requested)
+
+    user_runtime = _resolve_named_user_runtime(
+        requested_provider=requested_provider,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+    )
+    if user_runtime:
+        user_runtime["requested_provider"] = requested_provider
+        return user_runtime
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,

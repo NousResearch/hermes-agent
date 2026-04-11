@@ -744,9 +744,14 @@ def switch_model(
                 if value:
                     api_key = value
                     break
+            if not api_key and str(target_provider).startswith("custom:"):
+                api_key = "no-key-required"
         else:
             try:
-                runtime = resolve_runtime_provider(requested=target_provider, config=runtime_config)
+                try:
+                    runtime = resolve_runtime_provider(requested=target_provider, config=runtime_config)
+                except TypeError:
+                    runtime = resolve_runtime_provider(requested=target_provider)
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
@@ -763,7 +768,10 @@ def switch_model(
                 )
     else:
         try:
-            runtime = resolve_runtime_provider(requested=current_provider, config=runtime_config)
+            try:
+                runtime = resolve_runtime_provider(requested=current_provider, config=runtime_config)
+            except TypeError:
+                runtime = resolve_runtime_provider(requested=current_provider)
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")

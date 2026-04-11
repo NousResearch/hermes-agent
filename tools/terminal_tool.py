@@ -42,7 +42,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -1140,6 +1140,7 @@ def terminal_tool(
     check_interval: Optional[int] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
+    watch_patterns: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1154,6 +1155,7 @@ def terminal_tool(
         check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, auto-notify the agent when the process exits
+        watch_patterns: List of strings to watch for in background output; triggers notification on match
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1438,6 +1440,11 @@ def terminal_tool(
                             "thread_id": _gw_thread_id,
                             "notify_on_complete": True,
                         })
+
+                # Set watch patterns for output monitoring
+                if watch_patterns and background:
+                    proc_session.watch_patterns = list(watch_patterns)
+                    result_data["watch_patterns"] = proc_session.watch_patterns
 
                 # Register check_interval watcher (gateway picks this up after agent run)
                 if check_interval and background:
@@ -1762,6 +1769,11 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
                 "default": False
+            },
+            "watch_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of strings to watch for in background process output. When any pattern matches a line of output, you'll be notified with the matching text — like notify_on_complete but triggers mid-process on specific output. Use for monitoring logs, watching for errors, or waiting for specific events (e.g. [\"ERROR\", \"FAIL\", \"listening on port\"])."
             }
         },
         "required": ["command"]
@@ -1779,6 +1791,7 @@ def _handle_terminal(args, **kw):
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
+        watch_patterns=args.get("watch_patterns"),
     )
 
 

@@ -490,4 +490,14 @@ def register(ctx):
         validate_config=validate_config,
         required_env=["IRC_SERVER", "IRC_CHANNEL", "IRC_NICKNAME"],
         install_hint="No extra packages needed (stdlib only)",
+        # Auth env vars for _is_user_authorized() integration
+        allowed_users_env="IRC_ALLOWED_USERS",
+        allow_all_env="IRC_ALLOW_ALL_USERS",
+        # IRC line limit after protocol overhead
+        max_message_length=450,
+        # Display
+        emoji="💬",
+        # IRC doesn't have phone numbers to redact
+        pii_safe=False,
+        allow_update_command=True,
     )

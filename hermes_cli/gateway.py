@@ -3779,35 +3779,61 @@ def gateway_setup():
         print()
         print_header("Messaging Platforms")
 
+        # Build menu from built-in platforms + plugin platforms
+        _plugin_entries = []
+        try:
+            from gateway.platform_registry import platform_registry
+            _plugin_entries = platform_registry.plugin_entries()
+        except Exception:
+            pass
+
         menu_items = []
         for plat in _PLATFORMS:
             status = _platform_status(plat)
             menu_items.append(f"{plat['label']}  ({status})")
+        for pentry in _plugin_entries:
+            configured = pentry.check_fn()
+            status_str = "configured" if configured else "not configured"
+            menu_items.append(f"{pentry.emoji} {pentry.label}  ({status_str}) [plugin]")
         menu_items.append("Done")
 
+        _total_platforms = len(_PLATFORMS) + len(_plugin_entries)
         choice = prompt_choice("Select a platform to configure:", menu_items, len(menu_items) - 1)
 
-        if choice == len(_PLATFORMS):
+        if choice == _total_platforms:
             break
 
-        platform = _PLATFORMS[choice]
+        if choice < len(_PLATFORMS):
+            platform = _PLATFORMS[choice]
 
-        if platform["key"] == "whatsapp":
-            _setup_whatsapp()
-        elif platform["key"] == "signal":
-            _setup_signal()
-        elif platform["key"] == "weixin":
-            _setup_weixin()
-        elif platform["key"] == "dingtalk":
-            _setup_dingtalk()
-        elif platform["key"] == "feishu":
-            _setup_feishu()
-        elif platform["key"] == "qqbot":
-            _setup_qqbot()
-        elif platform["key"] == "wecom":
-            _setup_wecom()
+            if platform["key"] == "whatsapp":
+                _setup_whatsapp()
+            elif platform["key"] == "signal":
+                _setup_signal()
+            elif platform["key"] == "weixin":
+                _setup_weixin()
+            elif platform["key"] == "dingtalk":
+                _setup_dingtalk()
+            elif platform["key"] == "feishu":
+                _setup_feishu()
+            elif platform["key"] == "qqbot":
+                _setup_qqbot()
+            elif platform["key"] == "wecom":
+                _setup_wecom()
+            else:
+                _setup_standard_platform(platform)
         else:
-            _setup_standard_platform(platform)
+            # Plugin platform — show env var setup instructions
+            pentry = _plugin_entries[choice - len(_PLATFORMS)]
+            print(f"\n  {pentry.label} (plugin platform)")
+            if pentry.required_env:
+                print(f"  Required env vars: {', '.join(pentry.required_env)}")
+                print(f"  Set these in ~/.hermes/.env or config.yaml gateway.platforms.{pentry.name}.extra")
+            else:
+                print(f"  Configure in config.yaml under gateway.platforms.{pentry.name}")
+            if pentry.install_hint:
+                print(f"  {pentry.install_hint}")
+            print()
 
     # ── Post-setup: offer to install/restart gateway ──
     any_configured = any(

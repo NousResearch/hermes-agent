@@ -235,6 +235,17 @@ class TestExtractAttachments(unittest.TestCase):
         mock_cache.assert_called_once()
 
 
+class TestCronDelivery(unittest.TestCase):
+    """Verify email in cron scheduler platform_map."""
+
+    def test_email_resolves_for_cron(self):
+        """Email platform resolves via Platform() for cron delivery."""
+        from gateway.config import Platform
+        p = Platform("email")
+        self.assertEqual(p, Platform.EMAIL)
+        self.assertEqual(p.value, "email")
+
+
 class TestDispatchMessage(unittest.TestCase):
     """Test email message dispatch logic."""
 

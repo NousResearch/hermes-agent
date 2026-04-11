@@ -205,30 +205,12 @@ def _handle_send(args):
     except Exception as e:
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
-    platform_map = {
-        "telegram": Platform.TELEGRAM,
-        "discord": Platform.DISCORD,
-        "slack": Platform.SLACK,
-        "whatsapp": Platform.WHATSAPP,
-        "signal": Platform.SIGNAL,
-        "bluebubbles": Platform.BLUEBUBBLES,
-        "qqbot": Platform.QQBOT,
-        "matrix": Platform.MATRIX,
-        "mattermost": Platform.MATTERMOST,
-        "homeassistant": Platform.HOMEASSISTANT,
-        "dingtalk": Platform.DINGTALK,
-        "feishu": Platform.FEISHU,
-        "wecom": Platform.WECOM,
-        "wecom_callback": Platform.WECOM_CALLBACK,
-        "weixin": Platform.WEIXIN,
-        "email": Platform.EMAIL,
-        "sms": Platform.SMS,
-        "yuanbao": Platform.YUANBAO,
-    }
-    platform = platform_map.get(platform_name)
-    if not platform:
-        avail = ", ".join(platform_map.keys())
-        return tool_error(f"Unknown platform: {platform_name}. Available: {avail}")
+    # Accept any platform name — built-in names resolve to their enum
+    # member, plugin platform names create dynamic members via _missing_().
+    try:
+        platform = Platform(platform_name)
+    except (ValueError, KeyError):
+        return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
@@ -429,6 +411,27 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
     }
 
 
+async def _send_via_adapter(platform, pconfig, chat_id, chunk):
+    """Send a message via a live gateway adapter (for plugin platforms).
+
+    Falls back to error if no adapter is connected for this platform.
+    """
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        if runner:
+            adapter = runner.adapters.get(platform)
+            if adapter:
+                from gateway.platforms.base import SendResult
+                result = await adapter.send(chat_id=chat_id, content=chunk)
+                if result.success:
+                    return {"success": True, "message_id": result.message_id}
+                return {"error": f"Adapter send failed: {result.error}"}
+    except Exception as e:
+        return {"error": f"Plugin platform send failed: {e}"}
+    return {"error": f"No live adapter for platform '{platform.value}'. Is the gateway running with this platform connected?"}
+
+
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None):
     """Route a message to the appropriate platform sender.
 
@@ -472,6 +475,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+
+    # Check plugin registry for max_message_length
+    if platform not in _MAX_LENGTHS:
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform.value)
+            if entry and entry.max_message_length > 0:
+                _MAX_LENGTHS[platform] = entry.max_message_length
+        except Exception:
+            pass
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -617,7 +630,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
-            result = {"error": f"Direct sending not yet implemented for {platform.value}"}
+            # Plugin platform — route through the gateway's live adapter
+            # if available, otherwise report the error.
+            result = await _send_via_adapter(platform, pconfig, chat_id, chunk)
 
         if isinstance(result, dict) and result.get("error"):
             return result

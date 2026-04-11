@@ -120,9 +120,9 @@ _TOOL_STUBS = {
     ),
     "terminal": (
         "terminal",
-        "command: str, timeout: int = None, workdir: str = None",
-        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code"."""',
-        '{"command": command, "timeout": timeout, "workdir": workdir}',
+        "command: str, timeout: int = None, workdir: str = None, watch_patterns: list[str] | None = None",
+        '"""Run a shell command (foreground only). Returns dict with "output" and "exit_code". watch_patterns is accepted for schema parity but ignored in sandbox mode."""',
+        '{"command": command, "timeout": timeout, "workdir": workdir, "watch_patterns": watch_patterns}',
     ),
 }
 
@@ -1286,8 +1286,8 @@ _TOOL_DOC_LINES = [
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),
     ("terminal",
-     "  terminal(command: str, timeout=None, workdir=None) -> dict\n"
-     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}"),
+     "  terminal(command: str, timeout=None, workdir=None, watch_patterns=None) -> dict\n"
+     "    Foreground only (no background/pty). Returns {\"output\": \"...\", \"exit_code\": N}. watch_patterns is ignored in sandbox mode."),
 ]
 
 

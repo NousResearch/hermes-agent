@@ -153,7 +153,7 @@ gateway/platforms/
 ├── slack.py             # Slack Socket Mode
 ├── whatsapp.py          # WhatsApp Business Cloud API
 ├── signal.py            # Signal via signal-cli REST API
-├── matrix.py            # Matrix via matrix-nio (optional E2EE)
+├── matrix.py            # Matrix via mautrix (optional E2EE)
 ├── mattermost.py        # Mattermost WebSocket API
 ├── email.py             # Email via IMAP/SMTP
 ├── sms.py               # SMS via Twilio

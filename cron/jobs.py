@@ -31,7 +31,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
@@ -338,10 +338,12 @@ def load_jobs() -> List[Dict[str, Any]]:
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
-        except Exception:
-            return []
-    except IOError:
-        return []
+        except Exception as e:
+            logger.error("Failed to auto-repair jobs.json: %s", e)
+            raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+    except IOError as e:
+        logger.error("IOError reading jobs.json: %s", e)
+        raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
@@ -452,6 +454,7 @@ def create_job(
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
+        "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -620,8 +623,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
             save_jobs(jobs)
             return
-    
-    save_jobs(jobs)
+
+    logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
 def advance_next_run(job_id: str) -> bool:

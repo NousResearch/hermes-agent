@@ -4,6 +4,8 @@ import json
 import sys
 import types
 
+import pytest
+
 from hermes_cli.auth import get_active_provider
 from hermes_cli.config import load_config, save_config
 from hermes_cli.setup import setup_model_provider
@@ -362,3 +364,52 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+def test_resolve_hermes_chat_argv_prefers_which(monkeypatch):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda name: "/usr/local/bin/hermes" if name == "hermes" else None)
+
+    assert setup_mod._resolve_hermes_chat_argv() == ["/usr/local/bin/hermes", "chat"]
+
+
+def test_resolve_hermes_chat_argv_falls_back_to_module(monkeypatch):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(setup_mod.importlib.util, "find_spec", lambda name: object() if name == "hermes_cli" else None)
+
+    assert setup_mod._resolve_hermes_chat_argv() == [sys.executable, "-m", "hermes_cli.main", "chat"]
+
+
+def test_offer_launch_chat_execs_fresh_process(monkeypatch):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: ["/usr/local/bin/hermes", "chat"])
+
+    exec_calls = []
+
+    def fake_execvp(path, argv):
+        exec_calls.append((path, argv))
+        raise SystemExit(0)
+
+    monkeypatch.setattr(setup_mod.os, "execvp", fake_execvp)
+
+    with pytest.raises(SystemExit):
+        setup_mod._offer_launch_chat()
+
+    assert exec_calls == [("/usr/local/bin/hermes", ["/usr/local/bin/hermes", "chat"])]
+
+
+def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys):
+    from hermes_cli import setup as setup_mod
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(setup_mod, "_resolve_hermes_chat_argv", lambda: None)
+
+    setup_mod._offer_launch_chat()
+
+    captured = capsys.readouterr()
+    assert "Run 'hermes chat' manually" in captured.out

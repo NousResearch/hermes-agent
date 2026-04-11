@@ -42,7 +42,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -1140,6 +1140,7 @@ def terminal_tool(
     check_interval: Optional[int] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
+    watch_patterns: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1154,6 +1155,7 @@ def terminal_tool(
         check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, auto-notify the agent when the process exits
+        watch_patterns: List of strings to watch for in background output; triggers notification on match
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1420,10 +1422,11 @@ def terminal_tool(
                     # In gateway mode, auto-register a fast watcher so the
                     # gateway can detect completion and trigger a new agent
                     # turn.  CLI mode uses the completion_queue directly.
-                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    from gateway.session_context import get_session_env as _gse
+                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform and not check_interval:
-                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
@@ -1438,6 +1441,11 @@ def terminal_tool(
                             "notify_on_complete": True,
                         })
 
+                # Set watch patterns for output monitoring
+                if watch_patterns and background:
+                    proc_session.watch_patterns = list(watch_patterns)
+                    result_data["watch_patterns"] = proc_session.watch_patterns
+
                 # Register check_interval watcher (gateway picks this up after agent run)
                 if check_interval and background:
                     effective_interval = max(30, check_interval)
@@ -1445,9 +1453,10 @@ def terminal_tool(
                         result_data["check_interval_note"] = (
                             f"Requested {check_interval}s raised to minimum 30s"
                         )
-                    watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
-                    watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                    watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    from gateway.session_context import get_session_env as _gse2
+                    watcher_platform = _gse2("HERMES_SESSION_PLATFORM", "")
+                    watcher_chat_id = _gse2("HERMES_SESSION_CHAT_ID", "")
+                    watcher_thread_id = _gse2("HERMES_SESSION_THREAD_ID", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform
@@ -1760,6 +1769,11 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
                 "default": False
+            },
+            "watch_patterns": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of strings to watch for in background process output. When any pattern matches a line of output, you'll be notified with the matching text — like notify_on_complete but triggers mid-process on specific output. Use for monitoring logs, watching for errors, or waiting for specific events (e.g. [\"ERROR\", \"FAIL\", \"listening on port\"])."
             }
         },
         "required": ["command"]
@@ -1777,6 +1791,7 @@ def _handle_terminal(args, **kw):
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
+        watch_patterns=args.get("watch_patterns"),
     )
 
 

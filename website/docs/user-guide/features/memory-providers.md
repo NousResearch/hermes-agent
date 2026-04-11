@@ -16,6 +16,8 @@ hermes memory status     # check what's active
 hermes memory off        # disable external provider
 ```
 
+You can also select the active memory provider via `hermes plugins` → Provider Plugins → Memory Provider.
+
 Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml

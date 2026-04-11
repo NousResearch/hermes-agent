@@ -1406,6 +1406,12 @@ class AIAgent:
             else:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
+        # Check immediately so CLI users see the warning at startup.
+        # Gateway status_callback is not yet wired, so any warning is stored
+        # in _compression_warning and replayed in the first run_conversation().
+        self._compression_warning = None
+        self._check_compression_model_feasibility()
+
         # Snapshot primary runtime for per-turn restoration.  When fallback
         # activates during a turn, the next turn restores these values so the
         # preferred model gets a fresh attempt each time.  Uses a single dict
@@ -1696,6 +1702,104 @@ class AIAgent:
                 self.status_callback("lifecycle", message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+
+    def _check_compression_model_feasibility(self) -> None:
+        """Warn at session start if the auxiliary compression model's context
+        window is smaller than the main model's compression threshold.
+
+        When the auxiliary model cannot fit the content that needs summarising,
+        compression will either fail outright (the LLM call errors) or produce
+        a severely truncated summary.
+
+        Called during ``__init__`` so CLI users see the warning immediately
+        (via ``_vprint``).  The gateway sets ``status_callback`` *after*
+        construction, so ``_replay_compression_warning()`` re-sends the
+        stored warning through the callback on the first
+        ``run_conversation()`` call.
+        """
+        if not self.compression_enabled:
+            return
+        try:
+            from agent.auxiliary_client import get_text_auxiliary_client
+            from agent.model_metadata import get_model_context_length
+
+            client, aux_model = get_text_auxiliary_client("compression")
+            if client is None or not aux_model:
+                msg = (
+                    "⚠ No auxiliary LLM provider configured — context "
+                    "compression will drop middle turns without a summary. "
+                    "Run `hermes setup` or set OPENROUTER_API_KEY."
+                )
+                self._compression_warning = msg
+                self._emit_status(msg)
+                logger.warning(
+                    "No auxiliary LLM provider for compression — "
+                    "summaries will be unavailable."
+                )
+                return
+
+            aux_base_url = str(getattr(client, "base_url", ""))
+            aux_api_key = str(getattr(client, "api_key", ""))
+            aux_context = get_model_context_length(
+                aux_model,
+                base_url=aux_base_url,
+                api_key=aux_api_key,
+            )
+
+            threshold = self.context_compressor.threshold_tokens
+            if aux_context < threshold:
+                # Suggest a threshold that would fit the aux model,
+                # rounded down to a clean percentage.
+                safe_pct = int((aux_context / self.context_compressor.context_length) * 100)
+                msg = (
+                    f"⚠ Compression model ({aux_model}) context "
+                    f"is {aux_context:,} tokens, but the main model's "
+                    f"compression threshold is {threshold:,} tokens. "
+                    f"Context compression will not be possible — the "
+                    f"content to summarise will exceed the auxiliary "
+                    f"model's context window.\n"
+                    f"  Fix options (config.yaml):\n"
+                    f"  1. Use a larger compression model:\n"
+                    f"       auxiliary:\n"
+                    f"         compression:\n"
+                    f"           model: <model-with-{threshold:,}+-context>\n"
+                    f"  2. Lower the compression threshold to fit "
+                    f"the current model:\n"
+                    f"       compression:\n"
+                    f"         threshold: 0.{safe_pct:02d}"
+                )
+                self._compression_warning = msg
+                self._emit_status(msg)
+                logger.warning(
+                    "Auxiliary compression model %s has %d token context, "
+                    "below the main model's compression threshold of %d "
+                    "tokens — compression summaries will fail or be "
+                    "severely truncated.",
+                    aux_model,
+                    aux_context,
+                    threshold,
+                )
+        except Exception as exc:
+            logger.debug(
+                "Compression feasibility check failed (non-fatal): %s", exc
+            )
+
+    def _replay_compression_warning(self) -> None:
+        """Re-send the compression warning through ``status_callback``.
+
+        During ``__init__`` the gateway's ``status_callback`` is not yet
+        wired, so ``_emit_status`` only reaches ``_vprint`` (CLI).  This
+        method is called once at the start of the first
+        ``run_conversation()`` — by then the gateway has set the callback,
+        so every platform (Telegram, Discord, Slack, etc.) receives the
+        warning.
+        """
+        msg = getattr(self, "_compression_warning", None)
+        if msg and self.status_callback:
+            try:
+                self.status_callback("lifecycle", msg)
+            except Exception:
+                pass
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
@@ -7468,6 +7572,12 @@ class AIAgent:
                     )
             except Exception:
                 pass
+        # Replay compression warning through status_callback for gateway
+        # platforms (the callback was not wired during __init__).
+        if self._compression_warning:
+            self._replay_compression_warning()
+            self._compression_warning = None  # send once
+
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.

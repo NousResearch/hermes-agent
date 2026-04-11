@@ -12,7 +12,7 @@
 
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { CellWidth, cellAt, cellAtIndex, setCellStyleId } from './screen.js'
+import { cellAt, cellAtIndex, CellWidth, setCellStyleId } from './screen.js'
 
 type Point = { col: number; row: number }
 

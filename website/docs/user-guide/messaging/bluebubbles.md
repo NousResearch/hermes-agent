@@ -36,6 +36,7 @@ Or set environment variables directly in `~/.hermes/.env`:
 ```bash
 BLUEBUBBLES_SERVER_URL=http://192.168.1.10:1234
 BLUEBUBBLES_PASSWORD=your-server-password
+BLUEBUBBLES_WEBHOOK_SECRET=separate-webhook-secret
 ```
 
 ### 4. Authorize Users
@@ -84,6 +85,7 @@ Hermes → BlueBubbles REST API → Messages.app → iMessage
 |----------|----------|---------|-------------|
 | `BLUEBUBBLES_SERVER_URL` | Yes | — | BlueBubbles server URL |
 | `BLUEBUBBLES_PASSWORD` | Yes | — | Server password |
+| `BLUEBUBBLES_WEBHOOK_SECRET` | No* | — | Dedicated webhook secret. Required when `BLUEBUBBLES_WEBHOOK_HOST` is not loopback-only. |
 | `BLUEBUBBLES_WEBHOOK_HOST` | No | `127.0.0.1` | Webhook listener bind address |
 | `BLUEBUBBLES_WEBHOOK_PORT` | No | `8645` | Webhook listener port |
 | `BLUEBUBBLES_WEBHOOK_PATH` | No | `/bluebubbles-webhook` | Webhook URL path |

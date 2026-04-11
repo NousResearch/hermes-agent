@@ -10,6 +10,7 @@ runs at a time if multiple processes overlap.
 
 import asyncio
 import concurrent.futures
+import contextvars
 import json
 import logging
 import os
@@ -770,7 +771,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+        # Preserve scheduler-scoped ContextVar state (for example skill-declared
+        # env passthrough registrations) when the cron run hops into the worker
+        # thread used for inactivity timeout monitoring.
+        _cron_context = contextvars.copy_context()
+        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:

@@ -1696,10 +1696,17 @@ def clear_runtime_main() -> None:
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
-    This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
-    endpoints where the base URL lives in config.yaml instead of the live
-    environment.
+    Only treat a custom endpoint as active when the user explicitly selected a
+    custom/local provider in config, or when OPENAI_BASE_URL is set directly in
+    the environment for a one-off local server workflow.
     """
+    openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    main_provider = _read_main_provider()
+
+    if not openai_base and main_provider not in {"custom", "local/custom"}:
+        return None, None, None
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1709,8 +1716,6 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         runtime = None
 
     if not isinstance(runtime, dict):
-        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
-        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
         if not openai_base:
             return None, None, None
         runtime = {
@@ -2054,8 +2059,13 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     except Exception:
         pass
 
-    from agent.anthropic_adapter import _is_oauth_token
+    from agent.anthropic_adapter import _is_oauth_token, _is_third_party_anthropic_endpoint
     is_oauth = _is_oauth_token(token)
+    if not is_oauth and not _is_third_party_anthropic_endpoint(base_url) and not token.startswith("sk-ant-api"):
+        # For direct Anthropic endpoints, any non-console token is treated as an
+        # OAuth/setup token even if a test or external bridge uses a synthetic
+        # placeholder instead of Anthropic's real sk-ant-/JWT formats.
+        is_oauth = True
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:

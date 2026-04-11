@@ -125,6 +125,9 @@ def _make_update(msg):
 def adapter():
     config = PlatformConfig(enabled=True, token="fake-token")
     a = TelegramAdapter(config)
+    # Speed up media-group / photo-burst waits so tests don't sleep for 3s
+    a.MEDIA_GROUP_WAIT_SECONDS = 0.05
+    a._media_batch_delay_seconds = 0.05
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
     return a

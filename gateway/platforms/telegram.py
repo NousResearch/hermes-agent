@@ -125,7 +125,11 @@ class TelegramAdapter(BasePlatformAdapter):
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
-    MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Albums can be split across getUpdates calls; 0.8s is too short and causes
+    # media groups to be flushed as separate messages (hallucination).
+    MEDIA_GROUP_WAIT_SECONDS = float(
+        os.getenv("HERMES_TELEGRAM_MEDIA_GROUP_WAIT_SECONDS", "3.0")
+    )
     
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.TELEGRAM)

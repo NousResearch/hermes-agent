@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -217,6 +218,7 @@ class NowledgeMemProvider(MemoryProvider):
         self._working_memory = ""
         self._cron_skipped = False
         self._bg_threads: List[threading.Thread] = []
+        self._resolved_space: str | None = None
 
     @property
     def name(self) -> str:
@@ -239,8 +241,20 @@ class NowledgeMemProvider(MemoryProvider):
             self._cron_skipped = True
             return
 
-        timeout = self._load_timeout(kwargs.get("hermes_home", ""))
-        self._client = NowledgeMemClient(timeout=timeout)
+        config = self._load_config(kwargs.get("hermes_home", ""))
+        raw_timeout = config.get("timeout", 30)
+        try:
+            timeout = int(raw_timeout or 30)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid timeout in nowledge-mem.json: %r; falling back to 30s",
+                raw_timeout,
+            )
+            timeout = 30
+        if timeout <= 0:
+            timeout = 30
+        self._resolved_space = self._resolve_space(config, kwargs)
+        self._client = NowledgeMemClient(timeout=timeout, space=self._resolved_space)
 
         if not self._client.health():
             logger.warning("Nowledge Mem not reachable via nmem CLI")
@@ -254,13 +268,18 @@ class NowledgeMemProvider(MemoryProvider):
             logger.debug("Working memory fetch failed: %s", error)
             self._working_memory = ""
 
-        logger.info("Nowledge Mem provider initialized (CLI transport)")
+        logger.info(
+            "Nowledge Mem provider initialized (CLI transport)",
+            extra={"space": self._resolved_space or "default"},
+        )
 
     def system_prompt_block(self) -> str:
         if self._cron_skipped:
             return ""
 
         parts = [GUIDANCE]
+        if self._resolved_space:
+            parts.append(f"## Active Space\n\n{self._resolved_space}")
         if self._working_memory:
             parts.append(f"## Working Memory\n\n{self._working_memory}")
         elif self._client:
@@ -388,6 +407,21 @@ class NowledgeMemProvider(MemoryProvider):
                 "key": "timeout",
                 "description": "Request timeout in seconds",
                 "default": "30",
+            },
+            {
+                "key": "space",
+                "description": "Optional default space name for this Hermes provider",
+                "default": "",
+            },
+            {
+                "key": "space_by_identity",
+                "description": 'Optional JSON object mapping Hermes identities to space names, for example {"research":"Research Agent"}',
+                "default": "",
+            },
+            {
+                "key": "space_template",
+                "description": "Optional template like research-{identity}; used when space is empty",
+                "default": "",
             }
         ]
 
@@ -408,6 +442,7 @@ class NowledgeMemProvider(MemoryProvider):
             if thread.is_alive():
                 thread.join(timeout=3.0)
         self._bg_threads.clear()
+        self._resolved_space = None
 
     @staticmethod
     def _parse_csv(value: Any) -> Optional[List[str]]:
@@ -439,16 +474,59 @@ class NowledgeMemProvider(MemoryProvider):
         return {"success": True, "result": result}
 
     @staticmethod
-    def _load_timeout(hermes_home: str) -> int:
+    def _load_config(hermes_home: str) -> Dict[str, Any]:
         if hermes_home:
             config_path = Path(hermes_home) / "nowledge-mem.json"
             if config_path.exists():
                 try:
                     cfg = json.loads(config_path.read_text())
-                    return int(cfg.get("timeout", 30))
-                except Exception:
-                    pass
-        return 30
+                    if isinstance(cfg, dict):
+                        return cfg
+                except Exception as err:
+                    logger.debug(
+                        "Failed to parse nowledge-mem config %s under hermes_home=%s: %s",
+                        config_path,
+                        hermes_home,
+                        err,
+                    )
+        return {}
+
+    @staticmethod
+    def _resolve_space(config: Dict[str, Any], kwargs: Dict[str, Any]) -> str | None:
+        if "space" in config:
+            raw_space = config.get("space")
+            if isinstance(raw_space, str):
+                return raw_space.strip()
+
+        raw_identity = kwargs.get("agent_identity")
+        identity = str(raw_identity or "").strip()
+        identity_map = config.get("space_by_identity")
+        if isinstance(identity_map, str):
+            try:
+                identity_map = json.loads(identity_map)
+            except Exception:
+                identity_map = None
+        if identity and isinstance(identity_map, dict):
+            mapped = identity_map.get(identity)
+            if isinstance(mapped, str) and mapped.strip():
+                return mapped.strip()
+
+        template = str(config.get("space_template") or "").strip()
+        if identity and template:
+            resolved = template.replace("{identity}", identity)
+            resolved = " ".join(resolved.split()).strip()
+            if resolved:
+                return resolved
+
+        env_space = (os.environ.get("NMEM_SPACE") or "").strip()
+        if env_space:
+            return env_space
+
+        legacy_env_space = (os.environ.get("NMEM_SPACE_ID") or "").strip()
+        if legacy_env_space:
+            return legacy_env_space
+
+        return None
 
     @staticmethod
     def _format_working_memory(wm: Any) -> str:

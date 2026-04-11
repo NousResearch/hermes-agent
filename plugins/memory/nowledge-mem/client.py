@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 from typing import Any, Dict, List, Optional
 
@@ -27,8 +28,10 @@ class NowledgeMemClient:
     The CLI owns auth, server URL, and remote config.
     """
 
-    def __init__(self, timeout: int = 30) -> None:
+    def __init__(self, timeout: int = 30, *, space: Optional[str] = None) -> None:
         self._timeout = timeout
+        self._has_explicit_space = isinstance(space, str)
+        self._space = space.strip() if isinstance(space, str) else None
 
     @staticmethod
     def is_available() -> bool:
@@ -173,12 +176,20 @@ class NowledgeMemClient:
     def _cli(self, args: List[str]) -> Any:
         """Run ``nmem --json <args>`` and return parsed JSON."""
         cmd = ["nmem", "--json"] + args
+        env = os.environ.copy()
+        if self._has_explicit_space:
+            env.pop("NMEM_SPACE", None)
+            env.pop("NMEM_SPACE_ID", None)
+        if self._has_explicit_space and self._space:
+            env["NMEM_SPACE"] = self._space
+            env["NMEM_SPACE_ID"] = self._space
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=self._timeout,
+                env=env,
             )
         except FileNotFoundError:
             raise RuntimeError(

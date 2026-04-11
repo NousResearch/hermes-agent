@@ -55,23 +55,49 @@ use them.
 
 ## Configuration
 
-The only provider-specific setting is the request timeout:
-
-```json
-{
-  "timeout": 30
-}
-```
-
-Stored at:
+Store provider config in:
 
 ```text
 $HERMES_HOME/nowledge-mem.json
 ```
 
-Server URL and API key are managed by `nmem`, not the provider.
+Example:
 
-For remote Mem, configure the machine running Hermes with:
+```json
+{
+  "timeout": 30,
+  "space": "Research Agent",
+  "space_by_identity": {
+    "research": "Research Agent",
+    "ops": "Operations Agent"
+  },
+  "space_template": "agent-{identity}"
+}
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `timeout` | `30` | Request timeout in seconds |
+| `space` | `""` | Optional default space name for this Hermes provider |
+| `space_by_identity` | `""` | Optional JSON object mapping Hermes identities to spaces |
+| `space_template` | `""` | Optional template like `research-{identity}` when `space` is empty |
+
+Use `space` when one Hermes profile always belongs to one lane. Use
+`space_by_identity` when a few Hermes identities map to named lanes. Use
+`space_template` when Hermes already has a stable identity and you want one
+lane per identity.
+
+If you are launching Hermes through a CLI wrapper with no provider config of
+its own, you can still set one session-wide fallback lane with:
+
+```bash
+NMEM_SPACE="Research Agent" hermes
+```
+
+If you do not have a real ambient lane, stay on `Default`.
+
+Server URL and API key are managed by `nmem`, not the provider. For remote
+Mem, configure the machine running Hermes with:
 
 ```bash
 nmem config client set url https://your-server:14242

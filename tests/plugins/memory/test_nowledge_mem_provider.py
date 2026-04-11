@@ -1,5 +1,6 @@
 import importlib
 import json
+import os
 
 
 provider_module = importlib.import_module("plugins.memory.nowledge-mem.provider")
@@ -11,8 +12,9 @@ NowledgeMemProvider = provider_module.NowledgeMemProvider
 class FakeClient:
     available = True
 
-    def __init__(self, timeout=30):
+    def __init__(self, timeout=30, space=None):
         self.timeout = timeout
+        self.space = space
         self.saved = []
 
     @staticmethod
@@ -73,6 +75,40 @@ def test_initialize_and_prompt(monkeypatch, tmp_path):
     prompt = provider.system_prompt_block()
     assert "Nowledge Mem" in prompt
     assert "ship plugin quality" in prompt
+
+
+def test_initialize_falls_back_on_invalid_timeout(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    (tmp_path / "nowledge-mem.json").write_text(json.dumps({"timeout": "abc"}))
+
+    provider = NowledgeMemProvider()
+    provider.initialize("session-1", hermes_home=str(tmp_path), platform="cli")
+
+    assert provider._client.timeout == 30
+
+
+def test_initialize_passes_resolved_space_to_client(monkeypatch, tmp_path):
+    monkeypatch.setattr(provider_module, "NowledgeMemClient", FakeClient)
+    (tmp_path / "nowledge-mem.json").write_text(
+        json.dumps(
+            {
+                "space_by_identity": {
+                    "research": "Research Agent",
+                }
+            }
+        )
+    )
+
+    provider = NowledgeMemProvider()
+    provider.initialize(
+        "session-1",
+        hermes_home=str(tmp_path),
+        platform="cli",
+        agent_identity="research",
+    )
+
+    assert provider._client.space == "Research Agent"
+    assert "## Active Space" in provider.system_prompt_block()
 
 
 def test_tool_schemas_are_available_before_initialize(monkeypatch):
@@ -176,3 +212,27 @@ def test_handle_tool_call_falls_back_without_registry_helpers(monkeypatch, tmp_p
     payload = json.loads(provider.handle_tool_call("nmem_search", {"query": "release"}))
     assert payload["success"] is True
     assert payload["memories"][0]["title"] == "Shipping focus"
+
+
+def test_resolve_space_explicit_empty_beats_environment():
+    previous = os.environ.get("NMEM_SPACE")
+    os.environ["NMEM_SPACE"] = "Env Space"
+    try:
+        resolved = NowledgeMemProvider._resolve_space({"space": ""}, {})
+        assert resolved == ""
+    finally:
+        if previous is None:
+            os.environ.pop("NMEM_SPACE", None)
+        else:
+            os.environ["NMEM_SPACE"] = previous
+
+
+def test_resolve_space_non_string_falls_through_to_identity():
+    resolved = NowledgeMemProvider._resolve_space(
+        {
+            "space": None,
+            "space_by_identity": {"research": "Research Agent"},
+        },
+        {"agent_identity": "research"},
+    )
+    assert resolved == "Research Agent"

@@ -304,6 +304,17 @@ That writes the shared local client config used by `nmem`. It is separate from s
 | `space_by_identity` | `""` | Optional JSON object mapping Hermes identities to named spaces |
 | `space_template` | `""` | Optional template like `research-{identity}` when `space` is empty |
 
+Use `space` when one Hermes profile always belongs to one lane. Use `space_by_identity`
+when a few Hermes identities map to named lanes. Use `space_template` when Hermes
+already has a stable identity and you want one lane per identity.
+
+If you launch Hermes through a CLI wrapper with no provider config of its own, you
+can still set one session-wide fallback lane with:
+
+```bash
+NMEM_SPACE="Research Agent" hermes
+```
+
 **Key features:**
 - Working Memory injected into the system prompt
 - Search-backed prefetch before each turn

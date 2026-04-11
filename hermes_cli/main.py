@@ -1080,6 +1080,42 @@ def select_provider_and_model(args=None):
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
+    # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
+    # When the user switches to a named provider (anything except "custom"),
+    # a leftover OPENAI_BASE_URL in ~/.hermes/.env can poison auxiliary
+    # clients that use provider:auto. Clear it proactively.  (#5161)
+    if selected_provider not in ("custom", "cancel", "remove-custom") \
+            and not selected_provider.startswith("custom:"):
+        _clear_stale_openai_base_url()
+
+
+def _clear_stale_openai_base_url():
+    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
+
+    After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
+    clients (compression, vision, delegation) with provider:auto to route
+    requests to the old custom endpoint instead of the newly selected
+    provider.  See issue #5161.
+    """
+    from hermes_cli.config import get_env_value, save_env_value, load_config
+
+    cfg = load_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        provider = (model_cfg.get("provider") or "").strip().lower()
+    else:
+        provider = ""
+
+    if provider == "custom" or not provider:
+        return  # custom provider legitimately uses OPENAI_BASE_URL
+
+    stale_url = get_env_value("OPENAI_BASE_URL")
+    if stale_url:
+        save_env_value("OPENAI_BASE_URL", "")
+        print(f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url[:40]}...)"
+              if len(stale_url) > 40
+              else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})")
+
 
 def _prompt_provider_choice(choices, *, default=0):
     """Show provider selection menu with curses arrow-key navigation.

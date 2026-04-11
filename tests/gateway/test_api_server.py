@@ -409,10 +409,49 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                assert resp.headers.get("X-Accel-Buffering") == "no"
                 body = await resp.text()
                 assert "data: " in body
                 assert "[DONE]" in body
                 assert "Hello!" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_sends_keepalive_during_quiet_tool_gap(self, adapter):
+        """Idle SSE streams should send keepalive comments while tools run silently."""
+        import asyncio
+        import gateway.platforms.api_server as api_server_mod
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Working")
+                    await asyncio.sleep(0.65)
+                    cb("...done")
+                return (
+                    {"final_response": "Working...done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with (
+                patch.object(api_server_mod, "CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS", 0.01),
+                patch.object(adapter, "_run_agent", side_effect=_mock_run_agent),
+            ):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "do the thing"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert ": keepalive" in body
+                assert "Working" in body
+                assert "...done" in body
+                assert "[DONE]" in body
 
     @pytest.mark.asyncio
     async def test_stream_survives_tool_call_none_sentinel(self, adapter):

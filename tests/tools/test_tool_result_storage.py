@@ -124,6 +124,34 @@ class TestWriteToSandbox:
         cmd = env.execute.call_args[0][0]
         assert "mkdir -p /data/data/com.termux/files/usr/tmp/hermes-results" in cmd
 
+    def test_path_with_spaces_is_quoted(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        remote_path = "/tmp/hermes results/abc file.txt"
+        _write_to_sandbox("content", remote_path, env)
+        cmd = env.execute.call_args[0][0]
+        assert "'/tmp/hermes results'" in cmd
+        assert "'/tmp/hermes results/abc file.txt'" in cmd
+
+    def test_shell_metacharacters_neutralized(self):
+        """Paths with shell metacharacters must be quoted to prevent injection."""
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        malicious_path = "/tmp/hermes-results/$(whoami).txt"
+        _write_to_sandbox("content", malicious_path, env)
+        cmd = env.execute.call_args[0][0]
+        # The $() must not appear unquoted — shlex.quote wraps it
+        assert "'/tmp/hermes-results/$(whoami).txt'" in cmd
+
+    def test_semicolon_injection_neutralized(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        malicious_path = "/tmp/x; rm -rf /; echo .txt"
+        _write_to_sandbox("content", malicious_path, env)
+        cmd = env.execute.call_args[0][0]
+        # The semicolons must be inside quotes, not acting as command separators
+        assert "'/tmp/x; rm -rf /; echo .txt'" in cmd
+
 
 class TestResolveStorageDir:
     def test_defaults_to_storage_dir_without_env(self):

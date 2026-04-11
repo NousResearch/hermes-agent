@@ -37,6 +37,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_url,
 )
+from gateway.platforms.helpers import redact_phone
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +52,9 @@ SSE_RETRY_DELAY_MAX = 60.0
 HEALTH_CHECK_INTERVAL = 30.0  # seconds between health checks
 HEALTH_CHECK_STALE_THRESHOLD = 120.0  # seconds without SSE activity before concern
 
-# E.164 phone number pattern for redaction
-_PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _redact_phone(phone: str) -> str:
-    """Redact a phone number for logging: +15551234567 -> +155****4567."""
-    if not phone:
-        return "<none>"
-    if len(phone) <= 8:
-        return phone[:2] + "****" + phone[-2:] if len(phone) > 4 else "****"
-    return phone[:4] + "****" + phone[-4:]
 
 
 def _parse_comma_list(value: str) -> List[str]:
@@ -184,10 +173,8 @@ class SignalAdapter(BasePlatformAdapter):
         self._recent_sent_timestamps: set = set()
         self._max_recent_timestamps = 50
 
-        self._phone_lock_identity: Optional[str] = None
-
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
-                     self.http_url, _redact_phone(self.account),
+                     self.http_url, redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
 
     # ------------------------------------------------------------------
@@ -202,23 +189,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
         try:
-            from gateway.status import acquire_scoped_lock
-
-            self._phone_lock_identity = self.account
-            acquired, existing = acquire_scoped_lock(
-                "signal-phone",
-                self._phone_lock_identity,
-                metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this Signal account"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second Signal listener."
-                )
-                logger.error("Signal: %s", message)
-                self._set_fatal_error("signal_phone_lock", message, retryable=False)
+            if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
                 return False
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
@@ -270,13 +241,7 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
-        if self._phone_lock_identity:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("signal-phone", self._phone_lock_identity)
-            except Exception as e:
-                logger.warning("Signal: Error releasing phone lock: %s", e, exc_info=True)
-            self._phone_lock_identity = None
+        self._release_platform_lock()
 
         logger.info("Signal: disconnected")
 
@@ -542,7 +507,7 @@ class SignalAdapter(BasePlatformAdapter):
         )
 
         logger.debug("Signal: message from %s in %s: %s",
-                      _redact_phone(sender), chat_id[:20], (text or "")[:50])
+                      redact_phone(sender), chat_id[:20], (text or "")[:50])
 
         await self.handle_message(event)
 

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.run import _dequeue_pending_event
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -77,6 +78,26 @@ class TestQueueMessageStorage:
         assert retrieved is not None
         assert retrieved.text == "queued prompt"
         # Should be consumed (cleared)
+        assert adapter.get_pending_message(session_key) is None
+
+    def test_dequeue_pending_event_preserves_voice_media_metadata(self):
+        adapter = _StubAdapter()
+        session_key = "telegram:user:voice"
+        event = MessageEvent(
+            text="",
+            message_type=MessageType.VOICE,
+            source=MagicMock(chat_id="123", platform=Platform.TELEGRAM),
+            message_id="voice-q1",
+            media_urls=["/tmp/voice.ogg"],
+            media_types=["audio/ogg"],
+        )
+        adapter._pending_messages[session_key] = event
+
+        retrieved = _dequeue_pending_event(adapter, session_key)
+
+        assert retrieved is event
+        assert retrieved.media_urls == ["/tmp/voice.ogg"]
+        assert retrieved.media_types == ["audio/ogg"]
         assert adapter.get_pending_message(session_key) is None
 
     def test_queue_does_not_set_interrupt_event(self):

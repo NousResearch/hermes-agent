@@ -9385,8 +9385,6 @@ class AIAgent:
                 # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
                 # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
                 if has_incomplete_scratchpad(assistant_message.content or ""):
-                    if not hasattr(self, '_incomplete_scratchpad_retries'):
-                        self._incomplete_scratchpad_retries = 0
                     self._incomplete_scratchpad_retries += 1
                     
                     self._vprint(f"{self.log_prefix}⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
@@ -9414,12 +9412,9 @@ class AIAgent:
                         }
                 
                 # Reset incomplete scratchpad counter on clean response
-                if hasattr(self, '_incomplete_scratchpad_retries'):
-                    self._incomplete_scratchpad_retries = 0
+                self._incomplete_scratchpad_retries = 0
 
                 if self.api_mode == "codex_responses" and finish_reason == "incomplete":
-                    if not hasattr(self, "_codex_incomplete_retries"):
-                        self._codex_incomplete_retries = 0
                     self._codex_incomplete_retries += 1
 
                     interim_msg = self._build_assistant_message(assistant_message, finish_reason)
@@ -9490,8 +9485,6 @@ class AIAgent:
                     ]
                     if invalid_tool_calls:
                         # Track retries for invalid tool calls
-                        if not hasattr(self, '_invalid_tool_retries'):
-                            self._invalid_tool_retries = 0
                         self._invalid_tool_retries += 1
 
                         # Return helpful error to model — model can self-correct next turn
@@ -9527,8 +9520,7 @@ class AIAgent:
                             })
                         continue
                     # Reset retry counter on successful tool call validation
-                    if hasattr(self, '_invalid_tool_retries'):
-                        self._invalid_tool_retries = 0
+                    self._invalid_tool_retries = 0
                     
                     # Validate tool call arguments are valid JSON
                     # Handle empty strings as empty objects (common model quirk)
@@ -9930,8 +9922,7 @@ class AIAgent:
                         break
                     
                     # Reset retry counter/signature on successful content
-                    if hasattr(self, '_empty_content_retries'):
-                        self._empty_content_retries = 0
+                    self._empty_content_retries = 0
                     self._thinking_prefill_retries = 0
 
                     if (

@@ -1,9 +1,6 @@
 """Tests for tools/checkpoint_manager.py — CheckpointManager."""
 
 import logging
-import os
-import json
-import shutil
 import subprocess
 import pytest
 from pathlib import Path
@@ -43,6 +40,19 @@ def checkpoint_base(tmp_path):
 
 
 @pytest.fixture()
+def fake_home(tmp_path, monkeypatch):
+    """Set a deterministic fake home for expanduser/path-home behavior."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("HOMEDRIVE", raising=False)
+    monkeypatch.delenv("HOMEPATH", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    return home
+
+
+@pytest.fixture()
 def mgr(work_dir, checkpoint_base, monkeypatch):
     """CheckpointManager with redirected checkpoint base."""
     monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
@@ -77,6 +87,16 @@ class TestShadowRepoPath:
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         p = _shadow_repo_path(str(work_dir))
         assert str(p).startswith(str(checkpoint_base))
+
+    def test_tilde_and_expanded_home_share_shadow_repo(self, fake_home, checkpoint_base, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        project = fake_home / "project"
+        project.mkdir()
+
+        tilde_path = f"~/{project.name}"
+        expanded_path = str(project)
+
+        assert _shadow_repo_path(tilde_path) == _shadow_repo_path(expanded_path)
 
 
 # =========================================================================
@@ -221,6 +241,20 @@ class TestListCheckpoints:
         assert result[0]["reason"] == "third"
         assert result[2]["reason"] == "first"
 
+    def test_tilde_path_lists_same_checkpoints_as_expanded_path(self, checkpoint_base, fake_home, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        project = fake_home / "project"
+        project.mkdir()
+        (project / "main.py").write_text("v1\n")
+
+        tilde_path = f"~/{project.name}"
+        assert mgr.ensure_checkpoint(tilde_path, "initial") is True
+
+        listed = mgr.list_checkpoints(str(project))
+        assert len(listed) == 1
+        assert listed[0]["reason"] == "initial"
+
 
 # =========================================================================
 # CheckpointManager — restoring
@@ -271,6 +305,28 @@ class TestRestore:
         assert len(all_cps) >= 2
         assert "pre-rollback" in all_cps[0]["reason"]
 
+    def test_tilde_path_supports_diff_and_restore_flow(self, checkpoint_base, fake_home, monkeypatch):
+        monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
+        mgr = CheckpointManager(enabled=True, max_snapshots=50)
+        project = fake_home / "project"
+        project.mkdir()
+        file_path = project / "main.py"
+        file_path.write_text("original\n")
+
+        tilde_path = f"~/{project.name}"
+        assert mgr.ensure_checkpoint(tilde_path, "initial") is True
+        mgr.new_turn()
+
+        file_path.write_text("changed\n")
+        checkpoints = mgr.list_checkpoints(str(project))
+        diff_result = mgr.diff(tilde_path, checkpoints[0]["hash"])
+        assert diff_result["success"] is True
+        assert "main.py" in diff_result["diff"]
+
+        restore_result = mgr.restore(tilde_path, checkpoints[0]["hash"])
+        assert restore_result["success"] is True
+        assert file_path.read_text() == "original\n"
+
 
 # =========================================================================
 # CheckpointManager — working dir resolution
@@ -310,6 +366,19 @@ class TestWorkingDirResolution:
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(filepath.parent)
 
+    def test_resolves_tilde_path_to_project_root(self, fake_home):
+        mgr = CheckpointManager(enabled=True)
+        project = fake_home / "myproject"
+        project.mkdir()
+        (project / "pyproject.toml").write_text("[project]\n")
+        subdir = project / "src"
+        subdir.mkdir()
+        filepath = subdir / "main.py"
+        filepath.write_text("x\n")
+
+        result = mgr.get_working_dir_for_path(f"~/{project.name}/src/main.py")
+        assert result == str(project)
+
 
 # =========================================================================
 # Git env isolation
@@ -332,6 +401,14 @@ class TestGitEnvIsolation:
         shadow = tmp_path / "shadow"
         env = _git_env(shadow, str(tmp_path))
         assert "GIT_INDEX_FILE" not in env
+
+    def test_expands_tilde_in_work_tree(self, fake_home, tmp_path):
+        shadow = tmp_path / "shadow"
+        work = fake_home / "work"
+        work.mkdir()
+
+        env = _git_env(shadow, f"~/{work.name}")
+        assert env["GIT_WORK_TREE"] == str(work.resolve())
 
 
 # =========================================================================
@@ -384,6 +461,8 @@ class TestErrorResilience:
         assert result is False
 
     def test_run_git_allows_expected_nonzero_without_error_log(self, tmp_path, caplog):
+        work = tmp_path / "work"
+        work.mkdir()
         completed = subprocess.CompletedProcess(
             args=["git", "diff", "--cached", "--quiet"],
             returncode=1,
@@ -395,13 +474,45 @@ class TestErrorResilience:
                 ok, stdout, stderr = _run_git(
                     ["diff", "--cached", "--quiet"],
                     tmp_path / "shadow",
-                    str(tmp_path / "work"),
+                    str(work),
                     allowed_returncodes={1},
                 )
         assert ok is False
         assert stdout == ""
         assert stderr == ""
         assert not caplog.records
+
+    def test_run_git_invalid_working_dir_reports_path_error(self, tmp_path, caplog):
+        missing = tmp_path / "missing"
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(
+                ["status"],
+                tmp_path / "shadow",
+                str(missing),
+            )
+        assert ok is False
+        assert stdout == ""
+        assert "working directory not found" in stderr
+        assert not any("Git executable not found" in r.getMessage() for r in caplog.records)
+
+    def test_run_git_missing_git_reports_git_not_found(self, tmp_path, monkeypatch, caplog):
+        work = tmp_path / "work"
+        work.mkdir()
+
+        def raise_missing_git(*args, **kwargs):
+            raise FileNotFoundError(2, "No such file or directory", "git")
+
+        monkeypatch.setattr("tools.checkpoint_manager.subprocess.run", raise_missing_git)
+        with caplog.at_level(logging.ERROR, logger="tools.checkpoint_manager"):
+            ok, stdout, stderr = _run_git(
+                ["status"],
+                tmp_path / "shadow",
+                str(work),
+            )
+        assert ok is False
+        assert stdout == ""
+        assert stderr == "git not found"
+        assert any("Git executable not found" in r.getMessage() for r in caplog.records)
 
     def test_checkpoint_failure_does_not_raise(self, mgr, work_dir, monkeypatch):
         """Checkpoint failures should never raise — they're silently logged."""

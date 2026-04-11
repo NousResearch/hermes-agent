@@ -775,12 +775,14 @@ class AIAgent:
         self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
-        # Iteration budget pressure: warn the LLM as it approaches max_iterations.
-        # Warnings are injected into the last tool result JSON (not as separate
-        # messages) so they don't break message structure or invalidate caching.
-        self._budget_caution_threshold = 0.7   # 70% — nudge to start wrapping up
-        self._budget_warning_threshold = 0.9   # 90% — urgent, respond now
-        self._budget_pressure_enabled = True
+        # Iteration budget: the LLM is only notified when it actually exhausts
+        # the iteration budget (api_call_count >= max_iterations).  At that
+        # point we inject ONE message, allow one final API call, and if the
+        # model doesn't produce a text response, force a user-message asking
+        # it to summarise.  No intermediate pressure warnings — they caused
+        # models to "give up" prematurely on complex tasks (#7915).
+        self._budget_exhausted_injected = False
+        self._budget_grace_call = False
 
         # Context pressure warnings: notify the USER (not the LLM) as context
         # fills up.  Purely informational — displayed in CLI output and sent via
@@ -1330,6 +1332,19 @@ class AIAgent:
                 provider=self.provider,
             )
         self.compression_enabled = compression_enabled
+
+        # Reject models whose context window is below the minimum required
+        # for reliable tool-calling workflows (64K tokens).
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        _ctx = getattr(self.context_compressor, "context_length", 0)
+        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+            raise ValueError(
+                f"Model {self.model} has a context window of {_ctx:,} tokens, "
+                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+                f"by Hermes Agent.  Choose a model with at least "
+                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
+                f"model.context_length in config.yaml to override."
+            )
 
         # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand)
         self._context_engine_tool_names: set = set()
@@ -6985,6 +7000,15 @@ class AIAgent:
             self._current_tool = function_name
             self._touch_activity(f"executing tool: {function_name}")
 
+            # Set activity callback for long-running tool execution (terminal
+            # commands, etc.) so the gateway's inactivity monitor doesn't kill
+            # the agent while a command is running.
+            try:
+                from tools.environments.base import set_activity_callback
+                set_activity_callback(self._touch_activity)
+            except Exception:
+                pass
+
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
@@ -7298,25 +7322,11 @@ class AIAgent:
     def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
         """Return a budget pressure string, or None if not yet needed.
 
-        Two-tier system:
-          - Caution (70%): nudge to consolidate work
-          - Warning (90%): urgent, must respond now
+        Only fires once the iteration budget is fully exhausted.  No
+        intermediate warnings — those caused models to abandon complex
+        tasks prematurely.
         """
-        if not self._budget_pressure_enabled or self.max_iterations <= 0:
-            return None
-        progress = api_call_count / self.max_iterations
-        remaining = self.max_iterations - api_call_count
-        if progress >= self._budget_warning_threshold:
-            return (
-                f"[BUDGET WARNING: Iteration {api_call_count}/{self.max_iterations}. "
-                f"Only {remaining} iteration(s) left. "
-                "Provide your final response NOW. No more tool calls unless absolutely critical.]"
-            )
-        if progress >= self._budget_caution_threshold:
-            return (
-                f"[BUDGET: Iteration {api_call_count}/{self.max_iterations}. "
-                f"{remaining} iterations left. Start consolidating your work.]"
-            )
+        # Never inject warnings during the normal run
         return None
 
     def _emit_context_pressure(self, compaction_progress: float, compressor) -> None:
@@ -7834,7 +7844,7 @@ class AIAgent:
             except Exception:
                 pass
 
-        while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
+        while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) or self._budget_grace_call:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot
             self._checkpoint_mgr.new_turn()
 
@@ -7849,7 +7859,13 @@ class AIAgent:
             api_call_count += 1
             self._api_call_count = api_call_count
             self._touch_activity(f"starting API call #{api_call_count}")
-            if not self.iteration_budget.consume():
+
+            # Grace call: the budget is exhausted but we gave the model one
+            # more chance.  Consume the grace flag so the loop exits after
+            # this iteration regardless of outcome.
+            if self._budget_grace_call:
+                self._budget_grace_call = False
+            elif not self.iteration_budget.consume():
                 _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
@@ -10034,7 +10050,31 @@ class AIAgent:
         if final_response is None and (
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
-        ):
+        ) and not self._budget_exhausted_injected:
+            # Budget exhausted but we haven't tried asking the model to
+            # summarise yet.  Inject a user message and give it one grace
+            # API call to produce a text response.
+            self._budget_exhausted_injected = True
+            self._budget_grace_call = True
+            _grace_msg = (
+                "Your tool budget ran out. Please give me the information "
+                "or actions you've completed so far."
+            )
+            messages.append({"role": "user", "content": _grace_msg})
+            self._emit_status(
+                f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                "— asking model to summarise"
+            )
+            if not self.quiet_mode:
+                self._safe_print(
+                    f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
+                    "— requesting summary..."
+                )
+
+        if final_response is None and (
+            api_call_count >= self.max_iterations
+            or self.iteration_budget.remaining <= 0
+        ) and not self._budget_grace_call:
             _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
             if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
                 print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")

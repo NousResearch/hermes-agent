@@ -85,6 +85,11 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# Minimum context length required to run Hermes Agent.  Models with fewer
+# tokens cannot maintain enough working memory for tool-calling workflows.
+# Sessions, model switches, and cron jobs should reject models below this.
+MINIMUM_CONTEXT_LENGTH = 64_000
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.

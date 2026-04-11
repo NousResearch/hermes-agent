@@ -2742,19 +2742,7 @@ class TestSystemPromptStability:
         assert "Hermes Agent" in agent._cached_system_prompt
 
 class TestBudgetPressure:
-    """Budget pressure warning system — now only fires at budget exhaustion."""
-
-    def test_no_intermediate_warnings(self, agent):
-        """No warnings at 70% or 90% — only at actual exhaustion."""
-        agent.max_iterations = 60
-        assert agent._get_budget_warning(30) is None  # 50%
-        assert agent._get_budget_warning(42) is None  # 70%
-        assert agent._get_budget_warning(54) is None  # 90%
-        assert agent._get_budget_warning(59) is None  # last iteration
-
-    def test_zero_max_iterations(self, agent):
-        agent.max_iterations = 0
-        assert agent._get_budget_warning(0) is None
+    """Budget exhaustion grace call system."""
 
     def test_grace_call_flags_initialized(self, agent):
         """Agent should have budget grace call flags."""

@@ -483,14 +483,13 @@ def _(rid, params: dict) -> dict:
     os.environ["HERMES_INTERACTIVE"] = "1"
     try:
         db.reopen_session(target)
+        history = db.get_messages_as_conversation(target)
         messages = [
-            {"role": m["role"], "text": m["content"] or ""}
-            for m in db.get_messages(target)
+            {"role": m["role"], "text": m.get("content") or ""}
+            for m in history
             if m.get("role") in ("user", "assistant", "tool", "system")
-            and isinstance(m.get("content"), str)
             and (m.get("content") or "").strip()
         ]
-        history = [{"role": m["role"], "content": m["text"]} for m in messages]
         agent = _make_agent(sid, target, session_id=target)
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:

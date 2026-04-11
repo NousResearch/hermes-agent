@@ -1255,9 +1255,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(block.text)
             text_result = "\n".join(parts) if parts else ""
 
-            # Prefer structuredContent (machine-readable JSON) over plain text
+            # Combine content + structuredContent when both are present.
+            # MCP spec: content is model-oriented (text), structuredContent
+            # is machine-oriented (JSON metadata).  For an AI agent, content
+            # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
+                if text_result:
+                    return json.dumps({
+                        "result": text_result,
+                        "structuredContent": structured,
+                    })
                 return json.dumps({"result": structured})
             return json.dumps({"result": text_result})
 
@@ -2152,6 +2160,7 @@ def _kill_orphaned_mcp_children() -> None:
     Only kills PIDs tracked in ``_stdio_pids`` — never arbitrary children.
     """
     import signal as _signal
+    kill_signal = getattr(_signal, "SIGKILL", _signal.SIGTERM)
 
     with _lock:
         pids = list(_stdio_pids)
@@ -2159,7 +2168,7 @@ def _kill_orphaned_mcp_children() -> None:
 
     for pid in pids:
         try:
-            os.kill(pid, _signal.SIGKILL)
+            os.kill(pid, kill_signal)
             logger.debug("Force-killed orphaned MCP stdio process %d", pid)
         except (ProcessLookupError, PermissionError, OSError):
             pass  # Already exited or inaccessible

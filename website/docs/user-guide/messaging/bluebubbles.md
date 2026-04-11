@@ -135,8 +135,9 @@ Without the Private API, basic text messaging and media still work.
 ### Messages not arriving
 - Check that the webhook is registered in BlueBubbles Server → Settings → API → Webhooks
 - Verify the webhook URL is reachable from the Mac
-- Check `hermes gateway logs` for webhook errors
+- Check `hermes logs gateway` for webhook errors (or `hermes logs -f` to follow in real-time)
 
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)
 - Basic messaging works without it — only reactions, typing, and read receipts require it
+

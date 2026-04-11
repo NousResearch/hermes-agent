@@ -7,7 +7,6 @@ from pathlib import Path
 from hermes_state import SessionDB
 from agent.insights import (
     InsightsEngine,
-    _get_pricing,
     _estimate_cost,
     _format_duration,
     _bar_chart,
@@ -116,45 +115,6 @@ def populated_db(db):
 
     db._conn.commit()
     return db
-
-
-# =========================================================================
-# Pricing helpers
-# =========================================================================
-
-class TestPricing:
-    def test_provider_prefix_stripped(self):
-        pricing = _get_pricing("anthropic/claude-sonnet-4-20250514")
-        assert pricing["input"] == 3.00
-        assert pricing["output"] == 15.00
-
-    def test_unknown_models_do_not_use_heuristics(self):
-        pricing = _get_pricing("some-new-opus-model")
-        assert pricing == _DEFAULT_PRICING
-        pricing = _get_pricing("anthropic/claude-haiku-future")
-        assert pricing == _DEFAULT_PRICING
-
-    def test_unknown_model_returns_zero_cost(self):
-        """Unknown/custom models should NOT have fabricated costs."""
-        pricing = _get_pricing("totally-unknown-model-xyz")
-        assert pricing == _DEFAULT_PRICING
-        assert pricing["input"] == 0.0
-        assert pricing["output"] == 0.0
-
-    def test_custom_endpoint_model_zero_cost(self):
-        """Self-hosted models should return zero cost."""
-        for model in ["FP16_Hermes_4.5", "Hermes_4.5_1T_epoch2", "my-local-llama"]:
-            pricing = _get_pricing(model)
-            assert pricing["input"] == 0.0, f"{model} should have zero cost"
-            assert pricing["output"] == 0.0, f"{model} should have zero cost"
-
-    def test_none_model(self):
-        pricing = _get_pricing(None)
-        assert pricing == _DEFAULT_PRICING
-
-    def test_empty_model(self):
-        pricing = _get_pricing("")
-        assert pricing == _DEFAULT_PRICING
 
 
 class TestHasKnownPricing:

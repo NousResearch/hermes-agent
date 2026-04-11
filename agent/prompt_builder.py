@@ -40,7 +40,7 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
-    (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none', "hidden_div"),
+    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
@@ -356,6 +356,14 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
     ),
+    "weixin": (
+        "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
+        "it improves readability, but keep the message compact and chat-friendly. You can send media files natively: "
+        "include MEDIA:/absolute/path/to/file in your response. Images are sent as native "
+        "photos, videos play inline when supported, and other files arrive as downloadable "
+        "documents. You can also include image URLs in markdown format ![alt](url) and they "
+        "will be downloaded and sent as native media when possible."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000
@@ -479,7 +487,7 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     (True, {}, "") to err on the side of showing the skill.
     """
     try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
+        raw = skill_file.read_text(encoding="utf-8")
         frontmatter, _ = parse_frontmatter(raw)
 
         if not skill_matches_platform(frontmatter):
@@ -487,19 +495,8 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
 
         return True, frontmatter, extract_skill_description(frontmatter)
     except Exception as e:
-        logger.debug("Failed to parse skill file %s: %s", skill_file, e)
+        logger.warning("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
-
-
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = parse_frontmatter(raw)
-        return extract_skill_conditions(frontmatter)
-    except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
-        return {}
 
 
 def _skill_should_show(
@@ -561,9 +558,10 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
+    from gateway.session_context import get_session_env
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
-        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
         or ""
     )
     cache_key = (

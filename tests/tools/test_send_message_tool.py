@@ -9,7 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import (
+    _parse_target_ref,
+    _send_discord,
+    _send_telegram,
+    _send_to_platform,
+    send_message_tool,
+)
 
 
 def _run_async_immediately(coro):
@@ -700,3 +706,151 @@ class TestSendTelegramHtmlDetection:
         assert bot.send_message.await_count == 2
         second_call = bot.send_message.await_args_list[1].kwargs
         assert second_call["parse_mode"] is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for Discord thread_id support
+# ---------------------------------------------------------------------------
+
+
+class TestParseTargetRefDiscord:
+    """_parse_target_ref correctly extracts chat_id and thread_id for Discord."""
+
+    def test_discord_chat_id_with_thread_id(self):
+        """discord:chat_id:thread_id returns both values."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "-1001234567890:17585")
+        assert chat_id == "-1001234567890"
+        assert thread_id == "17585"
+        assert is_explicit is True
+
+    def test_discord_chat_id_without_thread_id(self):
+        """discord:chat_id returns None for thread_id."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "9876543210")
+        assert chat_id == "9876543210"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_discord_large_snowflake_without_thread(self):
+        """Large Discord snowflake IDs work without thread."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "1003724596514")
+        assert chat_id == "1003724596514"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_discord_channel_with_thread(self):
+        """Full Discord format: channel:thread."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "1003724596514:99999")
+        assert chat_id == "1003724596514"
+        assert thread_id == "99999"
+        assert is_explicit is True
+
+    def test_discord_whitespace_is_stripped(self):
+        """Whitespace around Discord targets is stripped."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("discord", "  123456:789  ")
+        assert chat_id == "123456"
+        assert thread_id == "789"
+        assert is_explicit is True
+
+
+class TestSendDiscordThreadId:
+    """_send_discord uses thread_id when provided."""
+
+    @staticmethod
+    def _build_mock(response_status, response_data=None, response_text="error body"):
+        """Build a properly-structured aiohttp mock chain.
+
+        session.post() returns a context manager yielding mock_resp.
+        """
+        mock_resp = MagicMock()
+        mock_resp.status = response_status
+        mock_resp.json = AsyncMock(return_value=response_data or {"id": "msg123"})
+        mock_resp.text = AsyncMock(return_value=response_text)
+
+        # mock_resp as async context manager (for "async with session.post(...) as resp")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_resp)
+
+        return mock_session, mock_resp
+
+    def _run(self, token, chat_id, message, thread_id=None):
+        return asyncio.run(_send_discord(token, chat_id, message, thread_id=thread_id))
+
+    def test_without_thread_id_uses_chat_id_endpoint(self):
+        """When no thread_id, sends to /channels/{chat_id}/messages."""
+        mock_session, _ = self._build_mock(200)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            self._run("tok", "111222333", "hello world")
+        call_url = mock_session.post.call_args.args[0]
+        assert call_url == "https://discord.com/api/v10/channels/111222333/messages"
+
+    def test_with_thread_id_uses_thread_endpoint(self):
+        """When thread_id is provided, sends to /channels/{thread_id}/messages."""
+        mock_session, _ = self._build_mock(200)
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            self._run("tok", "999888777", "hello from thread", thread_id="555444333")
+        call_url = mock_session.post.call_args.args[0]
+        assert call_url == "https://discord.com/api/v10/channels/555444333/messages"
+
+    def test_success_returns_message_id(self):
+        """Successful send returns the Discord message ID."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "9876543210"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "111", "hi", thread_id="999")
+        assert result["success"] is True
+        assert result["message_id"] == "9876543210"
+        assert result["chat_id"] == "111"
+
+    def test_error_status_returns_error_dict(self):
+        """Non-200/201 responses return an error dict."""
+        mock_session, _ = self._build_mock(403, response_data={"message": "Forbidden"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "111", "hi")
+        assert "error" in result
+        assert "403" in result["error"]
+
+
+class TestSendToPlatformDiscordThread:
+    """_send_to_platform passes thread_id through to _send_discord."""
+
+    def test_discord_thread_id_passed_to_send_discord(self):
+        """Discord platform with thread_id passes it to _send_discord."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "-1001234567890",
+                    "hello thread",
+                    thread_id="17585",
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once()
+        _, call_kwargs = send_mock.await_args
+        assert call_kwargs["thread_id"] == "17585"
+
+    def test_discord_no_thread_id_when_not_provided(self):
+        """Discord platform without thread_id passes None."""
+        send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
+
+        with patch("tools.send_message_tool._send_discord", send_mock):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DISCORD,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "9876543210",
+                    "hello channel",
+                )
+            )
+
+        send_mock.assert_awaited_once()
+        _, call_kwargs = send_mock.await_args
+        assert call_kwargs["thread_id"] is None

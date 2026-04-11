@@ -113,19 +113,31 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen
+    # Qwen — specific model families before the catch-all.
+    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3-coder-plus": 1000000,  # 1M context
+    "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax (lowercase — lookup lowercases model names at line 973)
-    "minimax-m1-256k": 1000000,
-    "minimax-m1-128k": 1000000,
-    "minimax-m1-80k": 1000000,
-    "minimax-m1-40k": 1000000,
-    "minimax-m1": 1000000,
-    "minimax-m2.5": 1048576,
-    "minimax-m2.7": 1048576,
-    "minimax": 1048576,
+    # MiniMax — official docs: 204,800 context for all models
+    # https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    "minimax": 204800,
     # GLM
     "glm": 202752,
+    # xAI Grok — xAI /v1/models does not return context_length metadata,
+    # so these hardcoded fallbacks prevent Hermes from probing-down to
+    # the default 128k when the user points at https://api.x.ai/v1
+    # via a custom provider. Values sourced from models.dev (2026-04).
+    # Keys use substring matching (longest-first), so e.g. "grok-4.20"
+    # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    "grok-code-fast": 256000,   # grok-code-fast-1
+    "grok-4-1-fast": 2000000,   # grok-4-1-fast-(non-)reasoning
+    "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
+    "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning
+    "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4": 256000,           # grok-4, grok-4-0709
+    "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
+    "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
+    "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
     # Arcee
@@ -136,7 +148,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 1048576,
+    "MiniMaxAI/MiniMax-M2.5": 204800,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
@@ -198,6 +210,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
+    "api.x.ai": "xai",
 }
 
 

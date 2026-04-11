@@ -225,6 +225,26 @@ class TestDeveloperRoleSwap:
         assert kwargs["messages"][0]["role"] == "developer"
 
 
+class TestBuildApiKwargsChatCompletionsServiceTier:
+    """service_tier via request_overrides works on the chat_completions path."""
+
+    def test_includes_service_tier_via_request_overrides(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "gpt-4.1"
+        agent.request_overrides = {"service_tier": "priority"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["service_tier"] == "priority"
+
+    def test_no_service_tier_when_overrides_empty(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "gpt-4.1"
+        agent.request_overrides = {}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "service_tier" not in kwargs
+
+
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
@@ -355,6 +375,25 @@ class TestBuildApiKwargsCodex:
         kwargs = agent._build_api_kwargs(messages)
         assert "reasoning" in kwargs
         assert kwargs["reasoning"]["effort"] == "medium"
+
+    def test_includes_service_tier_via_request_overrides(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.model = "gpt-5.4"
+        agent.service_tier = "priority"
+        agent.request_overrides = {"service_tier": "priority"}
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["service_tier"] == "priority"
+
+    def test_omits_max_output_tokens_for_codex_backend(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.model = "gpt-5.4"
+        agent.max_tokens = 20
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "max_output_tokens" not in kwargs
 
     def test_includes_encrypted_content_in_include(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",

@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 import time
@@ -316,7 +317,8 @@ def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_definition_lookup
 
     rewritten_user = kwargs["messages"][-1]["content"]
     assert 'The tool available for this turn is: search_files.' in rewritten_user
-    assert '"pattern": "_chatgpt_web_tool_args"' in rewritten_user
+    assert '_chatgpt_web_tool_args' in rewritten_user
+    assert '\\\\b' in rewritten_user
     assert '"path": "run_agent.py"' in rewritten_user
 
 
@@ -391,7 +393,8 @@ def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_explicit_path_def
     rewritten_user = kwargs["messages"][-1]["content"]
     assert 'The tool available for this turn is: search_files.' in rewritten_user
     assert f'"path": "{target_path}"' in rewritten_user
-    assert '"pattern": "BETA"' in rewritten_user
+    assert 'BETA' in rewritten_user
+    assert '\\\\b' in rewritten_user
     assert '"target": "content"' in rewritten_user
 
 
@@ -416,6 +419,76 @@ def test_build_api_kwargs_chatgpt_web_infers_read_file_after_explicit_path_defin
     assert f'"path": "{target_path}"' in rewritten_user
     assert '"offset": 2' in rewritten_user
     assert '"limit": 1' in rewritten_user
+    assert agent._chatgpt_web_forced_tool_call == {
+        "name": "read_file",
+        "arguments": {"path": str(target_path), "offset": 2, "limit": 1},
+    }
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_read_file_for_relative_repo_path_inspection(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Inspect tools/browser_tool.py and answer only with the first line."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: read_file.' in rewritten_user
+    assert '"path": "tools/browser_tool.py"' in rewritten_user
+    assert '"offset": 1' in rewritten_user
+    assert '"limit": 1' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_relative_repo_path_definition_lookup(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Read run_agent.py and answer only with the exact line that defines _chatgpt_web_tool_args."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: search_files.' in rewritten_user
+    assert '"path": "run_agent.py"' in rewritten_user
+    assert '_chatgpt_web_tool_args' in rewritten_user
+    assert '\\\\b' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_continues_read_file_after_truncated_inspection(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Inspect tools/browser_tool.py and report in 2 bullet points where fallback PATH directories are defined and where subprocess PATH is assembled."},
+        {"role": "tool", "content": json.dumps({
+            "content": "     1|#!/usr/bin/env python3\n    20|  - Session isolation per task ID\n",
+            "total_lines": 2282,
+            "truncated": True,
+            "hint": "Use offset=21 to continue reading (showing 1-20 of 2282 lines)",
+        })},
+    ])
+
+    rewritten_user = kwargs["messages"][0]["content"]
+    assert 'The tool available for this turn is: read_file.' in rewritten_user
+    assert '"path": "tools/browser_tool.py"' in rewritten_user
+    assert '"offset": 21' in rewritten_user
+    assert '"limit": 40' in rewritten_user
+    assert agent._chatgpt_web_forced_tool_call is None
 
 
 
@@ -527,7 +600,8 @@ def test_build_api_kwargs_chatgpt_web_with_tools_injects_protocol_and_disables_r
     assert "Hermes has already determined that this turn requires a tool call." in rewritten_user
     assert "Reply now with this exact structure:" in rewritten_user
     assert '"name": "search_files"' in rewritten_user
-    assert '"pattern": "stream_chatgpt_web_completion"' in rewritten_user
+    assert 'stream_chatgpt_web_completion' in rewritten_user
+    assert '\\\\b' in rewritten_user
     assert '"path": "hermes_cli/chatgpt_web.py"' in rewritten_user
 
 

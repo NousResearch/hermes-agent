@@ -758,19 +758,38 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
+    Delivery units (top-level lines, tables, code blocks) are packed together
+    into messages up to *max_length* so that a long response does not produce
+    dozens of tiny API calls — which trips WeChat rate-limits and causes
+    message drops.  Code blocks and indented continuations are kept intact.
     """
     if len(content) <= max_length and "\n" not in content:
         return [content]
 
+    units = _split_delivery_units_for_weixin(content)
+    if not units:
+        return [content]
+
     chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
+    current = ""
+    for unit in units:
+        if len(unit) > max_length:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
             continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+
+        candidate = f"{current}\n\n{unit}" if current else unit
+        if len(candidate) <= max_length:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = unit
+
+    if current:
+        chunks.append(current)
     return chunks or [content]
 
 
@@ -1344,7 +1363,10 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         try:
-            for chunk in self._split_text(self.format_message(content)):
+            chunks = self._split_text(self.format_message(content))
+            for idx, chunk in enumerate(chunks):
+                if idx > 0:
+                    await asyncio.sleep(0.3)
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await _send_message(
                     self._session,

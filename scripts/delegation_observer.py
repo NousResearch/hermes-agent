@@ -121,13 +121,22 @@ def summarize(limit: int, since_hours: int | None = None) -> dict[str, Any]:
                 else:
                     summary['delegated_results'] += 1
 
+                args = event.get('args') or {}
+                event_goal = args.get('goal') or ''
+                task_index = result.get('task_index')
+                if not event_goal and args.get('tasks') and isinstance(task_index, int):
+                    try:
+                        event_goal = (args['tasks'][task_index] or {}).get('goal') or ''
+                    except (IndexError, TypeError):
+                        event_goal = ''
+
                 per['events'].append({
                     'decision': decision,
                     'worker_class': worker_class,
                     'model': model,
                     'score': result.get('delegation_score'),
                     'reasons': result.get('delegation_reasons') or [],
-                    'goal': (event.get('args', {}) or {}).get('goal'),
+                    'goal': event_goal,
                 })
         summary['per_session'].append(per)
 

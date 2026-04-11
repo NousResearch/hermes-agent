@@ -359,16 +359,6 @@ def _openrouter_has_credentials() -> bool:
         return False
 
 
-def _oauth_status(provider_slug: str) -> dict:
-    if provider_slug == "openai-codex":
-        return get_codex_auth_status()
-    if provider_slug == "nous":
-        return get_nous_auth_status()
-    if provider_slug == "qwen-oauth":
-        return get_qwen_auth_status()
-    return {"logged_in": False}
-
-
 def _vendor_label(vendor_slug: str) -> str:
     label = _OPENROUTER_VENDOR_LABELS.get(vendor_slug)
     if label:
@@ -617,15 +607,18 @@ def build_model_selection_tree(
 
     oauth_providers: list[ProviderNode] = []
     oauth_defs = (
-        ("openai", "openai-codex", "OpenAI", get_codex_auth_status, lambda configured: get_codex_model_ids(access_token=None) if configured else []),
-        ("nous", "nous", "Nous", get_nous_auth_status, lambda configured: list(_PROVIDER_MODELS.get("nous", ())) if configured else []),
-        ("qwen", "qwen-oauth", "Qwen", get_qwen_auth_status, lambda configured: list(_QWEN_OAUTH_MODELS) if configured else []),
+        ("openai", "openai-codex", "OpenAI", lambda configured: get_codex_model_ids(access_token=None) if configured else []),
+        ("nous", "nous", "Nous", lambda configured: list(_PROVIDER_MODELS.get("nous", ())) if configured else []),
+        ("qwen", "qwen-oauth", "Qwen", lambda configured: list(_QWEN_OAUTH_MODELS) if configured else []),
     )
-    for token, provider_slug, label, status_fn, model_ids_fn in oauth_defs:
-        status = status_fn()
-        configured = bool(status.get("logged_in") or status.get("configured"))
+    for token, provider_slug, label, model_ids_fn in oauth_defs:
+        status_label, status_kind = _provider_configured_status(
+            provider_slug,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+        )
+        configured = status_kind != "error"
         model_ids = model_ids_fn(configured)
-        status_label, status_kind = _status_label(configured)
         provider_id = f"oauth:{token}"
         oauth_providers.append(
             ProviderNode(

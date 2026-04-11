@@ -165,6 +165,27 @@ class TestHandleVoiceCommand:
         data = json.loads(runner._VOICE_MODE_PATH.read_text())
         assert data["123"] == "off"
 
+    def test_save_voice_modes_preserves_existing_file_on_write_failure(self, runner):
+        original = {"456": "all"}
+        runner._VOICE_MODE_PATH.write_text(json.dumps(original))
+        runner._voice_mode = {"123": "voice_only"}
+
+        with patch("utils.json.dump", side_effect=OSError("disk full")):
+            runner._save_voice_modes()
+
+        assert json.loads(runner._VOICE_MODE_PATH.read_text()) == original
+
+    @pytest.mark.asyncio
+    async def test_voice_on_succeeds_when_persistence_fails(self, runner):
+        event = _make_event("/voice on")
+
+        with patch("utils.json.dump", side_effect=OSError("disk full")):
+            result = await runner._handle_voice_command(event)
+
+        assert "enabled" in result.lower()
+        assert runner._voice_mode["123"] == "voice_only"
+        assert not runner._VOICE_MODE_PATH.exists()
+
     def test_sync_voice_mode_state_to_adapter_restores_off_chats(self, runner):
         runner._voice_mode = {"123": "off", "456": "all"}
         adapter = SimpleNamespace(_auto_tts_disabled_chats=set())

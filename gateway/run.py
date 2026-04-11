@@ -76,7 +76,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write
+from utils import atomic_json_write, atomic_yaml_write
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -662,12 +662,9 @@ class GatewayRunner:
 
     def _save_voice_modes(self) -> None:
         try:
-            self._VOICE_MODE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            self._VOICE_MODE_PATH.write_text(
-                json.dumps(self._voice_mode, indent=2)
-            )
-        except OSError as e:
-            logger.warning("Failed to save voice modes: %s", e)
+            atomic_json_write(self._VOICE_MODE_PATH, self._voice_mode, indent=2)
+        except Exception as e:
+            logger.warning("Failed to save voice modes: %s", e, exc_info=True)
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""

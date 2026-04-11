@@ -1247,7 +1247,7 @@ class AIAgent:
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
 
-        # Check custom_providers per-model context_length
+        # Check custom_providers per-model context_length and max_tokens
         if _config_context_length is None:
             _custom_providers = _agent_cfg.get("custom_providers")
             if isinstance(_custom_providers, list):
@@ -1266,6 +1266,14 @@ class AIAgent:
                                         _config_context_length = int(_cp_ctx)
                                     except (TypeError, ValueError):
                                         pass
+                                # Also read max_tokens from per-model config if not already set
+                                if self.max_tokens is None:
+                                    _cp_max_tok = _cp_model_cfg.get("max_tokens")
+                                    if _cp_max_tok is not None:
+                                        try:
+                                            self.max_tokens = int(_cp_max_tok)
+                                        except (TypeError, ValueError):
+                                            pass
                         break
         
         self.context_compressor = ContextCompressor(

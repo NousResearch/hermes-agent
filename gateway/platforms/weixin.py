@@ -1425,11 +1425,14 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        image_path: str = "",
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
+        # Accept legacy 'path' kwarg for backwards compat
+        path = image_path or kwargs.get("path", "")
         return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
 
     async def send_document(
@@ -1495,26 +1498,39 @@ class WeixinAdapter(BasePlatformAdapter):
             )
         elif upload_full_url:
             timeout = aiohttp.ClientTimeout(total=120)
-            async with self._session.put(
-                upload_full_url,
-                data=ciphertext,
-                headers={"Content-Type": "application/octet-stream"},
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
-                encrypted_query_param = response.headers.get("x-encrypted-param") or filekey
+            _upload_headers = {"Content-Type": "application/octet-stream"}
+            # The upload_full_url contains an upload-auth token in its own
+            # encrypted_query_param query param; that is NOT the download key.
+            # The actual download key is returned by the CDN in the
+            # x-encrypted-param response header after a successful upload.
+            encrypted_query_param = None
+            for _method in ("post", "put"):
+                _req = getattr(self._session, _method)
+                async with _req(upload_full_url, data=ciphertext, headers=_upload_headers, timeout=timeout) as response:
+                    if response.status == 404 and _method == "post":
+                        await response.read()
+                        logger.debug("[%s] CDN upload POST→404, retrying with PUT", self.name)
+                        continue
+                    response.raise_for_status()
+                    encrypted_query_param = response.headers.get("x-encrypted-param") or filekey
+                    break
+            if encrypted_query_param is None:
+                raise RuntimeError("CDN upload failed with both POST and PUT")
         else:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
 
         context_token = self._token_store.get(self._account_id, chat_id)
+        # aes_key in the message MUST be base64(hex_string_of_key), NOT base64(raw_bytes).
+        # WeChat client decodes: base64 → 32 ASCII hex chars → bytes.fromhex → 16-byte AES key.
+        aes_key_b64_for_msg = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
         media_item = item_builder(
             encrypt_query_param=encrypted_query_param,
-            aes_key_b64=base64.b64encode(aes_key).decode("ascii"),
+            aes_key_b64=aes_key_b64_for_msg,
+            aes_key_hex=aes_key.hex(),
             ciphertext_size=len(ciphertext),
             plaintext_size=rawsize,
             filename=Path(path).name,
         )
-
         last_message_id = None
         if caption:
             last_message_id = f"hermes-weixin-{uuid.uuid4().hex}"

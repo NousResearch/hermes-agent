@@ -468,13 +468,20 @@ def _resolve_explicit_runtime(
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
+            # Honour model.api_key from config.yaml before falling back to env.
+            for k in ("api_key", "api"):
+                v = model_cfg.get(k)
+                if isinstance(v, str) and v.strip():
+                    api_key = v.strip()
+                    break
+        if not api_key:
             from agent.anthropic_adapter import resolve_anthropic_token
 
             api_key = resolve_anthropic_token()
             if not api_key:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
+                    "add api_key to config.yaml, run 'claude setup-token', or authenticate with 'claude /login'."
                 )
         return {
             "provider": "anthropic",
@@ -745,12 +752,19 @@ def resolve_runtime_provider(
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
+        # Honour model.api_key from config.yaml (consistent with other providers).
+        cfg_api_key = ""
+        for k in ("api_key", "api"):
+            v = model_cfg.get(k)
+            if isinstance(v, str) and v.strip():
+                cfg_api_key = v.strip()
+                break
         from agent.anthropic_adapter import resolve_anthropic_token
-        token = resolve_anthropic_token()
+        token = cfg_api_key or resolve_anthropic_token()
         if not token:
             raise AuthError(
                 "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                "run 'claude setup-token', or authenticate with 'claude /login'."
+                "add api_key to config.yaml, run 'claude setup-token', or authenticate with 'claude /login'."
             )
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic

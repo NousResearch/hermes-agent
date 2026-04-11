@@ -455,6 +455,8 @@ class DiscordAdapter(BasePlatformAdapter):
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
+        self._sync_task: Optional[asyncio.Task] = None
+        self._commands_synced: bool = False  # sync slash commands only once per process
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
         # Dedup cache: message_id → timestamp.  Prevents duplicate bot
@@ -558,13 +560,45 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
-                # Sync slash commands with Discord
-                try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
-                except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+                # Mark ready immediately so the gateway doesn't time out
+                # waiting for slash command sync — the bot can receive and
+                # reply to messages without slash commands being registered.
                 adapter_self._ready_event.set()
+
+                # Sync slash commands in the background.  Discord may
+                # rate-limit the bulk-overwrite endpoint (429) with retry
+                # delays of 200+ seconds, which would block on_ready and
+                # cause the 30-second connect timeout to fire, putting the
+                # gateway into a reconnect loop (see #7137).
+                #
+                # on_ready fires again after websocket reconnects, but the
+                # registered commands don't change, so we only sync once
+                # per process lifetime to avoid stacking rate-limit pressure.
+                if adapter_self._commands_synced:
+                    logger.debug("[%s] Slash commands already synced, skipping", adapter_self.name)
+                    return
+
+                async def _background_sync():
+                    _this_task = asyncio.current_task()
+                    try:
+                        synced = await adapter_self._client.tree.sync()
+                        logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                        adapter_self._commands_synced = True
+                    except Exception as e:  # pragma: no cover - defensive logging
+                        logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+                    finally:
+                        # Only clear the slot if we are still the current sync
+                        # task — a newer replacement may already own the slot.
+                        if adapter_self._sync_task is _this_task:
+                            adapter_self._sync_task = None
+
+                # Cancel any previous in-flight sync — this can happen if
+                # on_ready fires again (reconnect) while the first sync is
+                # still awaiting Discord's rate-limit retry.
+                if adapter_self._sync_task and not adapter_self._sync_task.done():
+                    adapter_self._sync_task.cancel()
+
+                adapter_self._sync_task = asyncio.create_task(_background_sync())
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -712,6 +746,12 @@ class DiscordAdapter(BasePlatformAdapter):
                 await self.leave_voice_channel(guild_id)
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+
+        # Cancel any in-flight slash command sync so it doesn't outlive the
+        # client session (the HTTP session is closed below).
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
+            self._sync_task = None
 
         if self._client:
             try:

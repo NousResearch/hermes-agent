@@ -436,4 +436,3 @@ export const clearYogaNodeReferences = (node: DOMElement | TextNode): void => {
 
   node.yogaNode = undefined
 }
-

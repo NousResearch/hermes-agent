@@ -39,6 +39,7 @@ export const compactPreview = (s: string, max: number) => {
 export const buildToolTrailLine = (name: string, context: string, error?: boolean): string => {
   const label = TOOL_VERBS[name] ?? name
   const mark = error ? '✗' : '✓'
+
   return `${label}${context ? ': ' + compactPreview(context, 72) : ''} ${mark}`
 }
 

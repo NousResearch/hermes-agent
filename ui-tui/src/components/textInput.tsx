@@ -303,9 +303,12 @@ export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, pl
   // ── Input handler ────────────────────────────────────────────────
 
   useInput(
-    (inp, k) => {
-      // Paste hotkey
-      if ((k.ctrl || k.meta) && inp.toLowerCase() === 'v') {
+    (inp, k, event) => {
+      // Some terminals normalize Ctrl+V to "v"; others deliver raw ^V (\x16).
+      const ctrlPaste = k.ctrl && (inp.toLowerCase() === 'v' || event.keypress.raw === '\x16')
+      const metaPaste = k.meta && inp.toLowerCase() === 'v'
+
+      if (ctrlPaste || metaPaste) {
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 

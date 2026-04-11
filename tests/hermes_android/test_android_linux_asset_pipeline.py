@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -13,3 +15,15 @@ def test_prepare_android_linux_assets_script_exists_and_is_wired_into_gradle():
     assert "prepareHermesAndroidLinuxAssets" in gradle
     assert "generated/hermes-linux-assets" in gradle
     assert "assets.srcDir" in gradle
+
+
+def test_prepare_android_linux_assets_script_imports_from_android_workdir():
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts/prepare_android_linux_assets.py"), "--help"],
+        cwd=REPO_ROOT / "android",
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Prepare Android Linux CLI assets" in result.stdout

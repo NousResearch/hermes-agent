@@ -1407,7 +1407,7 @@ class TestAsyncCallLlmFallback:
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("auto", "google/gemini-3-flash-preview", None, None)), \
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
              patch("agent.auxiliary_client._try_payment_fallback",
                     return_value=(fb_sync_client, "gpt-5.2-codex", "openai-codex")) as mock_fb, \
              patch("agent.auxiliary_client._to_async_client",

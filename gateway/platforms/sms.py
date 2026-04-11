@@ -11,7 +11,8 @@ Shares credentials with the optional telephony skill — same env vars:
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
   - SMS_WEBHOOK_HOST     (default 0.0.0.0)
-  - SMS_WEBHOOK_URL      (public URL for Twilio signature validation)
+  - SMS_WEBHOOK_URL      (public URL for Twilio signature validation — required)
+  - SMS_INSECURE_NO_SIGNATURE  (true to disable signature validation — dev only)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
@@ -94,11 +95,23 @@ class SmsAdapter(BasePlatformAdapter):
             logger.error("[sms] TWILIO_PHONE_NUMBER not set — cannot send replies")
             return False
 
-        if not self._webhook_url:
+        insecure_no_sig = os.getenv("SMS_INSECURE_NO_SIGNATURE", "").lower() == "true"
+
+        if not self._webhook_url and not insecure_no_sig:
+            logger.error(
+                "[sms] Refusing to start: SMS_WEBHOOK_URL is required for Twilio "
+                "signature validation. Set it to the public URL configured in your "
+                "Twilio console (e.g. https://example.com/webhooks/twilio). "
+                "For local development without validation, set "
+                "SMS_INSECURE_NO_SIGNATURE=true (NOT recommended for production).",
+            )
+            return False
+
+        if insecure_no_sig:
             logger.warning(
-                "[sms] SMS_WEBHOOK_URL not set — Twilio signature validation is "
-                "DISABLED. Any client that can reach port %d can inject messages. "
-                "Set SMS_WEBHOOK_URL to enable signature validation.",
+                "[sms] SMS_INSECURE_NO_SIGNATURE=true — Twilio signature validation "
+                "is DISABLED. Any client that can reach port %d can inject messages. "
+                "Do NOT use this in production.",
                 self._webhook_port,
             )
 

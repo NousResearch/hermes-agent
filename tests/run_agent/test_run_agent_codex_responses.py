@@ -1104,3 +1104,58 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     ]
     assert "enc_first" in encrypted_contents
     assert "enc_second" in encrypted_contents
+
+
+def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):
+    """Duplicate reasoning item IDs across multi-turn incomplete responses
+    must be deduplicated so the Responses API doesn't reject with HTTP 400."""
+    agent = _build_agent(monkeypatch)
+    messages = [
+        {"role": "user", "content": "think hard"},
+        {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
+                {"type": "reasoning", "id": "rs_bbb", "encrypted_content": "enc_2"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": "partial answer",
+            "codex_reasoning_items": [
+                # rs_aaa is duplicated from the previous turn
+                {"type": "reasoning", "id": "rs_aaa", "encrypted_content": "enc_1"},
+                {"type": "reasoning", "id": "rs_ccc", "encrypted_content": "enc_3"},
+            ],
+        },
+    ]
+    items = agent._chat_messages_to_responses_input(messages)
+
+    reasoning_ids = [it["id"] for it in items if it.get("type") == "reasoning"]
+    # rs_aaa should appear only once (first occurrence kept)
+    assert reasoning_ids.count("rs_aaa") == 1
+    # rs_bbb and rs_ccc should each appear once
+    assert reasoning_ids.count("rs_bbb") == 1
+    assert reasoning_ids.count("rs_ccc") == 1
+    assert len(reasoning_ids) == 3
+
+
+def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
+    """_preflight_codex_input_items should also deduplicate reasoning items by ID."""
+    agent = _build_agent(monkeypatch)
+    raw_input = [
+        {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
+        {"role": "assistant", "content": "ok"},
+        {"type": "reasoning", "id": "rs_xyz", "encrypted_content": "enc_a"},
+        {"type": "reasoning", "id": "rs_zzz", "encrypted_content": "enc_b"},
+        {"role": "assistant", "content": "done"},
+    ]
+    normalized = agent._preflight_codex_input_items(raw_input)
+
+    reasoning_items = [it for it in normalized if it.get("type") == "reasoning"]
+    reasoning_ids = [it["id"] for it in reasoning_items]
+    assert reasoning_ids.count("rs_xyz") == 1
+    assert reasoning_ids.count("rs_zzz") == 1
+    assert len(reasoning_items) == 2

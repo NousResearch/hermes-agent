@@ -8,6 +8,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    check_config_version,
     get_hermes_home,
     ensure_hermes_home,
     load_config,
@@ -421,3 +422,20 @@ class TestAnthropicTokenMigration:
         }):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
+
+
+class TestConfigVersionDetection:
+    def test_missing_version_is_treated_as_legacy_and_runs_migrations(self, tmp_path):
+        """Configs missing _config_version must still run versioned migrations."""
+        (tmp_path / "config.yaml").write_text("model: test-model\n")
+        (tmp_path / ".env").write_text("ANTHROPIC_TOKEN=old-token\n")
+        with patch.dict(os.environ, {
+            "HERMES_HOME": str(tmp_path),
+            "ANTHROPIC_TOKEN": "old-token",
+        }):
+            current, latest = check_config_version()
+            assert current == 0
+            assert latest == DEFAULT_CONFIG["_config_version"]
+
+            migrate_config(interactive=False, quiet=True)
+            assert load_env().get("ANTHROPIC_TOKEN") == ""

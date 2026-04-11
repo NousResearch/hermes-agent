@@ -1463,8 +1463,13 @@ def check_config_version() -> Tuple[int, int]:
     
     Returns (current_version, latest_version).
     """
-    config = load_config()
+    config = read_raw_config()
     current = config.get("_config_version", 0)
+    if not isinstance(current, int):
+        try:
+            current = int(current)
+        except (TypeError, ValueError):
+            current = 0
     latest = DEFAULT_CONFIG.get("_config_version", 1)
     return current, latest
 

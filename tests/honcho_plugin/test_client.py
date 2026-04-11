@@ -342,6 +342,35 @@ class TestResolveConfigPath:
         assert config.api_key == "local-key"
         assert config.workspace_id == "local-ws"
 
+    def test_custom_hermes_root_does_not_fallback_to_native_default_profile(self, tmp_path):
+        """Custom HERMES_HOME deployments must stay isolated from ~/.hermes/honcho.json."""
+        fake_home = tmp_path / "fakehome"
+        native_default = fake_home / ".hermes"
+        native_default.mkdir(parents=True)
+        (native_default / "honcho.json").write_text(json.dumps({"apiKey": "native-key"}))
+
+        custom_root = tmp_path / "isolated-root"
+        custom_root.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(custom_root)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            result = resolve_config_path()
+
+        assert result == GLOBAL_CONFIG_PATH
+
+    def test_custom_profile_falls_back_to_custom_root_config(self, tmp_path):
+        """Profiles under a custom root should share that root's honcho.json."""
+        custom_root = tmp_path / "isolated-root"
+        profile_home = custom_root / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        root_cfg = custom_root / "honcho.json"
+        root_cfg.write_text(json.dumps({"apiKey": "root-key"}))
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile_home)}):
+            result = resolve_config_path()
+
+        assert result == root_cfg
+
 
 class TestResolveActiveHost:
     def test_default_returns_hermes(self):

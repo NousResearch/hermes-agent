@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ def resolve_config_path() -> Path:
 
     Resolution order:
       1. $HERMES_HOME/honcho.json      (profile-local, if it exists)
-      2. ~/.hermes/honcho.json          (default profile — shared host blocks live here)
+      2. <Hermes root>/honcho.json    (shared root config for the active deployment)
       3. ~/.honcho/config.json          (global, cross-app interop)
 
     Returns the global path if none exist (for first-time setup writes).
@@ -67,8 +67,11 @@ def resolve_config_path() -> Path:
     if local_path.exists():
         return local_path
 
-    # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    # Shared root config: default ~/.hermes for native installs, but a custom
+    # deployment root (including Docker/profile roots) when HERMES_HOME lives
+    # outside ~/.hermes. This avoids leaking host-user Honcho config into an
+    # isolated Hermes instance.
+    default_path = get_default_hermes_root() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 

@@ -4093,6 +4093,979 @@ class AIAgent:
 
         return json.dumps(formatted_tools, ensure_ascii=False)
 
+    @staticmethod
+    def _compact_chatgpt_web_schema(value: Any) -> Any:
+        if isinstance(value, dict):
+            cleaned: dict[str, Any] = {}
+            for key, inner in value.items():
+                if key in {"description", "title", "default", "examples", "$schema"}:
+                    continue
+                compact = AIAgent._compact_chatgpt_web_schema(inner)
+                if compact in ({}, [], None, ""):
+                    continue
+                cleaned[key] = compact
+            return cleaned
+        if isinstance(value, list):
+            items = [AIAgent._compact_chatgpt_web_schema(item) for item in value]
+            return [item for item in items if item not in ({}, [], None, "")]
+        return value
+
+    @staticmethod
+    def _compact_chatgpt_web_description(text: str) -> str:
+        if not isinstance(text, str) or not text.strip():
+            return ""
+        first_paragraph = text.strip().split("\n\n", 1)[0].strip()
+        first_sentence = re.split(r"(?<=[.!?])\s+", first_paragraph, maxsplit=1)[0].strip()
+        return first_sentence[:220]
+
+    @staticmethod
+    def _chatgpt_web_current_turn_messages(payload_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not isinstance(payload_messages, list):
+            return []
+        for idx in range(len(payload_messages) - 1, -1, -1):
+            item = payload_messages[idx]
+            if isinstance(item, dict) and item.get("role") == "user":
+                return payload_messages[idx:]
+        return payload_messages
+
+    @staticmethod
+    def _chatgpt_web_extract_original_request(user_content: str) -> str:
+        original = str(user_content or "").strip()
+        marker = "Original user request:\n"
+        if marker in original:
+            original = original.split(marker, 1)[1].strip()
+            original = original.split("\n\nRuntime reminder:", 1)[0].strip()
+        return original
+
+    def _chatgpt_web_original_user_request(self, payload_messages: list[dict[str, Any]]) -> str:
+        current_turn_messages = self._chatgpt_web_current_turn_messages(payload_messages)
+        for item in reversed(current_turn_messages):
+            if isinstance(item, dict) and item.get("role") == "user":
+                return self._chatgpt_web_extract_original_request(str(item.get("content") or ""))
+        return ""
+
+    @staticmethod
+    def _chatgpt_web_answer_only_mode(original_request: str) -> str:
+        lowered = str(original_request or "").strip().lower()
+        if "answer only" not in lowered:
+            return ""
+        if (("yes/no" in lowered) or ("yes or no" in lowered)) and "matching path" in lowered:
+            return "yes_no_path"
+        if (
+            "answer only the exact line" in lowered
+            or "answer only with the exact line" in lowered
+            or "answer only exact line" in lowered
+            or "answer only the first line" in lowered
+            or "answer only with the first line" in lowered
+            or "answer only first line" in lowered
+            or "answer only the def line" in lowered
+            or "answer only with the def line" in lowered
+            or "answer only exact def line" in lowered
+        ):
+            return "line"
+        if (
+            "answer only the path" in lowered
+            or "answer only path" in lowered
+            or "answer only the saved path" in lowered
+            or "answer only saved path" in lowered
+        ):
+            return "path"
+        if "answer only the result" in lowered or "answer only the output" in lowered:
+            return "result"
+        if "answer only yes/no" in lowered or "answer only yes or no" in lowered:
+            return "yes_no"
+        if "answer only the value" in lowered or "answer only value" in lowered:
+            return "value"
+        if "answer only saved" in lowered:
+            return "saved"
+        if "answer only created" in lowered:
+            return "created"
+        if "answer only removed" in lowered:
+            return "removed"
+        if "answer only deleted" in lowered:
+            return "deleted"
+        return ""
+
+    def _chatgpt_web_final_answer_example(self, original_request: str) -> str:
+        mode = self._chatgpt_web_answer_only_mode(original_request)
+        if mode == "path":
+            return "Final answer format example:\n/data/data/com.termux/files/home/project"
+        if mode == "line":
+            return "Final answer format example:\n_SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)"
+        if mode == "result":
+            return "Final answer format example:\n42"
+        if mode == "yes_no":
+            return "Final answer format example:\nyes"
+        if mode == "yes_no_path":
+            return "Final answer format example when a match exists:\nyes\nrun_agent.py\nIf no match exists, answer:\nno"
+        if mode == "removed":
+            return "Final answer format example:\nremoved"
+        if mode == "deleted":
+            return "Final answer format example:\ndeleted"
+        return ""
+
+    @staticmethod
+    def _chatgpt_web_extract_path_candidate(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        normalized = re.sub(r"/\s+", "/", text.strip())
+        for pattern in (
+            r"(/(?:[A-Za-z0-9._-]+/?)+)",
+            r"\b([A-Za-z0-9_./-]+\.[A-Za-z0-9_]+)\b",
+        ):
+            match = re.search(pattern, normalized)
+            if match:
+                candidate = match.group(1).strip().strip('"\'`')
+                return candidate.rstrip('.,;:!')
+        return None
+
+    @staticmethod
+    def _chatgpt_web_extract_simple_result(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stripped = text.strip().strip('"\'`')
+        number_match = re.search(r"(?<!\w)(-?\d+(?:\.\d+)?)(?!\w)", stripped)
+        if number_match:
+            return number_match.group(1)
+        lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+        if len(lines) == 1 and lines[0] and not any(ch in lines[0] for ch in "<>`"):
+            return lines[0].strip('"\'')
+        return None
+
+    @staticmethod
+    def _chatgpt_web_extract_simple_value(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stripped = text.strip()
+        quoted = re.findall(r'"([^"]+)"', stripped)
+        if quoted:
+            return quoted[-1].strip()
+        single_quoted = re.findall(r"'([^']+)'", stripped)
+        if single_quoted:
+            return single_quoted[-1].strip()
+        value_match = re.search(r"\b(?:is|as|saved as)\s+([A-Za-z0-9._-]+)\b", stripped, re.IGNORECASE)
+        if value_match:
+            return value_match.group(1).strip().rstrip('.,;:!')
+        lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+        if len(lines) == 1 and lines[0] and re.fullmatch(r"[A-Za-z0-9._-]+", lines[0]):
+            return lines[0]
+        return None
+
+    @staticmethod
+    def _chatgpt_web_extract_yes_no(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        lowered = text.strip().lower()
+        if re.match(r"^yes\b", lowered):
+            return "yes"
+        if re.match(r"^no\b", lowered):
+            return "no"
+        return None
+
+    @staticmethod
+    def _chatgpt_web_parse_tool_payload(tool_content: Any) -> Any:
+        if not isinstance(tool_content, str):
+            return None
+        try:
+            return json.loads(tool_content)
+        except Exception:
+            return None
+
+    def _chatgpt_web_extract_path_from_tool_payload(self, tool_payload: Any, tool_content: str) -> Optional[str]:
+        if isinstance(tool_payload, dict):
+            direct_path = tool_payload.get("path")
+            if isinstance(direct_path, str) and direct_path.strip():
+                return direct_path.strip()
+            matches = tool_payload.get("matches")
+            if isinstance(matches, list) and matches:
+                first = matches[0]
+                if isinstance(first, dict):
+                    path = first.get("path")
+                    if isinstance(path, str) and path.strip():
+                        return path.strip()
+            files = tool_payload.get("files")
+            if isinstance(files, list) and files:
+                first = files[0]
+                if isinstance(first, str) and first.strip():
+                    return first.strip()
+            output = tool_payload.get("output")
+            if isinstance(output, str) and output.strip():
+                path = self._chatgpt_web_extract_path_candidate(output)
+                if path:
+                    return path
+        return self._chatgpt_web_extract_path_candidate(tool_content)
+
+    def _chatgpt_web_extract_result_from_tool_payload(self, tool_payload: Any, tool_content: str) -> Optional[str]:
+        if isinstance(tool_payload, dict):
+            output = tool_payload.get("output")
+            if isinstance(output, str):
+                result = self._chatgpt_web_extract_simple_result(output)
+                if result:
+                    return result
+        return self._chatgpt_web_extract_simple_result(tool_content)
+
+    @staticmethod
+    def _chatgpt_web_extract_exact_line_from_text(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        fence_match = re.search(r"```(?:[A-Za-z0-9_+-]+)?\n([^`]+?)\n```", text, re.DOTALL)
+        if fence_match:
+            fenced_lines = [line.strip() for line in fence_match.group(1).splitlines() if line.strip()]
+            if fenced_lines:
+                return fenced_lines[0]
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            numbered = re.match(r"^\d+\|(.*)$", line)
+            if numbered:
+                candidate = numbered.group(1).strip()
+                if candidate:
+                    return candidate
+            if line.startswith(("def ", "class ", "_", "@")) or " = " in line:
+                return line.strip('"\'`')
+        simple = AIAgent._chatgpt_web_extract_simple_result(text)
+        if simple and "\n" not in simple:
+            return simple
+        return None
+
+    def _chatgpt_web_extract_line_from_tool_payload(self, tool_payload: Any, tool_content: str) -> Optional[str]:
+        if isinstance(tool_payload, dict):
+            matches = tool_payload.get("matches")
+            if isinstance(matches, list) and matches:
+                first = matches[0]
+                if isinstance(first, dict):
+                    line = self._chatgpt_web_extract_exact_line_from_text(str(first.get("content") or ""))
+                    if line:
+                        return line
+            for key in ("content", "output"):
+                value = tool_payload.get(key)
+                if isinstance(value, str):
+                    line = self._chatgpt_web_extract_exact_line_from_text(value)
+                    if line:
+                        return line
+        return self._chatgpt_web_extract_exact_line_from_text(tool_content)
+
+    @staticmethod
+    def _chatgpt_web_extract_yes_no_from_tool_payload(tool_payload: Any) -> Optional[str]:
+        if isinstance(tool_payload, dict):
+            total_count = tool_payload.get("total_count")
+            if isinstance(total_count, int):
+                return "yes" if total_count > 0 else "no"
+            for key in ("matches", "files"):
+                value = tool_payload.get(key)
+                if isinstance(value, list):
+                    return "yes" if value else "no"
+        return None
+
+    def _chatgpt_web_repair_answer_only_response(
+        self,
+        original_request: str,
+        final_response: str,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        repaired = str(final_response or "").strip()
+        mode = self._chatgpt_web_answer_only_mode(original_request)
+        if not mode:
+            return repaired
+
+        last_tool_content = ""
+        for item in reversed(messages):
+            if isinstance(item, dict) and item.get("role") == "tool":
+                last_tool_content = str(item.get("content") or "")
+                break
+
+        tool_payload = self._chatgpt_web_parse_tool_payload(last_tool_content) if last_tool_content else None
+        if mode == "path":
+            image_url = self._chatgpt_web_extract_image_url_from_text(repaired)
+            if image_url and any(keyword in str(original_request or "").lower() for keyword in ("save", "download", "store")):
+                return image_url
+            repaired_path = self._chatgpt_web_extract_path_candidate(repaired)
+            if repaired_path:
+                return repaired_path
+            path = self._chatgpt_web_extract_path_from_tool_payload(tool_payload, last_tool_content) if last_tool_content else None
+            return path or repaired
+        if mode == "line":
+            line = self._chatgpt_web_extract_exact_line_from_text(repaired) or (
+                self._chatgpt_web_extract_line_from_tool_payload(tool_payload, last_tool_content) if last_tool_content else None
+            )
+            return line or repaired
+        if mode == "result":
+            result = self._chatgpt_web_extract_simple_result(repaired) or (
+                self._chatgpt_web_extract_result_from_tool_payload(tool_payload, last_tool_content) if last_tool_content else None
+            )
+            return result or repaired
+        if mode == "yes_no":
+            verdict = self._chatgpt_web_extract_yes_no(repaired) or self._chatgpt_web_extract_yes_no_from_tool_payload(tool_payload)
+            return verdict or repaired
+        if mode == "yes_no_path":
+            verdict = self._chatgpt_web_extract_yes_no(repaired) or self._chatgpt_web_extract_yes_no_from_tool_payload(tool_payload)
+            path = self._chatgpt_web_extract_path_candidate(repaired) or (
+                self._chatgpt_web_extract_path_from_tool_payload(tool_payload, last_tool_content) if last_tool_content else None
+            )
+            if verdict == "no":
+                return "no"
+            if path:
+                return f"yes\n{path}"
+        if mode == "value":
+            value = self._chatgpt_web_extract_simple_value(repaired)
+            return value or repaired
+        if mode == "saved":
+            if isinstance(tool_payload, dict) and tool_payload.get("success") is True:
+                return "saved"
+            if last_tool_content and ("entry added" in last_tool_content.lower() or "saved" in last_tool_content.lower()):
+                return "saved"
+            if "saved" in repaired.lower():
+                return "saved"
+        if mode == "created":
+            if last_tool_content and (" created" in last_tool_content.lower() or " updated" in last_tool_content.lower()):
+                return "created"
+            if "created" in repaired.lower() or "updated" in repaired.lower():
+                return "created"
+        if mode == "removed":
+            if isinstance(tool_payload, dict) and tool_payload.get("success") is True:
+                return "removed"
+            if last_tool_content and ("removed" in last_tool_content.lower() or "deleted" in last_tool_content.lower()):
+                return "removed"
+            if "removed" in repaired.lower() or "deleted" in repaired.lower():
+                return "removed"
+        if mode == "deleted":
+            if last_tool_content and ("deleted" in last_tool_content.lower() or "removed" in last_tool_content.lower()):
+                return "deleted"
+            if "deleted" in repaired.lower() or "removed" in repaired.lower():
+                return "deleted"
+        return repaired
+
+    @staticmethod
+    def _chatgpt_web_extract_local_path(text: str, *, extensions: Optional[tuple[str, ...]] = None) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stripped = text.strip()
+        candidates: list[str] = []
+        for pattern in (
+            r'"((?:~|/)[^"\n]+)"',
+            r"'((?:~|/)[^'\n]+)'",
+            r"`((?:~|/)[^`\n]+)`",
+            r"(?<![A-Za-z0-9_.-])((?:~|/)[A-Za-z0-9_./-]+)",
+        ):
+            for match in re.finditer(pattern, stripped):
+                candidate = match.group(1).strip().rstrip('.,;:!')
+                if candidate:
+                    candidates.append(candidate)
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = os.path.expanduser(candidate)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            if extensions is not None:
+                lowered = normalized.lower()
+                if not lowered.endswith(tuple(ext.lower() for ext in extensions)):
+                    continue
+            return normalized
+        return None
+
+    @staticmethod
+    def _chatgpt_web_extract_image_input_path(text: str) -> Optional[str]:
+        return AIAgent._chatgpt_web_extract_local_path(
+            text,
+            extensions=(".png", ".jpg", ".jpeg", ".webp", ".gif"),
+        )
+
+    @staticmethod
+    def _chatgpt_web_extract_symbol_target(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stopwords = {"and", "the", "a", "an", "where", "with", "this", "that", "it"}
+        patterns = (
+            r"\bdefinition\s+of\s+[`\"']?([A-Za-z_][A-Za-z0-9_]*)",
+            r"\b(?:define|defines|defined)\s+[`\"']?([A-Za-z_][A-Za-z0-9_]*)",
+            r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if not match:
+                continue
+            candidate = match.group(1)
+            if candidate.lower() in stopwords:
+                continue
+            return candidate
+        return None
+
+    @staticmethod
+    def _chatgpt_web_sanitize_skill_name(name: str) -> str:
+        sanitized = re.sub(r"[^a-z0-9_-]+", "-", str(name or "").strip().lower())
+        sanitized = sanitized.strip("-_")
+        return sanitized[:64]
+
+    def _chatgpt_web_build_skill_content(self, name: str, description: str) -> str:
+        clean_name = self._chatgpt_web_sanitize_skill_name(name) or "chatgpt-web-temp-skill"
+        clean_desc = (description or "Temporary skill created from a ChatGPT Web request.").strip()
+        body_desc = clean_desc.rstrip(".") + "."
+        return (
+            f"---\n"
+            f"name: {clean_name}\n"
+            f"description: {clean_desc}\n"
+            f"version: 1.0.0\n"
+            f"author: Hermes Agent\n"
+            f"license: MIT\n"
+            f"---\n\n"
+            f"# {clean_name}\n\n"
+            f"{body_desc}\n"
+        )
+
+    @staticmethod
+    def _chatgpt_web_default_image_download_dir() -> Path:
+        termux_dir = Path.home() / "storage" / "downloads" / "chatgpt-web-images"
+        if termux_dir.parent.exists():
+            return termux_dir
+        return get_hermes_home() / "downloads" / "chatgpt-web-images"
+
+    def _chatgpt_web_requested_image_download_dir(self, original_request: str) -> Optional[Path]:
+        if not isinstance(original_request, str) or not original_request.strip():
+            return None
+        lowered = original_request.lower()
+        if not any(keyword in lowered for keyword in ("save", "download", "store", "upload")):
+            return None
+        explicit_path = re.search(r"\b(?:save|download|store|upload)(?:\s+it)?\s+to\s+([~/][A-Za-z0-9_./-]+)", original_request, re.IGNORECASE)
+        if explicit_path:
+            return Path(os.path.expanduser(explicit_path.group(1).strip().rstrip('.,;:!')))
+        if "downloads" in lowered or "chatgpt-web-images" in lowered or "chatgpt web images" in lowered:
+            return self._chatgpt_web_default_image_download_dir()
+        return None
+
+    @staticmethod
+    def _chatgpt_web_extract_image_url_from_text(text: str) -> Optional[str]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        markdown_match = re.search(r"!\[[^\]]*\]\((https?://[^)\s]+)\)", text)
+        if markdown_match:
+            return markdown_match.group(1)
+        estuary_match = re.search(r"(https?://[^\s)]+/backend-api/estuary/content\?[^\s)]+)", text, re.IGNORECASE)
+        if estuary_match:
+            return estuary_match.group(1)
+        bare_match = re.search(r"(https?://\S+?\.(?:png|jpe?g|gif|webp)(?:\?\S*)?)", text, re.IGNORECASE)
+        if bare_match:
+            return bare_match.group(1)
+        return None
+
+    def _chatgpt_web_extract_generated_image_url(self, final_response: str, messages: list[dict[str, Any]]) -> Optional[str]:
+        direct = self._chatgpt_web_extract_image_url_from_text(final_response)
+        if direct:
+            return direct
+        for item in reversed(messages):
+            if not isinstance(item, dict) or item.get("role") != "tool":
+                continue
+            tool_content = str(item.get("content") or "")
+            tool_payload = self._chatgpt_web_parse_tool_payload(tool_content)
+            if isinstance(tool_payload, dict):
+                image_url = tool_payload.get("image")
+                if isinstance(image_url, str) and image_url.strip():
+                    return image_url.strip()
+                images = tool_payload.get("images")
+                if isinstance(images, list):
+                    for image in images:
+                        if isinstance(image, str) and image.strip():
+                            return image.strip()
+                        if isinstance(image, dict):
+                            candidate = image.get("url")
+                            if isinstance(candidate, str) and candidate.strip():
+                                return candidate.strip()
+            fallback = self._chatgpt_web_extract_image_url_from_text(tool_content)
+            if fallback:
+                return fallback
+        return None
+
+    def _chatgpt_web_download_image_to_dir(self, image_url: str, target_dir: Path) -> Path:
+        import httpx
+        from urllib.parse import unquote, urlparse
+
+        target_dir = Path(target_dir).expanduser()
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        parsed = urlparse(str(image_url or ""))
+        candidate_name = Path(parsed.path).name or f"chatgpt-web-image-{uuid.uuid4().hex[:8]}.png"
+        candidate_name = re.sub(r"[^A-Za-z0-9._-]+", "-", candidate_name).strip("-._") or f"chatgpt-web-image-{uuid.uuid4().hex[:8]}.png"
+
+        request_headers = None
+        if (
+            self.api_mode == "chatgpt_web"
+            and parsed.scheme in {"http", "https"}
+            and parsed.netloc.lower().endswith("chatgpt.com")
+            and parsed.path.startswith("/backend-api/")
+        ):
+            request_headers = _chatgpt_web._build_chatgpt_web_headers(
+                access_token=self.api_key,
+                accept="*/*",
+            )
+            request_headers.pop("Content-Type", None)
+
+        response = httpx.get(image_url, headers=request_headers, timeout=60.0, follow_redirects=True)
+        response.raise_for_status()
+
+        content_disposition = str(response.headers.get("content-disposition") or "")
+        disposition_match = re.search(r"filename\*=UTF-8''([^;]+)", content_disposition)
+        if disposition_match:
+            disposition_name = unquote(disposition_match.group(1))
+            candidate_name = disposition_name.strip() or candidate_name
+        else:
+            fallback_match = re.search(r'filename="?([^";]+)"?', content_disposition)
+            if fallback_match:
+                candidate_name = fallback_match.group(1).strip() or candidate_name
+
+        candidate_name = re.sub(r"[^A-Za-z0-9._-]+", "-", candidate_name).strip("-._") or f"chatgpt-web-image-{uuid.uuid4().hex[:8]}.png"
+
+        suffix = Path(candidate_name).suffix.lower()
+        if not suffix:
+            content_type = str(response.headers.get("content-type") or "").lower()
+            if "jpeg" in content_type or "jpg" in content_type:
+                suffix = ".jpg"
+            elif "webp" in content_type:
+                suffix = ".webp"
+            elif "gif" in content_type:
+                suffix = ".gif"
+            else:
+                suffix = ".png"
+            candidate_name += suffix
+
+        destination = target_dir / candidate_name
+        if destination.exists():
+            destination = target_dir / f"{destination.stem}-{uuid.uuid4().hex[:8]}{destination.suffix}"
+
+        destination.write_bytes(response.content)
+        return destination
+
+    def _chatgpt_web_postprocess_generated_image_response(
+        self,
+        original_request: str,
+        final_response: str,
+        messages: list[dict[str, Any]],
+    ) -> str:
+        download_dir = self._chatgpt_web_requested_image_download_dir(original_request)
+        if download_dir is None:
+            return final_response
+        image_url = self._chatgpt_web_extract_generated_image_url(final_response, messages)
+        if not image_url:
+            return final_response
+        try:
+            saved_path = self._chatgpt_web_download_image_to_dir(image_url, download_dir)
+        except Exception:
+            return final_response
+        if self._chatgpt_web_answer_only_mode(original_request) == "path":
+            return str(saved_path)
+        return f"{final_response}\n\nSaved image to {saved_path}"
+
+    def _select_chatgpt_web_tools(self, payload_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self.tools:
+            return []
+
+        tools_by_name = {
+            str(tool.get("function", {}).get("name") or "").strip(): tool
+            for tool in self.tools
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
+        tools_by_name = {name: tool for name, tool in tools_by_name.items() if name}
+        if not tools_by_name:
+            return []
+
+        user_text = "\n".join(
+            str(msg.get("content") or "")
+            for msg in payload_messages
+            if isinstance(msg, dict) and msg.get("role") == "user"
+        )
+        used_tool_count = sum(
+            1 for msg in payload_messages
+            if isinstance(msg, dict) and msg.get("role") == "tool"
+        )
+
+        explicit_pattern = re.compile(
+            r"\b(" + "|".join(re.escape(name) for name in sorted(tools_by_name, key=len, reverse=True)) + r")\b",
+            re.IGNORECASE,
+        )
+        explicit_sequence = [match.group(1) for match in explicit_pattern.finditer(user_text)]
+        if explicit_sequence:
+            next_index = min(used_tool_count, len(explicit_sequence) - 1)
+            next_name = explicit_sequence[next_index]
+            for candidate_name, tool in tools_by_name.items():
+                if candidate_name.lower() == next_name.lower():
+                    return [tool]
+
+        lowered = user_text.lower()
+        heuristic_names: list[str] = []
+        explicit_local_path = self._chatgpt_web_extract_local_path(user_text)
+        relative_path_match = re.search(r"\b([A-Za-z0-9_./-]+\.[A-Za-z0-9_]+)\b", user_text)
+        path_match = explicit_local_path or (relative_path_match.group(1) if relative_path_match else None)
+        explicit_symbol_target = self._chatgpt_web_extract_symbol_target(user_text)
+        image_generation_request = (
+            any(keyword in lowered for keyword in ("generate", "create", "draw", "make", "illustrate", "paint"))
+            and any(keyword in lowered for keyword in ("image", "picture", "photo", "illustration", "drawing", "logo"))
+        )
+        image_analysis_request = bool(self._chatgpt_web_extract_image_input_path(user_text)) or any(
+            keyword in lowered for keyword in (
+                "look at this image",
+                "look at this local image",
+                "analyze this image",
+                "describe this image",
+                "what is in this image",
+                "dominant color",
+                "screenshot",
+                "photo",
+                "picture",
+            )
+        )
+        memory_request = any(
+            keyword in lowered for keyword in (
+                "remember that",
+                "remember this",
+                "save this to memory",
+                "store this in memory",
+                "don't forget",
+                "forget that",
+                "forget this",
+                "remove from memory",
+                "delete from memory",
+                "my preference",
+                "my favorite",
+                "my timezone",
+                "my name is",
+            )
+        )
+        skill_request = any(
+            keyword in lowered for keyword in (
+                "create a skill",
+                "temporary skill",
+                "save as a skill",
+                "skill named",
+                "skill called",
+                "workflow skill",
+            )
+        )
+
+        if image_generation_request:
+            image_tool = tools_by_name.get("image_generate")
+            return [image_tool] if image_tool is not None else []
+        if image_analysis_request:
+            vision_tool = tools_by_name.get("vision_analyze")
+            return [vision_tool] if vision_tool is not None else []
+        if used_tool_count == 0 and path_match and explicit_symbol_target and any(
+            keyword in lowered for keyword in ("find", "search", "grep", "symbol", "definition", "define", "defines", "defined")
+        ):
+            search_tool = tools_by_name.get("search_files")
+            if search_tool is not None:
+                return [search_tool]
+        if path_match and any(
+            keyword in lowered for keyword in ("read", "first line", "exact def line", "open the file", "show the file", "inspect", "summarize", "report")
+        ):
+            read_tool = tools_by_name.get("read_file")
+            if read_tool is not None:
+                return [read_tool]
+        if explicit_local_path and any(keyword in lowered for keyword in ("contains exactly", "with content", "containing")):
+            write_tool = tools_by_name.get("write_file")
+            if write_tool is not None:
+                return [write_tool]
+        if memory_request:
+            memory_tool = tools_by_name.get("memory")
+            return [memory_tool] if memory_tool is not None else []
+        if skill_request:
+            skill_tool = tools_by_name.get("skill_manage")
+            return [skill_tool] if skill_tool is not None else []
+        if any(
+            keyword in lowered for keyword in (
+                "working directory",
+                "pwd",
+                "current directory",
+                "date",
+                "time",
+                "port",
+                "process",
+                "platform details",
+                "platform info",
+                "platform information",
+                "system details",
+                "system info",
+                "system information",
+                "what system",
+                "what os",
+                "operating system",
+                "kernel",
+                "uname",
+            )
+        ):
+            heuristic_names.append("terminal")
+        if any(keyword in lowered for keyword in ("python", "script", "calculate", "math", "compute", "sum", "product", "multiply")):
+            heuristic_names.append("execute_code")
+        if any(keyword in lowered for keyword in ("find", "search", "grep", "file", "files", "path", "repo", "symbol", "definition")):
+            heuristic_names.extend(["search_files", "read_file"])
+        if any(keyword in lowered for keyword in ("shell", "command", "run ")):
+            heuristic_names.append("terminal")
+        if explicit_local_path and any(keyword in lowered for keyword in ("edit", "modify", "change", "patch", "fix", "write")) and "contains exactly" in lowered:
+            heuristic_names.append("write_file")
+        if any(keyword in lowered for keyword in ("edit", "modify", "change", "patch", "fix", "write")):
+            heuristic_names.extend(["patch", "write_file"])
+
+        for name in heuristic_names:
+            tool = tools_by_name.get(name)
+            if tool is not None:
+                return [tool]
+
+        return []
+
+    def _chatgpt_web_tool_args(self, tool_name: str, payload_messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return None
+        user_text = "\n".join(
+            str(msg.get("content") or "")
+            for msg in payload_messages
+            if isinstance(msg, dict) and msg.get("role") == "user"
+        )
+        lowered = user_text.lower()
+        explicit_local_path = self._chatgpt_web_extract_local_path(user_text)
+        explicit_symbol_target = self._chatgpt_web_extract_symbol_target(user_text)
+        relative_path_match = re.search(r"\b([A-Za-z0-9_./-]+\.[A-Za-z0-9_]+)\b", user_text)
+        path_match = explicit_local_path or (relative_path_match.group(1) if relative_path_match else None)
+        last_tool_content = ""
+        for item in reversed(payload_messages):
+            if isinstance(item, dict) and item.get("role") == "tool":
+                last_tool_content = str(item.get("content") or "")
+                break
+        last_tool_payload = self._chatgpt_web_parse_tool_payload(last_tool_content) if last_tool_content else None
+
+        if tool_name == "search_files":
+            if path_match and explicit_symbol_target and any(
+                keyword in lowered for keyword in ("find", "search", "grep", "symbol", "definition", "define", "defines", "defined")
+            ):
+                return {
+                    "pattern": rf"\b{re.escape(explicit_symbol_target)}\b",
+                    "target": "content",
+                    "path": path_match,
+                }
+            if "find" in lowered or "file named" in lowered or "named" in lowered:
+                filename = path_match or "*.py"
+                return {
+                    "pattern": filename,
+                    "target": "files",
+                    "path": ".",
+                    "output_mode": "files_only",
+                    "limit": 20,
+                }
+
+        if tool_name == "read_file":
+            if isinstance(last_tool_payload, dict):
+                matches = last_tool_payload.get("matches")
+                if isinstance(matches, list) and matches:
+                    first = matches[0]
+                    if isinstance(first, dict):
+                        match_path = str(first.get("path") or "").strip()
+                        match_line = first.get("line")
+                        if match_path:
+                            offset = int(match_line) if isinstance(match_line, int) and match_line > 0 else 1
+                            return {"path": match_path, "offset": offset, "limit": 1}
+                if (
+                    path_match
+                    and bool(last_tool_payload.get("truncated"))
+                    and any(keyword in lowered for keyword in ("inspect", "summarize", "report", "where"))
+                    and not any(keyword in lowered for keyword in ("first line", "exact def line", "exact line"))
+                ):
+                    hint_text = str(last_tool_payload.get("hint") or "")
+                    hint_match = re.search(r"offset=(\d+)", hint_text)
+                    next_offset = int(hint_match.group(1)) if hint_match else None
+                    if next_offset is None:
+                        content_text = str(last_tool_payload.get("content") or "")
+                        numbered_lines = [
+                            int(match.group(1))
+                            for match in re.finditer(r"(?m)^\s*(\d+)\|", content_text)
+                        ]
+                        if numbered_lines:
+                            next_offset = numbered_lines[-1] + 1
+                    if next_offset and next_offset > 1:
+                        return {"path": path_match, "offset": next_offset, "limit": 40}
+            if path_match and any(keyword in lowered for keyword in ("read", "first line", "line", "open", "show", "inspect", "summarize", "report")):
+                limit = 1 if any(keyword in lowered for keyword in ("first line", "exact def line", "exact line")) else 20
+                return {"path": path_match, "offset": 1, "limit": limit}
+
+        if tool_name == "memory":
+            forget_match = re.search(r"\b(?:forget|remove|delete)(?:\s+that|\s+this)?\b\s*(.+?)(?:\.\s*answer only.*)?$", user_text, re.IGNORECASE | re.DOTALL)
+            if forget_match:
+                old_text = forget_match.group(1).strip().rstrip(".")
+                if old_text:
+                    return {"action": "remove", "target": "user", "old_text": old_text}
+            remember_match = re.search(r"\bremember(?:\s+that|\s+this)?\b\s*(.+?)(?:\.\s*answer only.*)?$", user_text, re.IGNORECASE | re.DOTALL)
+            if remember_match:
+                content = remember_match.group(1).strip().rstrip(".")
+                if content:
+                    return {"action": "add", "target": "user", "content": content}
+
+        if tool_name == "skill_manage":
+            delete_match = re.search(
+                r"\bdelete\s+(?:the\s+)?(?:temporary\s+)?skill\s+named\s+([A-Za-z0-9_.-]+)(?:\.\s*answer only.*)?$",
+                user_text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if delete_match:
+                skill_name = self._chatgpt_web_sanitize_skill_name(delete_match.group(1))
+                if skill_name:
+                    return {"action": "delete", "name": skill_name}
+            create_match = re.search(
+                r"\b(?:create|save)\s+(?:a\s+)?(?:temporary\s+)?skill\s+named\s+([A-Za-z0-9_.-]+)(?:\s+describing\s+(.+?))?(?:\.\s*answer only.*)?$",
+                user_text,
+                re.IGNORECASE | re.DOTALL,
+            )
+            if create_match:
+                raw_name = create_match.group(1)
+                description = (create_match.group(2) or "Temporary skill created from a ChatGPT Web request.").strip().rstrip(".")
+                skill_name = self._chatgpt_web_sanitize_skill_name(raw_name)
+                if skill_name:
+                    return {
+                        "action": "create",
+                        "name": skill_name,
+                        "content": self._chatgpt_web_build_skill_content(skill_name, description),
+                    }
+
+        if tool_name == "vision_analyze":
+            image_path = self._chatgpt_web_extract_image_input_path(user_text)
+            if image_path:
+                question = re.sub(r"\.\s*answer only.*$", "", user_text, flags=re.IGNORECASE).strip()
+                return {"image_url": image_path, "question": question}
+
+        if tool_name == "write_file":
+            if explicit_local_path:
+                content_match = re.search(r"contains exactly\s+(.+?)(?:\s+on one line|\.\s*then answer only.*|\.\s*answer only.*|$)", user_text, re.IGNORECASE | re.DOTALL)
+                if not content_match:
+                    content_match = re.search(r"(?:with content|containing)\s+(.+?)(?:\.\s*then answer only.*|\.\s*answer only.*|$)", user_text, re.IGNORECASE | re.DOTALL)
+                if content_match:
+                    content = content_match.group(1).strip().strip('"\'`')
+                    if "on one line" in lowered and not content.endswith("\n"):
+                        content += "\n"
+                    return {"path": explicit_local_path, "content": content}
+
+        if tool_name == "image_generate":
+            if any(keyword in lowered for keyword in ("generate", "create", "draw", "make", "illustrate", "paint")) and any(
+                keyword in lowered for keyword in ("image", "picture", "photo", "illustration", "drawing", "logo")
+            ):
+                prompt_match = re.search(
+                    r"\b(?:generate|create|draw|make|illustrate|paint)\s+(?:a|an|the)?\s*(?:square|portrait|landscape)?\s*(?:image|picture|photo|illustration|drawing|logo)?\s*(?:of\s+)?(.+?)(?:\s+and\s+(?:save|download|store)|\.\s*answer only.*|$)",
+                    user_text,
+                    re.IGNORECASE | re.DOTALL,
+                )
+                prompt = (prompt_match.group(1).strip() if prompt_match else "").rstrip(".")
+                if prompt:
+                    aspect_ratio = "square" if "square" in lowered else ("portrait" if "portrait" in lowered else "landscape")
+                    return {"prompt": prompt, "aspect_ratio": aspect_ratio}
+
+        if tool_name == "execute_code":
+            expr_match = re.search(r"([0-9][0-9\s\+\-\*\/\(\)]*[\+\-\*\/][0-9\s\+\-\*\/\(\)]*)", user_text)
+            if expr_match:
+                expr = expr_match.group(1).strip()
+                return {"code": f"print({expr})"}
+
+        if tool_name == "terminal":
+            if "working directory" in lowered or "pwd" in lowered or "current directory" in lowered:
+                return {"command": "pwd"}
+            command_match = re.search(r"\brun\s+(.+?)(?:\.\s*answer only.*|$)", user_text, re.IGNORECASE | re.DOTALL)
+            if not command_match:
+                command_match = re.search(r"`([^`]+)`", user_text)
+            if command_match:
+                command = command_match.group(1).strip().strip('"\'`').rstrip('.')
+                if command:
+                    return {"command": command}
+            if any(
+                keyword in lowered for keyword in (
+                    "platform details",
+                    "platform info",
+                    "platform information",
+                    "system details",
+                    "system info",
+                    "system information",
+                    "what system",
+                    "system you are running on",
+                    "what os",
+                    "operating system",
+                    "kernel",
+                    "uname",
+                )
+            ):
+                return {"command": "uname -a"}
+            if "date" in lowered or re.search(r"\b(?:what time is it|current time|time is it)\b", lowered):
+                return {"command": "date"}
+
+        return None
+
+    def _chatgpt_web_tool_hint(self, tool_name: str, payload_messages: list[dict[str, Any]]) -> str:
+        args = self._chatgpt_web_tool_args(tool_name, payload_messages)
+        if args is None:
+            return ""
+        return "Use these exact arguments for this turn: " + json.dumps(args, ensure_ascii=False)
+
+    def _chatgpt_web_tool_call_example(self, tool_name: str, payload_messages: list[dict[str, Any]]) -> str:
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return ""
+        args = self._chatgpt_web_tool_args(tool_name, payload_messages)
+        if args is None:
+            return ""
+        return (
+            "<tool_call>\n"
+            + json.dumps({"name": tool_name, "arguments": args}, ensure_ascii=False)
+            + "\n</tool_call>"
+        )
+
+    def _format_tools_for_chatgpt_web(self, tools: Optional[list[dict[str, Any]]] = None) -> str:
+        selected_tools = tools if tools is not None else self.tools
+        if not selected_tools:
+            return "[]"
+        formatted_tools = []
+        for tool in selected_tools:
+            func = tool.get("function") if isinstance(tool, dict) else None
+            if not isinstance(func, dict):
+                continue
+            name = str(func.get("name") or "").strip()
+            if not name:
+                continue
+            schema = self._compact_chatgpt_web_schema(func.get("parameters", {}))
+            if not isinstance(schema, dict) or not schema:
+                schema = {"type": "object"}
+            formatted_tools.append({
+                "name": name,
+                "description": self._compact_chatgpt_web_description(func.get("description", "")),
+                "parameters": schema,
+            })
+        return json.dumps(formatted_tools, ensure_ascii=False)
+
+    def _chatgpt_web_tool_protocol(self, tools: Optional[list[dict[str, Any]]] = None) -> str:
+        selected_tools = tools if tools is not None else self.tools
+        if not selected_tools:
+            return ""
+        tool_names = [
+            str(tool.get("function", {}).get("name") or "").strip()
+            for tool in selected_tools
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        ]
+        tool_names = [name for name in tool_names if name]
+        if len(tool_names) == 1:
+            tool_label = tool_names[0]
+            return (
+                f"You have access to exactly one tool in this turn: {tool_label}. "
+                f"That tool is available right now. Do not say tools are unavailable. "
+                f"Ignore any later steps for now and focus only on using {tool_label} in this response. "
+                f"If the user's request needs {tool_label}, your next response must be EXACTLY ONE <tool_call>...</tool_call> block and nothing else. "
+                "After you receive a <tool_response>, continue the task and either make the next tool call or give the final answer.\n"
+                f"<tools>\n{self._format_tools_for_chatgpt_web(selected_tools)}\n</tools>\n"
+                "Tool call schema: {'name': <function-name>, 'arguments': <args-dict>}\n"
+                f"Example:\n<tool_call>\n{{\"name\": \"{tool_label}\", \"arguments\": {{}}}}\n</tool_call>"
+            )
+        return (
+            "You are running inside Hermes Agent's local tool loop over ChatGPT Web. "
+            "If the user asks for live filesystem inspection, file search, command execution, Python/code execution, calculations, or current system/repo facts, you MUST call Hermes tools before answering. "
+            "Never claim that tools are unavailable, inaccessible, or unsupported here. They ARE available through this local tool loop. "
+            "Do not claim that a tool failed unless you actually emitted a <tool_call> block and were given a failing <tool_response>. "
+            "For multi-step tasks, work iteratively: make the single best next tool call now, wait for the <tool_response>, then make the next tool call or provide the final answer. "
+            "When a tool is needed, respond with EXACTLY ONE <tool_call>...</tool_call> block and no surrounding commentary. "
+            "After tool execution, you will receive tool outputs inside <tool_response>...</tool_response> blocks and should then continue the task.\n"
+            f"<tools>\n{self._format_tools_for_chatgpt_web(selected_tools)}\n</tools>\n"
+            "For each function call return a JSON object with this schema: {'name': <function-name>, 'arguments': <args-dict>}. "
+            "Each function call must be enclosed within <tool_call> </tool_call> XML tags.\n"
+            "Example:\n<tool_call>\n{\"name\": \"search_files\", \"arguments\": {\"pattern\": \"chatgpt_web\", \"target\": \"content\", \"path\": \"hermes_cli/chatgpt_web.py\"}}\n</tool_call>"
+        )
+
     def _convert_to_trajectory_format(self, messages: List[Dict[str, Any]], user_query: str, completed: bool) -> List[Dict[str, Any]]:
         """
         Convert internal message format to trajectory format for saving.

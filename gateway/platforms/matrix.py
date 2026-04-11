@@ -1308,20 +1308,33 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
-        # Resume from the token stored during the initial sync.
-        next_batch = await client.sync_store.get_next_batch()
+        # Resume from the token stored during the initial sync when available.
+        next_batch = None
+        sync_store = getattr(client, "sync_store", None)
+        if sync_store is not None:
+            try:
+                getter = getattr(sync_store, "get_next_batch", None)
+                if getter is not None:
+                    maybe_batch = getter()
+                    if asyncio.iscoroutine(maybe_batch):
+                        next_batch = await maybe_batch
+                    else:
+                        next_batch = maybe_batch
+            except Exception:
+                next_batch = None
         while not self._closing:
             try:
                 # Wrap in asyncio.wait_for to guard against TCP-level hangs
                 # that the Matrix long-poll timeout cannot catch. Long-poll
                 # is 30s, so 45s gives 15s slack for network drain.
-                sync_data = await asyncio.wait_for(
-                    client.sync(
-                        since=next_batch,
-                        timeout=30000,
-                    ),
-                    timeout=45.0,
-                )
+                if next_batch:
+                    try:
+                        sync_coro = client.sync(since=next_batch, timeout=30000)
+                    except TypeError:
+                        sync_coro = client.sync(timeout=30000)
+                else:
+                    sync_coro = client.sync(timeout=30000)
+                sync_data = await asyncio.wait_for(sync_coro, timeout=45.0)
 
                 # nio returns SyncError objects (not exceptions) for auth
                 # failures like M_UNKNOWN_TOKEN. Detect and stop immediately.
@@ -1348,7 +1361,15 @@ class MatrixAdapter(BasePlatformAdapter):
                     nb = sync_data.get("next_batch")
                     if nb:
                         next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
+                        if sync_store is not None:
+                            try:
+                                putter = getattr(sync_store, "put_next_batch", None)
+                                if putter is not None:
+                                    maybe_put = putter(nb)
+                                    if asyncio.iscoroutine(maybe_put):
+                                        await maybe_put
+                            except Exception:
+                                pass
 
                     # Dispatch events to registered handlers so that
                     # _on_room_message / _on_reaction / _on_invite fire.

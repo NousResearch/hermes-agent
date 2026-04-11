@@ -426,11 +426,12 @@ class TrajectoryCompressor:
         from openai import AsyncOpenAI
         from agent.auxiliary_client import _to_openai_base_url
         # Always create a fresh client so it binds to the running loop.
-        self.async_client = AsyncOpenAI(
+        client = AsyncOpenAI(
             api_key=self._async_client_api_key,
             base_url=_to_openai_base_url(self.config.base_url),
         )
-        return self.async_client
+        self.async_client = client
+        return client
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""

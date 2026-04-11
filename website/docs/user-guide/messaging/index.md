@@ -27,6 +27,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | DingTalk | — | — | — | — | — | ✅ | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
 
@@ -51,6 +52,7 @@ flowchart TB
             dt[DingTalk]
     fs[Feishu/Lark]
     wc[WeCom]
+    wcb[WeCom Callback]
     wx[Weixin]
     bb[BlueBubbles]
             api["API Server<br/>(OpenAI-compatible)"]
@@ -75,6 +77,7 @@ flowchart TB
     dt --> store
     fs --> store
     wc --> store
+    wcb --> store
     wx --> store
     bb --> store
     api --> store
@@ -180,6 +183,7 @@ MATRIX_ALLOWED_USERS=@alice:matrix.org
 DINGTALK_ALLOWED_USERS=user-id-1
 FEISHU_ALLOWED_USERS=ou_xxxxxxxx,ou_yyyyyyyy
 WECOM_ALLOWED_USERS=user-id-1,user-id-2
+WECOM_CALLBACK_ALLOWED_USERS=user-id-1,user-id-2
 
 # Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321
@@ -362,6 +366,7 @@ Each platform has its own toolset:
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
 | WeCom | `hermes-wecom` | Full tools including terminal |
+| WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
@@ -382,6 +387,7 @@ Each platform has its own toolset:
 - [DingTalk Setup](dingtalk.md)
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
+- [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
 - [Open WebUI + API Server](open-webui.md)

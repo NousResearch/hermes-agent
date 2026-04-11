@@ -512,6 +512,7 @@ def _preserve_parent_mcp_toolsets(
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+MIN_SUBAGENT_MAX_ITERATIONS = 2
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -560,6 +561,21 @@ _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
     "tool.completed": DelegateEvent.TASK_TOOL_COMPLETED,
     "subagent_progress": DelegateEvent.TASK_PROGRESS,
 }
+
+
+def _resolve_effective_max_iterations(default: Any = DEFAULT_MAX_ITERATIONS) -> float | int:
+    """Normalize subagent iteration limits.
+
+    Subagents typically need one LLM turn to decide/use a tool and a second turn
+    to produce their final summary.
+
+    Clamp finite limits to at least ``MIN_SUBAGENT_MAX_ITERATIONS`` while still
+    preserving unlimited/sentinel values from config.
+    """
+    parsed = parse_iteration_limit(default, default=DEFAULT_MAX_ITERATIONS)
+    if is_unlimited_iteration_limit(parsed):
+        return parsed
+    return max(MIN_SUBAGENT_MAX_ITERATIONS, int(parsed))
 
 
 def check_delegate_requirements() -> bool:
@@ -1986,7 +2002,7 @@ def delegate_task(
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
+    effective_max_iter = _resolve_effective_max_iterations(default_max_iter)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2393,6 +2409,15 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         provider = "custom"
         api_mode = _detect_api_mode_for_url(configured_base_url) or "chat_completions"
         if (
+            base_url_hostname(configured_base_url) == "chatgpt.com"
+            and (
+                "/backend-api/f" in base_lower
+                or "/backend-anon/f" in base_lower
+            )
+        ):
+            provider = "chatgpt-web"
+            api_mode = "chatgpt_web"
+        elif (
             base_url_hostname(configured_base_url) == "chatgpt.com"
             and "/backend-api/codex" in base_lower
         ):

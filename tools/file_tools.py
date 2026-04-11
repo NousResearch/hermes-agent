@@ -460,19 +460,20 @@ def _discover_related_paths(path: str, content: str | None) -> list[dict]:
     """Return lightweight related-file hints for a read_file result.
 
     Deterministic only — no learning, no preview injection.
-    Detects: local imports, test companions, __init__.py, same-directory siblings.
-    Each entry: {"path": str, "reason": str}.
+    Detects: absolute+relative imports, test companions, __init__.py.
+    Each entry: {"path": str, "reason": str}. Only existing files.
     """
-    from pathlib import PurePosixPath
     import re as _re
+    from pathlib import PurePosixPath
 
     resolved = Path(path).expanduser().resolve()
+    cwd = Path.cwd()
     try:
-        rel = resolved.relative_to(Path.cwd())
+        rel_str = str(resolved.relative_to(cwd))
     except ValueError:
-        rel = resolved
+        rel_str = str(resolved)
 
-    pp = PurePosixPath(rel)
+    pp = PurePosixPath(rel_str)
     if pp.is_absolute():
         return []
 
@@ -481,68 +482,68 @@ def _discover_related_paths(path: str, content: str | None) -> list[dict]:
 
     def _add(p: str, reason: str):
         key = str(p)
-        if key not in seen and key != str(pp):
+        if key not in seen and key != rel_str:
             seen.add(key)
             results.append({"path": key, "reason": reason})
 
-    def _file_exists(rel_path: PurePosixPath) -> bool:
-        """Check if a relative path exists on disk."""
+    def _exists(rel: str) -> bool:
         try:
-            return (Path.cwd() / Path(str(rel_path))).exists()
+            return (cwd / rel).exists()
         except (OSError, ValueError):
             return False
 
-    # --- Test / __init__ companions (only for .py) ---
-    if pp.suffix == ".py" and pp.name != "__init__.py":
-        parent = pp.parent
-        init = parent / "__init__.py"
-        if _file_exists(init):
-            _add(init.as_posix(), "package initializer in same directory")
-        stem = pp.stem
-        for pattern in [f"test_{stem}.py", f"{stem}_test.py"]:
-            candidate = parent / pattern
-            if _file_exists(candidate):
-                _add(candidate.as_posix(), f"test companion ({pattern})")
-        candidate = PurePosixPath("tests") / f"test_{stem}.py"
-        if _file_exists(candidate):
-            _add(candidate.as_posix(), f"test companion (tests/test_{stem}.py)")
+    def _try_add(candidate: str, reason: str):
+        if _exists(candidate):
+            _add(candidate, reason)
 
-    # --- Local imports from file content ---
+    # --- Python imports (relative + absolute) ---
     if content and pp.suffix == ".py":
-        for m in _re.finditer(r'^\s*from\s+(\.\S*)\s+import\s+', content, _re.MULTILINE):
-            mod = m.group(1).strip()
-            leading = len(mod) - len(mod.lstrip("."))
-            remainder = mod[leading:]
-            base = pp.parent
-            for _ in range(max(leading - 1, 0)):
-                base = base.parent
-            if remainder:
-                base = base.joinpath(*remainder.split("."))
-            for candidate in [base.with_suffix(".py"), base / "__init__.py"]:
-                if _file_exists(candidate):
-                    _add(candidate.as_posix(), f"local import ({mod})")
-        # Handle "from . import foo" and "from .. import foo" (no dotted name after dots)
-        for m in _re.finditer(r'^\s*from\s+(\.\S*)\s+import\s+', content, _re.MULTILINE):
-            mod = m.group(1).rstrip()
-            if mod.endswith("."):
-                mod = mod[:-1]
-            if not mod or remainder:
-                continue  # already handled above
-            leading = len(mod) - len(mod.lstrip("."))
-            base = pp.parent
-            for _ in range(max(leading - 1, 0)):
-                base = base.parent
-            candidate = base / "__init__.py"
-            if _file_exists(candidate):
-                _add(candidate.as_posix(), f"local import ({mod})")
+        for m in _re.finditer(r'^\s*(?:from|import)\s+(\S+)', content, _re.MULTILINE):
+            mod = m.group(1).split(",")[0].strip()  # handle "from x import a, b"
+            mod = mod.split(" as ")[0].strip()  # handle "from x import a as b"
+            if not mod or mod.startswith("."):
+                # Relative imports
+                if mod:
+                    leading = len(mod) - len(mod.lstrip("."))
+                    remainder = mod[leading:]
+                    base = pp.parent
+                    for _ in range(max(leading - 1, 0)):
+                        base = base.parent
+                    if remainder:
+                        dotted = base.joinpath(*remainder.split("."))
+                        _try_add(dotted.with_suffix(".py").as_posix(), f"local import ({mod})")
+                        _try_add((dotted / "__init__.py").as_posix(), f"local import ({mod})")
+                    else:
+                        _try_add((base / "__init__.py").as_posix(), f"local import ({mod})")
+                continue
 
-    if content and pp.suffix in {".js", ".jsx", ".ts", ".tsx"}:
-        for m in _re.finditer(r'''(?:from|require\()\s*['"](\.[^'"]+)['"]''', content):
-            mod = m.group(1)
-            candidate = (pp.parent / mod).as_posix()
-            _add(candidate, f"local import ({mod})")
-            for ext in [".ts", ".tsx", ".js", ".jsx"]:
-                _add(candidate + ext, f"local import ({mod}{ext})")
+            # Absolute imports: "tools.registry" → try tools/registry.py
+            parts = mod.split(".")
+            candidate_path = PurePosixPath(*parts)
+            _try_add(candidate_path.with_suffix(".py").as_posix(), f"import ({mod})")
+            _try_add((candidate_path / "__init__.py").as_posix(), f"import ({mod})")
+
+    # --- Test companions ---
+    if pp.suffix == ".py" and pp.name != "__init__.py":
+        stem = pp.stem
+        parent = pp.parent
+
+        # Same directory test patterns
+        for pattern in [f"test_{stem}.py", f"{stem}_test.py"]:
+            _try_add((parent / pattern).as_posix(), f"test companion ({pattern})")
+
+        # tests/ directory patterns (flat)
+        for pattern in [f"test_{stem}.py", f"{stem}_test.py"]:
+            _try_add(f"tests/{pattern}", f"test companion (tests/{pattern})")
+
+        # tests/ directory patterns (mirrored structure)
+        # tools/file_tools.py → tests/tools/test_file_tools.py
+        for pattern in [f"test_{stem}.py", f"{stem}_test.py"]:
+            _try_add(f"tests/{parent}/{pattern}", f"test companion (tests/{parent}/{pattern})")
+
+    # --- __init__.py companion ---
+    if pp.suffix == ".py" and pp.name != "__init__.py" and str(pp.parent) != ".":
+        _try_add((pp.parent / "__init__.py").as_posix(), "package initializer")
 
     return results[:5]  # Cap at 5 hints
 
@@ -752,7 +753,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                preview_lines: int = 0, task_id: str = "default") -> str:
+                preview_lines: int = 3, task_id: str = "default") -> str:
     """Search for content or files."""
     try:
         # Track searches to detect *consecutive* repeated search loops.
@@ -890,7 +891,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts. Optional preview_lines can inline a numbered snippet around each returned match.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts. Each result includes a numbered snippet preview around the match (default 3 lines context). Set preview_lines=0 to disable previews.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -902,7 +903,7 @@ SEARCH_FILES_SCHEMA = {
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
             "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
-            "preview_lines": {"type": "integer", "description": "Inline N numbered lines of preview around each content match (content output mode only)", "default": 0, "minimum": 0}
+            "preview_lines": {"type": "integer", "description": "Number of context lines to preview around each match (default: 3). Set to 0 to disable previews.", "default": 3, "minimum": 0}
         },
         "required": ["pattern"]
     }
@@ -936,7 +937,7 @@ def _handle_search_files(args, **kw):
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
-        preview_lines=args.get("preview_lines", 0), task_id=tid)
+        preview_lines=args.get("preview_lines", 3), task_id=tid)
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))

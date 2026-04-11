@@ -207,7 +207,7 @@ class TestSearchHandler:
         mock_ops.search.assert_called_once_with(
             pattern="class", path="/src", target="files", file_glob="*.py",
             limit=10, offset=5, output_mode="count", context=2,
-            preview_lines=0,
+            preview_lines=3,
         )
 
     @patch("tools.file_tools._get_file_ops")

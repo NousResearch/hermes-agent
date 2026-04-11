@@ -475,10 +475,22 @@ class ContextCompressor(ContextEngine):
                 name, args = self._tool_call_name_and_args(tc)
                 if tool_call_id and tool_call_id not in result_ids:
                     pending_calls.append(self._describe_tool_call(name, args))
-                if name in ("write_file", "patch") and tool_call_id in result_ids:
+                if name in ("write_file", "patch") and tool_call_id in following_tools:
+                    result_content = following_tools.get(tool_call_id, "")
+                    # Skip failed operations
+                    if '"error"' in result_content[:200]:
+                        continue
                     path = args.get("path")
                     if path:
                         modified_files.append(str(path))
+                    # V4A patch mode: extract paths from patch argument
+                    if name == "patch" and not path and args.get("patch"):
+                        import re as _re_cp
+                        for pm in _re_cp.finditer(r'^(?:\+\+\+|---)\s+[ab]/(.+)$',
+                                                   args["patch"], _re_cp.MULTILINE):
+                            fpath = pm.group(1)
+                            if fpath != "/dev/null" and fpath not in modified_files:
+                                modified_files.append(fpath)
                 if tool_call_id and tool_call_id in following_tools:
                     batch_results.append(self._summarize_tool_result(name, following_tools[tool_call_id]))
 

@@ -57,19 +57,8 @@ def _confirm(question: str, default: bool = True) -> bool:
 
 
 def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
-    display = f"  {question}"
-    if default:
-        display += f" [{default}]"
-    display += ": "
-    try:
-        if password:
-            value = getpass.getpass(color(display, Colors.YELLOW))
-        else:
-            value = input(color(display, Colors.YELLOW))
-        return value.strip() or default
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return default
+    from hermes_cli.cli_output import prompt as _shared_prompt
+    return _shared_prompt(question, default=default, password=password)
 
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

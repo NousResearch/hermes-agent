@@ -53,6 +53,7 @@ except ImportError:  # pragma: no cover - dependency gate
     CRYPTO_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -1008,8 +1009,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._typing_cache = TypingTicketCache()
         self._session: Optional[aiohttp.ClientSession] = None
         self._poll_task: Optional[asyncio.Task] = None
-        self._seen_messages: Dict[str, float] = {}
-        self._token_lock_identity: Optional[str] = None
+        self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
         self._account_id = str(extra.get("account_id") or os.getenv("WEIXIN_ACCOUNT_ID", "")).strip()
         self._token = str(config.token or extra.get("token") or os.getenv("WEIXIN_TOKEN", "")).strip()
@@ -1067,23 +1067,7 @@ class WeixinAdapter(BasePlatformAdapter):
             return False
 
         try:
-            from gateway.status import acquire_scoped_lock
-
-            self._token_lock_identity = self._token
-            acquired, existing = acquire_scoped_lock(
-                "weixin-bot-token",
-                self._token_lock_identity,
-                metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this Weixin token"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second Weixin poller."
-                )
-                logger.error("[%s] %s", self.name, message)
-                self._set_fatal_error("weixin_token_lock", message, retryable=False)
+            if not self._acquire_platform_lock('weixin-bot-token', self._token, 'Weixin bot token'):
                 return False
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
@@ -1107,12 +1091,7 @@ class WeixinAdapter(BasePlatformAdapter):
         if self._session and not self._session.closed:
             await self._session.close()
         self._session = None
-        if self._token_lock_identity:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("weixin-bot-token", self._token_lock_identity)
-            except Exception as exc:
-                logger.warning("[%s] Error releasing Weixin token lock: %s", self.name, exc, exc_info=True)
+        self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
 
@@ -1190,16 +1169,8 @@ class WeixinAdapter(BasePlatformAdapter):
             return
 
         message_id = str(message.get("message_id") or "").strip()
-        if message_id:
-            now = time.time()
-            self._seen_messages = {
-                key: value
-                for key, value in self._seen_messages.items()
-                if now - value < MESSAGE_DEDUP_TTL_SECONDS
-            }
-            if message_id in self._seen_messages:
-                return
-            self._seen_messages[message_id] = now
+        if message_id and self._dedup.is_duplicate(message_id):
+            return
 
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":

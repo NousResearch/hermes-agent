@@ -114,16 +114,16 @@ class TestSignalAdapterInit:
 
 class TestSignalHelpers:
     def test_redact_phone_long(self):
-        from gateway.platforms.signal import _redact_phone
-        assert _redact_phone("+15551234567") == "+155****4567"
+        from gateway.platforms.helpers import redact_phone
+        assert redact_phone("+155****4567") == "+155****4567"
 
     def test_redact_phone_short(self):
-        from gateway.platforms.signal import _redact_phone
-        assert _redact_phone("+12345") == "+1****45"
+        from gateway.platforms.helpers import redact_phone
+        assert redact_phone("+12345") == "+1****45"
 
     def test_redact_phone_empty(self):
-        from gateway.platforms.signal import _redact_phone
-        assert _redact_phone("") == "<none>"
+        from gateway.platforms.helpers import redact_phone
+        assert redact_phone("") == "<none>"
 
     def test_parse_comma_list(self):
         from gateway.platforms.signal import _parse_comma_list

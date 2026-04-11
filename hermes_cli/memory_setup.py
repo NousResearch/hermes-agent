@@ -25,85 +25,13 @@ def _curses_select(title: str, items: list[tuple[str, str]], default: int = 0) -
     items: list of (label, description) tuples.
     Returns selected index, or default on escape/quit.
     """
-    try:
-        import curses
-        result = [default]
-
-        def _menu(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-                curses.init_pair(3, curses.COLOR_CYAN, -1)
-            cursor = default
-
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
-
-                # Title
-                try:
-                    stdscr.addnstr(0, 0, title, max_x - 1,
-                                   curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0))
-                    stdscr.addnstr(1, 0, "  ↑↓ navigate  ⏎ select  q quit", max_x - 1,
-                                   curses.color_pair(3) if curses.has_colors() else curses.A_DIM)
-                except curses.error:
-                    pass
-
-                for i, (label, desc) in enumerate(items):
-                    y = i + 3
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {label}"
-                    if desc:
-                        line += f"  {desc}"
-
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line[:max_x - 1], max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                key = stdscr.getch()
-
-                if key in (curses.KEY_UP, ord('k')):
-                    cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord('j')):
-                    cursor = (cursor + 1) % len(items)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result[0] = cursor
-                    return
-                elif key in (27, ord('q')):
-                    return
-
-        curses.wrapper(_menu)
-        return result[0]
-
-    except Exception:
-        # Fallback: numbered input
-        print(f"\n  {title}\n")
-        for i, (label, desc) in enumerate(items):
-            marker = "→" if i == default else " "
-            d = f"  {desc}" if desc else ""
-            print(f"  {marker} {i + 1}. {label}{d}")
-        while True:
-            try:
-                val = input(f"\n  Select [1-{len(items)}] ({default + 1}): ")
-                if not val:
-                    return default
-                idx = int(val) - 1
-                if 0 <= idx < len(items):
-                    return idx
-            except (ValueError, EOFError):
-                return default
+    from hermes_cli.curses_ui import curses_radiolist
+    # Format (label, desc) tuples into display strings
+    display_items = [
+        f"{label}  {desc}" if desc else label
+        for label, desc in items
+    ]
+    return curses_radiolist(title, display_items, selected=default, cancel_returns=default)
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:

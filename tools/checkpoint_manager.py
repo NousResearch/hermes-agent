@@ -71,7 +71,7 @@ _MAX_FILES = 50_000
 
 def _shadow_repo_path(working_dir: str) -> Path:
     """Deterministic shadow repo path: sha256(abs_path)[:16]."""
-    abs_path = str(Path(working_dir).resolve())
+    abs_path = str(Path(working_dir).expanduser().resolve())
     dir_hash = hashlib.sha256(abs_path.encode()).hexdigest()[:16]
     return CHECKPOINT_BASE / dir_hash
 
@@ -80,7 +80,7 @@ def _git_env(shadow_repo: Path, working_dir: str) -> dict:
     """Build env dict that redirects git to the shadow repo."""
     env = os.environ.copy()
     env["GIT_DIR"] = str(shadow_repo)
-    env["GIT_WORK_TREE"] = str(Path(working_dir).resolve())
+    env["GIT_WORK_TREE"] = str(Path(working_dir).expanduser().resolve())
     env.pop("GIT_INDEX_FILE", None)
     env.pop("GIT_NAMESPACE", None)
     env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
@@ -110,7 +110,7 @@ def _run_git(
             text=True,
             timeout=timeout,
             env=env,
-            cwd=str(Path(working_dir).resolve()),
+            cwd=str(Path(working_dir).expanduser().resolve()),
         )
         ok = result.returncode == 0
         stdout = result.stdout.strip()
@@ -154,7 +154,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     )
 
     (shadow_repo / "HERMES_WORKDIR").write_text(
-        str(Path(working_dir).resolve()) + "\n", encoding="utf-8"
+        str(Path(working_dir).expanduser().resolve()) + "\n", encoding="utf-8"
     )
 
     logger.debug("Initialised checkpoint repo at %s for %s", shadow_repo, working_dir)
@@ -229,7 +229,7 @@ class CheckpointManager:
         if not self._git_available:
             return False
 
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(Path(working_dir).expanduser().resolve())
 
         # Skip root, home, and other overly broad directories
         if abs_dir in ("/", str(Path.home())):
@@ -254,7 +254,7 @@ class CheckpointManager:
         Returns a list of dicts with keys: hash, short_hash, timestamp, reason,
         files_changed, insertions, deletions.  Most recent first.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(Path(working_dir).expanduser().resolve())
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -311,7 +311,7 @@ class CheckpointManager:
 
         Returns dict with success, diff text, and stat summary.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(Path(working_dir).expanduser().resolve())
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -364,7 +364,7 @@ class CheckpointManager:
 
         Returns dict with success/error info.
         """
-        abs_dir = str(Path(working_dir).resolve())
+        abs_dir = str(Path(working_dir).expanduser().resolve())
         shadow = _shadow_repo_path(abs_dir)
 
         if not (shadow / "HEAD").exists():
@@ -413,7 +413,7 @@ class CheckpointManager:
         (directory containing .git, pyproject.toml, package.json, etc.).
         Falls back to the file's parent directory.
         """
-        path = Path(file_path).resolve()
+        path = Path(file_path).expanduser().resolve()
         if path.is_dir():
             candidate = path
         else:

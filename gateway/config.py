@@ -1015,6 +1015,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         weixin_group_allowed_users = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
         if weixin_group_allowed_users:
             extra["group_allow_from"] = weixin_group_allowed_users
+        weixin_merge = os.getenv("WEIXIN_MERGE_MESSAGES", "").strip().lower()
+        if weixin_merge in ("1", "true", "yes", "on"):
+            extra["merge_messages"] = True
         weixin_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
         if weixin_home:
             config.platforms[Platform.WEIXIN].home_channel = HomeChannel(

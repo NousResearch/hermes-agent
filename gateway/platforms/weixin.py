@@ -992,6 +992,10 @@ class WeixinAdapter(BasePlatformAdapter):
         self._allow_from = self._coerce_list(allow_from)
         self._group_allow_from = self._coerce_list(group_allow_from)
 
+        # When True, the entire response is sent as one message instead of
+        # splitting each newline/paragraph into a separate WeChat message.
+        self._merge_messages = bool(extra.get("merge_messages") or False)
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
@@ -1344,7 +1348,16 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         try:
-            for chunk in self._split_text(self.format_message(content)):
+            formatted = self.format_message(content)
+            # When merge_messages is enabled, send as single message (split only if exceeds max length)
+            if self._merge_messages:
+                chunks = _split_text_for_weixin_delivery(formatted, self.MAX_MESSAGE_LENGTH)
+                # If total content fits, force single message
+                if len(formatted) <= self.MAX_MESSAGE_LENGTH:
+                    chunks = [formatted]
+            else:
+                chunks = self._split_text(formatted)
+            for chunk in chunks:
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await _send_message(
                     self._session,

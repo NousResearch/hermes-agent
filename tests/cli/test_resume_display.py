@@ -611,6 +611,52 @@ class TestPreloadResumedSession:
         assert "1 user messages" not in output
 
 
+# ── Tests for _handle_resume_command recap display ───────────────────
+
+
+class TestHandleResumeCommandRecap:
+    """In-session /resume should show the same recap panel as startup resume."""
+
+    def test_resume_command_displays_recap_when_messages_restored(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        messages = _simple_history()
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
+        mock_db.get_messages_as_conversation.return_value = messages
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume test session")
+
+        assert cli.session_id == "target_session"
+        assert cli.conversation_history == messages
+        mock_db.end_session.assert_called_once_with("current_session", "resumed_other")
+        mock_db.reopen_session.assert_called_once_with("target_session")
+        display_mock.assert_called_once_with()
+
+    def test_resume_command_skips_recap_when_session_has_no_messages(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": None}
+        mock_db.get_messages_as_conversation.return_value = []
+        cli._session_db = mock_db
+
+        with (
+            patch("hermes_cli.main._resolve_session_by_name_or_id", return_value="target_session"),
+            patch.object(cli, "_display_resumed_history") as display_mock,
+        ):
+            cli._handle_resume_command("/resume target_session")
+
+        display_mock.assert_not_called()
+
+
 # ── Integration: _init_agent skips when preloaded ────────────────────
 
 

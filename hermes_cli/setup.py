@@ -2814,6 +2814,145 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
 
 
 # =============================================================================
+# AgentMail Setup
+# =============================================================================
+
+
+def _agentmail_sdk_available() -> bool:
+    """Return True if the agentmail SDK is importable."""
+    return importlib.util.find_spec("agentmail") is not None
+
+
+def _agentmail_signup(human_email: str, username: str):
+    """Call AgentMail sign_up and return the result, or None on failure."""
+    try:
+        from agentmail import AgentMail
+        return AgentMail().agent.sign_up(human_email=human_email, username=username)
+    except Exception as e:
+        print_error(f"AgentMail sign-up failed: {e}")
+        return None
+
+
+def _agentmail_verify(api_key: str, otp_code: str) -> bool:
+    """Verify the OTP with the provisional key. Returns True on success."""
+    try:
+        from agentmail import AgentMail
+        AgentMail(api_key=api_key).agent.verify(otp_code=otp_code)
+        return True
+    except Exception as e:
+        print_error(f"Verification failed: {e}")
+        return False
+
+
+def _agentmail_enable_mcp(config: dict) -> None:
+    """Write the AgentMail MCP server block into config (only called after verification)."""
+    config.setdefault("mcp_servers", {})["AgentMail"] = {
+        "command": "npx",
+        "args": ["-y", "agentmail-mcp"],
+        "env": {"AGENTMAIL_API_KEY": "${AGENTMAIL_API_KEY}"},
+        "enabled": True,
+    }
+
+
+def _agentmail_write_memory(email: str) -> None:
+    """Write the agent's inbox address to MEMORY.md so it's always in context.
+
+    Uses get_hermes_home() directly to avoid a cross-package import of tools.memory_tool.
+    """
+    try:
+        mem_dir = Path(get_hermes_home()) / "memories"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        memory_path = mem_dir / "MEMORY.md"
+        entry = f"AgentMail inbox: {email} — use this to send and receive emails on the user's behalf.\n"
+        existing = memory_path.read_text() if memory_path.exists() else ""
+        if "AgentMail inbox:" not in existing:
+            with open(memory_path, "a") as f:
+                f.write(f"§\n{entry}")
+    except Exception as e:
+        logger.debug("Failed to write AgentMail inbox to memory: %s", e)
+
+
+def setup_agentmail(config: dict):
+    """Optional setup section: provision an AgentMail inbox for the agent."""
+    print_header("Agent Email Inbox (AgentMail)")
+    print_info("I can create an email address for myself so I can send and receive emails on your behalf.")
+
+    if not _agentmail_sdk_available():
+        print_error("AgentMail SDK not installed. Run: pip install agentmail")
+        return
+
+    agentmail_cfg = config.get("agentmail", {})
+    existing_key = get_env_value("AGENTMAIL_API_KEY")
+
+    # Already fully configured — show status and skip.
+    if existing_key and agentmail_cfg.get("email"):
+        print_info(f"Agent inbox already active: {agentmail_cfg['email']}")
+        return
+
+    # Pending OTP from a previous run — offer to resume.
+    if agentmail_cfg.get("pending_verification"):
+        pending_key = get_env_value("AGENTMAIL_PENDING_API_KEY")
+        if pending_key:
+            print_warning("A verification code was sent in a previous session.")
+            otp_code = prompt("Enter the verification code (or leave blank to start over)")
+            if otp_code:
+                if not _agentmail_verify(pending_key, otp_code):
+                    print_info("Re-run 'hermes setup agentmail' to try again.")
+                    return
+                save_env_value("AGENTMAIL_API_KEY", pending_key)
+                save_env_value("AGENTMAIL_PENDING_API_KEY", "")
+                config.setdefault("agentmail", {})["pending_verification"] = False
+                _agentmail_enable_mcp(config)
+                _agentmail_write_memory(agentmail_cfg.get("email", ""))
+                print_success(f"Verified! Your agent's inbox is active: {agentmail_cfg.get('email')}")
+                print_info("To remove AgentMail, run: hermes mcp remove AgentMail")
+                return
+        # No pending key found or user wants to start over
+        save_env_value("AGENTMAIL_PENDING_API_KEY", "")
+        config.setdefault("agentmail", {})["pending_verification"] = False
+
+    if not prompt_yes_no("Give your agent an email inbox?", default=False):
+        return
+
+    human_email = prompt("Your email (for verification)")
+    if not human_email:
+        print_error("Email is required. Skipping AgentMail setup.")
+        return
+
+    username = prompt("Agent inbox name (must be unique)", default="hermes-agent")
+    print_info(f"Your agent will be reachable at {username}@agentmail.to")
+
+    result = _agentmail_signup(human_email, username)
+    if result is None:
+        return
+
+    email = result.inbox_id  # AgentMail uses the email address as the inbox ID
+    config.setdefault("agentmail", {})
+    config["agentmail"]["inbox_id"] = result.inbox_id
+    config["agentmail"]["email"] = email
+    config["agentmail"]["pending_verification"] = True
+    save_env_value("AGENTMAIL_PENDING_API_KEY", result.api_key)
+
+    print_success("Inbox created! Check your email for a verification code.")
+    otp_code = prompt("Enter the verification code")
+    if not otp_code:
+        print_warning("No code entered. Re-run 'hermes setup agentmail' to verify later.")
+        return
+
+    if not _agentmail_verify(result.api_key, otp_code):
+        print_info("Re-run 'hermes setup agentmail' to try again.")
+        return
+
+    save_env_value("AGENTMAIL_API_KEY", result.api_key)
+    save_env_value("AGENTMAIL_PENDING_API_KEY", "")
+    config["agentmail"]["pending_verification"] = False
+    _agentmail_enable_mcp(config)
+    _agentmail_write_memory(email)
+    print_success(f"Verified! Your agent's inbox is active: {email}")
+    print_info("To remove AgentMail, run: hermes mcp remove AgentMail")
+
+
+# =============================================================================
 # Main Wizard Orchestrator
 # =============================================================================
 
@@ -2824,6 +2963,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("agentmail", "Agent Email Inbox (AgentMail)", setup_agentmail),
 ]
 
 # The returning-user menu intentionally omits standalone TTS because model setup
@@ -3047,6 +3187,9 @@ def run_setup_wizard(args):
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
+
+    # Section 6: AgentMail
+    setup_agentmail(config)
 
     # Save and show summary
     save_config(config)

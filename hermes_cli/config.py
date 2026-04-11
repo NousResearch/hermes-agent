@@ -599,6 +599,13 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # AgentMail — agent email inbox provisioned during setup
+    "agentmail": {
+        "inbox_id": None,
+        "email": None,
+        "pending_verification": False,  # True while awaiting OTP — key stored in .env
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 13,
 }
@@ -952,6 +959,19 @@ OPTIONAL_ENV_VARS = {
         "tools": ["image_generate"],
         "password": True,
         "category": "tool",
+    },
+    "AGENTMAIL_API_KEY": {
+        "description": "AgentMail — email inbox API for AI agents",
+        "prompt": "AgentMail API Key",
+        "url": "https://agentmail.to",
+        "password": True,
+        "category": "tool",
+    },
+    "AGENTMAIL_PENDING_API_KEY": {
+        "description": "AgentMail provisional key awaiting OTP verification (managed by setup wizard)",
+        "password": True,
+        "category": "tool",
+        "hidden": True,  # not shown in hermes setup tools — managed automatically
     },
     "TINKER_API_KEY": {
         "description": "Tinker API key for RL training",

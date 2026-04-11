@@ -5965,6 +5965,15 @@ class AIAgent:
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
 
+        # Detect first turn - add cache_prompt: false as universal fallback
+        # This prevents KV-cache context bleed on llama-server when slot erasure fails
+        _turn_count = sum(1 for msg in api_messages if msg.get("role") == "user")
+        if _turn_count == 1 and "cache_prompt" not in (extra_body or {}):
+            if extra_body is None:
+                extra_body = {"cache_prompt": False}
+            else:
+                extra_body["cache_prompt"] = False
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 

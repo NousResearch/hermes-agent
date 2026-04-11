@@ -3786,6 +3786,16 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
+        # Flush llama-server KV-cache to prevent context bleed
+        try:
+            from gateway.llamacpp_slots import erase_all_slots
+            runtime = _resolve_runtime_agent_kwargs()
+            base_url = runtime.get("base_url")
+            if base_url:
+                erase_all_slots(base_url)
+        except Exception as e:
+            logger.debug("KV-cache flush failed: %s", e)
+
         # Clear any session-scoped model override so the next agent picks up
         # the configured default instead of the previously switched model.
         self._session_model_overrides.pop(session_key, None)

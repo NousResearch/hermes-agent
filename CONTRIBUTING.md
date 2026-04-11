@@ -88,8 +88,16 @@ cp cli-config.yaml.example ~/.hermes/config.yaml
 touch ~/.hermes/.env
 
 # Add at minimum an LLM provider key:
-echo 'OPENROUTER_API_KEY=sk-or-v1-your-key' >> ~/.hermes/.env
+echo 'OPENROUTER_API_KEY=*** >> ~/.hermes/.env
 ```
+
+### Set up git hooks
+
+```bash
+git config core.hooksPath githooks
+```
+
+This enables the `post-merge` hook that clears `__pycache__` after every `git pull`, preventing stale bytecode crashes when upstream changes module internals.
 
 ### Run
 

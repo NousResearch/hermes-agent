@@ -1,0 +1,21 @@
+#!/bin/bash
+# Clear stale __pycache__ after git pull/merge to prevent ImportError
+# from mismatched .pyc bytecode and updated .py source files.
+#
+# This is a known issue when upstream changes internal module signatures
+# (e.g., adding type annotations, changing imports) — cached .pyc files
+# from the old code collide with the new source, causing crashes at import.
+#
+# Install: git config core.hooksPath githooks
+
+repo_root="$(git rev-parse --show-toplevel)"
+cleared=0
+
+while IFS= read -r -d '' dir; do
+    rm -rf "$dir"
+    cleared=$((cleared + 1))
+done < <(find "$repo_root" -type d -name "__pycache__" -print0 2>/dev/null)
+
+if [ "$cleared" -gt 0 ]; then
+    echo "[post-merge] Cleared $cleared __pycache__ director$([ "$cleared" -eq 1 ] && echo "y" || echo "ies")."
+fi

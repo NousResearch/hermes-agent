@@ -299,9 +299,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Exhausted retries — fatal
         message = (
-            "Another Telegram bot poller is already using this token. "
+            "Another process is already polling this Telegram bot token "
+            "(possibly OpenClaw or another Hermes instance). "
             "Hermes stopped Telegram polling after %d retries. "
-            "Make sure only one gateway instance is running for this bot token."
+            "Only one poller can run per token — stop the other process "
+            "and restart with 'hermes start'."
             % MAX_CONFLICT_RETRIES
         )
         logger.error("[%s] %s Original error: %s", self.name, message, error)

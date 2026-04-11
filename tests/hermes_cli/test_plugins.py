@@ -17,6 +17,8 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    get_plugin_command_handler,
+    get_plugin_commands,
     get_plugin_manager,
     get_plugin_tool_names,
     discover_plugins,
@@ -341,6 +343,100 @@ class TestPluginContext:
 
         from tools.registry import registry
         assert "plugin_echo" in registry._tools
+
+    def test_register_slash_command_records_handler(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="slash_plugin"), mgr)
+
+        def _handler(args: str):
+            return f"ok:{args}"
+
+        ctx.register_slash_command(
+            "design-sync",
+            _handler,
+            description="Sync design context",
+        )
+
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", mgr)
+
+        assert mgr._plugin_commands["design-sync"]["description"] == "Sync design context"
+        assert mgr._plugin_commands["design-sync"]["plugin"] == "slash_plugin"
+        assert mgr._plugin_commands["design-sync"]["handler"] is _handler
+        assert get_plugin_command_handler("design-sync") is _handler
+        assert get_plugin_commands()["design-sync"]["description"] == "Sync design context"
+
+    def test_register_slash_command_rejects_duplicate_name(self):
+        mgr = PluginManager()
+        ctx_a = PluginContext(PluginManifest(name="plugin_a"), mgr)
+        ctx_b = PluginContext(PluginManifest(name="plugin_b"), mgr)
+
+        ctx_a.register_slash_command("design-sync", lambda _args: None)
+
+        with pytest.raises(ValueError, match="already registered by plugin_a"):
+            ctx_b.register_slash_command("design-sync", lambda _args: None)
+
+    def test_register_slash_command_rejects_builtin_conflict(self):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        with pytest.raises(ValueError, match="conflicts with built-in /help"):
+            ctx.register_slash_command("help", lambda _args: None)
+
+    def test_register_slash_command_rejects_skill_gateway_alias_conflict(self, monkeypatch):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        monkeypatch.setattr(
+            "agent.skill_commands.get_skill_commands",
+            lambda: {"/claude-code": {"name": "Claude Code", "description": "Skill"}},
+        )
+
+        with pytest.raises(ValueError, match="conflicts with installed skill /claude-code"):
+            ctx.register_slash_command("claude_code", lambda _args: None)
+
+    def test_register_slash_command_rejects_quick_command_conflict(self, monkeypatch):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"quick_commands": {"design-sync": {"type": "exec", "command": "echo hi"}}},
+        )
+
+        with pytest.raises(ValueError, match="conflicts with quick command /design-sync"):
+            ctx.register_slash_command("design-sync", lambda _args: None)
+
+    def test_register_slash_command_rejects_quick_command_gateway_alias_conflict(self, monkeypatch):
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"quick_commands": {"design_sync": {"type": "exec", "command": "echo hi"}}},
+        )
+
+        with pytest.raises(ValueError, match="conflicts with quick command /design_sync"):
+            ctx.register_slash_command("design-sync", lambda _args: None)
+
+    def test_register_slash_command_rejects_project_quick_command_conflict(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "cli-config.yaml").write_text(
+            "quick_commands:\n  design-sync:\n    type: alias\n    target: /help\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project_root)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+        with pytest.raises(ValueError, match="conflicts with quick command /design-sync"):
+            ctx.register_slash_command("design-sync", lambda _args: None)
 
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────

@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
@@ -28,6 +29,13 @@ except ImportError:  # pragma: no cover
     Completer = object    # type: ignore[assignment,misc]
     Suggestion = None     # type: ignore[assignment]
     Completion = None     # type: ignore[assignment]
+
+try:
+    from hermes_cli.skills_command_request import skills_subcommand_names as _shared_skills_subcommand_names
+    from hermes_cli.skills_command_request import skills_subcommand_tree as _shared_skills_subcommand_tree
+except Exception:  # pragma: no cover
+    _shared_skills_subcommand_names = None
+    _shared_skills_subcommand_tree = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +77,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
+    CommandDef("plan", "Write a markdown implementation plan via the bundled plan skill", "Session",
+               args_hint="[request]"),
     CommandDef("compress", "Manually compress conversation context", "Session"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
@@ -222,6 +232,11 @@ def rebuild_lookups() -> None:
         m = _PIPE_SUBS_RE.search(cmd.args_hint)
         if m:
             SUBCOMMANDS[key] = m.group(0).split("|")
+    if _shared_skills_subcommand_names is not None:
+        try:
+            SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names(command_source="slash")
+        except Exception:
+            pass
 
     GATEWAY_KNOWN_COMMANDS = frozenset(
         name
@@ -274,6 +289,11 @@ for _cmd in COMMAND_REGISTRY:
     m = _PIPE_SUBS_RE.search(_cmd.args_hint)
     if m:
         SUBCOMMANDS[key] = m.group(0).split("|")
+if _shared_skills_subcommand_names is not None:
+    try:
+        SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names(command_source="slash")
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -291,7 +311,7 @@ GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
 )
 
 
-def _resolve_config_gates() -> set[str]:
+def _resolve_config_gates(config: Any = None) -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 
     Reads ``config.yaml`` and walks the dot-separated key path for each
@@ -301,11 +321,22 @@ def _resolve_config_gates() -> set[str]:
     gated = [c for c in COMMAND_REGISTRY if c.gateway_config_gate]
     if not gated:
         return set()
-    try:
-        from hermes_cli.config import read_raw_config
-        cfg = read_raw_config()
-    except Exception:
-        return set()
+    if config is None:
+        try:
+            from hermes_cli.config import read_raw_config
+            cfg = read_raw_config()
+        except Exception:
+            return set()
+    elif isinstance(config, dict):
+        cfg = config
+    else:
+        try:
+            cfg = {
+                "display": getattr(config, "display", None),
+                "agent": getattr(config, "agent", None),
+            }
+        except Exception:
+            return set()
     result: set[str] = set()
     for cmd in gated:
         val: Any = cfg
@@ -488,7 +519,8 @@ def _collect_gateway_skill_entries(
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
-            desc = "Plugin command"
+            spec = plugin_cmds.get(cmd_name) or {}
+            desc = str(spec.get("description", "") or "Plugin command")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             plugin_pairs.append((name, desc))
@@ -638,6 +670,359 @@ def slack_subcommand_map() -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Slash resolution inventory
+# ---------------------------------------------------------------------------
+
+SlashCommandKind = Literal["builtin", "quick", "plugin", "skill"]
+SlashResolutionStatus = Literal["matched", "ambiguous", "unknown"]
+
+_EXACT_KIND_PRIORITY: dict[SlashCommandKind, int] = {
+    "builtin": 0,
+    "quick": 1,
+    "skill": 2,
+    "plugin": 3,
+}
+
+
+@dataclass(frozen=True)
+class SlashCommandEntry:
+    kind: SlashCommandKind
+    slash_name: str
+    canonical_name: str
+    description: str = ""
+    payload: Any = None
+    allow_prefix: bool = False
+
+    @property
+    def bare_name(self) -> str:
+        return self.slash_name.lstrip("/")
+
+
+@dataclass(frozen=True)
+class SlashResolution:
+    status: SlashResolutionStatus
+    entry: SlashCommandEntry | None
+    typed_name: str
+    args: str
+    matches: tuple[str, ...] = ()
+
+
+def _normalize_slash_args(command_text: str) -> tuple[str, str]:
+    stripped = (command_text or "").strip()
+    if not stripped:
+        return "", ""
+    parts = stripped.split(None, 1)
+    raw_base = parts[0]
+    args = parts[1].strip() if len(parts) > 1 else ""
+    return raw_base, args
+
+
+def effective_quick_commands(config: Any = None) -> dict[str, dict[str, Any]]:
+    """Return the quick-command surface used by slash resolution."""
+    if config is not None:
+        if isinstance(config, dict):
+            quick = config.get("quick_commands", {}) or {}
+        else:
+            quick = getattr(config, "quick_commands", {}) or {}
+        return quick if isinstance(quick, dict) else {}
+
+    try:
+        import yaml
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        if isinstance(loaded, dict):
+            quick = loaded.get("quick_commands", {}) or {}
+            if isinstance(quick, dict) and quick:
+                return quick
+
+        for project_config_path in (Path.cwd() / "cli-config.yaml", Path(__file__).resolve().parents[1] / "cli-config.yaml"):
+            if not project_config_path.exists():
+                continue
+            with open(project_config_path, encoding="utf-8") as f:
+                project_cfg = yaml.safe_load(f) or {}
+            quick = project_cfg.get("quick_commands", {}) if isinstance(project_cfg, dict) else {}
+            return quick if isinstance(quick, dict) else {}
+    except Exception:
+        return {}
+
+
+def iter_plugin_command_entries(
+    plugin_commands: Mapping[str, dict[str, Any]] | None,
+    *,
+    include_gateway_underscore_aliases: bool,
+) -> list[SlashCommandEntry]:
+    entries: list[SlashCommandEntry] = []
+    if not plugin_commands:
+        return entries
+    for name, spec in plugin_commands.items():
+        desc = str(spec.get("description", "") or "Plugin command")
+        entries.append(
+            SlashCommandEntry(
+                kind="plugin",
+                slash_name=f"/{name}",
+                canonical_name=name,
+                description=desc,
+                payload=spec,
+            )
+        )
+        if include_gateway_underscore_aliases and "-" in name:
+            entries.append(
+                SlashCommandEntry(
+                    kind="plugin",
+                    slash_name=f"/{name.replace('-', '_')}",
+                    canonical_name=name,
+                    description=desc,
+                    payload=spec,
+                )
+            )
+    return entries
+
+
+def get_plugin_command_specs() -> dict[str, dict[str, Any]]:
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+
+        specs = get_plugin_commands()
+        return specs if isinstance(specs, dict) else {}
+    except Exception:
+        return {}
+
+
+def _iter_cli_builtin_entries() -> list[SlashCommandEntry]:
+    entries: list[SlashCommandEntry] = []
+    for cmd in COMMAND_REGISTRY:
+        if cmd.gateway_only:
+            continue
+        desc = COMMANDS.get(f"/{cmd.name}", cmd.description)
+        entries.append(
+            SlashCommandEntry(
+                kind="builtin",
+                slash_name=f"/{cmd.name}",
+                canonical_name=cmd.name,
+                description=desc,
+                allow_prefix=True,
+            )
+        )
+        for alias in cmd.aliases:
+            entries.append(
+                SlashCommandEntry(
+                    kind="builtin",
+                    slash_name=f"/{alias}",
+                    canonical_name=cmd.name,
+                    description=COMMANDS.get(f"/{alias}", desc),
+                    allow_prefix=True,
+                )
+            )
+    return entries
+
+
+def _iter_gateway_builtin_entries(config: Any = None) -> list[SlashCommandEntry]:
+    entries: list[SlashCommandEntry] = []
+    overrides = _resolve_config_gates(config)
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        entries.append(
+            SlashCommandEntry(
+                kind="builtin",
+                slash_name=f"/{cmd.name}",
+                canonical_name=cmd.name,
+                description=cmd.description,
+            )
+        )
+        for alias in cmd.aliases:
+            entries.append(
+                SlashCommandEntry(
+                    kind="builtin",
+                    slash_name=f"/{alias}",
+                    canonical_name=cmd.name,
+                    description=cmd.description,
+                )
+            )
+        if cmd.name == "skills":
+            for subcommand in SUBCOMMANDS.get("/skills", []):
+                entries.append(
+                    SlashCommandEntry(
+                        kind="builtin",
+                        slash_name=f"/skills_{subcommand}",
+                        canonical_name="skills",
+                        description=cmd.description,
+                    )
+                )
+    return entries
+
+
+def _iter_skill_entries(
+    skill_commands: Mapping[str, dict[str, Any]] | None,
+    *,
+    allow_prefix: bool,
+    include_gateway_underscore_aliases: bool,
+) -> list[SlashCommandEntry]:
+    entries: list[SlashCommandEntry] = []
+    if not skill_commands:
+        return entries
+    for cmd_key, info in skill_commands.items():
+        desc = str(info.get("description", "") or "Skill command")
+        entries.append(
+            SlashCommandEntry(
+                kind="skill",
+                slash_name=cmd_key,
+                canonical_name=cmd_key.lstrip("/"),
+                description=desc,
+                payload=info,
+                allow_prefix=allow_prefix,
+            )
+        )
+        if include_gateway_underscore_aliases and "-" in cmd_key:
+            entries.append(
+                SlashCommandEntry(
+                    kind="skill",
+                    slash_name=cmd_key.replace("-", "_"),
+                    canonical_name=cmd_key.lstrip("/"),
+                    description=desc,
+                    payload=info,
+                )
+            )
+    return entries
+
+
+def _iter_quick_entries(quick_commands: Mapping[str, dict[str, Any]]) -> list[SlashCommandEntry]:
+    return [
+        SlashCommandEntry(
+            kind="quick",
+            slash_name=f"/{name}",
+            canonical_name=name,
+            description=str(spec.get("description", "") or "Quick command"),
+            payload=spec,
+        )
+        for name, spec in quick_commands.items()
+        if isinstance(spec, dict)
+    ]
+
+
+def _pick_exact(entries: list[SlashCommandEntry], slash_name: str) -> SlashCommandEntry | None:
+    exact = [entry for entry in entries if entry.slash_name == slash_name]
+    if not exact:
+        return None
+    exact.sort(key=lambda entry: (_EXACT_KIND_PRIORITY[entry.kind], entry.slash_name))
+    return exact[0]
+
+
+def _prefix_resolution(slash_name: str, entries: list[SlashCommandEntry]) -> SlashResolution:
+    prefix_entries = [entry for entry in entries if entry.allow_prefix]
+    matches = [entry for entry in prefix_entries if entry.slash_name.startswith(slash_name)]
+    if not matches:
+        return SlashResolution(status="unknown", entry=None, typed_name=slash_name, args="")
+
+    exact = _pick_exact(matches, slash_name)
+    if exact is not None:
+        return SlashResolution(status="matched", entry=exact, typed_name=slash_name, args="")
+
+    min_len = min(len(entry.slash_name) for entry in matches)
+    shortest = [entry for entry in matches if len(entry.slash_name) == min_len]
+    if len(shortest) == 1:
+        return SlashResolution(status="matched", entry=shortest[0], typed_name=slash_name, args="")
+
+    return SlashResolution(
+        status="ambiguous",
+        entry=None,
+        typed_name=slash_name,
+        args="",
+        matches=tuple(sorted({entry.slash_name for entry in matches})),
+    )
+
+
+def resolve_cli_slash_command(
+    command_text: str,
+    *,
+    config: Any,
+    skill_commands: Mapping[str, dict[str, Any]] | None,
+    plugin_commands: Mapping[str, dict[str, Any]] | None = None,
+) -> SlashResolution:
+    raw_base, args = _normalize_slash_args(command_text)
+    slash_name = raw_base.lower()
+    if not slash_name.startswith("/"):
+        return SlashResolution(status="unknown", entry=None, typed_name=slash_name, args=args)
+
+    builtin = resolve_command(slash_name)
+    if builtin is not None and not builtin.gateway_only:
+        desc = COMMANDS.get(f"/{builtin.name}", builtin.description)
+        return SlashResolution(
+            status="matched",
+            entry=SlashCommandEntry(
+                kind="builtin",
+                slash_name=f"/{builtin.name}",
+                canonical_name=builtin.name,
+                description=desc,
+                allow_prefix=True,
+            ),
+            typed_name=slash_name,
+            args=args,
+        )
+
+    entries = (
+        _iter_cli_builtin_entries()
+        + _iter_quick_entries(effective_quick_commands(config))
+        + iter_plugin_command_entries(plugin_commands, include_gateway_underscore_aliases=False)
+        + _iter_skill_entries(skill_commands, allow_prefix=True, include_gateway_underscore_aliases=False)
+    )
+
+    exact = _pick_exact(entries, slash_name)
+    if exact is not None:
+        return SlashResolution(status="matched", entry=exact, typed_name=slash_name, args=args)
+
+    prefix = _prefix_resolution(slash_name, entries)
+    return SlashResolution(
+        status=prefix.status,
+        entry=prefix.entry,
+        typed_name=slash_name,
+        args=args,
+        matches=prefix.matches,
+    )
+
+
+def resolve_gateway_slash_command(
+    command_name: str,
+    *,
+    config: Any,
+    skill_commands: Mapping[str, dict[str, Any]] | None,
+    plugin_commands: Mapping[str, dict[str, Any]] | None = None,
+) -> SlashResolution:
+    bare_name = (command_name or "").strip().lower()
+    slash_name = f"/{bare_name}" if bare_name else ""
+    if not bare_name:
+        return SlashResolution(status="unknown", entry=None, typed_name=slash_name, args="")
+
+    builtin = resolve_command(slash_name)
+    overrides = _resolve_config_gates(config)
+    if builtin is not None and _is_gateway_available(builtin, overrides):
+        return SlashResolution(
+            status="matched",
+            entry=SlashCommandEntry(
+                kind="builtin",
+                slash_name=f"/{builtin.name}",
+                canonical_name=builtin.name,
+                description=builtin.description,
+            ),
+            typed_name=slash_name,
+            args="",
+        )
+
+    entries = (
+        _iter_gateway_builtin_entries(config)
+        + _iter_quick_entries(effective_quick_commands(config))
+        + iter_plugin_command_entries(plugin_commands, include_gateway_underscore_aliases=True)
+        + _iter_skill_entries(skill_commands, allow_prefix=False, include_gateway_underscore_aliases=True)
+    )
+
+    exact = _pick_exact(entries, slash_name)
+    if exact is None:
+        return SlashResolution(status="unknown", entry=None, typed_name=slash_name, args="")
+    return SlashResolution(status="matched", entry=exact, typed_name=slash_name, args="")
+
+
+# ---------------------------------------------------------------------------
 # Autocomplete
 # ---------------------------------------------------------------------------
 
@@ -647,10 +1032,12 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        plugin_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
         model_selection_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._plugin_commands_provider = plugin_commands_provider
         self._command_filter = command_filter
         self._model_selection_provider = model_selection_provider
 
@@ -680,6 +1067,23 @@ class SlashCommandCompleter(Completer):
             return controller.current_view()
         except Exception:
             return None
+
+    def _iter_plugin_commands(self) -> Mapping[str, dict[str, Any]]:
+        if self._plugin_commands_provider is None:
+            return {}
+        try:
+            return self._plugin_commands_provider() or {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _skills_nested_tree() -> dict[str, list[str]]:
+        if _shared_skills_subcommand_tree is None:
+            return {}
+        try:
+            return _shared_skills_subcommand_tree(command_source="slash")
+        except Exception:
+            return {}
 
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
@@ -966,6 +1370,23 @@ class SlashCommandCompleter(Completer):
                 yield from self._model_completions(sub_text, sub_lower)
                 return
 
+            if base_cmd == "/skills":
+                nested_tree = self._skills_nested_tree()
+                sub_parts = sub_text.split()
+                if len(sub_parts) >= 1 and sub_parts[0] in nested_tree:
+                    nested = nested_tree[sub_parts[0]]
+                    if nested:
+                        nested_prefix = "" if text.endswith(" ") else sub_parts[-1]
+                        if len(sub_parts) == 1 or (len(sub_parts) == 2 and not text.endswith(" ")):
+                            for sub in nested:
+                                if sub.startswith(nested_prefix.lower()) and sub != nested_prefix.lower():
+                                    yield Completion(
+                                        sub,
+                                        start_position=-len(nested_prefix),
+                                        display=sub,
+                                    )
+                            return
+
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 for sub in SUBCOMMANDS[base_cmd]:
@@ -989,6 +1410,17 @@ class SlashCommandCompleter(Completer):
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        for cmd_name, spec in self._iter_plugin_commands().items():
+            if cmd_name.startswith(word):
+                description = str(spec.get("description", "Plugin command"))
+                short_desc = description[:50] + ("..." if len(description) > 50 else "")
+                yield Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=f"/{cmd_name}",
+                    display_meta=f"🔌 {short_desc}",
                 )
 
         for cmd, info in self._iter_skill_commands().items():
@@ -1022,6 +1454,15 @@ class SlashCommandAutoSuggest(AutoSuggest):
     ) -> None:
         self._history = history_suggest
         self._completer = completer  # Reuse its model cache
+
+    @staticmethod
+    def _skills_nested_tree() -> dict[str, list[str]]:
+        if _shared_skills_subcommand_tree is None:
+            return {}
+        try:
+            return _shared_skills_subcommand_tree(command_source="slash")
+        except Exception:
+            return {}
 
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
@@ -1058,6 +1499,17 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # Static subcommands
         if self._completer is not None and not self._completer._command_allowed(base_cmd):
             return None
+        if base_cmd == "/skills":
+            nested_tree = self._completer._skills_nested_tree() if self._completer is not None else self._skills_nested_tree()
+            sub_parts = sub_text.split()
+            if sub_parts and sub_parts[0] in nested_tree and nested_tree[sub_parts[0]]:
+                if len(sub_parts) == 1 and text.endswith(" "):
+                    return Suggestion(nested_tree[sub_parts[0]][0])
+                if len(sub_parts) == 2:
+                    nested_lower = sub_parts[1].lower()
+                    for sub in nested_tree[sub_parts[0]]:
+                        if sub.startswith(nested_lower) and sub != nested_lower:
+                            return Suggestion(sub[len(sub_parts[1]):])
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:

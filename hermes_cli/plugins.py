@@ -34,6 +34,7 @@ import logging
 import os
 import sys
 import types
+import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -47,6 +48,17 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _load_quick_commands_for_slash_validation() -> dict[str, Any]:
+    """Load the same effective quick-command surface slash resolution uses."""
+    try:
+        from hermes_cli.commands import effective_quick_commands
+
+        return effective_quick_commands()
+    except Exception:
+        pass
+    return {}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -244,6 +256,84 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
+    def register_slash_command(
+        self,
+        name: str,
+        handler: Callable,
+        *,
+        description: str = "",
+    ) -> None:
+        """Register a slash command handler shared by CLI and gateway."""
+        normalized = str(name or "").strip().lower().lstrip("/")
+        if not normalized:
+            raise ValueError("Plugin slash command name cannot be empty")
+        gateway_aliases = {normalized}
+        if "-" in normalized:
+            gateway_aliases.add(normalized.replace("-", "_"))
+
+        from hermes_cli.commands import resolve_command
+
+        for alias in gateway_aliases:
+            builtin = resolve_command(alias)
+            if builtin is None:
+                continue
+            raise ValueError(
+                f"Plugin slash command '{normalized}' conflicts with built-in /{builtin.name}"
+            )
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            for skill_key in get_skill_commands():
+                skill_name = str(skill_key or "").strip().lstrip("/")
+                if not skill_name:
+                    continue
+                skill_aliases = {skill_name}
+                if "-" in skill_name:
+                    skill_aliases.add(skill_name.replace("-", "_"))
+                if gateway_aliases & skill_aliases:
+                    raise ValueError(
+                        f"Plugin slash command '{normalized}' conflicts with installed skill /{skill_name}"
+                    )
+        except ValueError:
+            raise
+        except Exception:
+            pass
+        try:
+            quick_commands = _load_quick_commands_for_slash_validation()
+            for alias in gateway_aliases:
+                if alias in quick_commands:
+                    raise ValueError(
+                        f"Plugin slash command '{normalized}' conflicts with quick command /{alias}"
+                    )
+        except ValueError:
+            raise
+        except Exception:
+            pass
+
+        for existing_name, existing in self._manager._plugin_commands.items():
+            if not isinstance(existing, dict):
+                continue
+            existing_aliases = {existing_name}
+            if "-" in existing_name:
+                existing_aliases.add(existing_name.replace("-", "_"))
+            if gateway_aliases & existing_aliases:
+                existing_plugin = str(existing.get("plugin") or "unknown plugin")
+                raise ValueError(
+                    f"Plugin slash command '{normalized}' already registered by {existing_plugin}"
+                )
+
+        self._manager._plugin_commands[normalized] = {
+            "name": normalized,
+            "handler": handler,
+            "description": description or "Plugin command",
+            "plugin": self.manifest.name,
+        }
+        logger.debug(
+            "Plugin %s registered slash command: %s",
+            self.manifest.name,
+            normalized,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -275,6 +365,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_commands: Dict[str, dict] = {}
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
@@ -601,6 +692,23 @@ def get_plugin_cli_commands() -> Dict[str, dict]:
 def get_plugin_context_engine():
     """Return the plugin-registered context engine, or None."""
     return get_plugin_manager()._context_engine
+
+
+def get_plugin_commands() -> Dict[str, dict]:
+    """Return registered plugin slash commands keyed by canonical name."""
+    return dict(get_plugin_manager()._plugin_commands)
+
+
+def get_plugin_command_handler(name: str) -> Optional[Callable]:
+    """Return the registered plugin slash-command handler, if any."""
+    normalized = str(name or "").strip().lower().lstrip("/")
+    if not normalized:
+        return None
+    spec = get_plugin_manager()._plugin_commands.get(normalized)
+    if not isinstance(spec, dict):
+        return None
+    handler = spec.get("handler")
+    return handler if callable(handler) else None
 
 
 def get_plugin_toolsets() -> List[tuple]:

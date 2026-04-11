@@ -677,6 +677,49 @@ class TestSlashCommands:
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
 
+    def test_model_switch_preserves_explicit_provider_for_aggregator_syntax(self, tmp_path, monkeypatch):
+        """`/model openrouter:vendor/model` should keep explicit provider=openrouter."""
+        runtime_calls = []
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            runtime_calls.append(requested)
+            provider = requested or "openrouter"
+            return {
+                "provider": provider,
+                "api_mode": "chat_completions",
+                "base_url": f"https://{provider}.example/v1",
+                "api_key": f"{provider}-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(
+                model=kwargs.get("model"),
+                provider=kwargs.get("provider"),
+                base_url=kwargs.get("base_url"),
+                api_mode=kwargs.get("api_mode"),
+            )
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "openrouter/gpt-5"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            acp_agent = HermesACPAgent(session_manager=manager)
+            state = manager.create_session(cwd="/tmp")
+            result = acp_agent._cmd_model("openrouter:anthropic/claude-sonnet-4-6", state)
+
+        assert "Provider: openrouter" in result
+        assert state.agent.provider == "openrouter"
+        assert state.agent.model == "anthropic/claude-sonnet-4-6"
+        assert runtime_calls[-1] == "openrouter"
+
 
 # ---------------------------------------------------------------------------
 # _register_session_mcp_servers

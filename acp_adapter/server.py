@@ -556,32 +556,49 @@ class HermesACPAgent(acp.Agent):
             provider = getattr(state.agent, "provider", None) or "auto"
             return f"Current model: {model}\nProvider: {provider}"
 
-        new_model = args.strip()
-        target_provider = None
-        current_provider = getattr(state.agent, "provider", None) or "openrouter"
-
-        # Auto-detect provider for the requested model
         try:
-            from hermes_cli.models import parse_model_input, detect_provider_for_model
-            target_provider, new_model = parse_model_input(new_model, current_provider)
-            if target_provider == current_provider:
-                detected = detect_provider_for_model(new_model, current_provider)
-                if detected:
-                    target_provider, new_model = detected
-        except Exception:
-            logger.debug("Provider detection failed, using model as-is", exc_info=True)
+            from hermes_cli.models import parse_model_input
+            from hermes_cli.model_switch import switch_model
 
-        state.model = new_model
+            current_provider = getattr(state.agent, "provider", None) or "openrouter"
+            current_model = state.model or getattr(state.agent, "model", "") or ""
+            current_base_url = getattr(state.agent, "base_url", None) or ""
+            current_api_key = getattr(state.agent, "api_key", None) or ""
+            raw_input = args.strip()
+            parsed_provider, parsed_model = parse_model_input(raw_input, current_provider)
+            explicit_provider = ""
+            if parsed_model != raw_input:
+                explicit_provider = parsed_provider
+            result = switch_model(
+                raw_input=parsed_model,
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key=current_api_key,
+                is_global=False,
+                explicit_provider=explicit_provider,
+            )
+        except Exception:
+            logger.debug("ACP model switch failed", exc_info=True)
+            result = None
+
+        if result is None or not result.success:
+            message = getattr(result, "error_message", None) if result is not None else None
+            return f"Error: {message or 'could not switch models'}"
+
+        state.model = result.new_model
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,
             cwd=state.cwd,
-            model=new_model,
-            requested_provider=target_provider or current_provider,
+            model=result.new_model,
+            requested_provider=result.target_provider,
+            base_url=result.base_url,
+            api_mode=result.api_mode,
         )
         self.session_manager.save_session(state.session_id)
-        provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
-        logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+        provider_label = getattr(state.agent, "provider", None) or result.target_provider
+        logger.info("Session %s: model switched to %s", state.session_id, result.new_model)
+        return f"Model switched to: {result.new_model}\nProvider: {provider_label}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:

@@ -107,6 +107,22 @@ class TestSlashCommandPrefixMatching:
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected skill prefix to match, got: {printed}"
 
+    def test_skill_commands_are_read_live_when_snapshot_is_unset(self):
+        cli_obj = _make_cli()
+        printed = []
+        cli_obj.console.print = lambda *a, **kw: printed.append(str(a))
+
+        import cli as cli_mod
+        with patch.object(cli_mod, "_skill_commands", None), patch(
+            "cli.get_skill_commands",
+            return_value={"/live-skill": {"name": "Live Skill", "description": "test"}},
+        ) as mock_get_skill_commands:
+            cli_obj.process_command("/live-ski")
+
+        mock_get_skill_commands.assert_called()
+        unknown = any("Unknown command" in p for p in printed)
+        assert not unknown, f"Expected live skill registry to match, got: {printed}"
+
     def test_ambiguous_between_builtin_and_skill(self):
         """Ambiguous prefix spanning builtin + skill commands shows suggestions."""
         cli_obj = _make_cli()

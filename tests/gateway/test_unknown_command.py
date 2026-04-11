@@ -164,3 +164,31 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_exception_returns_plugin_error(monkeypatch):
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin command failure leaked through to the agent")
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_plugin_commands",
+        lambda: {
+            "design-sync": {
+                "description": "Plugin",
+                "handler": lambda _args: (_ for _ in ()).throw(RuntimeError("boom")),
+            }
+        },
+    )
+
+    result = await runner._handle_message(_make_event("/design-sync"))
+
+    assert result == "Plugin command error: boom"
+    runner._run_agent.assert_not_called()

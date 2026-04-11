@@ -377,6 +377,20 @@ class TestSlashCommandCompleter:
         assert completions[0].display_text == "/gif-search"
         assert completions[0].display_meta_text == "⚡ Search for GIFs across providers"
 
+    def test_plugin_commands_are_completed_from_provider(self):
+        completer = SlashCommandCompleter(
+            plugin_commands_provider=lambda: {
+                "design-sync": {"description": "Sync design context"},
+            }
+        )
+
+        completions = _completions(completer, "/des")
+
+        assert len(completions) == 1
+        assert completions[0].text == "design-sync"
+        assert completions[0].display_text == "/design-sync"
+        assert completions[0].display_meta_text == "🔌 Sync design context"
+
     def test_skill_exact_match_adds_trailing_space(self):
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {
@@ -438,6 +452,9 @@ class TestSubcommands:
         """Commands with explicit subcommands on CommandDef are extracted."""
         assert "/skills" in SUBCOMMANDS
         assert "install" in SUBCOMMANDS["/skills"]
+        assert "list" in SUBCOMMANDS["/skills"]
+        assert "tap" in SUBCOMMANDS["/skills"]
+        assert "config" not in SUBCOMMANDS["/skills"]
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS
@@ -501,6 +518,16 @@ class TestSubcommandCompletion:
         texts = {c.text for c in completions}
         assert texts == {"show"}
 
+    def test_skills_tap_nested_completion_after_space(self):
+        completions = _completions(SlashCommandCompleter(), "/skills tap ")
+        texts = {c.text for c in completions}
+        assert {"list", "add", "remove"} <= texts
+
+    def test_skills_snapshot_nested_prefix_completion(self):
+        completions = _completions(SlashCommandCompleter(), "/skills snapshot i")
+        texts = {c.text for c in completions}
+        assert texts == {"import"}
+
     def test_subcommand_exact_match_suppressed(self):
         """Typing the full subcommand shouldn't re-suggest it."""
         completions = _completions(SlashCommandCompleter(), "/reasoning show")
@@ -557,6 +584,12 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
+
+    def test_skills_tap_nested_suggestion(self):
+        assert _suggestion("/skills tap ") == "list"
+
+    def test_skills_snapshot_nested_suggestion(self):
+        assert _suggestion("/skills snapshot e") == "xport"
 
 
 # ---------------------------------------------------------------------------

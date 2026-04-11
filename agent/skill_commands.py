@@ -15,6 +15,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_skill_commands_dirty: bool = True
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
@@ -203,7 +204,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands
+    global _skill_commands, _skill_commands_dirty
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
@@ -259,14 +260,25 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     continue
     except Exception:
         pass
+    _skill_commands_dirty = False
     return _skill_commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
+def get_skill_commands(*, force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Return the current skill commands mapping.
+
+    When ``force_refresh`` is true, rescan the skill directories even if a
+    previous result is cached.
+    """
+    if force_refresh or _skill_commands_dirty or not _skill_commands:
         scan_skill_commands()
     return _skill_commands
+
+
+def mark_skill_commands_dirty() -> None:
+    """Mark cached slash skill commands stale so the next lookup rescans."""
+    global _skill_commands_dirty
+    _skill_commands_dirty = True
 
 
 def resolve_skill_command_key(command: str) -> Optional[str]:

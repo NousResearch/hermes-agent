@@ -1146,20 +1146,27 @@ def _looks_like_slash_command(text: str) -> bool:
 # ============================================================================
 
 from agent.skill_commands import (
-    scan_skill_commands,
+    get_skill_commands,
+    mark_skill_commands_dirty,
     build_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,
 )
 
-_skill_commands = scan_skill_commands()
+_skill_commands = None
+
+
+def _current_skill_commands() -> dict:
+    """Return live skill commands unless a test/override has patched them in."""
+    return _skill_commands if _skill_commands is not None else get_skill_commands()
 
 
 def _get_plugin_cmd_handler_names() -> set:
     """Return plugin command names (without slash prefix) for dispatch matching."""
     try:
-        from hermes_cli.plugins import get_plugin_manager
-        return set(get_plugin_manager()._plugin_commands.keys())
+        from hermes_cli.plugins import get_plugin_commands
+
+        return set(get_plugin_commands().keys())
     except Exception:
         return set()
 
@@ -3295,9 +3302,24 @@ class HermesCLI:
                     continue
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
-        if _skill_commands:
-            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(_skill_commands)} installed):")
-            for cmd, info in sorted(_skill_commands.items()):
+        try:
+            from hermes_cli.plugins import get_plugin_commands
+
+            plugin_commands = get_plugin_commands()
+        except Exception:
+            plugin_commands = {}
+        if plugin_commands:
+            _cprint(f"\n  🔌 {_BOLD}Plugin Commands{_RST} ({len(plugin_commands)} registered):")
+            for name, spec in sorted(plugin_commands.items()):
+                desc = str(spec.get("description", "") or "Plugin command")
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{'/' + name:<22}[/] [dim]-[/] {_escape(desc)}"
+                )
+
+        skill_commands = _current_skill_commands()
+        if skill_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Skill Commands{_RST} ({len(skill_commands)} installed):")
+            for cmd, info in sorted(skill_commands.items()):
                 ChatConsole().print(
                     f"    [bold {_accent_hex()}]{cmd:<22}[/] [dim]-[/] {_escape(info['description'])}"
                 )
@@ -4703,6 +4725,14 @@ class HermesCLI:
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
+        cmd_lower = cmd.lower().strip()
+        if (
+            cmd_lower.startswith("/skills install")
+            or cmd_lower.startswith("/skills uninstall")
+            or cmd_lower.startswith("/skills update")
+            or cmd_lower.startswith("/skills snapshot import")
+        ):
+            mark_skill_commands_dirty()
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
@@ -4774,14 +4804,97 @@ class HermesCLI:
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
 
-        # Resolve aliases via central registry so adding an alias is a one-line
-        # change in hermes_cli/commands.py instead of touching every dispatch site.
-        from hermes_cli.commands import resolve_command as _resolve_cmd
-        _base_word = cmd_lower.split()[0].lstrip("/")
-        _cmd_def = _resolve_cmd(_base_word)
-        canonical = _cmd_def.name if _cmd_def else _base_word
-        
-        if canonical in ("quit", "exit", "q"):
+        from hermes_cli.commands import (
+            get_plugin_command_specs,
+            resolve_cli_slash_command,
+        )
+
+        skill_commands = _current_skill_commands()
+
+        resolution = resolve_cli_slash_command(
+            cmd_original,
+            config=getattr(self, "config", {}),
+            skill_commands=skill_commands,
+            plugin_commands=get_plugin_command_specs(),
+        )
+
+        if resolution.status == "ambiguous":
+            _cprint(f"{_GOLD}Ambiguous command: {cmd_lower}{_RST}")
+            _cprint(f"{_DIM}Did you mean: {', '.join(sorted(resolution.matches))}?{_RST}")
+            return True
+
+        if resolution.status == "unknown" or resolution.entry is None:
+            _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
+            _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
+            return True
+
+        entry = resolution.entry
+        if entry.kind == "quick":
+            qcmd = entry.payload if isinstance(entry.payload, dict) else {}
+            if qcmd.get("type") == "exec":
+                import subprocess
+                exec_cmd = qcmd.get("command", "")
+                if exec_cmd:
+                    try:
+                        result = subprocess.run(
+                            exec_cmd, shell=True, capture_output=True,
+                            text=True, timeout=30
+                        )
+                        output = result.stdout.strip() or result.stderr.strip()
+                        if output:
+                            self.console.print(_rich_text_from_ansi(output))
+                        else:
+                            self.console.print("[dim]Command returned no output[/]")
+                    except subprocess.TimeoutExpired:
+                        self.console.print("[bold red]Quick command timed out (30s)[/]")
+                    except Exception as e:
+                        self.console.print(f"[bold red]Quick command error: {e}[/]")
+                else:
+                    self.console.print(f"[bold red]Quick command '{entry.bare_name}' has no command defined[/]")
+                return True
+            if qcmd.get("type") == "alias":
+                target = qcmd.get("target", "").strip()
+                if target:
+                    target = target if target.startswith("/") else f"/{target}"
+                    aliased_command = f"{target} {resolution.args}".strip()
+                    return self.process_command(aliased_command)
+                self.console.print(f"[bold red]Quick command '{entry.bare_name}' has no target defined[/]")
+                return True
+            self.console.print(
+                f"[bold red]Quick command '{entry.bare_name}' has unsupported type "
+                "(supported: 'exec', 'alias')[/]"
+            )
+            return True
+
+        if entry.kind == "plugin":
+            plugin_handler = entry.payload.get("handler") if isinstance(entry.payload, dict) else None
+            if callable(plugin_handler):
+                try:
+                    result = plugin_handler(resolution.args)
+                    if result:
+                        _cprint(str(result))
+                except Exception as e:
+                    _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
+            return True
+
+        if entry.kind == "skill":
+            msg = build_skill_invocation_message(
+                entry.slash_name,
+                resolution.args,
+                task_id=self.session_id,
+            )
+            if msg:
+                skill_name = skill_commands[entry.slash_name]["name"]
+                print(f"\n⚡ Loading skill: {skill_name}")
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(msg)
+            else:
+                ChatConsole().print(f"[bold red]Failed to load skill for {entry.slash_name}[/]")
+            return True
+
+        canonical = entry.canonical_name
+
+        if canonical == "quit":
             return False
         elif canonical == "help":
             self.show_help()
@@ -4992,109 +5105,6 @@ class HermesCLI:
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
-        else:
-            # Check for user-defined quick commands (bypass agent loop, no LLM call)
-            base_cmd = cmd_lower.split()[0]
-            quick_commands = self.config.get("quick_commands", {})
-            if base_cmd.lstrip("/") in quick_commands:
-                qcmd = quick_commands[base_cmd.lstrip("/")]
-                if qcmd.get("type") == "exec":
-                    import subprocess
-                    exec_cmd = qcmd.get("command", "")
-                    if exec_cmd:
-                        try:
-                            result = subprocess.run(
-                                exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
-                            )
-                            output = result.stdout.strip() or result.stderr.strip()
-                            if output:
-                                self.console.print(_rich_text_from_ansi(output))
-                            else:
-                                self.console.print("[dim]Command returned no output[/]")
-                        except subprocess.TimeoutExpired:
-                            self.console.print("[bold red]Quick command timed out (30s)[/]")
-                        except Exception as e:
-                            self.console.print(f"[bold red]Quick command error: {e}[/]")
-                    else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
-                elif qcmd.get("type") == "alias":
-                    target = qcmd.get("target", "").strip()
-                    if target:
-                        target = target if target.startswith("/") else f"/{target}"
-                        user_args = cmd_original[len(base_cmd):].strip()
-                        aliased_command = f"{target} {user_args}".strip()
-                        return self.process_command(aliased_command)
-                    else:
-                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
-                else:
-                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
-            # Check for plugin-registered slash commands
-            elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
-                from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
-                if plugin_handler:
-                    user_args = cmd_original[len(base_cmd):].strip()
-                    try:
-                        result = plugin_handler(user_args)
-                        if result:
-                            _cprint(str(result))
-                    except Exception as e:
-                        _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
-            # Check for skill slash commands (/gif-search, /axolotl, etc.)
-            elif base_cmd in _skill_commands:
-                user_instruction = cmd_original[len(base_cmd):].strip()
-                msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
-                )
-                if msg:
-                    skill_name = _skill_commands[base_cmd]["name"]
-                    print(f"\n⚡ Loading skill: {skill_name}")
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(f"[bold red]Failed to load skill for {base_cmd}[/]")
-            else:
-                # Prefix matching: if input uniquely identifies one command, execute it.
-                # Matches against both built-in COMMANDS and installed skill commands so
-                # that execution-time resolution agrees with tab-completion.
-                from hermes_cli.commands import COMMANDS
-                typed_base = cmd_lower.split()[0]
-                all_known = set(COMMANDS) | set(_skill_commands)
-                matches = [c for c in all_known if c.startswith(typed_base)]
-                if len(matches) > 1:
-                    # Prefer an exact match (typed the full command name)
-                    exact = [c for c in matches if c == typed_base]
-                    if len(exact) == 1:
-                        matches = exact
-                    else:
-                        # Prefer the unique shortest match:
-                        # /qui → /quit (5) wins over /quint-pipeline (15)
-                        min_len = min(len(c) for c in matches)
-                        shortest = [c for c in matches if len(c) == min_len]
-                        if len(shortest) == 1:
-                            matches = shortest
-                if len(matches) == 1:
-                    # Expand the prefix to the full command name, preserving arguments.
-                    # Guard against redispatching the same token to avoid infinite
-                    # recursion when the expanded name still doesn't hit an exact branch
-                    # (e.g. /config with extra args that are not yet handled above).
-                    full_name = matches[0]
-                    if full_name == typed_base:
-                        # Already an exact token — no expansion possible; fall through
-                        _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                        _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-                    else:
-                        remainder = cmd_original.strip()[len(typed_base):]
-                        full_cmd = full_name + remainder
-                        return self.process_command(full_cmd)
-                elif len(matches) > 1:
-                    _cprint(f"{_ACCENT}Ambiguous command: {cmd_lower}{_RST}")
-                    _cprint(f"{_DIM}Did you mean: {', '.join(sorted(matches))}?{_RST}")
-                else:
-                    _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-                    _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
-        
         return True
     
     def _handle_plan_command(self, cmd: str):
@@ -8208,9 +8218,16 @@ class HermesCLI:
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
+        def _plugin_commands_provider():
+            try:
+                from hermes_cli.plugins import get_plugin_commands
+                return get_plugin_commands()
+            except Exception:
+                return {}
 
         _completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: _skill_commands,
+            skill_commands_provider=_current_skill_commands,
+            plugin_commands_provider=_plugin_commands_provider,
             command_filter=cli_ref._command_available,
             model_selection_provider=lambda: getattr(cli_ref, "_model_selection_controller", None),
         )

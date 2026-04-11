@@ -7030,11 +7030,44 @@ class GatewayRunner:
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
-            agent.stream_delta_callback = _stream_delta_cb
-            agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
+
+            # Set up reasoning callback for streaming reasoning display
+            # This allows reasoning content to be streamed to the platform in real-time
+            _reasoning_started_holder = [False]  # Track if we've started reasoning
+            _reasoning_delta_cb = None
+            _wrapped_stream_delta_cb = None
+
+            if self._show_reasoning and _stream_delta_cb:
+                def _reasoning_delta_cb(text: str) -> None:
+                    """Stream reasoning content with a prefix to distinguish it from regular content."""
+                    if not text:
+                        return
+                    # Add reasoning prefix on first chunk
+                    if not _reasoning_started_holder[0]:
+                        _reasoning_started_holder[0] = True
+                        prefix = "💭 **Reasoning:**\n```\n"
+                        _stream_delta_cb(prefix)
+                    _stream_delta_cb(text)
+
+                def _wrapped_stream_delta_cb(text: str) -> None:
+                    """Wrap stream delta to close reasoning block before regular content."""
+                    # If reasoning was shown and this is the first regular content,
+                    # close the reasoning code block first
+                    if _reasoning_started_holder[0]:
+                        _reasoning_started_holder[0] = False  # Reset for next turn
+                        close_block = "\n```\n\n"
+                        _stream_delta_cb(close_block)
+                    _stream_delta_cb(text)
+
+                agent.reasoning_callback = _reasoning_delta_cb
+                agent.stream_delta_callback = _wrapped_stream_delta_cb
+            else:
+                agent.stream_delta_callback = _stream_delta_cb
+
+            agent.status_callback = _status_callback_sync
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:

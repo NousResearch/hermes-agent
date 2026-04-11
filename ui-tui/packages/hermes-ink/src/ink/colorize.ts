@@ -8,8 +8,8 @@ import type { Color, TextStyles } from './styles.js'
  * COLORTERM=truecolor. chalk's supports-color doesn't recognize
  * TERM_PROGRAM=vscode (it only knows iTerm.app/Apple_Terminal), so it falls
  * through to the -256color regex → level 2. At level 2, chalk.rgb()
- * downgrades to the nearest 6×6×6 cube color: rgb(215,119,87) (Claude
- * orange) → idx 174 rgb(215,135,135) — washed-out salmon.
+ * downgrades to the nearest 6×6×6 cube color: rgb(215,119,87) → idx 174
+ * rgb(215,135,135) — washed-out salmon.
  *
  * Gated on level === 2 (not < 3) to respect NO_COLOR / FORCE_COLOR=0 —
  * those yield level 0 and are an explicit "no colors" request. Desktop VS
@@ -48,13 +48,6 @@ function boostChalkLevelForXtermJs(): boolean {
  * this clamps ALL truecolor output (fg+bg+hex) across the entire app.
  */
 function clampChalkLevelForTmux(): boolean {
-  // bg.ts sets terminal-overrides :Tc before attach, so truecolor passes
-  // through — skip the clamp. General escape hatch for anyone who's
-  // configured their tmux correctly.
-  if (process.env.CLAUDE_CODE_TMUX_TRUECOLOR) {
-    return false
-  }
-
   if (process.env.TMUX && chalk.level > 2) {
     chalk.level = 2
 

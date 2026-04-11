@@ -138,7 +138,7 @@ export function isSynchronizedOutputSupported(): boolean {
 // -- XTVERSION-detected terminal name (populated async at startup) --
 //
 // TERM_PROGRAM is not forwarded over SSH by default, so env-based detection
-// fails when claude runs remotely inside a VS Code integrated terminal.
+// fails when the process runs remotely inside a VS Code integrated terminal.
 // XTVERSION (CSI > 0 q → DCS > | name ST) goes through the pty — the query
 // reaches the *client* terminal and the reply comes back through stdin.
 // App.tsx fires the query when raw mode enables; setXtversionName() is called

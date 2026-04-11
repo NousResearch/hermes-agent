@@ -20,7 +20,7 @@ import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
-import { compactPreview, fmtK, hasInterpolation, isToolTrailResultLine, pick, sameToolTrailGroup } from './lib/text.js'
+import { buildToolTrailLine, compactPreview, fmtK, hasInterpolation, isToolTrailResultLine, pick, sameToolTrailGroup } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
   ActiveTool,
@@ -107,24 +107,41 @@ const toTranscriptMessages = (rows: unknown): Msg[] => {
     return []
   }
 
-  return rows.flatMap(row => {
-    if (!row || typeof row !== 'object') {
-      return []
-    }
+  const result: Msg[] = []
+  let pendingTools: string[] = []
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue
 
     const role = (row as any).role
     const text = (row as any).text
 
-    if (
-      (role !== 'assistant' && role !== 'system' && role !== 'tool' && role !== 'user') ||
-      typeof text !== 'string' ||
-      !text.trim()
-    ) {
-      return []
+    if (role === 'tool') {
+      const name = (row as any).name ?? 'tool'
+      const ctx = (row as any).context ?? ''
+      pendingTools.push(buildToolTrailLine(name, ctx))
+      continue
     }
 
-    return [{ role, text }]
-  })
+    if (typeof text !== 'string' || !text.trim()) continue
+
+    if (role === 'assistant') {
+      const msg: Msg = { role, text }
+      if (pendingTools.length) {
+        msg.tools = pendingTools
+        pendingTools = []
+      }
+      result.push(msg)
+      continue
+    }
+
+    if (role === 'user' || role === 'system') {
+      pendingTools = []
+      result.push({ role, text })
+    }
+  }
+
+  return result
 }
 
 // ── StatusRule ────────────────────────────────────────────────────────
@@ -1155,14 +1172,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
         case 'tool.complete': {
-          const mark = p.error ? '✗' : '✓'
-
           toolCompleteRibbonRef.current = null
           setTools(prev => {
             const done = prev.find(t => t.id === p.tool_id)
-            const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
+            const name = done?.name ?? p.name
             const ctx = (p.error as string) || done?.context || ''
-            const line = `${label}${ctx ? ': ' + compactPreview(ctx, 72) : ''} ${mark}`
+            const label = TOOL_VERBS[name] ?? name
+            const line = buildToolTrailLine(name, ctx, !!p.error)
 
             toolCompleteRibbonRef.current = { label, line }
             const remaining = prev.filter(t => t.id !== p.tool_id)

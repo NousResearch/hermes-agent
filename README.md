@@ -4,6 +4,15 @@
 
 # Hermes Agent ☤
 
+> **This is a maintained fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent).** It carries fixes and enhancements that are unlikely to be reviewed upstream due to the volume of open PRs. Contributions are always welcome.
+
+### What's different in this fork
+
+- **`uv sync` migration** — Replaces the legacy `uv pip` editable-install flow with proper `uv sync` project environments across installers, update logic, CI, and docs. Fresh installs use `.venv` with the curated `--extra all` flow; existing venvs are preserved via `UV_PROJECT_ENVIRONMENT`.
+- **Expanded resume display** — Adds a `resume_display: expanded` configuration option that renders the last assistant response in the standard Hermes response panel below the compact recap when resuming a session, mirroring how a fresh response is displayed.
+
+---
+
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>

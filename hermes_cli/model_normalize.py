@@ -76,17 +76,22 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot-acp",
 })
 
-# Providers whose own naming is authoritative -- pass through unchanged.
-_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
+# Providers whose native naming is authoritative -- pass through unchanged.
+_AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
+    "huggingface",
+    "openai-codex",
+})
+
+# Direct providers that accept bare native names but should repair a matching
+# provider/ prefix when users copy the aggregator form into config.yaml.
+_MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
-    "huggingface",
-    "openai-codex",
     "custom",
 })
 
@@ -166,6 +171,40 @@ def _dots_to_hyphens(model_name: str) -> str:
     ``claude-sonnet-4.6`` -> ``claude-sonnet-4-6``.
     """
     return model_name.replace(".", "-")
+
+
+def _normalize_provider_alias(provider_name: str) -> str:
+    """Resolve provider aliases to Hermes' canonical ids."""
+    raw = (provider_name or "").strip().lower()
+    if not raw:
+        return raw
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(raw)
+    except Exception:
+        return raw
+
+
+def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
+    """Strip ``provider/`` only when the prefix matches the target provider.
+
+    This prevents arbitrary slash-bearing model IDs from being mangled on
+    native providers while still repairing manual config values like
+    ``zai/glm-5.1`` for the ``zai`` provider.
+    """
+    if "/" not in model_name:
+        return model_name
+
+    prefix, remainder = model_name.split("/", 1)
+    if not prefix.strip() or not remainder.strip():
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
+    normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_prefix and normalized_prefix == normalized_target:
+        return remainder.strip()
+    return model_name
 
 
 def detect_vendor(model_name: str) -> Optional[str]:
@@ -305,24 +344,37 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if not name:
         return name
 
-    provider = (target_provider or "").strip().lower()
+    provider = _normalize_provider_alias(target_provider)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip vendor, dots -> hyphens ---
+    # --- Anthropic / OpenCode: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
-        bare = _strip_vendor_prefix(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip vendor, keep dots ---
+    # --- Copilot: strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
-        return _strip_vendor_prefix(name)
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
-        return _normalize_for_deepseek(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        return _normalize_for_deepseek(bare)
+
+    # --- Direct providers: repair matching provider prefixes only ---
+    if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
+        return _strip_matching_provider_prefix(name, provider)
+
+    # --- Authoritative native providers: preserve user-facing slugs as-is ---
+    if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:
+        return name
 
     # --- Custom & all others: pass through as-is ---
     return name
@@ -332,31 +384,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
 
-def model_display_name(model_id: str) -> str:
-    """Return a short, human-readable display name for a model id.
-
-    Strips the vendor prefix (if any) for a cleaner display in menus
-    and status bars, while preserving dots for readability.
-
-    Examples::
-
-        >>> model_display_name("anthropic/claude-sonnet-4.6")
-        'claude-sonnet-4.6'
-        >>> model_display_name("claude-sonnet-4-6")
-        'claude-sonnet-4-6'
-    """
-    return _strip_vendor_prefix((model_id or "").strip())
-
-
-def is_aggregator_provider(provider: str) -> bool:
-    """Check if a provider is an aggregator that needs vendor/model format."""
-    return (provider or "").strip().lower() in _AGGREGATOR_PROVIDERS
-
-
-def vendor_for_model(model_name: str) -> str:
-    """Return the vendor slug for a model, or ``""`` if unknown.
-
-    Convenience wrapper around :func:`detect_vendor` that never returns
-    ``None``.
-    """
-    return detect_vendor(model_name) or ""

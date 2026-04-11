@@ -428,3 +428,31 @@ class TestPlatformToolsetConsistency:
                 f"Platform {platform!r} in tools_config but missing from "
                 f"skills_config PLATFORMS"
             )
+
+
+def test_numeric_mcp_server_name_does_not_crash_sorted():
+    """YAML parses bare numeric keys (e.g. ``12306:``) as int.
+
+    _get_platform_tools must normalise them to str so that sorted()
+    on the returned set never raises TypeError on mixed int/str.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/6901
+    """
+    config = {
+        "platform_toolsets": {"cli": ["web", 12306]},
+        "mcp_servers": {
+            12306: {"url": "https://example.com/mcp"},
+            "normal-server": {"url": "https://example.com/mcp2"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # All names must be str — no int leaking through
+    assert all(isinstance(name, str) for name in enabled), (
+        f"Non-string toolset names found: {enabled}"
+    )
+    assert "12306" in enabled
+
+    # sorted() must not raise TypeError
+    sorted(enabled)

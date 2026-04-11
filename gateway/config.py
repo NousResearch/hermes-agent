@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
 
 
@@ -260,6 +261,11 @@ class GatewayConfig:
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
+                continue
+            # Weixin requires both a token and an account_id
+            if platform == Platform.WEIXIN:
+                if config.extra.get("account_id") and (config.token or config.extra.get("token")):
+                    connected.append(platform)
                 continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
@@ -536,6 +542,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
+                    bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -581,6 +589,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ic, list):
                         ic = ",".join(str(v) for v in ic)
                     os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = discord_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
                 # no_thread_channels: channels where bot responds directly without creating thread
                 ntc = discord_cfg.get("no_thread_channels")
                 if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
@@ -628,6 +642,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+                if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
+                    os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 
     except Exception as e:
         logger.warning(
@@ -666,6 +682,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -968,6 +985,44 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Weixin (personal WeChat via iLink Bot API)
+    weixin_token = os.getenv("WEIXIN_TOKEN")
+    weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
+    if weixin_token or weixin_account_id:
+        if Platform.WEIXIN not in config.platforms:
+            config.platforms[Platform.WEIXIN] = PlatformConfig()
+        config.platforms[Platform.WEIXIN].enabled = True
+        if weixin_token:
+            config.platforms[Platform.WEIXIN].token = weixin_token
+        extra = config.platforms[Platform.WEIXIN].extra
+        if weixin_account_id:
+            extra["account_id"] = weixin_account_id
+        weixin_base_url = os.getenv("WEIXIN_BASE_URL", "").strip()
+        if weixin_base_url:
+            extra["base_url"] = weixin_base_url.rstrip("/")
+        weixin_cdn_base_url = os.getenv("WEIXIN_CDN_BASE_URL", "").strip()
+        if weixin_cdn_base_url:
+            extra["cdn_base_url"] = weixin_cdn_base_url.rstrip("/")
+        weixin_dm_policy = os.getenv("WEIXIN_DM_POLICY", "").strip().lower()
+        if weixin_dm_policy:
+            extra["dm_policy"] = weixin_dm_policy
+        weixin_group_policy = os.getenv("WEIXIN_GROUP_POLICY", "").strip().lower()
+        if weixin_group_policy:
+            extra["group_policy"] = weixin_group_policy
+        weixin_allowed_users = os.getenv("WEIXIN_ALLOWED_USERS", "").strip()
+        if weixin_allowed_users:
+            extra["allow_from"] = weixin_allowed_users
+        weixin_group_allowed_users = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
+        if weixin_group_allowed_users:
+            extra["group_allow_from"] = weixin_group_allowed_users
+        weixin_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+        if weixin_home:
+            config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
+                platform=Platform.WEIXIN,
+                chat_id=weixin_home,
+                name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
             )
 
     # BlueBubbles (iMessage)

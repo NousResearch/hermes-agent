@@ -109,6 +109,27 @@ def _write_manifest(entries: Dict[str, str]):
         logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
 
 
+def _read_skill_name(skill_md: Path, fallback: str) -> str:
+    """Read the name field from SKILL.md YAML frontmatter, falling back to *fallback*."""
+    try:
+        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return fallback
+    in_frontmatter = False
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped == "---":
+            if in_frontmatter:
+                break
+            in_frontmatter = True
+            continue
+        if in_frontmatter and stripped.startswith("name:"):
+            value = stripped.split(":", 1)[1].strip().strip("\"'")
+            if value:
+                return value
+    return fallback
+
+
 def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     """
     Find all SKILL.md files in the bundled directory.
@@ -123,7 +144,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
         if "/.git/" in path_str or "/.github/" in path_str or "/.hub/" in path_str:
             continue
         skill_dir = skill_md.parent
-        skill_name = skill_dir.name
+        skill_name = _read_skill_name(skill_md, skill_dir.name)
         skills.append((skill_name, skill_dir))
 
     return skills

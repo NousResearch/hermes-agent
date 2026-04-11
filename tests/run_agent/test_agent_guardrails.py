@@ -9,7 +9,9 @@ Covers three static methods on AIAgent (inspired by PR #1321 — @alireza78a):
 import types
 
 from run_agent import AIAgent
-from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
+from tools.delegate_tool import _get_max_concurrent_children
+
+MAX_CONCURRENT_CHILDREN = _get_max_concurrent_children()
 
 
 # ---------------------------------------------------------------------------

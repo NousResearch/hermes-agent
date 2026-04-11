@@ -132,6 +132,61 @@ class TestDefaultContextLengths:
             if "gemini" in key:
                 assert value == 1048576, f"{key} should be 1048576"
 
+    def test_grok_models_context_lengths(self):
+        # xAI /v1/models does not return context_length metadata, so
+        # DEFAULT_CONTEXT_LENGTHS must cover the Grok family explicitly.
+        # Values sourced from models.dev (2026-04).
+        expected = {
+            "grok-4.20": 2000000,
+            "grok-4-1-fast": 2000000,
+            "grok-4-fast": 2000000,
+            "grok-4": 256000,
+            "grok-code-fast": 256000,
+            "grok-3": 131072,
+            "grok-2": 131072,
+            "grok-2-vision": 8192,
+            "grok": 131072,
+        }
+        for key, value in expected.items():
+            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing from DEFAULT_CONTEXT_LENGTHS"
+            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
+                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
+            )
+
+    def test_grok_substring_matching(self):
+        # Longest-first substring matching must resolve the real xAI model
+        # IDs to the correct fallback entries without 128k probe-down.
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        # Fake the provider/API/cache layers so the lookup falls through
+        # to DEFAULT_CONTEXT_LENGTHS.
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}),              mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}),              mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("grok-4.20-0309-reasoning", 2000000),
+                ("grok-4.20-0309-non-reasoning", 2000000),
+                ("grok-4.20-multi-agent-0309", 2000000),
+                ("grok-4-1-fast-reasoning", 2000000),
+                ("grok-4-1-fast-non-reasoning", 2000000),
+                ("grok-4-fast-reasoning", 2000000),
+                ("grok-4-fast-non-reasoning", 2000000),
+                ("grok-4", 256000),
+                ("grok-4-0709", 256000),
+                ("grok-code-fast-1", 256000),
+                ("grok-3", 131072),
+                ("grok-3-mini", 131072),
+                ("grok-3-mini-fast", 131072),
+                ("grok-2", 131072),
+                ("grok-2-vision", 8192),
+                ("grok-2-vision-1212", 8192),
+                ("grok-beta", 131072),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
     def test_all_values_positive(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             assert value > 0, f"{key} has non-positive context length"
@@ -166,6 +221,24 @@ class TestGetModelContextLength:
     def test_partial_match_in_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("openai/gpt-4o") == 128000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_plus_context_length(self, mock_fetch):
+        """qwen3-coder-plus has a 1M context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder-plus") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_context_length(self, mock_fetch):
+        """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen_generic_context_length(self, mock_fetch):
+        """Generic qwen models still get the 128K default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-plus") == 131072
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):

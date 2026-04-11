@@ -39,15 +39,6 @@ def _has_known_pricing(model_name: str, provider: str = None, base_url: str = No
     return has_known_pricing(model_name, provider=provider, base_url=base_url)
 
 
-def _get_pricing(model_name: str) -> Dict[str, float]:
-    """Look up pricing for a model. Uses fuzzy matching on model name.
-
-    Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
-    we can't assume costs for self-hosted endpoints, local inference, etc.
-    """
-    return get_pricing(model_name)
-
-
 def _estimate_cost(
     session_or_model: Dict[str, Any] | str,
     input_tokens: int = 0,

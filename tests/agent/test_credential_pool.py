@@ -567,6 +567,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
     _write_auth_store(
         tmp_path,
         {
@@ -702,53 +703,6 @@ def test_least_used_strategy_selects_lowest_count(tmp_path, monkeypatch):
     assert entry.access_token == "sk-or-light"
 
 
-def test_mark_used_increments_request_count(tmp_path, monkeypatch):
-    """mark_used should increment the request_count of the current entry."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    monkeypatch.setattr(
-        "agent.credential_pool.get_pool_strategy",
-        lambda _provider: "fill_first",
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_singletons",
-        lambda provider, entries: (False, set()),
-    )
-    monkeypatch.setattr(
-        "agent.credential_pool._seed_from_env",
-        lambda provider, entries: (False, set()),
-    )
-    _write_auth_store(
-        tmp_path,
-        {
-            "version": 1,
-            "credential_pool": {
-                "openrouter": [
-                    {
-                        "id": "key-a",
-                        "label": "test",
-                        "auth_type": "api_key",
-                        "priority": 0,
-                        "source": "manual",
-                        "access_token": "sk-or-test",
-                        "request_count": 5,
-                    },
-                ]
-            },
-        },
-    )
-
-    from agent.credential_pool import load_pool
-
-    pool = load_pool("openrouter")
-    entry = pool.select()
-    assert entry is not None
-    assert entry.request_count == 5
-    pool.mark_used()
-    updated = pool.current()
-    assert updated is not None
-    assert updated.request_count == 6
-
-
 def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
     """Concurrent select() calls should not corrupt pool state."""
     import threading as _threading
@@ -798,7 +752,6 @@ def test_thread_safety_concurrent_select(tmp_path, monkeypatch):
                 entry = pool.select()
                 if entry:
                     results.append(entry.id)
-                    pool.mark_used(entry.id)
         except Exception as exc:
             errors.append(exc)
 
@@ -1056,8 +1009,8 @@ def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
 
     assert first == "cred-1"
     assert second == "cred-2"
-    assert pool.active_lease_count("cred-1") == 1
-    assert pool.active_lease_count("cred-2") == 1
+    assert pool._active_leases.get("cred-1", 0) == 1
+    assert pool._active_leases.get("cred-2", 0) == 1
 
 
 
@@ -1087,7 +1040,34 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
     pool = load_pool("openrouter")
     leased = pool.acquire_lease()
     assert leased == "cred-1"
-    assert pool.active_lease_count("cred-1") == 1
+    assert pool._active_leases.get("cred-1", 0) == 1
 
     pool.release_lease("cred-1")
-    assert pool.active_lease_count("cred-1") == 0
+    assert pool._active_leases.get("cred-1", 0) == 0
+
+
+def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):
+    """Claude Code credentials must not be auto-seeded when the user never selected anthropic."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    # Claude Code credentials exist on disk
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    # User configured kimi-coding, NOT anthropic
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: pid == "kimi-coding",
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+
+    # Should NOT have seeded the claude_code entry
+    assert pool.entries() == []

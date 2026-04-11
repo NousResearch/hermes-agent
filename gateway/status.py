@@ -14,6 +14,8 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +25,7 @@ from typing import Any, Optional
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_IS_WINDOWS = sys.platform == "win32"
 
 
 def _get_pid_path() -> Path:
@@ -47,6 +50,33 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def terminate_pid(pid: int, *, force: bool = False) -> None:
+    """Terminate a PID with platform-appropriate force semantics.
+
+    POSIX uses SIGTERM/SIGKILL. Windows uses taskkill /T /F for true force-kill
+    because os.kill(..., SIGTERM) is not equivalent to a tree-killing hard stop.
+    """
+    if force and _IS_WINDOWS:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except FileNotFoundError:
+            os.kill(pid, signal.SIGTERM)
+            return
+
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise OSError(details or f"taskkill failed for PID {pid}")
+        return
+
+    sig = signal.SIGTERM if not force else getattr(signal, "SIGKILL", signal.SIGTERM)
+    os.kill(pid, sig)
 
 
 def _scope_hash(identity: str) -> str:
@@ -128,6 +158,8 @@ def _build_runtime_status_record() -> dict[str, Any]:
     payload.update({
         "gateway_state": "starting",
         "exit_reason": None,
+        "restart_requested": False,
+        "active_agents": 0,
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -188,6 +220,8 @@ def write_runtime_status(
     *,
     gateway_state: Optional[str] = None,
     exit_reason: Optional[str] = None,
+    restart_requested: Optional[bool] = None,
+    active_agents: Optional[int] = None,
     platform: Optional[str] = None,
     platform_state: Optional[str] = None,
     error_code: Optional[str] = None,
@@ -206,6 +240,10 @@ def write_runtime_status(
         payload["gateway_state"] = gateway_state
     if exit_reason is not None:
         payload["exit_reason"] = exit_reason
+    if restart_requested is not None:
+        payload["restart_requested"] = bool(restart_requested)
+    if active_agents is not None:
+        payload["active_agents"] = max(0, int(active_agents))
 
     if platform is not None:
         platform_payload = payload["platforms"].get(platform, {})

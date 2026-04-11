@@ -68,9 +68,22 @@ class TestInitialize:
         resp = await agent.initialize(protocol_version=1)
         caps = resp.agent_capabilities
         assert isinstance(caps, AgentCapabilities)
+        assert caps.load_session is True
         assert caps.session_capabilities is not None
         assert caps.session_capabilities.fork is not None
         assert caps.session_capabilities.list is not None
+        assert caps.session_capabilities.resume is not None
+
+    @pytest.mark.asyncio
+    async def test_initialize_capabilities_wire_format(self, agent):
+        """Verify the JSON wire format uses correct aliases so ACP clients see the right keys."""
+        resp = await agent.initialize(protocol_version=1)
+        payload = resp.agent_capabilities.model_dump(by_alias=True, exclude_none=True)
+        assert payload["loadSession"] is True
+        session_caps = payload["sessionCapabilities"]
+        assert "fork" in session_caps
+        assert "list" in session_caps
+        assert "resume" in session_caps
 
 
 # ---------------------------------------------------------------------------
@@ -409,6 +422,37 @@ class TestPrompt:
         last_call = mock_conn.session_update.call_args_list[-1]
         update = last_call[1].get("update") or last_call[0][1]
         assert update.session_update == "agent_message_chunk"
+
+    @pytest.mark.asyncio
+    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
+        """ACP should map top-level token fields into PromptResponse.usage."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "usage attached",
+            "messages": [],
+            "prompt_tokens": 123,
+            "completion_tokens": 45,
+            "total_tokens": 168,
+            "reasoning_tokens": 7,
+            "cache_read_tokens": 11,
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="show usage")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert isinstance(resp, PromptResponse)
+        assert resp.usage is not None
+        assert resp.usage.input_tokens == 123
+        assert resp.usage.output_tokens == 45
+        assert resp.usage.total_tokens == 168
+        assert resp.usage.thought_tokens == 7
+        assert resp.usage.cached_read_tokens == 11
 
     @pytest.mark.asyncio
     async def test_prompt_cancelled_returns_cancelled_stop_reason(self, agent):

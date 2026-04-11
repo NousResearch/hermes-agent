@@ -31,13 +31,6 @@ logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
 COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
-COPILOT_DEVICE_CODE_URL = "https://github.com/login/device/code"
-COPILOT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
-
-# Copilot API constants
-COPILOT_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-COPILOT_API_BASE_URL = "https://api.githubcopilot.com"
-
 # Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
@@ -48,11 +41,6 @@ COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
-
-
-def is_classic_pat(token: str) -> bool:
-    """Check if a token is a classic PAT (ghp_*), which Copilot doesn't support."""
-    return token.strip().startswith(_CLASSIC_PAT_PREFIX)
 
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
@@ -285,6 +273,7 @@ def copilot_request_headers(
     headers: dict[str, str] = {
         "Editor-Version": "vscode/1.104.1",
         "User-Agent": "HermesAgent/1.0",
+        "Copilot-Integration-Id": "vscode-chat",
         "Openai-Intent": "conversation-edits",
         "x-initiator": "agent" if is_agent_turn else "user",
     }

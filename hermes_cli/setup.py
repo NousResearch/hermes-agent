@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import sys
+import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -105,8 +106,8 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
-    "minimax-cn": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
+    "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
@@ -172,150 +173,10 @@ def _setup_copilot_reasoning_selection(
         _set_reasoning_effort(config, "none")
 
 
-def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
-    """Model selection for API-key providers with live /models detection.
-
-    Tries the provider's /models endpoint first.  Falls back to a
-    hardcoded default list with a warning if the endpoint is unreachable.
-    Always offers a 'Custom model' escape hatch.
-    """
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.config import get_env_value
-    from hermes_cli.models import (
-        copilot_model_api_mode,
-        fetch_api_models,
-        fetch_github_model_catalog,
-        normalize_copilot_model_id,
-        normalize_opencode_model_id,
-        opencode_model_api_mode,
-    )
-
-    pconfig = PROVIDER_REGISTRY[provider_id]
-    is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
-
-    # Resolve API key and base URL for the probe
-    if is_copilot_catalog_provider:
-        api_key = ""
-        if provider_id == "copilot":
-            creds = resolve_api_key_provider_credentials(provider_id)
-            api_key = creds.get("api_key", "")
-            base_url = creds.get("base_url", "") or pconfig.inference_base_url
-        else:
-            try:
-                creds = resolve_api_key_provider_credentials("copilot")
-                api_key = creds.get("api_key", "")
-            except Exception:
-                pass
-            base_url = pconfig.inference_base_url
-        catalog = fetch_github_model_catalog(api_key)
-        current_model = normalize_copilot_model_id(
-            current_model,
-            catalog=catalog,
-            api_key=api_key,
-        ) or current_model
-    else:
-        api_key = ""
-        for ev in pconfig.api_key_env_vars:
-            api_key = get_env_value(ev) or os.getenv(ev, "")
-            if api_key:
-                break
-        base_url_env = pconfig.base_url_env_var or ""
-        base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
-        catalog = None
-
-    # Try live /models endpoint
-    if is_copilot_catalog_provider and catalog:
-        live_models = [item.get("id", "") for item in catalog if item.get("id")]
-    else:
-        live_models = fetch_api_models(api_key, base_url)
-
-    if live_models:
-        provider_models = live_models
-        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
-    else:
-        fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
-        provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
-        if provider_models:
-            print_warning(
-                f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
-                f"    Use \"Custom model\" if the model you expect isn't listed."
-            )
-
-    if provider_id in {"opencode-zen", "opencode-go"}:
-        provider_models = [normalize_opencode_model_id(provider_id, mid) for mid in provider_models]
-        current_model = normalize_opencode_model_id(provider_id, current_model)
-        provider_models = list(dict.fromkeys(mid for mid in provider_models if mid))
-
-    model_choices = list(provider_models)
-    model_choices.append("Custom model")
-    model_choices.append(f"Keep current ({current_model})")
-
-    keep_idx = len(model_choices) - 1
-    model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-    selected_model = current_model
-
-    if model_idx < len(provider_models):
-        selected_model = provider_models[model_idx]
-        if is_copilot_catalog_provider:
-            selected_model = normalize_copilot_model_id(
-                selected_model,
-                catalog=catalog,
-                api_key=api_key,
-            ) or selected_model
-        elif provider_id in {"opencode-zen", "opencode-go"}:
-            selected_model = normalize_opencode_model_id(provider_id, selected_model)
-        _set_default_model(config, selected_model)
-    elif model_idx == len(provider_models):
-        custom = prompt_fn("Enter model name")
-        if custom:
-            if is_copilot_catalog_provider:
-                selected_model = normalize_copilot_model_id(
-                    custom,
-                    catalog=catalog,
-                    api_key=api_key,
-                ) or custom
-            elif provider_id in {"opencode-zen", "opencode-go"}:
-                selected_model = normalize_opencode_model_id(provider_id, custom)
-            else:
-                selected_model = custom
-            _set_default_model(config, selected_model)
-    else:
-        # "Keep current" selected — validate it's compatible with the new
-        # provider.  OpenRouter-formatted names (containing "/") won't work
-        # on direct-API providers and would silently break the gateway.
-        if "/" in (current_model or "") and provider_models:
-            print_warning(
-                f"Current model \"{current_model}\" looks like an OpenRouter model "
-                f"and won't work with {pconfig.name}. "
-                f"Switching to {provider_models[0]}."
-            )
-            selected_model = provider_models[0]
-            _set_default_model(config, provider_models[0])
-
-    if provider_id == "copilot" and selected_model:
-        model_cfg = _model_config_dict(config)
-        model_cfg["api_mode"] = copilot_model_api_mode(
-            selected_model,
-            catalog=catalog,
-            api_key=api_key,
-        )
-        config["model"] = model_cfg
-        _setup_copilot_reasoning_selection(
-            config,
-            selected_model,
-            prompt_choice,
-            catalog=catalog,
-            api_key=api_key,
-        )
-    elif provider_id in {"opencode-zen", "opencode-go"} and selected_model:
-        model_cfg = _model_config_dict(config)
-        model_cfg["api_mode"] = opencode_model_api_mode(provider_id, selected_model)
-        config["model"] = model_cfg
-
 
 # Import config helpers
 from hermes_cli.config import (
+    DEFAULT_CONFIG,
     get_hermes_home,
     get_config_path,
     get_env_path,
@@ -477,6 +338,8 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                     return
 
         curses.wrapper(_curses_menu)
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         return result_holder[0]
     except Exception:
         return -1
@@ -694,6 +557,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+    elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
+        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -921,8 +786,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # changes with stale values (#4172).
     _refreshed = load_config()
     config["model"] = _refreshed.get("model", config.get("model"))
-    if _refreshed.get("custom_providers"):
+    if "custom_providers" in _refreshed:
         config["custom_providers"] = _refreshed["custom_providers"]
+    else:
+        config.pop("custom_providers", None)
 
     # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
@@ -1006,8 +873,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
                 _set_credential_pool_strategy(config, selected_provider, strategy_value)
                 print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
-            else:
-                _set_credential_pool_strategy(config, selected_provider, "fill_first")
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
@@ -1181,6 +1046,7 @@ def _setup_tts_provider(config: dict):
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
         "minimax": "MiniMax TTS",
+        "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -1201,10 +1067,11 @@ def _setup_tts_provider(config: dict):
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
+            "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1278,6 +1145,18 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)
                 print_success("MiniMax TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "mistral":
+        existing = get_env_value("MISTRAL_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("Mistral API key for TTS", password=True)
+            if api_key:
+                save_env_value("MISTRAL_API_KEY", api_key)
+                print_success("Mistral TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
@@ -2062,9 +1941,9 @@ def _setup_matrix():
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
+        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
         try:
-            __import__("nio")
+            __import__("mautrix")
         except ImportError:
             print_info(f"Installing {matrix_pkg}...")
             import subprocess
@@ -2165,6 +2044,12 @@ def _setup_whatsapp():
         print_success("WhatsApp enabled")
         print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
         print_info("or personal self-chat) and pair via QR code.")
+
+
+def _setup_weixin():
+    """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
+    from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
+    _gateway_setup_weixin()
 
 
 def _setup_bluebubbles():
@@ -2286,6 +2171,7 @@ _GATEWAY_PLATFORMS = [
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
@@ -2844,6 +2730,7 @@ def run_setup_wizard(args):
     Supports full, quick, and section-specific setup:
       hermes setup           — full or quick (auto-detected)
       hermes setup model     — just model/provider
+      hermes setup tts       — just text-to-speech
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
@@ -2854,6 +2741,11 @@ def run_setup_wizard(args):
         managed_error("run setup wizard")
         return
     ensure_hermes_home()
+
+    reset_requested = bool(getattr(args, "reset", False))
+    if reset_requested:
+        save_config(copy.deepcopy(DEFAULT_CONFIG))
+        print_success("Configuration reset to defaults.")
 
     config = load_config()
     hermes_home = get_hermes_home()
@@ -2955,18 +2847,13 @@ def run_setup_wizard(args):
         menu_choices = [
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
-            "---",
             "Model & Provider",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
-            "---",
             "Exit",
         ]
-
-        # Separator indices (not selectable, but prompt_choice doesn't filter them,
-        # so we handle them below)
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
@@ -2976,18 +2863,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
-            # Separator — treat as exit
+        elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 3 <= choice <= 7:
+        elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 3) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
+            # so positional indexing (choice - 2) would dispatch the wrong section.
+            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
                 _, label, func = section
@@ -3055,19 +2938,33 @@ def run_setup_wizard(args):
     _offer_launch_chat()
 
 
+def _resolve_hermes_chat_argv() -> Optional[list[str]]:
+    """Resolve argv for launching ``hermes chat`` in a fresh process."""
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin, "chat"]
+
+    try:
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main", "chat"]
+    except Exception:
+        pass
+
+    return None
+
+
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
-    if prompt_yes_no("Launch hermes chat now?", True):
-        from hermes_cli.main import cmd_chat
-        from types import SimpleNamespace
-        cmd_chat(SimpleNamespace(
-            query=None, resume=None, continue_last=None, model=None,
-            provider=None, effort=None, skin=None, oneshot=False,
-            quiet=False, verbose=False, toolsets=None, skills=None,
-            yolo=False, source=None, worktree=False, checkpoints=False,
-            pass_session_id=False, max_turns=None,
-        ))
+    if not prompt_yes_no("Launch hermes chat now?", True):
+        return
+
+    chat_argv = _resolve_hermes_chat_argv()
+    if not chat_argv:
+        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
+        return
+
+    os.execvp(chat_argv[0], chat_argv)
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

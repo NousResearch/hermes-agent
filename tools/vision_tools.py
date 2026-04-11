@@ -67,6 +67,10 @@ def _resolve_download_timeout() -> float:
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 
+# Hard cap on downloaded image file size (50 MB). Prevents OOM from
+# attacker-hosted multi-gigabyte files or decompression bombs.
+_VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -181,13 +185,25 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 )
                 response.raise_for_status()
 
+                # Reject overly large images early via Content-Length header.
+                cl = response.headers.get("content-length")
+                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+
                 final_url = str(response.url)
                 blocked = check_website_access(final_url)
                 if blocked:
                     raise PermissionError(blocked["message"])
                 
-                # Save the image content
-                destination.write_bytes(response.content)
+                # Save the image content (double-check actual size)
+                body = response.content
+                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+                destination.write_bytes(body)
             
             return destination
         except Exception as e:
@@ -326,7 +342,11 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(os.path.expanduser(image_url))
+        # Strip file:// scheme so file URIs resolve as local paths.
+        resolved_url = image_url
+        if resolved_url.startswith("file://"):
+            resolved_url = resolved_url[len("file://"):]
+        local_path = Path(os.path.expanduser(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
@@ -362,7 +382,19 @@ async def vision_analyze_tool(
         # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
-        
+
+        # Pre-flight size check: most vision APIs cap base64 payloads at 5 MB.
+        # Reject early with a clear message instead of a cryptic provider 400.
+        _MAX_BASE64_BYTES = 5 * 1024 * 1024  # 5 MB
+        # The data URL includes the header (e.g. "data:image/jpeg;base64,") which
+        # is negligible, but measure the full string to be safe.
+        if len(image_data_url) > _MAX_BASE64_BYTES:
+            raise ValueError(
+                f"Image too large for vision API: base64 payload is "
+                f"{len(image_data_url) / (1024 * 1024):.1f} MB (limit 5 MB). "
+                f"Resize or compress the image and try again."
+            )
+
         debug_call_data["image_size_bytes"] = image_size_bytes
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
@@ -455,13 +487,20 @@ async def vision_analyze_tool(
                 f"API provider account and try again. Error: {e}"
             )
         elif any(hint in err_str for hint in (
-            "does not support", "not support image", "invalid_request",
-            "content_policy", "image_url", "multimodal",
+            "does not support", "not support image",
+            "content_policy", "multimodal",
             "unrecognized request argument", "image input",
         )):
             analysis = (
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
+            )
+        elif "invalid_request" in err_str or "image_url" in err_str:
+            analysis = (
+                "The vision API rejected the image. This can happen when the "
+                "image is too large, in an unsupported format, or corrupted. "
+                "Try a smaller JPEG/PNG (under 3.5 MB) and retry. "
+                f"Error: {e}"
             )
         else:
             analysis = (

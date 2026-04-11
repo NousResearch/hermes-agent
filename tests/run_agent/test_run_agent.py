@@ -19,6 +19,7 @@ import pytest
 
 import run_agent
 from run_agent import AIAgent
+from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -135,6 +136,48 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+class TestProviderModelNormalization:
+    def test_aiagent_strips_matching_native_provider_prefix(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="zai/glm-5.1",
+                provider="zai",
+                base_url="https://api.z.ai/api/paas/v4",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.model == "glm-5.1"
+
+    def test_aiagent_keeps_aggregator_vendor_slug(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="anthropic/claude-sonnet-4.6",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.model == "anthropic/claude-sonnet-4.6"
 
 
 # ---------------------------------------------------------------------------
@@ -910,14 +953,24 @@ class TestBuildApiKwargs:
         assert kwargs["messages"][0]["content"][0]["text"] == "hi"
         assert "cache_control" not in kwargs["messages"][0]["content"][0]
 
-    def test_qwen_portal_omits_max_tokens(self, agent):
+    def test_qwen_portal_sends_explicit_max_tokens(self, agent):
+        """When the user explicitly sets max_tokens, it should be sent to Qwen Portal."""
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.max_tokens = 4096
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
-        assert "max_tokens" not in kwargs
-        assert "max_completion_tokens" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_qwen_portal_default_max_tokens(self, agent):
+        """When max_tokens is None, Qwen Portal gets a default of 65536
+        to prevent reasoning models from exhausting their output budget."""
+        agent.base_url = "https://portal.qwen.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.max_tokens = None
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["max_tokens"] == 65536
 
 
 class TestBuildAssistantMessage:
@@ -1780,6 +1833,111 @@ class TestRunConversation:
         assert result["final_response"] == "Here is the actual answer."
         assert result["api_calls"] == 2  # 1 original + 1 nudge retry
 
+    def test_empty_response_triggers_fallback_provider(self, agent):
+        """After 3 empty retries, fallback provider is activated and produces content."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        # Configure a fallback chain
+        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        content_resp = _mock_response(content="Fallback answer.", finish_reason="stop")
+        # 4 empty (1 orig + 3 retries), then fallback model answers
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp, content_resp,
+        ]
+
+        fallback_called = {"called": False}
+
+        def _mock_fallback():
+            fallback_called["called"] = True
+            # Simulate what _try_activate_fallback does: just advance the
+            # index and set the flag (the client is already mocked).
+            agent._fallback_index = 1
+            agent._fallback_activated = True
+            agent.model = "anthropic/claude-sonnet-4"
+            agent.provider = "openrouter"
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+        ):
+            result = agent.run_conversation("answer me")
+        assert fallback_called["called"], "Fallback should have been triggered"
+        assert result["completed"] is True
+        assert result["final_response"] == "Fallback answer."
+
+    def test_empty_response_fallback_also_empty_returns_empty(self, agent):
+        """If fallback also returns empty, final response is (empty)."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
+        agent._fallback_index = 0
+        agent._fallback_activated = False
+
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        # 4 empty from primary (1 + 3 retries), fallback activated,
+        # then 4 more empty from fallback (1 + 3 retries), no more fallbacks
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp,  # primary exhausted
+            empty_resp, empty_resp, empty_resp, empty_resp,  # fallback exhausted
+        ]
+
+        def _mock_fallback():
+            if agent._fallback_index >= len(agent._fallback_chain):
+                return False
+            agent._fallback_index += 1
+            agent._fallback_activated = True
+            agent.model = "anthropic/claude-sonnet-4"
+            agent.provider = "openrouter"
+            return True
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["final_response"] == "(empty)"
+
+    def test_empty_response_emits_status_for_gateway(self, agent):
+        """_emit_status is called during empty retries so gateway users see feedback."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        # 4 empty: 1 original + 3 retries, all empty, no fallback
+        agent.client.chat.completions.create.side_effect = [
+            empty_resp, empty_resp, empty_resp, empty_resp,
+        ]
+
+        status_messages = []
+
+        def _capture_status(msg):
+            status_messages.append(msg)
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=_capture_status),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["final_response"] == "(empty)"
+        # Should have emitted retry statuses (3 retries) + final failure
+        retry_msgs = [m for m in status_messages if "retrying" in m.lower()]
+        assert len(retry_msgs) == 3, f"Expected 3 retry status messages, got {len(retry_msgs)}: {status_messages}"
+        failure_msgs = [m for m in status_messages if "no content" in m.lower() or "no fallback" in m.lower()]
+        assert len(failure_msgs) >= 1, f"Expected at least 1 failure status, got: {status_messages}"
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"
@@ -2082,6 +2240,28 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "rate limited" in result["error"]
 
+    def test_build_api_kwargs_error_no_unbound_local(self, agent):
+        """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
+
+        Regression: _dump_api_request_debug(api_kwargs, ...) in the except block
+        referenced api_kwargs before it was assigned when _build_api_kwargs threw.
+        """
+        self._setup_agent(agent)
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=ValueError("bad messages")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+        # Must surface the real error, not UnboundLocalError
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "UnboundLocalError" not in result.get("error", "")
+        assert "bad messages" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # Flush sentinel leak
@@ -2236,6 +2416,29 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=402,
             has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_rotates_on_billing_reason_even_with_http_400(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                assert status_code == 400
+                assert error_context == {"reason": "out_of_extra_usage"}
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=400,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
+            error_context={"reason": "out_of_extra_usage"},
         )
 
         assert recovered is True

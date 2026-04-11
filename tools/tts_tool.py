@@ -2,11 +2,12 @@
 """
 Text-to-Speech Tool Module
 
-Supports five TTS providers:
+Supports six TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -23,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -62,6 +64,11 @@ def _import_openai_client():
     from openai import OpenAI as OpenAIClient
     return OpenAIClient
 
+def _import_mistral_client():
+    """Lazy import Mistral client. Returns the class or raises ImportError."""
+    from mistralai.client import Mistral
+    return Mistral
+
 def _import_sounddevice():
     """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
     import sounddevice as sd
@@ -82,6 +89,8 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
+DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -366,6 +375,55 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Mistral (Voxtral TTS)
+# ===========================================================================
+def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Mistral Voxtral TTS API.
+
+    The API returns base64-encoded audio; this function decodes it
+    and writes the raw bytes to *output_path*.
+    Supports native Opus output for Telegram voice bubbles.
+    """
+    api_key = os.getenv("MISTRAL_API_KEY", "")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not set. Get one at https://console.mistral.ai/")
+
+    mi_config = tts_config.get("mistral", {})
+    model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
+    voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
+
+    if output_path.endswith(".ogg"):
+        response_format = "opus"
+    elif output_path.endswith(".wav"):
+        response_format = "wav"
+    elif output_path.endswith(".flac"):
+        response_format = "flac"
+    else:
+        response_format = "mp3"
+
+    Mistral = _import_mistral_client()
+    try:
+        with Mistral(api_key=api_key) as client:
+            response = client.audio.speech.complete(
+                model=model,
+                input=text,
+                voice_id=voice_id,
+                response_format=response_format,
+            )
+            audio_bytes = base64.b64decode(response.audio_data)
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("Mistral TTS failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Mistral TTS failed: {type(e).__name__}") from e
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -480,7 +538,8 @@ def text_to_speech_tool(
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
-    platform = os.getenv("HERMES_SESSION_PLATFORM", "").lower()
+    from gateway.session_context import get_session_env
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
     # Determine output path
@@ -492,7 +551,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -528,6 +587,18 @@ def text_to_speech_tool(
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
+
+        elif provider == "mistral":
+            try:
+                _import_mistral_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Mistral provider selected but 'mistralai' package not installed. "
+                             "Run: pip install 'hermes-agent[mistral]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Mistral Voxtral TTS...")
+            _generate_mistral_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -583,8 +654,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai"):
-            # These providers can output Opus natively if the path ends in .ogg
+        elif provider in ("elevenlabs", "openai", "mistral"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -652,6 +722,12 @@ def check_tts_requirements() -> bool:
         pass
     if os.getenv("MINIMAX_API_KEY"):
         return True
+    try:
+        _import_mistral_client()
+        if os.getenv("MISTRAL_API_KEY"):
+            return True
+    except ImportError:
+        pass
     if _check_neutts_available():
         return True
     return False

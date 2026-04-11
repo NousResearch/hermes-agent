@@ -16,8 +16,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
-from prompt_toolkit.completion import Completer, Completion
+# prompt_toolkit is an optional CLI dependency — only needed for
+# SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
+# environments that lack it must still be able to import this module
+# for resolve_command, gateway_help_lines, and COMMAND_REGISTRY.
+try:
+    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+    from prompt_toolkit.completion import Completer, Completion
+except ImportError:  # pragma: no cover
+    AutoSuggest = object  # type: ignore[assignment,misc]
+    Completer = object    # type: ignore[assignment,misc]
+    Suggestion = None     # type: ignore[assignment]
+    Completion = None     # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +85,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
-    CommandDef("status", "Show session info", "Session",
-               gateway_only=True),
+    CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
@@ -102,6 +111,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+    CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
+               args_hint="[normal|fast|status]",
+               subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
@@ -130,6 +142,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
+    CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
+               gateway_only=True),
     CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
@@ -173,12 +187,6 @@ def resolve_command(name: str) -> CommandDef | None:
     Accepts names with or without the leading slash.
     """
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
-
-
-def register_plugin_command(cmd: CommandDef) -> None:
-    """Append a plugin-defined command to the registry and refresh lookups."""
-    COMMAND_REGISTRY.append(cmd)
-    rebuild_lookups()
 
 
 def rebuild_lookups() -> None:
@@ -643,8 +651,18 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        command_filter: Callable[[str], bool] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._command_filter = command_filter
+
+    def _command_allowed(self, slash_command: str) -> bool:
+        if self._command_filter is None:
+            return True
+        try:
+            return bool(self._command_filter(slash_command))
+        except Exception:
+            return True
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -943,7 +961,7 @@ class SlashCommandCompleter(Completer):
                     return
 
             # Static subcommand completions
-            if " " not in sub_text and base_cmd in SUBCOMMANDS:
+            if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
                         yield Completion(
@@ -956,6 +974,8 @@ class SlashCommandCompleter(Completer):
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
+            if not self._command_allowed(cmd):
+                continue
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
@@ -1014,6 +1034,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
             for cmd in COMMANDS:
+                if self._completer is not None and not self._completer._command_allowed(cmd):
+                    continue
                 cmd_name = cmd[1:]  # strip leading /
                 if cmd_name.startswith(word) and cmd_name != word:
                     return Suggestion(cmd_name[len(word):])
@@ -1024,6 +1046,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
         sub_lower = sub_text.lower()
 
         # Static subcommands
+        if self._completer is not None and not self._completer._command_allowed(base_cmd):
+            return None
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:

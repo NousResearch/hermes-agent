@@ -7,52 +7,6 @@ compression fires), users see >100% in /stats, gateway status, and
 memory tool output.
 """
 
-import pytest
-
-
-class TestContextCompressorUsagePercent:
-    """agent/context_compressor.py — get_status() usage_percent"""
-
-    def test_usage_percent_capped_at_100(self):
-        """Tokens exceeding context_length should still show max 100%."""
-        from agent.context_compressor import ContextCompressor
-
-        comp = ContextCompressor.__new__(ContextCompressor)
-        comp.last_prompt_tokens = 210_000  # exceeds context_length
-        comp.context_length = 200_000
-        comp.threshold_tokens = 160_000
-        comp.compression_count = 0
-
-        status = comp.get_status()
-        assert status["usage_percent"] <= 100
-
-    def test_usage_percent_normal(self):
-        """Normal usage should show correct percentage."""
-        from agent.context_compressor import ContextCompressor
-
-        comp = ContextCompressor.__new__(ContextCompressor)
-        comp.last_prompt_tokens = 100_000
-        comp.context_length = 200_000
-        comp.threshold_tokens = 160_000
-        comp.compression_count = 0
-
-        status = comp.get_status()
-        assert status["usage_percent"] == 50.0
-
-    def test_usage_percent_zero_context_length(self):
-        """Zero context_length should return 0, not crash."""
-        from agent.context_compressor import ContextCompressor
-
-        comp = ContextCompressor.__new__(ContextCompressor)
-        comp.last_prompt_tokens = 1000
-        comp.context_length = 0
-        comp.threshold_tokens = 0
-        comp.compression_count = 0
-
-        status = comp.get_status()
-        assert status["usage_percent"] == 0
-
-
 class TestMemoryToolPercentClamp:
     """tools/memory_tool.py — _success_response and _render_block pct"""
 
@@ -125,12 +79,6 @@ class TestSourceLinesAreClamped:
         base = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         with open(os.path.join(base, rel_path)) as f:
             return f.read()
-
-    def test_context_compressor_clamped(self):
-        src = self._read_file("agent/context_compressor.py")
-        assert "min(100," in src, (
-            "context_compressor.py usage_percent is not clamped with min(100, ...)"
-        )
 
     def test_gateway_run_clamped(self):
         src = self._read_file("gateway/run.py")

@@ -2,6 +2,7 @@
 
 import json
 import os
+from types import SimpleNamespace
 
 from gateway import status
 
@@ -102,6 +103,41 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+
+class TestTerminatePid:
+    def test_force_uses_taskkill_on_windows(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        def fake_run(cmd, capture_output=False, text=False, timeout=None):
+            calls.append((cmd, capture_output, text, timeout))
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(status.subprocess, "run", fake_run)
+
+        status.terminate_pid(123, force=True)
+
+        assert calls == [
+            (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10)
+        ]
+
+    def test_force_falls_back_to_sigterm_when_taskkill_missing(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(status, "_IS_WINDOWS", True)
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError
+
+        def fake_kill(pid, sig):
+            calls.append((pid, sig))
+
+        monkeypatch.setattr(status.subprocess, "run", fake_run)
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        status.terminate_pid(456, force=True)
+
+        assert calls == [(456, status.signal.SIGTERM)]
 
 
 class TestScopedLocks:

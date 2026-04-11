@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "weixin", "sms", "email", "webhook", "bluebubbles",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -234,6 +234,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
@@ -346,7 +347,42 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     return None
 
 
-_SCRIPT_TIMEOUT = 120  # seconds
+_DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+# Backward-compatible module override used by tests and emergency monkeypatches.
+_SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _get_script_timeout() -> int:
+    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
+    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
+        try:
+            timeout = int(float(_SCRIPT_TIMEOUT))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
+
+    env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("script_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron script timeout from config: %s", exc)
+
+    return _DEFAULT_SCRIPT_TIMEOUT
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -393,16 +429,26 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    script_timeout = _get_script_timeout()
+
     try:
         result = subprocess.run(
             [sys.executable, str(path)],
             capture_output=True,
             text=True,
-            timeout=_SCRIPT_TIMEOUT,
+            timeout=script_timeout,
             cwd=str(path.parent),
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
+
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
 
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
@@ -412,17 +458,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        # Redact any secrets that may appear in script output before
-        # they are injected into the LLM prompt context.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {_SCRIPT_TIMEOUT}s: {path}"
+        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 
@@ -646,6 +685,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             },
         )
 
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        credential_pool = None
+        runtime_provider = str(turn_route["runtime"].get("provider") or "").strip().lower()
+        if runtime_provider:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(runtime_provider)
+                if pool.has_credentials():
+                    credential_pool = pool
+                    logger.info(
+                        "Job '%s': loaded credential pool for provider %s with %d entries",
+                        job_id,
+                        runtime_provider,
+                        len(pool.entries()),
+                    )
+            except Exception as e:
+                logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -657,6 +714,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
+            fallback_model=fallback_model,
+            credential_pool=credential_pool,
             providers_allowed=pr.get("only"),
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
@@ -711,7 +770,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False)
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

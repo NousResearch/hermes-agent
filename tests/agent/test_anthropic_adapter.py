@@ -17,7 +17,6 @@ from agent.anthropic_adapter import (
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
-    get_anthropic_token_source,
     is_claude_code_token_valid,
     normalize_anthropic_response,
     normalize_model_name,
@@ -40,8 +39,13 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
     def test_managed_key(self):
-        # Managed keys from ~/.claude.json are NOT regular API keys
-        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is True
+        # Managed keys from ~/.claude.json without a recognisable Anthropic
+        # prefix are not positively identified as OAuth.  They enter the system
+        # via diagnostics-only read_claude_managed_key(), not via
+        # resolve_anthropic_token(), so they don't reach the OAuth gate in
+        # practice.  Third-party provider keys (MiniMax, Alibaba) also lack
+        # the sk-ant- prefix and must NOT be treated as OAuth.
+        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is False
 
     def test_jwt_token(self):
         # JWTs from OAuth flow
@@ -81,6 +85,9 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -92,7 +99,20 @@ class TestBuildAnthropicClient:
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
+            }
+
+    def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-cn-secret-123",
+                base_url="https://api.minimaxi.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "minimax-cn-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
 
@@ -164,15 +184,6 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "sk-ant-oat01-mytoken"
-
-    def test_reports_claude_json_primary_key_source(self, monkeypatch, tmp_path):
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
-        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
-        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
-
-        assert get_anthropic_token_source("sk-ant-api03-primary") == "claude_json_primary_api_key"
 
     def test_does_not_resolve_primary_api_key_as_native_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

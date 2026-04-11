@@ -40,9 +40,6 @@ async def test_enrich_message_with_transcription_skips_when_stt_disabled():
     with patch(
         "tools.transcription_tools.transcribe_audio",
         side_effect=AssertionError("transcribe_audio should not be called when STT is disabled"),
-    ), patch(
-        "tools.transcription_tools.get_stt_model_from_config",
-        return_value=None,
     ):
         result = await runner._enrich_message_with_transcription(
             "caption",
@@ -63,9 +60,6 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
     with patch(
         "tools.transcription_tools.transcribe_audio",
         return_value={"success": False, "error": "VOICE_TOOLS_OPENAI_KEY not set"},
-    ), patch(
-        "tools.transcription_tools.get_stt_model_from_config",
-        return_value=None,
     ):
         result = await runner._enrich_message_with_transcription(
             "caption",

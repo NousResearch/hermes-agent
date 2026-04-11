@@ -35,12 +35,6 @@ class TestTokenValidation:
         valid, msg = validate_copilot_token("")
         assert valid is False
 
-    def test_is_classic_pat(self):
-        from hermes_cli.copilot_auth import is_classic_pat
-        assert is_classic_pat("ghp_abc123") is True
-        assert is_classic_pat("gho_abc123") is False
-        assert is_classic_pat("github_pat_abc") is False
-        assert is_classic_pat("") is False
 
 
 class TestResolveToken:

@@ -201,8 +201,7 @@ class PluginContext:
 
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
-        as the default dispatch function via ``set_defaults(func=...)``.
-        """
+        as the default dispatch function via ``set_defaults(func=...)``."""
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,
@@ -212,6 +211,38 @@ class PluginContext:
             "plugin": self.manifest.name,
         }
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
+    # -- context engine registration -----------------------------------------
+
+    def register_context_engine(self, engine) -> None:
+        """Register a context engine to replace the built-in ContextCompressor.
+
+        Only one context engine plugin is allowed. If a second plugin tries
+        to register one, it is rejected with a warning.
+
+        The engine must be an instance of ``agent.context_engine.ContextEngine``.
+        """
+        if self._manager._context_engine is not None:
+            logger.warning(
+                "Plugin '%s' tried to register a context engine, but one is "
+                "already registered. Only one context engine plugin is allowed.",
+                self.manifest.name,
+            )
+            return
+        # Defer the import to avoid circular deps at module level
+        from agent.context_engine import ContextEngine
+        if not isinstance(engine, ContextEngine):
+            logger.warning(
+                "Plugin '%s' tried to register a context engine that does not "
+                "inherit from ContextEngine. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        self._manager._context_engine = engine
+        logger.info(
+            "Plugin '%s' registered context engine: %s",
+            self.manifest.name, engine.name,
+        )
 
     # -- hook registration --------------------------------------------------
 
@@ -245,6 +276,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
+        self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
 
@@ -564,6 +596,11 @@ def get_plugin_cli_commands() -> Dict[str, dict]:
     suitable for wiring into argparse subparsers.
     """
     return dict(get_plugin_manager()._cli_commands)
+
+
+def get_plugin_context_engine():
+    """Return the plugin-registered context engine, or None."""
+    return get_plugin_manager()._context_engine
 
 
 def get_plugin_toolsets() -> List[tuple]:

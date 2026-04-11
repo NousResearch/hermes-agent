@@ -496,6 +496,13 @@ def _provider_configured_status(
         if entry is not None:
             return _status_label(configured)
 
+    if provider_slug in {"openai-codex", "nous", "qwen-oauth"}:
+        try:
+            pool = load_pool(provider_slug)
+            return _status_label(bool(pool and pool.has_credentials()))
+        except Exception:
+            return _status_label(False)
+
     status = get_auth_status(provider_slug)
     configured = bool(status.get("configured") or status.get("logged_in"))
     return _status_label(configured)

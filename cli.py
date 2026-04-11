@@ -4076,6 +4076,7 @@ class HermesCLI:
 
         user_provs = None
         custom_provs = None
+        cfg = None
         try:
             cfg = load_cli_config()
             user_provs = cfg.get("providers")
@@ -4163,6 +4164,7 @@ class HermesCLI:
             explicit_provider=request.provider_slug,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            runtime_config=cfg,
         )
         self._close_model_selection(buffer, clear_text=True)
         if not result.success:
@@ -4189,10 +4191,9 @@ class HermesCLI:
 
         user_provs = None
         custom_provs = None
+        cfg = None
         try:
-            from hermes_cli.config import load_config
-
-            cfg = load_config()
+            cfg = load_cli_config()
             user_provs = cfg.get("providers")
             custom_provs = cfg.get("custom_providers")
         except Exception:
@@ -4213,6 +4214,7 @@ class HermesCLI:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            runtime_config=cfg,
         )
 
         if not result.success:

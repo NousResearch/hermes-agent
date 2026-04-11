@@ -2133,6 +2133,145 @@ class HermesCLI:
         line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
         return frags
 
+    def _render_resume_panel(self, sessions: list, cursor: int, width: int) -> list:
+        """Render the interactive session picker panel as prompt_toolkit fragments."""
+        import textwrap as _tw
+
+        filter_text = self._resume_filter
+        preview_lines = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+        full_preview_len = CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300)
+
+        def _display_title(s: dict) -> str:
+            return s.get("title") or "—"
+
+        def _search_text(s: dict) -> str:
+            parts = []
+            t = s.get("title") or ""
+            p = s.get("preview") or ""
+            i = s.get("id", "")
+            if t:
+                parts.append(t)
+            if p:
+                parts.append(p)
+            if i:
+                parts.append(i)
+            return " ".join(parts).lower()
+
+        def _fuzzy_match(query: str, text: str) -> bool:
+            it = iter(text)
+            return all(ch in it for ch in query.lower())
+
+        # Filter sessions
+        if filter_text:
+            filtered = [s for s in sessions if _fuzzy_match(filter_text, _search_text(s))]
+        else:
+            filtered = list(sessions)
+
+        if not filtered:
+            header = " No sessions match" if filter_text else " No sessions"
+            box_w = min(len(header) + 4, width)
+            return [
+                ("class:resume-panel-border", "┌" + "─" * (box_w - 2) + "┐\n"),
+                ("class:resume-panel-text", f"│{header}{' ' * (box_w - len(header) - 2)}│\n"),
+                ("class:resume-panel-border", "└" + "─" * (box_w - 2) + "┘"),
+            ]
+
+        from hermes_cli.main import _relative_time
+
+        # Column widths
+        title_w = 30
+        age_w = 12
+        id_w = 24
+        content_w = max(width - title_w - age_w - id_w - 4, 10)
+
+        lines: list = []
+        box_w = width
+
+        # Header
+        header_text = f" Sessions ({len(filtered)})"
+        if filter_text:
+            header_text += f"  /{filter_text}"
+        header_text = header_text.ljust(box_w - 2)
+
+        lines.append(("class:resume-panel-border", "┌" + "─" * (box_w - 2) + "┐\n"))
+        lines.append(("class:resume-panel-header", f"│{header_text}│\n"))
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+
+        # Page-based navigation
+        page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+        total_pages = max(1, (len(filtered) + page_size - 1) // page_size)
+        current_page = cursor // page_size + 1 if len(filtered) > 0 else 1
+
+        page_start = (current_page - 1) * page_size
+        page_end = min(page_start + page_size, len(filtered))
+        visible = filtered[page_start:page_end]
+
+        # Range indicator
+        range_text = f"showing {page_start + 1}-{page_end} of {len(filtered)}"
+        if total_pages > 1:
+            range_text += f"  (page {current_page}/{total_pages})"
+
+        # Column header
+        col_hdr = f" {'Title':<{title_w}} {'Preview':<{content_w}} {'Age':<{age_w}} {'ID'}"
+        lines.append(("class:resume-panel-col-header", f"│{col_hdr[:box_w-2]:<{box_w-2}}│\n"))
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+
+        for row_idx, s in enumerate(visible):
+            abs_idx = page_start + row_idx
+            is_selected = abs_idx == cursor
+            title = (_display_title(s))[:title_w]
+            preview = (s.get("preview") or "")[:content_w]
+            age = _relative_time(s.get("last_active"))[:age_w]
+            sid = (s.get("id", "") or "")[:id_w]
+
+            prefix = "▸ " if is_selected else "  "
+            row_text = f"{prefix}{title:<{title_w}} {preview:<{content_w}} {age:<{age_w}} {sid}"
+
+            if is_selected:
+                lines.append(("class:resume-panel-selected", f"│{row_text[:box_w-2]:<{box_w-2}}│\n"))
+            else:
+                lines.append(("class:resume-panel-row", f"│{row_text[:box_w-2]:<{box_w-2}}│\n"))
+
+        # Full preview for selected item
+        if 0 <= cursor < len(filtered):
+            sel = filtered[cursor]
+            full_preview = sel.get("_full_preview") or sel.get("preview") or ""
+            if full_preview and preview_lines > 0:
+                if len(full_preview) > full_preview_len:
+                    full_preview = full_preview[:full_preview_len] + "…"
+                inner_w = box_w - 4
+                preview_label = " Preview"
+                lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+                lines.append(("class:resume-panel-header", f"│{preview_label:<{box_w-2}}│\n"))
+                lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+                wrapped_lines = full_preview.split("\n")
+                shown = 0
+                for wline in wrapped_lines:
+                    if shown >= preview_lines:
+                        break
+                    sub_wrapped = _tw.wrap(wline, width=inner_w)
+                    for sub in sub_wrapped:
+                        if shown >= preview_lines:
+                            break
+                        safe = sub[:inner_w].ljust(inner_w)
+                        lines.append(("class:resume-panel-preview", f"│ {safe} │\n"))
+                        shown += 1
+                if shown == 0 and full_preview:
+                    safe = full_preview[:inner_w].ljust(inner_w)
+                    lines.append(("class:resume-panel-preview", f"│ {safe} │\n"))
+
+        # Footer
+        esc_hint = "Esc cancel search" if filter_text else "Esc close"
+        if filter_text:
+            footer_text = f" {range_text}  {esc_hint}  /{filter_text}"
+        else:
+            footer_text = f" {range_text}  Space=n page down  b page back  / search  {esc_hint}"
+        footer_text = footer_text[:box_w - 2].ljust(box_w - 2)
+        lines.append(("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"))
+        lines.append(("class:resume-panel-header", f"│{footer_text}│\n"))
+        lines.append(("class:resume-panel-border", "└" + "─" * (box_w - 2) + "┘"))
+        return lines
+
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
         current_model = (self.model or "").strip()
@@ -3854,7 +3993,7 @@ class HermesCLI:
         print(f"  Config File: {config_path} {config_status}")
         print()
     
-    def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
+    def _list_recent_sessions(self, limit: int = 10, preview_length: int = None, full_preview_length: int = None) -> list[dict[str, Any]]:
         """Return recent sessions for in-chat browsing/resume affordances.
 
         With display.resume_include_gateway: true, gateway sessions
@@ -3864,6 +4003,10 @@ class HermesCLI:
         if not self._session_db:
             return []
         include_gateway = CLI_CONFIG.get("display", {}).get("resume_include_gateway", False)
+        if preview_length is None:
+            preview_length = CLI_CONFIG.get("display", {}).get("resume_preview_length", 80)
+        if full_preview_length is None:
+            full_preview_length = CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300)
         try:
             sessions = self._session_db.list_sessions_rich(
                 source=None if include_gateway else "cli",
@@ -4045,56 +4188,17 @@ class HermesCLI:
         return selected_id[0]
 
     def show_sessions_full(self) -> None:
-        """Open an interactive session picker (prompt_toolkit mini-app).
-
-        Type to filter, ↑↓ to navigate, Enter to select and auto-resume,
-        Esc/q to cancel.  Falls back to a plain ``less`` list if the picker
-        fails (e.g. non-interactive terminal).
-        """
-        sessions = self._list_recent_sessions(limit=200)
-        if not sessions:
-            print("  No other sessions found.")
-            return
-
-        try:
-            chosen_id = self._pick_session_interactive(sessions)
-            if chosen_id:
-                self._handle_resume_command(f"/resume {chosen_id}")
-        except Exception:
-            # Fallback: plain session list (non-interactive terminal, test env, etc.)
-            if self._show_recent_sessions(reason="resume", limit=200):
-                return
-            # Last resort: less pager
-            import shutil as _shutil, subprocess as _subprocess
-            from hermes_cli.main import _relative_time
-
-            W = min(_shutil.get_terminal_size().columns, 120)
-            id_w, time_w, title_w = 24, 13, 38
-            prev_w = max(W - id_w - time_w - title_w - 6, 20)
-            rows = [
-                f"  {'Title':<{title_w}} {'Age':<{time_w}} {'Preview':<{prev_w}} ID\n",
-                f"  {'─' * title_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n",
-            ]
-            for s in sessions:
-                t = (s.get("title") or s.get("preview") or s["id"])[:title_w - 1]
-                rows.append(
-                    f"  {t:<{title_w}} {_relative_time(s.get('last_active')):<{time_w}} "
-                    f"{(s.get('preview') or '')[:prev_w - 1]:<{prev_w}} {s['id']}\n"
-                )
-            rows.append("\n  /resume <id or title>  to continue a session\n")
-            output = "".join(rows)
-            pager = _shutil.which("less")
-            if pager:
-                try:
-                    proc = _subprocess.Popen(
-                        [pager, "-R", "--no-init", "--quit-if-one-screen"],
-                        stdin=_subprocess.PIPE,
-                    )
-                    proc.communicate(output.encode("utf-8", errors="replace"))
-                    return
-                except Exception:
-                    pass
-            print(output)
+        """Open the interactive session picker panel."""
+        sessions = self._list_recent_sessions(
+            limit=CLI_CONFIG.get("display", {}).get("resume_session_limit", 2000),
+            preview_length=CLI_CONFIG.get("display", {}).get("resume_preview_length", 80),
+            full_preview_length=CLI_CONFIG.get("display", {}).get("resume_full_preview_length", 300),
+        )
+        self._resume_sessions = sessions
+        self._resume_cursor = 0
+        self._resume_filter = ""
+        self._resume_searching = False
+        self._resume_panel_open = True
 
     def show_history_full(self) -> None:
         """Show full conversation history newest-first, piped through a pager.

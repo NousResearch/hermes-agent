@@ -9459,7 +9459,8 @@ class AIAgent:
                         fallback = getattr(self, '_last_content_with_tools', None)
                         if fallback:
                             _turn_exit_reason = "fallback_prior_turn_content"
-                            logger.debug("Empty follow-up after tool calls — using prior turn content as final response")
+                            logger.info("Empty follow-up after tool calls — using prior turn content as final response")
+                            self._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
                             self._last_content_with_tools = None
                             self._empty_content_retries = 0
                             for i in range(len(messages) - 1, -1, -1):
@@ -9490,9 +9491,13 @@ class AIAgent:
                         )
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1
-                            self._vprint(
-                                f"{self.log_prefix}↻ Thinking-only response — "
-                                f"prefilling to continue "
+                            logger.info(
+                                "Thinking-only response (no visible content) — "
+                                "prefilling to continue (%d/2)",
+                                self._thinking_prefill_retries,
+                            )
+                            self._emit_status(
+                                f"↻ Thinking-only response — prefilling to continue "
                                 f"({self._thinking_prefill_retries}/2)"
                             )
                             interim_msg = self._build_assistant_message(
@@ -9508,23 +9513,57 @@ class AIAgent:
                         # Model returned nothing — no content, no
                         # structured reasoning, no tool calls.  Common
                         # with open models (transient provider issues,
-                        # rate limits, sampling flukes).  Silently retry
-                        # up to 3 times before giving up.  Skip when
+                        # rate limits, sampling flukes).  Retry up to 3
+                        # times before attempting fallback.  Skip when
                         # content has inline <think> tags (model chose
                         # to reason, just no visible text).
                         _truly_empty = not final_response.strip()
                         if _truly_empty and not _has_structured and self._empty_content_retries < 3:
                             self._empty_content_retries += 1
-                            self._vprint(
-                                f"{self.log_prefix}↻ Empty response (no content or reasoning) "
-                                f"— retrying ({self._empty_content_retries}/3)",
-                                force=True,
+                            logger.warning(
+                                "Empty response (no content or reasoning) — "
+                                "retry %d/3 (model=%s)",
+                                self._empty_content_retries, self.model,
+                            )
+                            self._emit_status(
+                                f"⚠️ Empty response from model — retrying "
+                                f"({self._empty_content_retries}/3)"
                             )
                             continue
 
-                        # Exhausted prefill attempts, empty retries, or
-                        # structured reasoning with no content —
-                        # fall through to "(empty)" terminal.
+                        # ── Exhausted retries — try fallback provider ──
+                        # Before giving up with "(empty)", attempt to
+                        # switch to the next provider in the fallback
+                        # chain.  This covers the case where a model
+                        # (e.g. GLM-4.5-Air) consistently returns empty
+                        # due to context degradation or provider issues.
+                        if _truly_empty and self._fallback_chain:
+                            logger.warning(
+                                "Empty response after %d retries — "
+                                "attempting fallback (model=%s, provider=%s)",
+                                self._empty_content_retries, self.model,
+                                self.provider,
+                            )
+                            self._emit_status(
+                                "⚠️ Model returning empty responses — "
+                                "switching to fallback provider..."
+                            )
+                            if self._try_activate_fallback():
+                                self._empty_content_retries = 0
+                                self._emit_status(
+                                    f"↻ Switched to fallback: {self.model} "
+                                    f"({self.provider})"
+                                )
+                                logger.info(
+                                    "Fallback activated after empty responses: "
+                                    "now using %s on %s",
+                                    self.model, self.provider,
+                                )
+                                continue
+
+                        # Exhausted retries and fallback chain (or no
+                        # fallback configured).  Fall through to the
+                        # "(empty)" terminal.
                         _turn_exit_reason = "empty_response_exhausted"
                         reasoning_text = self._extract_reasoning(assistant_message)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
@@ -9533,9 +9572,28 @@ class AIAgent:
 
                         if reasoning_text:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
-                            self._vprint(f"{self.log_prefix}ℹ️  Reasoning-only response (no visible content). Reasoning: {reasoning_preview}")
+                            logger.warning(
+                                "Reasoning-only response (no visible content) "
+                                "after exhausting retries and fallback. "
+                                "Reasoning: %s", reasoning_preview,
+                            )
+                            self._emit_status(
+                                "⚠️ Model produced reasoning but no visible "
+                                "response after all retries. Returning empty."
+                            )
                         else:
-                            self._vprint(f"{self.log_prefix}ℹ️  Empty response (no content or reasoning) after 3 retries.")
+                            logger.warning(
+                                "Empty response (no content or reasoning) "
+                                "after %d retries. No fallback available. "
+                                "model=%s provider=%s",
+                                self._empty_content_retries, self.model,
+                                self.provider,
+                            )
+                            self._emit_status(
+                                "❌ Model returned no content after all retries"
+                                + (" and fallback attempts." if self._fallback_chain else
+                                   ". No fallback providers configured.")
+                            )
 
                         final_response = "(empty)"
                         break

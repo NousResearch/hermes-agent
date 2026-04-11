@@ -13,7 +13,21 @@ from tools.browser_tool import (
     _find_agent_browser,
     _run_browser_command,
     _SANE_PATH,
+    check_browser_requirements,
 )
+import tools.browser_tool as _bt
+
+
+@pytest.fixture(autouse=True)
+def _clear_browser_caches():
+    """Clear lru_cache and manual caches between tests."""
+    _discover_homebrew_node_dirs.cache_clear()
+    _bt._cached_agent_browser = None
+    _bt._agent_browser_resolved = False
+    yield
+    _discover_homebrew_node_dirs.cache_clear()
+    _bt._cached_agent_browser = None
+    _bt._agent_browser_resolved = False
 
 
 class TestSanePath:
@@ -37,7 +51,7 @@ class TestDiscoverHomebrewNodeDirs:
     def test_returns_empty_when_no_homebrew(self):
         """Non-macOS systems without /opt/homebrew/opt should return empty."""
         with patch("os.path.isdir", return_value=False):
-            assert _discover_homebrew_node_dirs() == []
+            assert _discover_homebrew_node_dirs() == ()
 
     def test_finds_versioned_node_dirs(self):
         """Should discover node@20/bin, node@24/bin etc."""
@@ -67,13 +81,13 @@ class TestDiscoverHomebrewNodeDirs:
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", return_value=["node"]):
             result = _discover_homebrew_node_dirs()
-        assert result == []
+        assert result == ()
 
     def test_handles_oserror_gracefully(self):
         """Should return empty list if listdir raises OSError."""
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", side_effect=OSError("Permission denied")):
-            assert _discover_homebrew_node_dirs() == []
+            assert _discover_homebrew_node_dirs() == ()
 
 
 class TestFindAgentBrowser:
@@ -147,6 +161,31 @@ class TestFindAgentBrowser:
              ):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
+
+
+class TestBrowserRequirements:
+    def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+
+        assert check_browser_requirements() is False
+
+
+class TestRunBrowserCommandTermuxFallback:
+    def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+
+        result = _run_browser_command("task-1", "navigate", ["https://example.com"])
+
+        assert result["success"] is False
+        assert "bare npx fallback" in result["error"]
+        assert "agent-browser install" in result["error"]
 
 
 class TestRunBrowserCommandPathConstruction:

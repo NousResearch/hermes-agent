@@ -147,7 +147,7 @@ class TestBaseEnvCompatibility:
         """Hermes wires parser selection through ServerManager.tool_parser."""
         import ast
 
-        base_env_path = Path(__file__).parent.parent / "environments" / "hermes_base_env.py"
+        base_env_path = Path(__file__).parent.parent.parent / "environments" / "hermes_base_env.py"
         source = base_env_path.read_text()
         tree = ast.parse(source)
 
@@ -171,7 +171,7 @@ class TestBaseEnvCompatibility:
 
     def test_hermes_base_env_uses_config_tool_call_parser(self):
         """Verify hermes_base_env uses the config field rather than a local parser instance."""
-        base_env_path = Path(__file__).parent.parent / "environments" / "hermes_base_env.py"
+        base_env_path = Path(__file__).parent.parent.parent / "environments" / "hermes_base_env.py"
         source = base_env_path.read_text()
 
         assert 'tool_call_parser: str = Field(' in source

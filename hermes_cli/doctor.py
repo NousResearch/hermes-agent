@@ -54,6 +54,32 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
+from hermes_constants import is_termux as _is_termux
+
+
+def _python_install_cmd() -> str:
+    return "python -m pip install" if _is_termux() else "uv pip install"
+
+
+def _system_package_install_cmd(pkg: str) -> str:
+    if _is_termux():
+        return f"pkg install {pkg}"
+    if sys.platform == "darwin":
+        return f"brew install {pkg}"
+    return f"sudo apt install {pkg}"
+
+
+def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
+    steps: list[str] = []
+    step = 1
+    if not node_installed:
+        steps.append(f"{step}) pkg install nodejs")
+        step += 1
+    steps.append(f"{step}) npm install -g agent-browser")
+    steps.append(f"{step + 1}) agent-browser install")
+    return steps
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -200,7 +226,7 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: uv pip install {module}")
+            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
     
     for module, name in optional_packages:
         try:
@@ -503,7 +529,7 @@ def run_doctor(args):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
-        check_info("Install for faster search: sudo apt install ripgrep")
+        check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
@@ -526,7 +552,10 @@ def run_doctor(args):
         if shutil.which("docker"):
             check_ok("docker", "(optional)")
         else:
-            check_warn("docker not found", "(optional)")
+            if _is_termux():
+                check_info("Docker backend is not available inside Termux (expected on Android)")
+            else:
+                check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -574,9 +603,23 @@ def run_doctor(args):
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            if _is_termux():
+                check_info("agent-browser is not installed (expected in the tested Termux path)")
+                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+                check_info("Termux browser setup:")
+                for step in _termux_browser_setup_steps(node_installed=True):
+                    check_info(step)
+            else:
+                check_warn("agent-browser not installed", "(run: npm install)")
     else:
-        check_warn("Node.js not found", "(optional, needed for browser tools)")
+        if _is_termux():
+            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+            check_info("Install Node.js on Termux with: pkg install nodejs")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=False):
+                check_info(step)
+        else:
+            check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     if shutil.which("npm"):
@@ -679,9 +722,9 @@ def run_doctor(args):
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
-        # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+        # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
+        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
@@ -706,10 +749,15 @@ def run_doctor(args):
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
+                # Anthropic-compat endpoints (/anthropic) don't support /models.
+                # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                if _base and _base.rstrip("/").endswith("/anthropic"):
+                    from agent.auxiliary_client import _to_openai_base_url
+                    _base = _to_openai_base_url(_base)
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.0"
+                    _headers["User-Agent"] = "KimiCLI/1.30.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,
@@ -739,8 +787,9 @@ def run_doctor(args):
                 __import__("tinker_atropos")
                 check_ok("tinker-atropos", "(RL training backend)")
             except ImportError:
-                check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
-                issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
+                install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
+                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
+                issues.append(f"Install tinker-atropos: {install_cmd}")
         else:
             check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
     else:

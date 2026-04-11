@@ -135,9 +135,6 @@ class ProviderInfo:
     doc: str = ""                   # documentation URL
     model_count: int = 0
 
-    def has_api_url(self) -> bool:
-        return bool(self.api)
-
 
 # ---------------------------------------------------------------------------
 # Provider ID mapping: Hermes ↔ models.dev
@@ -634,43 +631,6 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
     return _parse_provider_info(mdev_id, raw)
 
 
-def list_all_providers() -> Dict[str, ProviderInfo]:
-    """Return all providers from models.dev as {provider_id: ProviderInfo}.
-
-    Returns the full catalog — 109+ providers.  For providers that have
-    a Hermes alias, both the models.dev ID and the Hermes ID are included.
-    """
-    data = fetch_models_dev()
-    result: Dict[str, ProviderInfo] = {}
-
-    for pid, pdata in data.items():
-        if isinstance(pdata, dict):
-            info = _parse_provider_info(pid, pdata)
-            result[pid] = info
-
-    return result
-
-
-def get_providers_for_env_var(env_var: str) -> List[str]:
-    """Reverse lookup: find all providers that use a given env var.
-
-    Useful for auto-detection: "user has ANTHROPIC_API_KEY set, which
-    providers does that enable?"
-
-    Returns list of models.dev provider IDs.
-    """
-    data = fetch_models_dev()
-    matches: List[str] = []
-
-    for pid, pdata in data.items():
-        if isinstance(pdata, dict):
-            env = pdata.get("env", [])
-            if isinstance(env, list) and env_var in env:
-                matches.append(pid)
-
-    return matches
-
-
 # ---------------------------------------------------------------------------
 # Model-level queries (rich ModelInfo)
 # ---------------------------------------------------------------------------
@@ -708,74 +668,3 @@ def get_model_info(
     return None
 
 
-def get_model_info_any_provider(model_id: str) -> Optional[ModelInfo]:
-    """Search all providers for a model by ID.
-
-    Useful when you have a full slug like "anthropic/claude-sonnet-4.6" or
-    a bare name and want to find it anywhere.  Checks Hermes-mapped providers
-    first, then falls back to all models.dev providers.
-    """
-    data = fetch_models_dev()
-
-    # Try Hermes-mapped providers first (more likely what the user wants)
-    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        pdata = data.get(mdev_id)
-        if not isinstance(pdata, dict):
-            continue
-        models = pdata.get("models", {})
-        if not isinstance(models, dict):
-            continue
-
-        raw = models.get(model_id)
-        if isinstance(raw, dict):
-            return _parse_model_info(model_id, raw, mdev_id)
-
-        # Case-insensitive
-        model_lower = model_id.lower()
-        for mid, mdata in models.items():
-            if mid.lower() == model_lower and isinstance(mdata, dict):
-                return _parse_model_info(mid, mdata, mdev_id)
-
-    # Fall back to ALL providers
-    for pid, pdata in data.items():
-        if pid in _get_reverse_mapping():
-            continue  # already checked
-        if not isinstance(pdata, dict):
-            continue
-        models = pdata.get("models", {})
-        if not isinstance(models, dict):
-            continue
-
-        raw = models.get(model_id)
-        if isinstance(raw, dict):
-            return _parse_model_info(model_id, raw, pid)
-
-    return None
-
-
-def list_provider_model_infos(provider_id: str) -> List[ModelInfo]:
-    """Return all models for a provider as ModelInfo objects.
-
-    Filters out deprecated models by default.
-    """
-    mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
-
-    data = fetch_models_dev()
-    pdata = data.get(mdev_id)
-    if not isinstance(pdata, dict):
-        return []
-
-    models = pdata.get("models", {})
-    if not isinstance(models, dict):
-        return []
-
-    result: List[ModelInfo] = []
-    for mid, mdata in models.items():
-        if not isinstance(mdata, dict):
-            continue
-        status = mdata.get("status", "")
-        if status == "deprecated":
-            continue
-        result.append(_parse_model_info(mid, mdata, mdev_id))
-
-    return result

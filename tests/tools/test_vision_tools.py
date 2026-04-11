@@ -30,7 +30,10 @@ class TestValidateImageUrl:
     """Tests for URL validation, including urlparse-based netloc check."""
 
     def test_valid_https_url(self):
-        assert _validate_image_url("https://example.com/image.jpg") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=[
@@ -56,10 +59,16 @@ class TestValidateImageUrl:
         assert _validate_image_url("http://localhost:8080/image.png") is False
 
     def test_valid_url_with_port(self):
-        assert _validate_image_url("http://example.com:8080/image.png") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
-        assert _validate_image_url("https://example.com/") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/") is True
 
     def test_rejects_empty_string(self):
         assert _validate_image_url("") is False
@@ -405,6 +414,7 @@ class TestVisionSafetyGuards:
 
         class FakeResponse:
             url = "https://blocked.test/final.png"
+            headers = {"content-length": "24"}
             content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
             def raise_for_status(self):
@@ -440,6 +450,11 @@ class TestVisionRequirements:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text(
             '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"codex-access-token","refresh_token":"codex-refresh-token"}}}}'
+        )
+        # config.yaml must reference the codex provider so vision auto-detect
+        # falls back to the active provider via _read_main_provider().
+        (tmp_path / "config.yaml").write_text(
+            'model:\n  default: gpt-4o\n  provider: openai-codex\n'
         )
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
@@ -517,6 +532,133 @@ class TestTildeExpansion:
         )
         data = json.loads(result)
         assert data["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# file:// URI support
+# ---------------------------------------------------------------------------
+
+
+class TestFileUriSupport:
+    """Verify that file:// URIs resolve as local file paths."""
+
+    @pytest.mark.asyncio
+    async def test_file_uri_resolved_as_local_path(self, tmp_path):
+        """file:///absolute/path should be treated as a local file."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                f"file://{img}", "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_file_uri_nonexistent_gives_error(self, tmp_path):
+        """file:// pointing to a missing file should fail gracefully."""
+        result = await vision_analyze_tool(
+            f"file://{tmp_path}/nonexistent.png", "describe this", "test/model"
+        )
+        data = json.loads(result)
+        assert data["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Base64 size pre-flight check
+# ---------------------------------------------------------------------------
+
+
+class TestBase64SizeLimit:
+    """Verify that oversized images are rejected before hitting the API."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_rejected_before_api_call(self, tmp_path):
+        """Images exceeding 5 MB base64 should fail with a clear size error."""
+        img = tmp_path / "huge.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (4 * 1024 * 1024))
+
+        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(img), "describe this"))
+
+        assert result["success"] is False
+        assert "too large" in result["error"].lower()
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_small_image_not_rejected(self, tmp_path):
+        """Images well under the limit should pass the size check."""
+        img = tmp_path / "small.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Small image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Error classification for 400 responses
+# ---------------------------------------------------------------------------
+
+
+class TestErrorClassification:
+    """Verify that API 400 errors produce actionable guidance."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_request_error_gives_image_guidance(self, tmp_path):
+        """An invalid_request_error from the API should mention image size/format."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        api_error = Exception(
+            "Error code: 400 - {'type': 'error', 'error': "
+            "{'type': 'invalid_request_error', 'message': 'Invalid request data'}}"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "rejected the image" in result["analysis"].lower()
+        assert "smaller" in result["analysis"].lower()
 
 
 class TestVisionRegistration:

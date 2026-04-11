@@ -16,6 +16,7 @@ from hermes_cli.auth import (
     DEFAULT_CODEX_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     PROVIDER_REGISTRY,
+    _agent_key_is_usable,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
@@ -644,6 +645,21 @@ def resolve_runtime_provider(
                 getattr(entry, "runtime_api_key", None)
                 or getattr(entry, "access_token", "")
             )
+        # For Nous, the pool entry's runtime_api_key is the agent_key — a
+        # short-lived inference credential (~30 min TTL).  The pool doesn't
+        # refresh it during selection (that would trigger network calls in
+        # non-runtime contexts like `hermes auth list`).  If the key is
+        # expired, clear pool_api_key so we fall through to
+        # resolve_nous_runtime_credentials() which handles refresh + mint.
+        if provider == "nous" and entry is not None and pool_api_key:
+            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+            nous_state = {
+                "agent_key": getattr(entry, "agent_key", None),
+                "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+            }
+            if not _agent_key_is_usable(nous_state, min_ttl):
+                logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
+                pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(
                 provider=provider,

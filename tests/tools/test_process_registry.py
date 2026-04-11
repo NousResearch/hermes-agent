@@ -136,6 +136,64 @@ class TestReadLog:
 
 
 # =========================================================================
+# Stdin helpers
+# =========================================================================
+
+class TestStdinHelpers:
+    def test_close_stdin_not_found(self, registry):
+        result = registry.close_stdin("nonexistent")
+        assert result["status"] == "not_found"
+
+    def test_close_stdin_pipe_mode(self, registry):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        s = _make_session()
+        s.process = proc
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id)
+
+        proc.stdin.close.assert_called_once()
+        assert result["status"] == "ok"
+
+    def test_close_stdin_pty_mode(self, registry):
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id)
+
+        pty.sendeof.assert_called_once()
+        assert result["status"] == "ok"
+
+    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
+        session = registry.spawn_local(
+            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            cwd=str(tmp_path),
+            use_pty=False,
+        )
+
+        try:
+            time.sleep(0.5)
+            assert registry.submit_stdin(session.id, "hello")["status"] == "ok"
+            assert registry.close_stdin(session.id)["status"] == "ok"
+
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                poll = registry.poll(session.id)
+                if poll["status"] == "exited":
+                    assert poll["exit_code"] == 0
+                    assert "hello" in poll["output_preview"]
+                    return
+                time.sleep(0.2)
+
+            pytest.fail("process did not exit after stdin was closed")
+        finally:
+            registry.kill_process(session.id)
+
+
+# =========================================================================
 # List sessions
 # =========================================================================
 
@@ -281,6 +339,67 @@ class TestSpawnEnvSanitization:
         assert "FIRECRAWL_API_KEY" not in env
         assert f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}TELEGRAM_BOT_TOKEN" not in env
         assert env["PYTHONUNBUFFERED"] == "1"
+
+    def test_spawn_via_env_uses_backend_temp_dir_for_artifacts(self, registry):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/data/data/com.termux/files/usr/tmp"
+
+            def execute(self, command, timeout=None):
+                self.commands.append((command, timeout))
+                return {"output": "4321\n"}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
+            patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_via_env(env, "echo hello")
+
+        bg_command = env.commands[0][0]
+        assert session.pid == 4321
+        assert "/data/data/com.termux/files/usr/tmp/hermes_bg_" in bg_command
+        assert ".exit" in bg_command
+        assert "rc=$?;" in bg_command
+        assert " > /tmp/hermes_bg_" not in bg_command
+        assert "cat /tmp/hermes_bg_" not in bg_command
+        fake_thread.start.assert_called_once()
+
+    def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
+        session = _make_session(sid="proc_space")
+        session.exited = False
+
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+                self._responses = iter([
+                    {"output": "hello\n"},
+                    {"output": "1\n"},
+                    {"output": "0\n"},
+                ])
+
+            def execute(self, command, timeout=None):
+                self.commands.append((command, timeout))
+                return next(self._responses)
+
+        env = FakeEnv()
+
+        with patch("tools.process_registry.time.sleep", return_value=None), \
+            patch.object(registry, "_move_to_finished"):
+            registry._env_poller_loop(
+                session,
+                env,
+                "/path with spaces/hermes_bg.log",
+                "/path with spaces/hermes_bg.pid",
+                "/path with spaces/hermes_bg.exit",
+            )
+
+        assert env.commands[0][0] == "cat '/path with spaces/hermes_bg.log' 2>/dev/null"
+        assert env.commands[1][0] == "kill -0 \"$(cat '/path with spaces/hermes_bg.pid' 2>/dev/null)\" 2>/dev/null; echo $?"
+        assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
 
 
 # =========================================================================

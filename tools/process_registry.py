@@ -58,6 +58,11 @@ MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 
+# Watch pattern rate limiting
+WATCH_MAX_PER_WINDOW = 8        # Max notifications delivered per window
+WATCH_WINDOW_SECONDS = 10       # Rolling window length
+WATCH_OVERLOAD_KILL_SECONDS = 45  # Sustained overload duration before disabling watch
+
 
 @dataclass
 class ProcessSession:
@@ -83,6 +88,14 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
+    # Watch patterns — trigger agent notification when output matches any pattern
+    watch_patterns: List[str] = field(default_factory=list)
+    _watch_hits: int = field(default=0, repr=False)          # total matches delivered
+    _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
+    _watch_overload_since: float = field(default=0.0, repr=False)  # when sustained overload began
+    _watch_disabled: bool = field(default=False, repr=False) # permanently killed by overload
+    _watch_window_hits: int = field(default=0, repr=False)   # hits in current rate window
+    _watch_window_start: float = field(default=0.0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -114,9 +127,10 @@ class ProcessRegistry:
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
 
-        # Completion notifications — processes with notify_on_complete push here
-        # on exit.  CLI process_loop and gateway drain this after each agent turn
-        # to auto-trigger a new agent turn with the process results.
+        # Notification queue — unified queue for all background process events.
+        # Completion notifications (notify_on_complete) and watch pattern matches
+        # both land here, distinguished by "type" field.  CLI process_loop and
+        # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -127,6 +141,84 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
+        """Scan new output for watch patterns and queue notifications.
+
+        Called from reader threads with new_text being the freshly-read chunk.
+        Rate-limited: max WATCH_MAX_PER_WINDOW notifications per WATCH_WINDOW_SECONDS.
+        If sustained overload exceeds WATCH_OVERLOAD_KILL_SECONDS, watching is
+        disabled permanently for this process.
+        """
+        if not session.watch_patterns or session._watch_disabled:
+            return
+
+        # Scan new text line-by-line for pattern matches
+        matched_lines = []
+        matched_pattern = None
+        for line in new_text.splitlines():
+            for pat in session.watch_patterns:
+                if pat in line:
+                    matched_lines.append(line.rstrip())
+                    if matched_pattern is None:
+                        matched_pattern = pat
+                    break  # one match per line is enough
+
+        if not matched_lines:
+            return
+
+        now = time.time()
+        with session._lock:
+            # Reset window if it's expired
+            if now - session._watch_window_start >= WATCH_WINDOW_SECONDS:
+                session._watch_window_hits = 0
+                session._watch_window_start = now
+
+            # Check rate limit
+            if session._watch_window_hits >= WATCH_MAX_PER_WINDOW:
+                session._watch_suppressed += len(matched_lines)
+
+                # Track sustained overload for kill switch
+                if session._watch_overload_since == 0.0:
+                    session._watch_overload_since = now
+                elif now - session._watch_overload_since > WATCH_OVERLOAD_KILL_SECONDS:
+                    session._watch_disabled = True
+                    self.completion_queue.put({
+                        "session_id": session.id,
+                        "command": session.command,
+                        "type": "watch_disabled",
+                        "suppressed": session._watch_suppressed,
+                        "message": (
+                            f"Watch patterns disabled for process {session.id} — "
+                            f"too many matches ({session._watch_suppressed} suppressed). "
+                            f"Use process(action='poll') to check output manually."
+                        ),
+                    })
+                return
+
+            # Under the rate limit — deliver notification
+            session._watch_window_hits += 1
+            session._watch_hits += 1
+            # Clear overload tracker since we got a delivery through
+            session._watch_overload_since = 0.0
+
+            # Include suppressed count if any events were dropped
+            suppressed = session._watch_suppressed
+            session._watch_suppressed = 0
+
+        # Trim matched output to a reasonable size
+        output = "\n".join(matched_lines[:20])
+        if len(output) > 2000:
+            output = output[:2000] + "\n...(truncated)"
+
+        self.completion_queue.put({
+            "session_id": session.id,
+            "command": session.command,
+            "type": "watch_match",
+            "pattern": matched_pattern,
+            "output": output,
+            "suppressed": suppressed,
+        })
 
     @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
@@ -171,6 +263,19 @@ class ProcessRegistry:
             os.kill(pid, signal.SIGTERM)
 
     # ----- Spawn -----
+
+    @staticmethod
+    def _env_temp_dir(env: Any) -> str:
+        """Return the writable sandbox temp dir for env-backed background tasks."""
+        get_temp_dir = getattr(env, "get_temp_dir", None)
+        if callable(get_temp_dir):
+            try:
+                temp_dir = get_temp_dir()
+                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+                    return temp_dir.rstrip("/") or "/"
+            except Exception as exc:
+                logger.debug("Could not resolve environment temp dir: %s", exc)
+        return "/tmp"
 
     def spawn_local(
         self,
@@ -316,12 +421,20 @@ class ProcessRegistry:
         )
 
         # Run the command in the sandbox with output capture
-        log_path = f"/tmp/hermes_bg_{session.id}.log"
-        pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        temp_dir = self._env_temp_dir(env)
+        log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
+        pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
+        exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
         quoted_command = shlex.quote(command)
+        quoted_temp_dir = shlex.quote(temp_dir)
+        quoted_log_path = shlex.quote(log_path)
+        quoted_pid_path = shlex.quote(pid_path)
+        quoted_exit_path = shlex.quote(exit_path)
         bg_command = (
-            f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
-            f"echo $! > {pid_path} && cat {pid_path}"
+            f"mkdir -p {quoted_temp_dir} && "
+            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
 
         try:
@@ -342,7 +455,7 @@ class ProcessRegistry:
             # Start a poller thread that periodically reads the log file
             reader = threading.Thread(
                 target=self._env_poller_loop,
-                args=(session, env, log_path, pid_path),
+                args=(session, env, log_path, pid_path, exit_path),
                 daemon=True,
                 name=f"proc-poller-{session.id}",
             )
@@ -373,44 +486,54 @@ class ProcessRegistry:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
-
-        # Process exited
-        try:
-            session.process.wait(timeout=5)
-        except Exception as e:
-            logger.debug("Process wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = session.process.returncode
-        self._move_to_finished(session)
+        finally:
+            # Always reap the child to prevent zombie processes.
+            try:
+                session.process.wait(timeout=5)
+            except Exception as e:
+                logger.debug("Process wait timed out or failed: %s", e)
+            session.exited = True
+            session.exit_code = session.process.returncode
+            self._move_to_finished(session)
 
     def _env_poller_loop(
-        self, session: ProcessSession, env: Any, log_path: str, pid_path: str
+        self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
         """Background thread: poll a sandbox log file for non-local backends."""
+        quoted_log_path = shlex.quote(log_path)
+        quoted_pid_path = shlex.quote(pid_path)
+        quoted_exit_path = shlex.quote(exit_path)
+        prev_output_len = 0  # track delta for watch pattern scanning
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
                 # Read new output from the log file
-                result = env.execute(f"cat {log_path} 2>/dev/null", timeout=10)
+                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
                 new_output = result.get("output", "")
                 if new_output:
+                    # Compute delta for watch pattern scanning
+                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
+                    prev_output_len = len(new_output)
                     with session._lock:
                         session.output_buffer = new_output
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                    if delta:
+                        self._check_watch_patterns(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
-                    f"kill -0 $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
+                    f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code
+                    # Process has exited -- get exit code captured by the wrapper shell.
                     exit_result = env.execute(
-                        f"wait $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
+                        f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,
                     )
                     exit_str = exit_result.get("output", "").strip()
@@ -443,6 +566,7 @@ class ProcessRegistry:
                             session.output_buffer += text
                             if len(session.output_buffer) > session.max_output_chars:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        self._check_watch_patterns(session, text)
                 except EOFError:
                     break
                 except Exception:
@@ -460,18 +584,25 @@ class ProcessRegistry:
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
-        """Move a session from running to finished."""
+        """Move a session from running to finished.
+
+        Idempotent: if the session was already moved (e.g. kill_process raced
+        with the reader thread), the second call is a no-op — no duplicate
+        completion notification is enqueued.
+        """
         with self._lock:
-            self._running.pop(session.id, None)
+            was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # If the caller requested agent notification, enqueue the completion
-        # so the CLI/gateway can auto-trigger a new agent turn.
-        if session.notify_on_complete:
+        # Only enqueue completion notification on the FIRST move.  Without
+        # this guard, kill_process() and the reader thread can both call
+        # _move_to_finished(), producing duplicate [SYSTEM: ...] messages.
+        if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
+                "type": "completion",
                 "session_id": session.id,
                 "command": session.command,
                 "exit_code": session.exit_code,
@@ -555,7 +686,10 @@ class ProcessRegistry:
         from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
-        default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        try:
+            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        except (ValueError, TypeError):
+            default_timeout = 180
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
@@ -700,6 +834,29 @@ class ProcessRegistry:
         """Send data + newline to a running process's stdin (like pressing Enter)."""
         return self.write_stdin(session_id, data + "\n")
 
+    def close_stdin(self, session_id: str) -> dict:
+        """Close a running process's stdin / send EOF without killing the process."""
+        session = self.get(session_id)
+        if session is None:
+            return {"status": "not_found", "error": f"No process with ID {session_id}"}
+        if session.exited:
+            return {"status": "already_exited", "error": "Process has already finished"}
+
+        if hasattr(session, '_pty') and session._pty:
+            try:
+                session._pty.sendeof()
+                return {"status": "ok", "message": "EOF sent"}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+
+        if not session.process or not session.process.stdin:
+            return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
+        try:
+            session.process.stdin.close()
+            return {"status": "ok", "message": "stdin closed"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""
         with self._lock:
@@ -816,6 +973,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
+                            "watch_patterns": s.watch_patterns,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -876,6 +1034,7 @@ class ProcessRegistry:
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
+                    watch_patterns=entry.get("watch_patterns", []),
                 )
                 with self._lock:
                     self._running[session.id] = session
@@ -915,14 +1074,14 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit"],
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
                 "description": "Action to perform on background processes"
             },
             "session_id": {
@@ -962,7 +1121,7 @@ def _handle_process(args, **kw):
 
     if action == "list":
         return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
-    elif action in ("poll", "log", "wait", "kill", "write", "submit"):
+    elif action in ("poll", "log", "wait", "kill", "write", "submit", "close"):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
@@ -978,7 +1137,9 @@ def _handle_process(args, **kw):
             return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":
             return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
-    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit")
+        elif action == "close":
+            return _json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
+    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
 
 
 registry.register(

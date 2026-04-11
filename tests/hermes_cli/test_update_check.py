@@ -1,6 +1,7 @@
 """Tests for the update check mechanism in hermes_cli.banner."""
 
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -144,7 +145,8 @@ def test_invalidate_update_cache_clears_all_profiles(tmp_path):
         p.mkdir(parents=True)
         (p / ".update_check").write_text('{"ts":1,"behind":50}')
 
-    with patch.object(Path, "home", return_value=tmp_path):
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
         _invalidate_update_cache()
 
     # All three caches should be gone
@@ -161,7 +163,8 @@ def test_invalidate_update_cache_no_profiles_dir(tmp_path):
     default_home.mkdir()
     (default_home / ".update_check").write_text('{"ts":1,"behind":5}')
 
-    with patch.object(Path, "home", return_value=tmp_path):
+    with patch.object(Path, "home", return_value=tmp_path), \
+         patch.dict(os.environ, {"HERMES_HOME": str(default_home)}):
         _invalidate_update_cache()
 
     assert not (default_home / ".update_check").exists()

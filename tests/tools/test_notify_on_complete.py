@@ -120,6 +120,26 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 1
         assert "FAILED" in completion["output"]
 
+    def test_move_to_finished_idempotent_no_duplicate(self, registry):
+        """Calling _move_to_finished twice must NOT enqueue two notifications.
+
+        Regression test: kill_process() and the reader thread can both call
+        _move_to_finished() for the same session, producing duplicate
+        [SYSTEM: Background process ...] messages.
+        """
+        s = _make_session(notify_on_complete=True, output="done", exit_code=-15)
+        s.exited = True
+        s.exit_code = -15
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)  # first call — should enqueue
+            s.exit_code = 143  # reader thread updates exit code
+            registry._move_to_finished(s)  # second call — should be no-op
+
+        assert registry.completion_queue.qsize() == 1
+        completion = registry.completion_queue.get_nowait()
+        assert completion["exit_code"] == -15  # from the first (kill) call
+
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""
         long_output = "x" * 5000

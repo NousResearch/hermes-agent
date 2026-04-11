@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.HermesAgent" parent="Theme.Material3.Light.NoActionBar">
+    <style name="Theme.HermesAgent" parent="@android:style/Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/hermes_background</item>
         <item name="android:statusBarColor">@color/hermes_primary_dark</item>
         <item name="android:navigationBarColor">@color/hermes_surface</item>

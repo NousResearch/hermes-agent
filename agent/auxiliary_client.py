@@ -1012,6 +1012,12 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
+def get_vision_auxiliary_client() -> Tuple[Optional[Any], Optional[str]]:
+    """Compatibility wrapper for the vision auto-resolution path."""
+    _provider, client, model = resolve_vision_provider_client("auto")
+    return client, model
+
+
 _AUTO_PROVIDER_LABELS = {
     "_try_openrouter": "openrouter",
     "_try_nous": "nous",

@@ -1765,7 +1765,6 @@ class GatewayRunner:
                     "Stopping gateway%s...",
                     " for restart" if restart else "",
                 )
-
                 if "adapters" not in vars(self):
                     self.adapters = {}
                 if "_running_agents" not in vars(self):
@@ -1871,7 +1870,8 @@ class GatewayRunner:
             return
 
         if self._stop_task is not None:
-            await self._stop_task
+            if inspect.isawaitable(self._stop_task):
+                await self._stop_task
             return
 
         async def _stop_impl() -> None:

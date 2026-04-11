@@ -62,7 +62,7 @@ class TestWeixinFormatting:
 
 
 class TestWeixinChunking:
-    def test_split_text_keeps_short_multiline_content_in_one_message(self):
+    def test_split_text_keeps_short_multiline_message_in_single_chunk(self):
         adapter = _make_adapter()
 
         content = adapter.format_message("第一行\n第二行\n第三行")
@@ -70,7 +70,7 @@ class TestWeixinChunking:
 
         assert chunks == ["第一行\n第二行\n第三行"]
 
-    def test_split_text_packs_transformed_table_rows_together_when_they_fit(self):
+    def test_split_text_keeps_short_reformatted_table_in_single_chunk(self):
         adapter = _make_adapter()
 
         content = adapter.format_message(
@@ -81,9 +81,7 @@ class TestWeixinChunking:
         )
         chunks = adapter._split_text(content)
 
-        assert chunks == [
-            "- Setting: Timeout\n  Value: 30s\n- Setting: Retries\n  Value: 3"
-        ]
+        assert chunks == [content]
 
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
         adapter = _make_adapter()
@@ -125,6 +123,23 @@ class TestWeixinChunking:
         assert chunks[-1] == "… [微信最多显示前几条，回复“继续”查看剩余内容]"
         assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
 
+    def test_split_text_can_restore_legacy_multiline_splitting_via_config(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "account_id": "acct",
+                    "token": "***",
+                    "split_multiline_messages": True,
+                },
+            )
+        )
+
+        content = adapter.format_message("第一行\n第二行\n第三行")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["第一行", "第二行", "第三行"]
+
 
 class TestWeixinQuota:
     @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
@@ -162,6 +177,7 @@ class TestWeixinConfig:
                 "WEIXIN_BASE_URL": "https://ilink.example.com/",
                 "WEIXIN_CDN_BASE_URL": "https://cdn.example.com/c2c/",
                 "WEIXIN_DM_POLICY": "allowlist",
+                "WEIXIN_SPLIT_MULTILINE_MESSAGES": "true",
                 "WEIXIN_ALLOWED_USERS": "wxid_1,wxid_2",
                 "WEIXIN_HOME_CHANNEL": "wxid_1",
                 "WEIXIN_HOME_CHANNEL_NAME": "Primary DM",
@@ -177,6 +193,7 @@ class TestWeixinConfig:
         assert platform_config.extra["base_url"] == "https://ilink.example.com"
         assert platform_config.extra["cdn_base_url"] == "https://cdn.example.com/c2c"
         assert platform_config.extra["dm_policy"] == "allowlist"
+        assert platform_config.extra["split_multiline_messages"] == "true"
         assert platform_config.extra["allow_from"] == "wxid_1,wxid_2"
         assert platform_config.home_channel == HomeChannel(Platform.WEIXIN, "wxid_1", "Primary DM")
 

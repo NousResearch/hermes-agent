@@ -15,6 +15,10 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _resize_image_for_vision,
+    _is_image_size_error,
+    _MAX_BASE64_BYTES,
+    _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -590,11 +594,13 @@ class TestBase64SizeLimit:
 
     @pytest.mark.asyncio
     async def test_oversized_image_rejected_before_api_call(self, tmp_path):
-        """Images exceeding 5 MB base64 should fail with a clear size error."""
+        """Images exceeding the 20 MB hard limit should fail with a clear error."""
         img = tmp_path / "huge.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (4 * 1024 * 1024))
 
-        with patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+        # Patch the hard limit to a small value so the test runs fast.
+        with patch("tools.vision_tools._MAX_BASE64_BYTES", 1000), \
+             patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
             result = json.loads(await vision_analyze_tool(str(img), "describe this"))
 
         assert result["success"] is False
@@ -686,3 +692,180 @@ class TestVisionRegistration:
 
         entry = registry._tools.get("vision_analyze")
         assert callable(entry.handler)
+
+
+# ---------------------------------------------------------------------------
+# _resize_image_for_vision — auto-resize oversized images
+# ---------------------------------------------------------------------------
+
+
+class TestResizeImageForVision:
+    """Tests for the auto-resize function."""
+
+    def test_small_image_returned_as_is(self, tmp_path):
+        """Images under the limit should be returned unchanged."""
+        # Create a small 10x10 red PNG
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (10, 10), (255, 0, 0))
+        path = tmp_path / "small.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        assert len(result) < _MAX_BASE64_BYTES
+
+    def test_large_image_is_resized(self, tmp_path):
+        """Images over the default target should be auto-resized to fit."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Create a large image that will exceed 5 MB in base64
+        # A 4000x4000 uncompressed PNG will be large
+        img = Image.new("RGB", (4000, 4000), (128, 200, 50))
+        path = tmp_path / "large.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        # Default target is _RESIZE_TARGET_BYTES (5 MB), not _MAX_BASE64_BYTES (20 MB)
+        assert len(result) <= _RESIZE_TARGET_BYTES
+
+    def test_custom_max_bytes(self, tmp_path):
+        """The max_base64_bytes parameter should be respected."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (200, 200), (0, 128, 255))
+        path = tmp_path / "medium.png"
+        img.save(path, "PNG")
+
+        # Set a very low limit to force resizing
+        result = _resize_image_for_vision(path, max_base64_bytes=500)
+        # Should still return a valid data URL
+        assert result.startswith("data:image/")
+
+    def test_jpeg_output_for_non_png(self, tmp_path):
+        """Non-PNG images should be resized as JPEG."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (2000, 2000), (255, 128, 0))
+        path = tmp_path / "photo.jpg"
+        img.save(path, "JPEG", quality=95)
+
+        result = _resize_image_for_vision(path, mime_type="image/jpeg",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_constants_sane(self):
+        """Hard limit should be larger than resize target."""
+        assert _MAX_BASE64_BYTES == 20 * 1024 * 1024
+        assert _RESIZE_TARGET_BYTES == 5 * 1024 * 1024
+        assert _MAX_BASE64_BYTES > _RESIZE_TARGET_BYTES
+
+    def test_extreme_aspect_ratio_preserved(self, tmp_path):
+        """Extreme aspect ratios should be preserved during resize."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very wide panorama: 8000x200
+        img = Image.new("RGB", (8000, 200), (100, 150, 200))
+        path = tmp_path / "panorama.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        # Decode and check aspect ratio is roughly preserved
+        import base64
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        from io import BytesIO
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 8000 / 200  # 40:1
+        resized_ratio = resized.width / resized.height if resized.height > 0 else 0
+        # Allow some tolerance (floor clamping), but ratio should stay above 10:1
+        # With independent halving, ratio would collapse to ~1:1. Proportional
+        # scaling should keep it well above 10.
+        assert resized_ratio > 10, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(ratio {resized_ratio:.1f}, expected >10)"
+        )
+
+    def test_tall_narrow_image_preserved(self, tmp_path):
+        """Tall narrow images should also preserve aspect ratio."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very tall: 200x6000
+        img = Image.new("RGB", (200, 6000), (200, 100, 50))
+        path = tmp_path / "tall.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        import base64
+        from io import BytesIO
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 6000 / 200  # 30:1 (h/w)
+        resized_ratio = resized.height / resized.width if resized.width > 0 else 0
+        assert resized_ratio > 5, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(h/w ratio {resized_ratio:.1f}, expected >5)"
+        )
+
+    def test_no_pillow_returns_original(self, tmp_path):
+        """Without Pillow, oversized images should be returned as-is."""
+        # Create a dummy file
+        path = tmp_path / "test.png"
+        # Write enough bytes to exceed a tiny limit
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+
+        with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
+            # Simulate a large base64 result
+            mock_b64.return_value = "data:image/png;base64," + "A" * 200
+            with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+                result = _resize_image_for_vision(path, max_base64_bytes=100)
+                # Should return the original (oversized) data url
+                assert len(result) > 100
+
+
+# ---------------------------------------------------------------------------
+# _is_image_size_error — detect size-related API errors
+# ---------------------------------------------------------------------------
+
+
+class TestIsImageSizeError:
+    """Tests for the size-error detection helper."""
+
+    def test_too_large_message(self):
+        assert _is_image_size_error(Exception("Request payload too large"))
+
+    def test_413_status(self):
+        assert _is_image_size_error(Exception("HTTP 413 Payload Too Large"))
+
+    def test_invalid_request(self):
+        assert _is_image_size_error(Exception("invalid_request_error: image too big"))
+
+    def test_exceeds_limit(self):
+        assert _is_image_size_error(Exception("Image exceeds maximum size"))
+
+    def test_unrelated_error(self):
+        assert not _is_image_size_error(Exception("Connection refused"))
+
+    def test_auth_error(self):
+        assert not _is_image_size_error(Exception("401 Unauthorized"))
+
+    def test_empty_message(self):
+        assert not _is_image_size_error(Exception(""))

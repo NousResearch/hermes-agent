@@ -771,20 +771,66 @@ def _cap_weixin_delivery_chunks(chunks: List[str], max_length: int, max_chunks: 
     return capped
 
 
-def _split_text_for_weixin_delivery(content: str, max_length: int, max_chunks: Optional[int] = None) -> List[str]:
+def _split_text_for_weixin_delivery(
+    content: str,
+    max_length: int,
+    split_per_line: bool = False,
+    max_chunks: Optional[int] = None,
+) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer a single message whenever it fits. For longer replies, pack markdown
-    blocks into as few messages as possible so Weixin's practical multi-message
-    limits are not exceeded. Oversized blocks still split safely.
-    """
-    if len(content) <= max_length:
-        return [content]
+    *compact* (default): Keep everything in a single message whenever it fits
+    within the platform limit, even when the author used explicit line breaks.
+    Only fall back to block-aware packing when the payload exceeds
+    ``max_length``.
 
-    chunks = _pack_markdown_blocks_for_weixin(content, max_length) or [content]
+    *per_line* (``split_per_line=True``): Legacy behavior — top-level line
+    breaks become separate chat messages; oversized units still use
+    block-aware packing.
+
+    The active mode is controlled via ``config.yaml`` ->
+    ``platforms.weixin.extra.split_multiline_messages`` (``true`` / ``false``)
+    or the env var ``WEIXIN_SPLIT_MULTILINE_MESSAGES``.
+    """
+    if split_per_line:
+        if len(content) <= max_length and "\n" not in content:
+            chunks = [content]
+        else:
+            chunks = []
+            for unit in _split_delivery_units_for_weixin(content):
+                if len(unit) <= max_length:
+                    chunks.append(unit)
+                    continue
+                chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+            if not chunks:
+                chunks = [content]
+    else:
+        if len(content) <= max_length:
+            chunks = [content]
+        else:
+            chunks = _pack_markdown_blocks_for_weixin(content, max_length) or [content]
+
     if max_chunks is not None:
         return _cap_weixin_delivery_chunks(chunks, max_length, max_chunks)
     return chunks
+
+
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce a config value to bool, tolerating strings like ``\"true\"``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
@@ -1008,6 +1054,11 @@ class WeixinAdapter(BasePlatformAdapter):
             group_allow_from = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "")
         self._allow_from = self._coerce_list(allow_from)
         self._group_allow_from = self._coerce_list(group_allow_from)
+        self._split_multiline_messages = _coerce_bool(
+            extra.get("split_multiline_messages")
+            or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
+            default=False,
+        )
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1351,6 +1402,7 @@ class WeixinAdapter(BasePlatformAdapter):
         return _split_text_for_weixin_delivery(
             content,
             self.MAX_MESSAGE_LENGTH,
+            self._split_multiline_messages,
             max_chunks=self.MAX_OUTBOUND_CHUNKS,
         )
 
@@ -1429,6 +1481,8 @@ class WeixinAdapter(BasePlatformAdapter):
                     _safe_id(chat_id),
                     len(chunk),
                 )
+                if idx > 1:
+                    await asyncio.sleep(0.3)
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await _send_message(
                     self._session,

@@ -3667,6 +3667,18 @@ class GatewayRunner:
                             if mi.has_cost_data():
                                 lines.append(f"Cost: {mi.format_cost()}")
                             lines.append(f"Capabilities: {mi.format_capabilities()}")
+                        else:
+                            try:
+                                from agent.model_metadata import get_model_context_length
+                                ctx = get_model_context_length(
+                                    result.new_model,
+                                    base_url=result.base_url or _cur_base_url,
+                                    api_key=result.api_key or _cur_api_key,
+                                    provider=result.target_provider,
+                                )
+                                lines.append(f"Context: {ctx:,} tokens")
+                            except Exception:
+                                pass
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 

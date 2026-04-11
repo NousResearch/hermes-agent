@@ -909,11 +909,16 @@ class MatrixAdapter(BasePlatformAdapter):
         if relates_to.get("rel_type") == "m.replace":
             return
 
+        # Ignore m.notice to prevent bot-to-bot loops (m.notice is the
+        # conventional msgtype for bot responses in the Matrix ecosystem).
+        if msgtype == "m.notice":
+            return
+
         # Dispatch by msgtype.
         media_msgtypes = ("m.image", "m.audio", "m.video", "m.file")
         if msgtype in media_msgtypes:
             await self._handle_media_message(room_id, sender, event_id, event_ts, source_content, relates_to, msgtype)
-        elif msgtype in ("m.text", "m.notice"):
+        elif msgtype == "m.text":
             await self._handle_text_message(room_id, sender, event_id, event_ts, source_content, relates_to)
 
     async def _resolve_message_context(

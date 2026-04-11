@@ -3,6 +3,7 @@
 import logging
 import os
 import stat
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
@@ -41,6 +42,7 @@ def _reset_logging_state():
             root.removeHandler(h)
             h.close()
     hermes_logging._logging_initialized = False
+    hermes_logging.clear_session_context()
 
 
 @pytest.fixture
@@ -220,6 +222,280 @@ class TestSetupLogging:
         ]
         assert agent_handlers[0].level == logging.WARNING
 
+    def test_session_filter_on_handlers(self, hermes_home):
+        """setup_logging() adds a _SessionFilter to each file handler."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+        for h in root.handlers:
+            if isinstance(h, RotatingFileHandler):
+                session_filters = [f for f in h.filters
+                                   if isinstance(f, hermes_logging._SessionFilter)]
+                assert len(session_filters) == 1, (
+                    f"Handler for {getattr(h, 'baseFilename', '?')} "
+                    f"should have exactly one _SessionFilter"
+                )
+
+
+class TestGatewayMode:
+    """setup_logging(mode='gateway') creates a filtered gateway.log."""
+
+    def test_gateway_log_created(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        root = logging.getLogger()
+
+        gw_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_handlers) == 1
+
+    def test_gateway_log_not_created_in_cli_mode(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        root = logging.getLogger()
+
+        gw_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_handlers) == 0
+
+    def test_gateway_log_receives_gateway_records(self, hermes_home):
+        """gateway.log captures records from gateway.* loggers."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        gw_logger = logging.getLogger("gateway.platforms.telegram")
+        gw_logger.info("telegram connected")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gw_log = hermes_home / "logs" / "gateway.log"
+        assert gw_log.exists()
+        assert "telegram connected" in gw_log.read_text()
+
+    def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
+        """gateway.log does NOT capture records from tools.*, agent.*, etc."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        tool_logger = logging.getLogger("tools.terminal_tool")
+        tool_logger.info("running command")
+
+        agent_logger = logging.getLogger("agent.context_compressor")
+        agent_logger.info("compressing context")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gw_log = hermes_home / "logs" / "gateway.log"
+        if gw_log.exists():
+            content = gw_log.read_text()
+            assert "running command" not in content
+            assert "compressing context" not in content
+
+    def test_agent_log_still_receives_all(self, hermes_home):
+        """agent.log (catch-all) still receives gateway AND tool records."""
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        logging.getLogger("gateway.run").info("gateway msg")
+        logging.getLogger("tools.file_tools").info("file msg")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "gateway msg" in content
+        assert "file msg" in content
+
+
+class TestSessionContext:
+    """set_session_context / clear_session_context + _SessionFilter."""
+
+    def test_session_tag_in_log_output(self, hermes_home):
+        """When session context is set, log lines include [session_id]."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.set_session_context("abc123")
+
+        test_logger = logging.getLogger("test.session_tag")
+        test_logger.info("tagged message")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "[abc123]" in content
+        assert "tagged message" in content
+
+    def test_no_session_tag_without_context(self, hermes_home):
+        """Without session context, log lines have no session tag."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.clear_session_context()
+
+        test_logger = logging.getLogger("test.no_session")
+        test_logger.info("untagged message")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "untagged message" in content
+        # Should not have any [xxx] session tag
+        import re
+        for line in content.splitlines():
+            if "untagged message" in line:
+                assert not re.search(r"\[.+?\]", line.split("INFO")[1].split("test.no_session")[0])
+
+    def test_clear_session_context(self, hermes_home):
+        """After clearing, session tag disappears."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        hermes_logging.set_session_context("xyz789")
+        hermes_logging.clear_session_context()
+
+        test_logger = logging.getLogger("test.cleared")
+        test_logger.info("after clear")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "[xyz789]" not in content
+
+    def test_session_context_thread_isolated(self, hermes_home):
+        """Session context is per-thread — one thread's context doesn't leak."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        results = {}
+
+        def thread_a():
+            hermes_logging.set_session_context("thread_a_session")
+            logging.getLogger("test.thread_a").info("from thread A")
+            for h in logging.getLogger().handlers:
+                h.flush()
+
+        def thread_b():
+            hermes_logging.set_session_context("thread_b_session")
+            logging.getLogger("test.thread_b").info("from thread B")
+            for h in logging.getLogger().handlers:
+                h.flush()
+
+        ta = threading.Thread(target=thread_a)
+        tb = threading.Thread(target=thread_b)
+        ta.start()
+        ta.join()
+        tb.start()
+        tb.join()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+
+        # Each thread's message should have its own session tag
+        for line in content.splitlines():
+            if "from thread A" in line:
+                assert "[thread_a_session]" in line
+                assert "[thread_b_session]" not in line
+            if "from thread B" in line:
+                assert "[thread_b_session]" in line
+                assert "[thread_a_session]" not in line
+
+
+class TestSessionFilter:
+    """Unit tests for _SessionFilter."""
+
+    def test_always_returns_true(self):
+        f = hermes_logging._SessionFilter()
+        record = logging.LogRecord(
+            "test", logging.INFO, "", 0, "msg", (), None
+        )
+        assert f.filter(record) is True
+
+    def test_sets_empty_tag_without_context(self):
+        hermes_logging.clear_session_context()
+        f = hermes_logging._SessionFilter()
+        record = logging.LogRecord(
+            "test", logging.INFO, "", 0, "msg", (), None
+        )
+        f.filter(record)
+        assert record.session_tag == ""
+
+    def test_sets_tag_with_context(self):
+        hermes_logging.set_session_context("sess_42")
+        f = hermes_logging._SessionFilter()
+        record = logging.LogRecord(
+            "test", logging.INFO, "", 0, "msg", (), None
+        )
+        f.filter(record)
+        assert record.session_tag == " [sess_42]"
+
+
+class TestComponentFilter:
+    """Unit tests for _ComponentFilter."""
+
+    def test_passes_matching_prefix(self):
+        f = hermes_logging._ComponentFilter(("gateway",))
+        record = logging.LogRecord(
+            "gateway.run", logging.INFO, "", 0, "msg", (), None
+        )
+        assert f.filter(record) is True
+
+    def test_passes_nested_matching_prefix(self):
+        f = hermes_logging._ComponentFilter(("gateway",))
+        record = logging.LogRecord(
+            "gateway.platforms.telegram", logging.INFO, "", 0, "msg", (), None
+        )
+        assert f.filter(record) is True
+
+    def test_blocks_non_matching(self):
+        f = hermes_logging._ComponentFilter(("gateway",))
+        record = logging.LogRecord(
+            "tools.terminal_tool", logging.INFO, "", 0, "msg", (), None
+        )
+        assert f.filter(record) is False
+
+    def test_multiple_prefixes(self):
+        f = hermes_logging._ComponentFilter(("agent", "run_agent", "model_tools"))
+        assert f.filter(logging.LogRecord(
+            "agent.compressor", logging.INFO, "", 0, "", (), None
+        ))
+        assert f.filter(logging.LogRecord(
+            "run_agent", logging.INFO, "", 0, "", (), None
+        ))
+        assert f.filter(logging.LogRecord(
+            "model_tools", logging.INFO, "", 0, "", (), None
+        ))
+        assert not f.filter(logging.LogRecord(
+            "tools.browser", logging.INFO, "", 0, "", (), None
+        ))
+
+
+class TestComponentPrefixes:
+    """COMPONENT_PREFIXES covers the expected components."""
+
+    def test_gateway_prefix(self):
+        assert "gateway" in hermes_logging.COMPONENT_PREFIXES
+        assert ("gateway",) == hermes_logging.COMPONENT_PREFIXES["gateway"]
+
+    def test_agent_prefix(self):
+        prefixes = hermes_logging.COMPONENT_PREFIXES["agent"]
+        assert "agent" in prefixes
+        assert "run_agent" in prefixes
+        assert "model_tools" in prefixes
+
+    def test_tools_prefix(self):
+        assert ("tools",) == hermes_logging.COMPONENT_PREFIXES["tools"]
+
+    def test_cli_prefix(self):
+        prefixes = hermes_logging.COMPONENT_PREFIXES["cli"]
+        assert "hermes_cli" in prefixes
+        assert "cli" in prefixes
+
+    def test_cron_prefix(self):
+        assert ("cron",) == hermes_logging.COMPONENT_PREFIXES["cron"]
+
 
 class TestSetupVerboseLogging:
     """setup_verbose_logging() adds a DEBUG-level console handler."""
@@ -295,6 +571,29 @@ class TestAddRotatingHandler:
             if isinstance(h, RotatingFileHandler)
         ]
         assert len(rotating_handlers) == 1
+        # Clean up
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    def test_log_filter_attached(self, tmp_path):
+        """Optional log_filter is attached to the handler."""
+        log_path = tmp_path / "filtered.log"
+        logger = logging.getLogger("_test_rotating_filter")
+        formatter = logging.Formatter("%(message)s")
+        test_filter = hermes_logging._ComponentFilter(("test",))
+
+        hermes_logging._add_rotating_handler(
+            logger, log_path,
+            level=logging.INFO, max_bytes=1024, backup_count=1,
+            formatter=formatter,
+            log_filter=test_filter,
+        )
+
+        handlers = [h for h in logger.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(handlers) == 1
+        assert test_filter in handlers[0].filters
         # Clean up
         for h in list(logger.handlers):
             if isinstance(h, RotatingFileHandler):

@@ -7,16 +7,28 @@ gateway call early in their startup path.  All log files live under
 Log files produced:
     agent.log   — INFO+, all agent/tool/session activity (the main log)
     errors.log  — WARNING+, errors and warnings only (quick triage)
+    gateway.log — INFO+, gateway-only events (created when mode="gateway")
 
-Both files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
+All files use ``RotatingFileHandler`` with ``RedactingFormatter`` so
 secrets are never written to disk.
+
+Component separation:
+    gateway.log only receives records from ``gateway.*`` loggers —
+    platform adapters, session management, slash commands, delivery.
+    agent.log remains the catch-all (everything goes there).
+
+Session context:
+    Call ``set_session_context(session_id)`` at the start of a conversation
+    and ``clear_session_context()`` when done.  All log lines emitted on
+    that thread will include ``[session_id]`` for filtering/correlation.
 """
 
 import logging
 import os
+import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from hermes_constants import get_config_path, get_hermes_home
 
@@ -25,9 +37,14 @@ from hermes_constants import get_config_path, get_hermes_home
 # unless ``force=True``.
 _logging_initialized = False
 
-# Default log format — includes timestamp, level, logger name, and message.
-_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
-_LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+# Thread-local storage for per-conversation session context.
+_session_context = threading.local()
+
+# Default log format — includes timestamp, level, optional session tag,
+# logger name, and message.  The ``%(session_tag)s`` field is injected by
+# ``_SessionFilter`` (always returns True, just enriches the record).
+_LOG_FORMAT = "%(asctime)s %(levelname)s%(session_tag)s %(name)s: %(message)s"
+_LOG_FORMAT_VERBOSE = "%(asctime)s - %(name)s - %(levelname)s%(session_tag)s - %(message)s"
 
 # Third-party loggers that are noisy at DEBUG/INFO level.
 _NOISY_LOGGERS = (
@@ -47,6 +64,77 @@ _NOISY_LOGGERS = (
     "markdown_it",
 )
 
+
+# ---------------------------------------------------------------------------
+# Public session context API
+# ---------------------------------------------------------------------------
+
+def set_session_context(session_id: str) -> None:
+    """Set the session ID for the current thread.
+
+    All subsequent log records on this thread will include ``[session_id]``
+    in the formatted output.  Call at the start of ``run_conversation()``.
+    """
+    _session_context.session_id = session_id
+
+
+def clear_session_context() -> None:
+    """Clear the session ID for the current thread.
+
+    Optional — ``set_session_context()`` overwrites the previous value,
+    so explicit clearing is only needed if the thread is reused for
+    non-conversation work after ``run_conversation()`` returns.
+    """
+    _session_context.session_id = None
+
+
+# ---------------------------------------------------------------------------
+# Filters
+# ---------------------------------------------------------------------------
+
+class _SessionFilter(logging.Filter):
+    """Enrich every log record with a ``session_tag`` attribute.
+
+    Reads the session ID from thread-local storage.  If set, produces
+    ``" [session_id]"``; otherwise ``""``.  Always returns True — this
+    filter enriches records, never blocks them.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        sid = getattr(_session_context, "session_id", None)
+        record.session_tag = f" [{sid}]" if sid else ""  # type: ignore[attr-defined]
+        return True
+
+
+class _ComponentFilter(logging.Filter):
+    """Only pass records whose logger name starts with one of *prefixes*.
+
+    Used to route gateway-specific records to ``gateway.log`` while
+    keeping ``agent.log`` as the catch-all.
+    """
+
+    def __init__(self, prefixes: Sequence[str]) -> None:
+        super().__init__()
+        self._prefixes = tuple(prefixes)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name.startswith(self._prefixes)
+
+
+# Logger name prefixes that belong to each component.
+# Used by _ComponentFilter and exposed for ``hermes logs --component``.
+COMPONENT_PREFIXES = {
+    "gateway": ("gateway",),
+    "agent": ("agent", "run_agent", "model_tools", "batch_runner"),
+    "tools": ("tools",),
+    "cli": ("hermes_cli", "cli"),
+    "cron": ("cron",),
+}
+
+
+# ---------------------------------------------------------------------------
+# Main setup
+# ---------------------------------------------------------------------------
 
 def setup_logging(
     *,
@@ -78,8 +166,9 @@ def setup_logging(
         Number of rotated backup files to keep.
         Defaults to 3 or the value from config.yaml ``logging.backup_count``.
     mode
-        Hint for the caller context: ``"cli"``, ``"gateway"``, ``"cron"``.
-        Currently used only for log format tuning (gateway includes PID).
+        Caller context: ``"cli"``, ``"gateway"``, ``"cron"``.
+        When ``"gateway"``, an additional ``gateway.log`` file is created
+        that receives only gateway-component records.
     force
         Re-run setup even if it has already been called.
 
@@ -130,6 +219,18 @@ def setup_logging(
         formatter=RedactingFormatter(_LOG_FORMAT),
     )
 
+    # --- gateway.log (INFO+, gateway component only) ------------------------
+    if mode == "gateway":
+        _add_rotating_handler(
+            root,
+            log_dir / "gateway.log",
+            level=logging.INFO,
+            max_bytes=5 * 1024 * 1024,
+            backup_count=3,
+            formatter=RedactingFormatter(_LOG_FORMAT),
+            log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+        )
+
     # Ensure root logger level is low enough for the handlers to fire.
     if root.level == logging.NOTSET or root.level > level:
         root.setLevel(level)
@@ -160,6 +261,7 @@ def setup_verbose_logging() -> None:
     handler = logging.StreamHandler()
     handler.setLevel(logging.DEBUG)
     handler.setFormatter(RedactingFormatter(_LOG_FORMAT_VERBOSE, datefmt="%H:%M:%S"))
+    handler.addFilter(_SessionFilter())
     handler._hermes_verbose = True  # type: ignore[attr-defined]
     root.addHandler(handler)
 
@@ -218,9 +320,16 @@ def _add_rotating_handler(
     max_bytes: int,
     backup_count: int,
     formatter: logging.Formatter,
+    log_filter: Optional[logging.Filter] = None,
 ) -> None:
     """Add a ``RotatingFileHandler`` to *logger*, skipping if one already
     exists for the same resolved file path (idempotent).
+
+    Parameters
+    ----------
+    log_filter
+        Optional filter to attach to the handler (e.g. ``_ComponentFilter``
+        for gateway.log).
     """
     resolved = path.resolve()
     for existing in logger.handlers:
@@ -236,6 +345,12 @@ def _add_rotating_handler(
     )
     handler.setLevel(level)
     handler.setFormatter(formatter)
+    # Session enrichment filter — injects %(session_tag)s for every record.
+    # Attached per-handler (not on root logger) because propagated records
+    # from child loggers bypass logger-level filters.
+    handler.addFilter(_SessionFilter())
+    if log_filter is not None:
+        handler.addFilter(log_filter)
     logger.addHandler(handler)
 
 

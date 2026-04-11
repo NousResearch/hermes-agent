@@ -4231,6 +4231,7 @@ def cmd_logs(args):
         level=getattr(args, "level", None),
         session=getattr(args, "session", None),
         since=getattr(args, "since", None),
+        component=getattr(args, "component", None),
     )
 
 
@@ -5630,6 +5631,7 @@ Examples:
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
+    hermes logs --component tools  Only show tool-related lines
     hermes logs --since 1h         Lines from the last hour
     hermes logs --since 30m -f     Follow, starting from 30 min ago
     hermes logs list               List available log files with sizes
@@ -5658,6 +5660,10 @@ Examples:
     logs_parser.add_argument(
         "--since", metavar="TIME",
         help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
+    )
+    logs_parser.add_argument(
+        "--component", metavar="NAME",
+        help="Filter by component: gateway, agent, tools, cli, cron",
     )
     logs_parser.set_defaults(func=cmd_logs)
 

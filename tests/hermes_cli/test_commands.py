@@ -96,6 +96,7 @@ class TestResolveCommand:
 
     def test_alias_resolves_to_canonical(self):
         assert resolve_command("bg").name == "background"
+        assert resolve_command("edit").name == "editor"
         assert resolve_command("reset").name == "new"
         assert resolve_command("q").name == "quit"
         assert resolve_command("exit").name == "quit"
@@ -132,6 +133,7 @@ class TestDerivedDicts:
 
     def test_commands_dict_includes_aliases(self):
         assert "/bg" in COMMANDS
+        assert "/edit" in COMMANDS
         assert "/reset" in COMMANDS
         assert "/q" in COMMANDS
         assert "/exit" in COMMANDS

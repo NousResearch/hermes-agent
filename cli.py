@@ -5124,6 +5124,8 @@ class HermesCLI:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "editor":
+            self._handle_editor_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -5258,6 +5260,63 @@ class HermesCLI:
             self._pending_input.put(msg)
         else:
             ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
+
+    def _handle_editor_command(self, cmd: str):
+        """Handle /editor — compose a message in the user's external editor."""
+        import shlex
+        import subprocess
+
+        editor = os.getenv("EDITOR") or os.getenv("VISUAL")
+        if not editor:
+            for candidate in ("nano", "vim", "vi", "code", "notepad"):
+                if shutil.which(candidate):
+                    editor = candidate
+                    break
+
+        if not editor:
+            _cprint("  No editor found. Set $EDITOR or $VISUAL first.")
+            return
+
+        if not hasattr(self, "_pending_input"):
+            _cprint("  Editor unavailable: input queue not initialized.")
+            return
+
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                suffix=".md",
+                prefix="hermes-editor-",
+                delete=False,
+            ) as handle:
+                temp_path = Path(handle.name)
+
+            argv = shlex.split(editor, posix=os.name != "nt")
+            if not argv:
+                _cprint("  Editor command is empty. Set $EDITOR or $VISUAL first.")
+                return
+
+            _cprint(f"  Opening {editor}... Save and close to send, leave empty to cancel.")
+            subprocess.call([*argv, str(temp_path)])
+
+            content = temp_path.read_text(encoding="utf-8")
+            if not content.strip():
+                _cprint("  Editor closed without content.")
+                return
+
+            self._pending_input.put(content)
+            _cprint(f"  Queued {len(content)} characters from editor.")
+        except FileNotFoundError:
+            _cprint(f"  Editor not found: {editor}")
+        except Exception as exc:
+            _cprint(f"  Editor command failed: {exc}")
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
     
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

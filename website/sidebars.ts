@@ -176,6 +176,7 @@ const sidebars: SidebarsConfig = {
             'developer-guide/adding-tools',
             'developer-guide/adding-providers',
             'developer-guide/memory-provider-plugin',
+            'developer-guide/context-engine-plugin',
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
           ],

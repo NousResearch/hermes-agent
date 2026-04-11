@@ -39,8 +39,13 @@ class TestIsOAuthToken:
         assert _is_oauth_token("sk-ant-api03-abcdef1234567890") is False
 
     def test_managed_key(self):
-        # Managed keys from ~/.claude.json are NOT regular API keys
-        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is True
+        # Managed keys from ~/.claude.json without a recognisable Anthropic
+        # prefix are not positively identified as OAuth.  They enter the system
+        # via diagnostics-only read_claude_managed_key(), not via
+        # resolve_anthropic_token(), so they don't reach the OAuth gate in
+        # practice.  Third-party provider keys (MiniMax, Alibaba) also lack
+        # the sk-ant- prefix and must NOT be treated as OAuth.
+        assert _is_oauth_token("ou1R1z-ft0A-bDeZ9wAA") is False
 
     def test_jwt_token(self):
         # JWTs from OAuth flow

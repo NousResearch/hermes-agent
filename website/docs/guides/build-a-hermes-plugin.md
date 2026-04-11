@@ -547,6 +547,12 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
+:::tip
+This guide covers **general plugins** (tools, hooks, CLI commands). For specialized plugin types, see:
+- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
+- [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
+:::
+
 ### Distribute via pip
 
 For sharing plugins publicly, add an entry point to your Python package:

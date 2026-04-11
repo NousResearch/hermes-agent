@@ -111,6 +111,32 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+def get_subprocess_home() -> str | None:
+    """Return a per-profile HOME directory for subprocesses, or None.
+
+    When ``{HERMES_HOME}/home/`` exists on disk, subprocesses should use it
+    as ``HOME`` so system tools (git, ssh, gh, npm …) write their configs
+    inside the Hermes data directory instead of the OS-level ``/root`` or
+    ``~/``.  This provides:
+
+    * **Docker persistence** — tool configs land inside the persistent volume.
+    * **Profile isolation** — each profile gets its own git identity, SSH
+      keys, gh tokens, etc.
+
+    The Python process's own ``os.environ["HOME"]`` and ``Path.home()`` are
+    **never** modified — only subprocess environments should inject this value.
+    Activation is directory-based: if the ``home/`` subdirectory doesn't
+    exist, returns ``None`` and behavior is unchanged.
+    """
+    hermes_home = os.getenv("HERMES_HOME")
+    if not hermes_home:
+        return None
+    profile_home = os.path.join(hermes_home, "home")
+    if os.path.isdir(profile_home):
+        return profile_home
+    return None
+
+
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
@@ -140,6 +166,27 @@ def is_termux() -> bool:
     """
     prefix = os.getenv("PREFIX", "")
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+_wsl_detected: bool | None = None
+
+
+def is_wsl() -> bool:
+    """Return True when running inside WSL (Windows Subsystem for Linux).
+
+    Checks ``/proc/version`` for the ``microsoft`` marker that both WSL1
+    and WSL2 inject.  Result is cached for the process lifetime.
+    Import-safe — no heavy deps.
+    """
+    global _wsl_detected
+    if _wsl_detected is not None:
+        return _wsl_detected
+    try:
+        with open("/proc/version", "r") as f:
+            _wsl_detected = "microsoft" in f.read().lower()
+    except Exception:
+        _wsl_detected = False
+    return _wsl_detected
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

@@ -31,7 +31,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_hermes_home()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 OUTPUT_DIR = CRON_DIR / "output"
@@ -338,10 +338,12 @@ def load_jobs() -> List[Dict[str, Any]]:
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs
-        except Exception:
-            return []
-    except IOError:
-        return []
+        except Exception as e:
+            logger.error("Failed to auto-repair jobs.json: %s", e)
+            raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+    except IOError as e:
+        logger.error("IOError reading jobs.json: %s", e)
+        raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
@@ -452,6 +454,7 @@ def create_job(
         "last_run_at": None,
         "last_status": None,
         "last_error": None,
+        "last_delivery_error": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -574,12 +577,16 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
+def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
+                 delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
     
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
+
+    ``delivery_error`` is tracked separately from the agent error — a job
+    can succeed (agent produced output) but fail delivery (platform down).
     """
     jobs = load_jobs()
     for i, job in enumerate(jobs):
@@ -588,6 +595,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
+            # Track delivery failures separately — cleared on successful delivery
+            job["last_delivery_error"] = delivery_error
             
             # Increment completed count
             if job.get("repeat"):
@@ -614,8 +623,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
 
             save_jobs(jobs)
             return
-    
-    save_jobs(jobs)
+
+    logger.warning("mark_job_run: job_id %s not found, skipping save", job_id)
 
 
 def advance_next_run(job_id: str) -> bool:

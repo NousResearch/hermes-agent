@@ -25,7 +25,7 @@ def clarify_callback(cli, question, choices):
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
-    is_open_ended = not choices or len(choices) == 0
+    is_open_ended = not choices
 
     cli._clarify_state = {
         "question": question,
@@ -61,47 +61,6 @@ def clarify_callback(cli, question, choices):
         "The user did not provide a response within the time limit. "
         "Use your best judgement to make the choice and proceed."
     )
-
-
-def sudo_password_callback(cli) -> str:
-    """Prompt for sudo password through the TUI.
-
-    Sets up a password input area and blocks until the user responds.
-    """
-    timeout = 45
-    response_queue = queue.Queue()
-
-    cli._sudo_state = {"response_queue": response_queue}
-    cli._sudo_deadline = _time.monotonic() + timeout
-
-    if hasattr(cli, "_app") and cli._app:
-        cli._app.invalidate()
-
-    while True:
-        try:
-            result = response_queue.get(timeout=1)
-            cli._sudo_state = None
-            cli._sudo_deadline = 0
-            if hasattr(cli, "_app") and cli._app:
-                cli._app.invalidate()
-            if result:
-                cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
-            else:
-                cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-            return result
-        except queue.Empty:
-            remaining = cli._sudo_deadline - _time.monotonic()
-            if remaining <= 0:
-                break
-            if hasattr(cli, "_app") and cli._app:
-                cli._app.invalidate()
-
-    cli._sudo_state = None
-    cli._sudo_deadline = 0
-    if hasattr(cli, "_app") and cli._app:
-        cli._app.invalidate()
-    cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-    return ""
 
 
 def prompt_for_secret(cli, var_name: str, prompt: str, metadata=None) -> dict:

@@ -32,7 +32,6 @@ Usage:
 
 import json
 import os
-import re
 import time
 import yaml
 import logging
@@ -45,6 +44,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL
+from agent.retry_utils import jittered_backoff
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -350,7 +350,6 @@ class TrajectoryCompressor:
         which handles auth, headers, and provider detection internally.
         For custom endpoints, falls back to raw client construction.
         """
-        from agent.auxiliary_client import call_llm, async_call_llm
 
         provider = self._detect_provider()
         if provider:
@@ -376,8 +375,9 @@ class TrajectoryCompressor:
                     f"Missing API key. Set {self.config.api_key_env} "
                     f"environment variable.")
             from openai import OpenAI
+            from agent.auxiliary_client import _to_openai_base_url
             self.client = OpenAI(
-                api_key=api_key, base_url=self.config.base_url)
+                api_key=api_key, base_url=_to_openai_base_url(self.config.base_url))
             # AsyncOpenAI is created lazily in _get_async_client() so it
             # binds to the current event loop — avoids "Event loop is closed"
             # when process_directory() is called multiple times (each call
@@ -396,10 +396,11 @@ class TrajectoryCompressor:
         avoiding "Event loop is closed" errors on repeated calls.
         """
         from openai import AsyncOpenAI
+        from agent.auxiliary_client import _to_openai_base_url
         # Always create a fresh client so it binds to the running loop.
         self.async_client = AsyncOpenAI(
             api_key=self._async_client_api_key,
-            base_url=self.config.base_url,
+            base_url=_to_openai_base_url(self.config.base_url),
         )
         return self.async_client
 
@@ -587,7 +588,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(self.config.retry_delay * (attempt + 1))
+                    time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
@@ -649,7 +650,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                    await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
@@ -919,68 +920,6 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             result["compression_metrics"] = metrics.to_dict()
         
         return result, metrics
-    
-    def process_file(
-        self, 
-        input_path: Path, 
-        output_path: Path,
-        progress_callback: Optional[Callable[[TrajectoryMetrics], None]] = None
-    ) -> List[TrajectoryMetrics]:
-        """
-        Process a single JSONL file.
-        
-        Args:
-            input_path: Path to input JSONL file
-            output_path: Path to output JSONL file
-            progress_callback: Optional callback called after each entry with its metrics
-            
-        Returns:
-            List of metrics for each trajectory
-        """
-        file_metrics = []
-        
-        # Read all entries
-        entries = []
-        with open(input_path, 'r', encoding='utf-8') as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError as e:
-                        self.logger.warning(f"Skipping invalid JSON at {input_path}:{line_num}: {e}")
-        
-        # Process entries
-        processed_entries = []
-        for entry in entries:
-            try:
-                processed_entry, metrics = self.process_entry(entry)
-                processed_entries.append(processed_entry)
-                file_metrics.append(metrics)
-                self.aggregate_metrics.add_trajectory_metrics(metrics)
-                
-                # Call progress callback if provided
-                if progress_callback:
-                    progress_callback(metrics)
-                
-            except Exception as e:
-                self.logger.error(f"Error processing entry: {e}")
-                self.aggregate_metrics.trajectories_failed += 1
-                # Keep original entry on error
-                processed_entries.append(entry)
-                empty_metrics = TrajectoryMetrics()
-                file_metrics.append(empty_metrics)
-                
-                if progress_callback:
-                    progress_callback(empty_metrics)
-        
-        # Write output
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            for entry in processed_entries:
-                f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-        
-        return file_metrics
     
     def process_directory(self, input_dir: Path, output_dir: Path):
         """

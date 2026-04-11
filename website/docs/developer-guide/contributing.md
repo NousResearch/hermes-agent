@@ -33,7 +33,7 @@ We value contributions in this order:
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With `--recurse-submodules` support |
-| **Python 3.10+** | uv will install it if missing |
+| **Python 3.11+** | uv will install it if missing |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 18+** | Optional — needed for browser tools and WhatsApp bridge |
 

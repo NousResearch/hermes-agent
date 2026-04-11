@@ -16,12 +16,12 @@ import logging
 import os
 import shutil
 import sys
+import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
-    get_nous_subscription_explainer_lines,
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -41,18 +41,6 @@ def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(current_model, str) and current_model.strip():
         return {"default": current_model.strip()}
     return {}
-
-
-def _set_model_provider(
-    config: Dict[str, Any], provider_id: str, base_url: str = ""
-) -> None:
-    model_cfg = _model_config_dict(config)
-    model_cfg["provider"] = provider_id
-    if base_url:
-        model_cfg["base_url"] = base_url.rstrip("/")
-    else:
-        model_cfg.pop("base_url", None)
-    config["model"] = model_cfg
 
 
 def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
@@ -118,8 +106,8 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
-    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
@@ -185,160 +173,10 @@ def _setup_copilot_reasoning_selection(
         _set_reasoning_effort(config, "none")
 
 
-def _setup_provider_model_selection(config, provider_id, current_model, prompt_choice, prompt_fn):
-    """Model selection for API-key providers with live /models detection.
-
-    Tries the provider's /models endpoint first.  Falls back to a
-    hardcoded default list with a warning if the endpoint is unreachable.
-    Always offers a 'Custom model' escape hatch.
-    """
-    from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
-    from hermes_cli.config import get_env_value
-    from hermes_cli.models import (
-        copilot_model_api_mode,
-        fetch_api_models,
-        fetch_github_model_catalog,
-        normalize_copilot_model_id,
-        normalize_opencode_model_id,
-        opencode_model_api_mode,
-    )
-
-    pconfig = PROVIDER_REGISTRY[provider_id]
-    is_copilot_catalog_provider = provider_id in {"copilot", "copilot-acp"}
-
-    # Resolve API key and base URL for the probe
-    if is_copilot_catalog_provider:
-        api_key = ""
-        if provider_id == "copilot":
-            creds = resolve_api_key_provider_credentials(provider_id)
-            api_key = creds.get("api_key", "")
-            base_url = creds.get("base_url", "") or pconfig.inference_base_url
-        else:
-            try:
-                creds = resolve_api_key_provider_credentials("copilot")
-                api_key = creds.get("api_key", "")
-            except Exception:
-                pass
-            base_url = pconfig.inference_base_url
-        catalog = fetch_github_model_catalog(api_key)
-        current_model = normalize_copilot_model_id(
-            current_model,
-            catalog=catalog,
-            api_key=api_key,
-        ) or current_model
-    else:
-        api_key = ""
-        for ev in pconfig.api_key_env_vars:
-            api_key = get_env_value(ev) or os.getenv(ev, "")
-            if api_key:
-                break
-        base_url_env = pconfig.base_url_env_var or ""
-        base_url = (get_env_value(base_url_env) if base_url_env else "") or pconfig.inference_base_url
-        catalog = None
-
-    # Try live /models endpoint
-    if is_copilot_catalog_provider and catalog:
-        live_models = [item.get("id", "") for item in catalog if item.get("id")]
-    else:
-        live_models = fetch_api_models(api_key, base_url)
-
-    if live_models:
-        provider_models = live_models
-        print_info(f"Found {len(live_models)} model(s) from {pconfig.name} API")
-    else:
-        fallback_provider_id = "copilot" if provider_id == "copilot-acp" else provider_id
-        provider_models = _DEFAULT_PROVIDER_MODELS.get(fallback_provider_id, [])
-        if provider_models:
-            print_warning(
-                f"Could not auto-detect models from {pconfig.name} API — showing defaults.\n"
-                f"    Use \"Custom model\" if the model you expect isn't listed."
-            )
-
-    if provider_id in {"opencode-zen", "opencode-go"}:
-        provider_models = [normalize_opencode_model_id(provider_id, mid) for mid in provider_models]
-        current_model = normalize_opencode_model_id(provider_id, current_model)
-        provider_models = list(dict.fromkeys(mid for mid in provider_models if mid))
-
-    model_choices = list(provider_models)
-    model_choices.append("Custom model")
-    model_choices.append(f"Keep current ({current_model})")
-
-    keep_idx = len(model_choices) - 1
-    model_idx = prompt_choice("Select default model:", model_choices, keep_idx)
-
-    selected_model = current_model
-
-    if model_idx < len(provider_models):
-        selected_model = provider_models[model_idx]
-        if is_copilot_catalog_provider:
-            selected_model = normalize_copilot_model_id(
-                selected_model,
-                catalog=catalog,
-                api_key=api_key,
-            ) or selected_model
-        elif provider_id in {"opencode-zen", "opencode-go"}:
-            selected_model = normalize_opencode_model_id(provider_id, selected_model)
-        _set_default_model(config, selected_model)
-    elif model_idx == len(provider_models):
-        custom = prompt_fn("Enter model name")
-        if custom:
-            if is_copilot_catalog_provider:
-                selected_model = normalize_copilot_model_id(
-                    custom,
-                    catalog=catalog,
-                    api_key=api_key,
-                ) or custom
-            elif provider_id in {"opencode-zen", "opencode-go"}:
-                selected_model = normalize_opencode_model_id(provider_id, custom)
-            else:
-                selected_model = custom
-            _set_default_model(config, selected_model)
-    else:
-        # "Keep current" selected — validate it's compatible with the new
-        # provider.  OpenRouter-formatted names (containing "/") won't work
-        # on direct-API providers and would silently break the gateway.
-        if "/" in (current_model or "") and provider_models:
-            print_warning(
-                f"Current model \"{current_model}\" looks like an OpenRouter model "
-                f"and won't work with {pconfig.name}. "
-                f"Switching to {provider_models[0]}."
-            )
-            selected_model = provider_models[0]
-            _set_default_model(config, provider_models[0])
-
-    if provider_id == "copilot" and selected_model:
-        model_cfg = _model_config_dict(config)
-        model_cfg["api_mode"] = copilot_model_api_mode(
-            selected_model,
-            catalog=catalog,
-            api_key=api_key,
-        )
-        config["model"] = model_cfg
-        _setup_copilot_reasoning_selection(
-            config,
-            selected_model,
-            prompt_choice,
-            catalog=catalog,
-            api_key=api_key,
-        )
-    elif provider_id in {"opencode-zen", "opencode-go"} and selected_model:
-        model_cfg = _model_config_dict(config)
-        model_cfg["api_mode"] = opencode_model_api_mode(provider_id, selected_model)
-        config["model"] = model_cfg
-
-
-def _sync_model_from_disk(config: Dict[str, Any]) -> None:
-    disk_model = load_config().get("model")
-    if isinstance(disk_model, dict):
-        model_cfg = _model_config_dict(config)
-        model_cfg.update(disk_model)
-        config["model"] = model_cfg
-    elif isinstance(disk_model, str) and disk_model.strip():
-        _set_default_model(config, disk_model.strip())
-
 
 # Import config helpers
 from hermes_cli.config import (
+    DEFAULT_CONFIG,
     get_hermes_home,
     get_config_path,
     get_env_path,
@@ -444,10 +282,22 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = default
+            scroll_offset = 0
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
+
+                # Rows available for list items: rows 2..(max_y-2) inclusive.
+                visible = max(1, max_y - 3)
+
+                # Scroll the viewport so the cursor is always visible.
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible:
+                    scroll_offset = cursor - visible + 1
+                scroll_offset = max(0, min(scroll_offset, max(0, len(choices) - visible)))
+
                 try:
                     stdscr.addnstr(
                         0,
@@ -459,12 +309,12 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 except curses.error:
                     pass
 
-                for i, choice in enumerate(choices):
-                    y = i + 2
+                for row, i in enumerate(range(scroll_offset, min(scroll_offset + visible, len(choices)))):
+                    y = row + 2
                     if y >= max_y - 1:
                         break
                     arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {choice}"
+                    line = f" {arrow}  {choices[i]}"
                     attr = curses.A_NORMAL
                     if i == cursor:
                         attr = curses.A_BOLD
@@ -488,6 +338,8 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                     return
 
         curses.wrapper(_curses_menu)
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         return result_holder[0]
     except Exception:
         return -1
@@ -660,14 +512,14 @@ def _print_setup_summary(config: dict, hermes_home):
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
-        tool_status.append(("Browser Automation (Nous Browserbase)", True, None))
+        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
     elif subscription_features.browser.available:
         label = "Browser Automation"
         if browser_provider:
             label = f"Browser Automation ({browser_provider})"
         tool_status.append((label, True, None))
     else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browserbase"
+        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
         if browser_provider == "Browserbase":
             missing_browser_hint = (
                 "npm install -g agent-browser and set "
@@ -705,6 +557,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+    elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
+        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -932,8 +786,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # changes with stale values (#4172).
     _refreshed = load_config()
     config["model"] = _refreshed.get("model", config.get("model"))
-    if _refreshed.get("custom_providers"):
+    if "custom_providers" in _refreshed:
         config["custom_providers"] = _refreshed["custom_providers"]
+    else:
+        config.pop("custom_providers", None)
 
     # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
@@ -1017,8 +873,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
                 _set_credential_pool_strategy(config, selected_provider, strategy_value)
                 print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
-            else:
-                _set_credential_pool_strategy(config, selected_provider, "fill_first")
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
@@ -1192,6 +1046,7 @@ def _setup_tts_provider(config: dict):
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
         "minimax": "MiniMax TTS",
+        "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -1212,10 +1067,11 @@ def _setup_tts_provider(config: dict):
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
+            "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1293,6 +1149,18 @@ def _setup_tts_provider(config: dict):
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
 
+    elif selected == "mistral":
+        existing = get_env_value("MISTRAL_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("Mistral API key for TTS", password=True)
+            if api_key:
+                save_env_value("MISTRAL_API_KEY", api_key)
+                print_success("Mistral TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
     # Save the selection
     if "tts" not in config:
         config["tts"] = {}
@@ -1347,8 +1215,6 @@ def setup_terminal_backend(config: dict):
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
-
-    default_terminal = backend_to_idx.get(current_backend, 0)
 
     terminal_idx = prompt_choice(
         "Select terminal backend:", terminal_choices, keep_current_idx
@@ -2075,9 +1941,9 @@ def _setup_matrix():
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
+        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
         try:
-            __import__("nio")
+            __import__("mautrix")
         except ImportError:
             print_info(f"Installing {matrix_pkg}...")
             import subprocess
@@ -2180,6 +2046,77 @@ def _setup_whatsapp():
         print_info("or personal self-chat) and pair via QR code.")
 
 
+def _setup_weixin():
+    """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
+    from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
+    _gateway_setup_weixin()
+
+
+def _setup_bluebubbles():
+    """Configure BlueBubbles iMessage gateway."""
+    print_header("BlueBubbles (iMessage)")
+    existing = get_env_value("BLUEBUBBLES_SERVER_URL")
+    if existing:
+        print_info("BlueBubbles: already configured")
+        if not prompt_yes_no("Reconfigure BlueBubbles?", False):
+            return
+
+    print_info("Connects Hermes to iMessage via BlueBubbles — a free, open-source")
+    print_info("macOS server that bridges iMessage to any device.")
+    print_info("   Requires a Mac running BlueBubbles Server v1.0.0+")
+    print_info("   Download: https://bluebubbles.app/")
+    print()
+    print_info("In BlueBubbles Server → Settings → API, note your Server URL and Password.")
+    print()
+
+    server_url = prompt("BlueBubbles server URL (e.g. http://192.168.1.10:1234)")
+    if not server_url:
+        print_warning("Server URL is required — skipping BlueBubbles setup")
+        return
+    save_env_value("BLUEBUBBLES_SERVER_URL", server_url.rstrip("/"))
+
+    password = prompt("BlueBubbles server password", password=True)
+    if not password:
+        print_warning("Password is required — skipping BlueBubbles setup")
+        return
+    save_env_value("BLUEBUBBLES_PASSWORD", password)
+    print_success("BlueBubbles credentials saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can message your bot")
+    print_info("   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)")
+    print()
+    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("BlueBubbles allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
+
+    print()
+    print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")
+    print_info("   You can also set this later with /set-home in your iMessage chat.")
+    home_channel = prompt("Home channel address (leave empty to set later)")
+    if home_channel:
+        save_env_value("BLUEBUBBLES_HOME_CHANNEL", home_channel)
+
+    print()
+    print_info("Advanced settings (defaults are fine for most setups):")
+    if prompt_yes_no("Configure webhook listener settings?", False):
+        webhook_port = prompt("Webhook listener port (default: 8645)")
+        if webhook_port:
+            try:
+                save_env_value("BLUEBUBBLES_WEBHOOK_PORT", str(int(webhook_port)))
+                print_success(f"Webhook port set to {webhook_port}")
+            except ValueError:
+                print_warning("Invalid port number, using default 8645")
+
+    print()
+    print_info("Requires the BlueBubbles Private API helper for typing indicators,")
+    print_info("read receipts, and tapback reactions. Basic messaging works without it.")
+    print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
+
+
 def _setup_webhooks():
     """Configure webhook integration."""
     print_header("Webhooks")
@@ -2234,6 +2171,8 @@ _GATEWAY_PLATFORMS = [
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
+    ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 
@@ -2277,6 +2216,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("WEBHOOK_ENABLED")
     )
     if any_messaging:
@@ -2296,6 +2236,8 @@ def setup_gateway(config: dict):
             missing_home.append("Discord")
         if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
             missing_home.append("Slack")
+        if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
+            missing_home.append("BlueBubbles")
 
         if missing_home:
             print()
@@ -2466,6 +2408,8 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("WhatsApp")
         if get_env_value("SIGNAL_ACCOUNT"):
             platforms.append("Signal")
+        if get_env_value("BLUEBUBBLES_SERVER_URL"):
+            platforms.append("BlueBubbles")
         if platforms:
             return ", ".join(platforms)
         return None  # No platforms configured — section must run
@@ -2514,8 +2458,119 @@ _OPENCLAW_SCRIPT = (
 )
 
 
+def _load_openclaw_migration_module():
+    """Load the openclaw_to_hermes migration script as a module.
+
+    Returns the loaded module, or None if the script can't be loaded.
+    """
+    if not _OPENCLAW_SCRIPT.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location(
+        "openclaw_to_hermes", _OPENCLAW_SCRIPT
+    )
+    if spec is None or spec.loader is None:
+        return None
+
+    mod = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so @dataclass can resolve the module
+    # (Python 3.11+ requires this for dynamically loaded modules)
+    import sys as _sys
+    _sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        _sys.modules.pop(spec.name, None)
+        raise
+    return mod
+
+
+# Item kinds that represent high-impact changes warranting explicit warnings.
+# Gateway tokens/channels can hijack messaging platforms from the old agent.
+# Config values may have different semantics between OpenClaw and Hermes.
+# Instruction/context files (.md) can contain incompatible setup procedures.
+_HIGH_IMPACT_KIND_KEYWORDS = {
+    "gateway": "⚠ Gateway/messaging — this will configure Hermes to use your OpenClaw messaging channels",
+    "telegram": "⚠ Telegram — this will point Hermes at your OpenClaw Telegram bot",
+    "slack": "⚠ Slack — this will point Hermes at your OpenClaw Slack workspace",
+    "discord": "⚠ Discord — this will point Hermes at your OpenClaw Discord bot",
+    "whatsapp": "⚠ WhatsApp — this will point Hermes at your OpenClaw WhatsApp connection",
+    "config": "⚠ Config values — OpenClaw settings may not map 1:1 to Hermes equivalents",
+    "soul": "⚠ Instruction file — may contain OpenClaw-specific setup/restart procedures",
+    "memory": "⚠ Memory/context file — may reference OpenClaw-specific infrastructure",
+    "context": "⚠ Context file — may contain OpenClaw-specific instructions",
+}
+
+
+def _print_migration_preview(report: dict):
+    """Print a detailed dry-run preview of what migration would do.
+
+    Groups items by category and adds explicit warnings for high-impact
+    changes like gateway token takeover and config value differences.
+    """
+    items = report.get("items", [])
+    if not items:
+        print_info("Nothing to migrate.")
+        return
+
+    migrated_items = [i for i in items if i.get("status") == "migrated"]
+    conflict_items = [i for i in items if i.get("status") == "conflict"]
+    skipped_items = [i for i in items if i.get("status") == "skipped"]
+
+    warnings_shown = set()
+
+    if migrated_items:
+        print(color("  Would import:", Colors.GREEN))
+        for item in migrated_items:
+            kind = item.get("kind", "unknown")
+            dest = item.get("destination", "")
+            if dest:
+                dest_short = str(dest).replace(str(Path.home()), "~")
+                print(f"      {kind:<22s} → {dest_short}")
+            else:
+                print(f"      {kind}")
+
+            # Check for high-impact items and collect warnings
+            kind_lower = kind.lower()
+            dest_lower = str(dest).lower()
+            for keyword, warning in _HIGH_IMPACT_KIND_KEYWORDS.items():
+                if keyword in kind_lower or keyword in dest_lower:
+                    warnings_shown.add(warning)
+        print()
+
+    if conflict_items:
+        print(color("  Would overwrite (conflicts with existing Hermes config):", Colors.YELLOW))
+        for item in conflict_items:
+            kind = item.get("kind", "unknown")
+            reason = item.get("reason", "already exists")
+            print(f"      {kind:<22s}  {reason}")
+        print()
+
+    if skipped_items:
+        print(color("  Would skip:", Colors.DIM))
+        for item in skipped_items:
+            kind = item.get("kind", "unknown")
+            reason = item.get("reason", "")
+            print(f"      {kind:<22s}  {reason}")
+        print()
+
+    # Print collected warnings
+    if warnings_shown:
+        print(color("  ── Warnings ──", Colors.YELLOW))
+        for warning in sorted(warnings_shown):
+            print(color(f"    {warning}", Colors.YELLOW))
+        print()
+        print(color("  Note: OpenClaw config values may have different semantics in Hermes.", Colors.YELLOW))
+        print(color("  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hermes's yolo mode.", Colors.YELLOW))
+        print(color("  Instruction files (.md) from OpenClaw may contain incompatible procedures.", Colors.YELLOW))
+        print()
+
+
 def _offer_openclaw_migration(hermes_home: Path) -> bool:
     """Detect ~/.openclaw and offer to migrate during first-time setup.
+
+    Runs a dry-run first to show the user exactly what would be imported,
+    overwritten, or taken over. Only executes after explicit confirmation.
 
     Returns True if migration ran successfully, False otherwise.
     """
@@ -2529,12 +2584,12 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     print()
     print_header("OpenClaw Installation Detected")
     print_info(f"Found OpenClaw data at {openclaw_dir}")
-    print_info("Hermes can import your settings, memories, skills, and API keys.")
+    print_info("Hermes can preview what would be imported before making any changes.")
     print()
 
-    if not prompt_yes_no("Would you like to import from OpenClaw?", default=True):
+    if not prompt_yes_no("Would you like to see what can be imported?", default=True):
         print_info(
-            "Skipping migration. You can run it later via the openclaw-migration skill."
+            "Skipping migration. You can run it later with: hermes claw migrate --dry-run"
         )
         return False
 
@@ -2543,34 +2598,71 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     if not config_path.exists():
         save_config(load_config())
 
-    # Dynamically load the migration script
+    # Load the migration module
     try:
-        spec = importlib.util.spec_from_file_location(
-            "openclaw_to_hermes", _OPENCLAW_SCRIPT
-        )
-        if spec is None or spec.loader is None:
+        mod = _load_openclaw_migration_module()
+        if mod is None:
             print_warning("Could not load migration script.")
             return False
+    except Exception as e:
+        print_warning(f"Could not load migration script: {e}")
+        logger.debug("OpenClaw migration module load error", exc_info=True)
+        return False
 
-        mod = importlib.util.module_from_spec(spec)
-        # Register in sys.modules so @dataclass can resolve the module
-        # (Python 3.11+ requires this for dynamically loaded modules)
-        import sys as _sys
-        _sys.modules[spec.name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception:
-            _sys.modules.pop(spec.name, None)
-            raise
-
-        # Run migration with the "full" preset, execute mode, no overwrite
+    # ── Phase 1: Dry-run preview ──
+    try:
         selected = mod.resolve_selected_options(None, None, preset="full")
+        dry_migrator = mod.Migrator(
+            source_root=openclaw_dir.resolve(),
+            target_root=hermes_home.resolve(),
+            execute=False,  # dry-run — no files modified
+            workspace_target=None,
+            overwrite=True,  # show everything including conflicts
+            migrate_secrets=True,
+            output_dir=None,
+            selected_options=selected,
+            preset_name="full",
+        )
+        preview_report = dry_migrator.migrate()
+    except Exception as e:
+        print_warning(f"Migration preview failed: {e}")
+        logger.debug("OpenClaw migration preview error", exc_info=True)
+        return False
+
+    # Display the full preview
+    preview_summary = preview_report.get("summary", {})
+    preview_count = preview_summary.get("migrated", 0)
+
+    if preview_count == 0:
+        print()
+        print_info("Nothing to import from OpenClaw.")
+        return False
+
+    print()
+    print_header(f"Migration Preview — {preview_count} item(s) would be imported")
+    print_info("No changes have been made yet. Review the list below:")
+    print()
+    _print_migration_preview(preview_report)
+
+    # ── Phase 2: Confirm and execute ──
+    if not prompt_yes_no("Proceed with migration?", default=False):
+        print_info(
+            "Migration cancelled. You can run it later with: hermes claw migrate"
+        )
+        print_info(
+            "Use --dry-run to preview again, or --preset minimal for a lighter import."
+        )
+        return False
+
+    # Execute the migration — overwrite=False so existing Hermes configs are
+    # preserved. The user saw the preview; conflicts are skipped by default.
+    try:
         migrator = mod.Migrator(
             source_root=openclaw_dir.resolve(),
             target_root=hermes_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=True,
+            overwrite=False,  # preserve existing Hermes config
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,
@@ -2582,7 +2674,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         logger.debug("OpenClaw migration error", exc_info=True)
         return False
 
-    # Print summary
+    # Print final summary
     summary = report.get("summary", {})
     migrated = summary.get("migrated", 0)
     skipped = summary.get("skipped", 0)
@@ -2593,7 +2685,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     if migrated:
         print_success(f"Imported {migrated} item(s) from OpenClaw.")
     if conflicts:
-        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes.")
+        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes (use hermes claw migrate --overwrite to force).")
     if skipped:
         print_info(f"Skipped {skipped} item(s) (not found or unchanged).")
     if errors:
@@ -2638,6 +2730,7 @@ def run_setup_wizard(args):
     Supports full, quick, and section-specific setup:
       hermes setup           — full or quick (auto-detected)
       hermes setup model     — just model/provider
+      hermes setup tts       — just text-to-speech
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
@@ -2648,6 +2741,11 @@ def run_setup_wizard(args):
         managed_error("run setup wizard")
         return
     ensure_hermes_home()
+
+    reset_requested = bool(getattr(args, "reset", False))
+    if reset_requested:
+        save_config(copy.deepcopy(DEFAULT_CONFIG))
+        print_success("Configuration reset to defaults.")
 
     config = load_config()
     hermes_home = get_hermes_home()
@@ -2749,18 +2847,13 @@ def run_setup_wizard(args):
         menu_choices = [
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
-            "---",
             "Model & Provider",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
-            "---",
             "Exit",
         ]
-
-        # Separator indices (not selectable, but prompt_choice doesn't filter them,
-        # so we handle them below)
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
@@ -2770,18 +2863,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
-            # Separator — treat as exit
+        elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 3 <= choice <= 7:
+        elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 3) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
+            # so positional indexing (choice - 2) would dispatch the wrong section.
+            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
                 _, label, func = section
@@ -2849,19 +2938,33 @@ def run_setup_wizard(args):
     _offer_launch_chat()
 
 
+def _resolve_hermes_chat_argv() -> Optional[list[str]]:
+    """Resolve argv for launching ``hermes chat`` in a fresh process."""
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin, "chat"]
+
+    try:
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main", "chat"]
+    except Exception:
+        pass
+
+    return None
+
+
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
-    if prompt_yes_no("Launch hermes chat now?", True):
-        from hermes_cli.main import cmd_chat
-        from types import SimpleNamespace
-        cmd_chat(SimpleNamespace(
-            query=None, resume=None, continue_last=None, model=None,
-            provider=None, effort=None, skin=None, oneshot=False,
-            quiet=False, verbose=False, toolsets=None, skills=None,
-            yolo=False, source=None, worktree=False, checkpoints=False,
-            pass_session_id=False, max_turns=None,
-        ))
+    if not prompt_yes_no("Launch hermes chat now?", True):
+        return
+
+    chat_argv = _resolve_hermes_chat_argv()
+    if not chat_argv:
+        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
+        return
+
+    os.execvp(chat_argv[0], chat_argv)
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

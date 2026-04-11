@@ -79,6 +79,9 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+from hermes_constants import is_termux as _is_termux
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -123,7 +126,8 @@ def show_status(args):
         "MiniMax-CN": "MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
-        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
+        "Browser Use": "BROWSER_USE_API_KEY",  # Optional — local browser works without this
+        "Browserbase": "BROWSERBASE_API_KEY",  # Optional — direct credentials only
         "FAL": "FAL_KEY",
         "Tinker": "TINKER_API_KEY",
         "WandB": "WANDB_API_KEY",
@@ -152,12 +156,14 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
+        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
+        qwen_status = get_qwen_auth_status()
     except Exception:
         nous_status = {}
         codex_status = {}
+        qwen_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
     print(
@@ -187,6 +193,21 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    qwen_logged_in = bool(qwen_status.get("logged_in"))
+    print(
+        f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
+        f"{'logged in' if qwen_logged_in else 'not logged in (run: qwen auth qwen-oauth)'}"
+    )
+    qwen_auth_file = qwen_status.get("auth_file")
+    if qwen_auth_file:
+        print(f"    Auth file:  {qwen_auth_file}")
+    qwen_exp = qwen_status.get("expires_at_ms")
+    if qwen_exp:
+        from datetime import datetime, timezone
+        print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
+    if qwen_status.get("error") and not qwen_logged_in:
+        print(f"    Error:      {qwen_status.get('error')}")
 
     # =========================================================================
     # Nous Subscription Features
@@ -284,6 +305,8 @@ def show_status(args):
         "DingTalk": ("DINGTALK_CLIENT_ID", None),
         "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
         "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
+        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():
@@ -306,7 +329,25 @@ def show_status(args):
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
-    if sys.platform.startswith('linux'):
+    if _is_termux():
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+            gateway_pids = find_gateway_pids()
+        except Exception:
+            gateway_pids = []
+        is_running = bool(gateway_pids)
+        print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
+        print("  Manager:      Termux / manual process")
+        if gateway_pids:
+            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
+            if len(gateway_pids) > 3:
+                rendered += ", ..."
+            print(f"  PID(s):       {rendered}")
+        else:
+            print("  Start with:   hermes gateway")
+            print("  Note:         Android may stop background jobs when Termux is suspended")
+
+    elif sys.platform.startswith('linux'):
         try:
             from hermes_cli.gateway import get_service_name
             _gw_svc = get_service_name()
@@ -320,7 +361,7 @@ def show_status(args):
                 timeout=5
             )
             is_active = result.stdout.strip() == "active"
-        except subprocess.TimeoutExpired:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             is_active = False
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")

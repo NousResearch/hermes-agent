@@ -647,7 +647,11 @@ class SignalAdapter(BasePlatformAdapter):
 
         if result is not None:
             self._track_sent_timestamp(result)
-            return SendResult(success=True)
+            # Use the timestamp from the RPC result as a pseudo message_id.
+            # Signal doesn't have real message IDs, but the stream consumer
+            # needs a truthy value to follow its edit→fallback path correctly.
+            _msg_id = str(result.get("timestamp", "")) if isinstance(result, dict) else None
+            return SendResult(success=True, message_id=_msg_id or None)
         return SendResult(success=False, error="RPC send failed")
 
     def _track_sent_timestamp(self, rpc_result) -> None:
@@ -836,6 +840,11 @@ class SignalAdapter(BasePlatformAdapter):
                 await task
             except asyncio.CancelledError:
                 pass
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Public interface for stopping typing — called by base adapter's
+        _keep_typing finally block to clean up platform-level typing tasks."""
+        await self._stop_typing_indicator(chat_id)
 
     # ------------------------------------------------------------------
     # Chat Info

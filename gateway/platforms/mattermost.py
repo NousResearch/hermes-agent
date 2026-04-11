@@ -407,6 +407,11 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
         import asyncio
         import aiohttp
 
@@ -430,7 +435,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     ct = resp.content_type or "application/octet-stream"
                     break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                last_exc = exc
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue

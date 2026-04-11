@@ -3,43 +3,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
-
-
-class StubAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
-
-    async def connect(self):
-        return True
-
-    async def disconnect(self):
-        return None
-
-    async def send(self, chat_id, content, reply_to=None, metadata=None):
-        return SendResult(success=True, message_id="1")
-
-    async def send_typing(self, chat_id, metadata=None):
-        return None
-
-    async def get_chat_info(self, chat_id):
-        return {"id": chat_id}
-
-
-def _source(chat_id="123456", chat_type="dm"):
-    return SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        chat_type=chat_type,
-    )
+from gateway.platforms.base import MessageEvent
+from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
+from gateway.session import build_session_key
+from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
 @pytest.mark.asyncio
 async def test_cancel_background_tasks_cancels_inflight_message_processing():
-    adapter = StubAdapter()
+    _runner, adapter = make_restart_runner()
     release = asyncio.Event()
 
     async def block_forever(_event):
@@ -47,7 +19,7 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
         return None
 
     adapter.set_message_handler(block_forever)
-    event = MessageEvent(text="work", source=_source(), message_id="1")
+    event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
 
     await adapter.handle_message(event)
     await asyncio.sleep(0)
@@ -65,17 +37,11 @@ async def test_cancel_background_tasks_cancels_inflight_message_processing():
 
 @pytest.mark.asyncio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
-    runner = object.__new__(GatewayRunner)
-    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
-    runner._running = True
-    runner._shutdown_event = asyncio.Event()
-    runner._exit_reason = None
+    runner, adapter = make_restart_runner()
     runner._pending_messages = {"session": "pending text"}
     runner._pending_approvals = {"session": {"command": "rm -rf /tmp/x"}}
-    runner._background_tasks = set()
-    runner._shutdown_all_gateway_honcho = lambda: None
+    runner._restart_drain_timeout = 0.0
 
-    adapter = StubAdapter()
     release = asyncio.Event()
 
     async def block_forever(_event):
@@ -83,7 +49,7 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
         return None
 
     adapter.set_message_handler(block_forever)
-    event = MessageEvent(text="work", source=_source(), message_id="1")
+    event = MessageEvent(text="work", source=make_restart_source(), message_id="1")
     await adapter.handle_message(event)
     await asyncio.sleep(0)
 
@@ -93,7 +59,6 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     session_key = build_session_key(event.source)
     running_agent = MagicMock()
     runner._running_agents = {session_key: running_agent}
-    runner.adapters = {Platform.TELEGRAM: adapter}
 
     with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
         await runner.stop()
@@ -105,3 +70,78 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._pending_messages == {}
     assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_drains_running_agents_before_disconnect():
+    runner, adapter = make_restart_runner()
+    disconnect_mock = AsyncMock()
+    adapter.disconnect = disconnect_mock
+
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
+
+    async def finish_agent():
+        await asyncio.sleep(0.05)
+        runner._running_agents.clear()
+
+    asyncio.create_task(finish_agent())
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    running_agent.interrupt.assert_not_called()
+    disconnect_mock.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_interrupts_after_drain_timeout():
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.05
+
+    disconnect_mock = AsyncMock()
+    adapter.disconnect = disconnect_mock
+
+    running_agent = MagicMock()
+    runner._running_agents = {"session": running_agent}
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    running_agent.interrupt.assert_called_once_with("Gateway shutting down")
+    disconnect_mock.assert_awaited_once()
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_service_restart_sets_named_exit_code():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop(restart=True, service_restart=True)
+
+    assert runner._exit_code == GATEWAY_SERVICE_RESTART_EXIT_CODE
+
+
+@pytest.mark.asyncio
+async def test_drain_active_agents_throttles_status_updates():
+    runner, _adapter = make_restart_runner()
+    runner._update_runtime_status = MagicMock()
+
+    runner._running_agents = {"a": MagicMock(), "b": MagicMock()}
+
+    async def finish_agents():
+        await asyncio.sleep(0.12)
+        runner._running_agents.pop("a")
+        await asyncio.sleep(0.12)
+        runner._running_agents.clear()
+
+    task = asyncio.create_task(finish_agents())
+    await runner._drain_active_agents(1.0)
+    await task
+
+    # Start, one count-change update, and final update. Allow one extra update
+    # if the loop observes the zero-agent state before exiting.
+    assert 3 <= runner._update_runtime_status.call_count <= 4

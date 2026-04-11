@@ -383,6 +383,19 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 
+## Interactive Model Picker
+
+When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:
+
+1. **Provider selection** — buttons showing each available provider with model counts (e.g., "OpenAI (15)", "✓ Anthropic (12)" for the current provider).
+2. **Model selection** — paginated model list with **Prev**/**Next** navigation, a **Back** button to return to providers, and **Cancel**.
+
+The current model and provider are displayed at the top. All navigation happens by editing the same message in-place (no chat clutter).
+
+:::tip
+If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
+:::
+
 ## Webhook Mode
 
 By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
@@ -448,6 +461,69 @@ platforms:
 
 :::tip
 You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
+:::
+
+## Proxy Support
+
+If your network requires an HTTP proxy to reach the internet (common in corporate environments), the Telegram adapter automatically reads standard proxy environment variables and routes all connections through the proxy.
+
+### Supported variables
+
+The adapter checks these environment variables in order, using the first one that is set:
+
+1. `HTTPS_PROXY`
+2. `HTTP_PROXY`
+3. `ALL_PROXY`
+4. `https_proxy` / `http_proxy` / `all_proxy` (lowercase variants)
+
+### Configuration
+
+Set the proxy in your environment before starting the gateway:
+
+```bash
+export HTTPS_PROXY=http://proxy.example.com:8080
+hermes gateway
+```
+
+Or add it to `~/.hermes/.env`:
+
+```bash
+HTTPS_PROXY=http://proxy.example.com:8080
+```
+
+The proxy applies to both the primary transport and all fallback IP transports. No additional Hermes configuration is needed — if the environment variable is set, it's used automatically.
+
+:::note
+This covers the custom fallback transport layer that Hermes uses for Telegram connections. The standard `httpx` client used elsewhere already respects proxy env vars natively.
+:::
+
+## Message Reactions
+
+The bot can add emoji reactions to messages as visual processing feedback:
+
+- 👀 when the bot starts processing your message
+- ✅ when the response is delivered successfully
+- ❌ if an error occurs during processing
+
+Reactions are **disabled by default**. Enable them in `config.yaml`:
+
+```yaml
+telegram:
+  reactions: true
+```
+
+Or via environment variable:
+
+```bash
+TELEGRAM_REACTIONS=true
+```
+
+:::note
+Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+:::
+
+:::tip
+If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
 ## Troubleshooting

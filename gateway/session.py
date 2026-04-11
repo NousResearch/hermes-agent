@@ -32,9 +32,6 @@ def _now() -> datetime:
 # PII redaction helpers
 # ---------------------------------------------------------------------------
 
-_PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
-
-
 def _hash_id(value: str) -> str:
     """Deterministic 12-char hex hash of an identifier."""
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
@@ -57,10 +54,6 @@ def _hash_chat_id(value: str) -> str:
         return f"{prefix}:{_hash_id(value[colon + 1:])}"
     return _hash_id(value)
 
-
-def _looks_like_phone(value: str) -> bool:
-    """Return True if *value* looks like a phone number (E.164 or similar)."""
-    return bool(_PHONE_RE.match(value.strip()))
 
 from .config import (
     Platform,
@@ -144,15 +137,6 @@ class SessionSource:
             chat_id_alt=data.get("chat_id_alt"),
         )
     
-    @classmethod
-    def local_cli(cls) -> "SessionSource":
-        """Create a source representing the local CLI."""
-        return cls(
-            platform=Platform.LOCAL,
-            chat_id="cli",
-            chat_name="CLI terminal",
-            chat_type="dm",
-        )
 
 
 @dataclass
@@ -193,6 +177,7 @@ _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
     Platform.TELEGRAM,
+    Platform.BLUEBUBBLES,
 })
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
@@ -509,8 +494,7 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None,
-                 on_auto_reset=None):
+                 has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -768,41 +752,6 @@ class SessionStore:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
-
-        # Seed new DM thread sessions with parent DM session history.
-        # When a bot reply creates a Slack thread and the user responds in it,
-        # the thread gets a new session (keyed by thread_ts).  Without seeding,
-        # the thread session starts with zero context — the user's original
-        # question and the bot's answer are invisible.  Fix: copy the parent
-        # DM session's transcript into the new thread session so context carries
-        # over while still keeping threads isolated from each other.
-        if (
-            source.chat_type == "dm"
-            and source.thread_id
-            and entry.created_at == entry.updated_at  # brand-new session
-            and not was_auto_reset
-        ):
-            parent_source = SessionSource(
-                platform=source.platform,
-                chat_id=source.chat_id,
-                chat_type="dm",
-                user_id=source.user_id,
-                # no thread_id — this is the parent DM session
-            )
-            parent_key = self._generate_session_key(parent_source)
-            with self._lock:
-                parent_entry = self._entries.get(parent_key)
-            if parent_entry and parent_entry.session_id != entry.session_id:
-                try:
-                    parent_history = self.load_transcript(parent_entry.session_id)
-                    if parent_history:
-                        self.rewrite_transcript(entry.session_id, parent_history)
-                        logger.info(
-                            "[Session] Seeded DM thread session %s with %d messages from parent %s",
-                            entry.session_id, len(parent_history), parent_entry.session_id,
-                        )
-                except Exception as e:
-                    logger.warning("[Session] Failed to seed thread session: %s", e)
 
         return entry
 

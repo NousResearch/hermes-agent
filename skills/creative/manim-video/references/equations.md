@@ -65,6 +65,57 @@ MathTex(r"\vec{v}")                       # vector
 MathTex(r"\lim_{x \to \infty} f(x)")    # limit
 ```
 
+## Matrices
+
+`MathTex` supports standard LaTeX matrix environments via `amsmath` (loaded by default):
+
+```python
+# Bracketed matrix
+MathTex(r"\begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}")
+
+# Parenthesized matrix
+MathTex(r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}")
+
+# Determinant (vertical bars)
+MathTex(r"\begin{vmatrix} a & b \\ c & d \end{vmatrix}")
+
+# Plain (no delimiters)
+MathTex(r"\begin{matrix} x_1 \\ x_2 \\ x_3 \end{matrix}")
+```
+
+For matrices you need to animate element-by-element or color individual entries, use the `IntegerMatrix`, `DecimalMatrix`, or `MobjectMatrix` mobjects instead — see `mobjects.md`.
+
+## Cases and Piecewise Functions
+
+```python
+MathTex(r"""
+    f(x) = \begin{cases}
+        x^2    & \text{if } x \geq 0 \\
+        -x^2   & \text{if } x < 0
+    \end{cases}
+""")
+```
+
+## Aligned Environments
+
+For multi-line derivations with alignment, use `aligned` inside `MathTex`:
+
+```python
+MathTex(r"""
+    \begin{aligned}
+        \nabla \cdot \mathbf{E} &= \frac{\rho}{\epsilon_0} \\
+        \nabla \cdot \mathbf{B} &= 0 \\
+        \nabla \times \mathbf{E} &= -\frac{\partial \mathbf{B}}{\partial t} \\
+        \nabla \times \mathbf{B} &= \mu_0 \mathbf{J} + \mu_0 \epsilon_0 \frac{\partial \mathbf{E}}{\partial t}
+    \end{aligned}
+""")
+```
+
+Note: `MathTex` wraps content in `align*` by default. Override with `tex_environment` if needed:
+```python
+MathTex(r"...", tex_environment="gather*")
+```
+
 ## Derivation Pattern
 
 ```python

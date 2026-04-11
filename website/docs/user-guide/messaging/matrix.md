@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Matrix bot"
 
 # Matrix Setup
 
-Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `matrix-nio` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
+Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
 
 Hermes works with any Matrix homeserver — Synapse, Conduit, Dendrite, or matrix.org.
 
@@ -16,7 +16,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
@@ -62,6 +62,7 @@ matrix:
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
   auto_thread: true               # Auto-create threads for responses (default: true)
+  dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
 ```
 
 Or via environment variables:
@@ -70,6 +71,7 @@ Or via environment variables:
 MATRIX_REQUIRE_MENTION=true
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
 MATRIX_AUTO_THREAD=true
+MATRIX_DM_MENTION_THREADS=false
 ```
 
 :::note
@@ -232,11 +234,11 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `matrix-nio` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
 
 ```bash
-# Install matrix-nio with E2EE support
-pip install 'matrix-nio[e2e]'
+# Install mautrix with E2EE support
+pip install 'mautrix[encryption]'
 
 # Or install with hermes extras
 pip install 'hermes-agent[matrix]'
@@ -265,17 +267,17 @@ MATRIX_ENCRYPTION=true
 
 When E2EE is enabled, Hermes:
 
-- Stores encryption keys in `~/.hermes/matrix/store/`
+- Stores encryption keys in `~/.hermes/platforms/matrix/store/` (legacy installs: `~/.hermes/matrix/store/`)
 - Uploads device keys on first connection
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
 
 :::warning
-If you delete the `~/.hermes/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
+If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
 :::
 
 :::info
-If `matrix-nio[e2e]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
 ## Home Room
@@ -319,14 +321,14 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 If this returns your user info, the token is valid. If it returns an error, generate a new token.
 
-### "matrix-nio not installed" error
+### "mautrix not installed" error
 
-**Cause**: The `matrix-nio` Python package is not installed.
+**Cause**: The `mautrix` Python package is not installed.
 
 **Fix**: Install it:
 
 ```bash
-pip install 'matrix-nio[e2e]'
+pip install 'mautrix[encryption]'
 ```
 
 Or with Hermes extras:

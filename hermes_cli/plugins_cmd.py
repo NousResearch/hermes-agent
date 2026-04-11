@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Minimum manifest version this installer understands.
@@ -26,8 +28,7 @@ _SUPPORTED_MANIFEST_VERSION = 1
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    plugins = Path(hermes_home) / "plugins"
+    plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
 
@@ -294,7 +295,7 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         sys.exit(1)
 
     # Warn about insecure / local URL schemes
-    if git_url.startswith("http://") or git_url.startswith("file://"):
+    if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs."
@@ -530,7 +531,7 @@ def cmd_disable(name: str) -> None:
 
     disabled.add(name)
     _save_disabled_set(disabled)
-    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
+    console.print(f"[yellow]\u2298[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
 
 
 def cmd_list() -> None:
@@ -593,8 +594,152 @@ def cmd_list() -> None:
     console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
 
 
+# ---------------------------------------------------------------------------
+# Provider plugin discovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _discover_memory_providers() -> list[tuple[str, str]]:
+    """Return [(name, description), ...] for available memory providers."""
+    try:
+        from plugins.memory import discover_memory_providers
+        return [(name, desc) for name, desc, _avail in discover_memory_providers()]
+    except Exception:
+        return []
+
+
+def _discover_context_engines() -> list[tuple[str, str]]:
+    """Return [(name, description), ...] for available context engines."""
+    try:
+        from plugins.context_engine import discover_context_engines
+        return [(name, desc) for name, desc, _avail in discover_context_engines()]
+    except Exception:
+        return []
+
+
+def _get_current_memory_provider() -> str:
+    """Return the current memory.provider from config (empty = built-in)."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return config.get("memory", {}).get("provider", "") or ""
+    except Exception:
+        return ""
+
+
+def _get_current_context_engine() -> str:
+    """Return the current context.engine from config."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return config.get("context", {}).get("engine", "compressor") or "compressor"
+    except Exception:
+        return "compressor"
+
+
+def _save_memory_provider(name: str) -> None:
+    """Persist memory.provider to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "memory" not in config:
+        config["memory"] = {}
+    config["memory"]["provider"] = name
+    save_config(config)
+
+
+def _save_context_engine(name: str) -> None:
+    """Persist context.engine to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "context" not in config:
+        config["context"] = {}
+    config["context"]["engine"] = name
+    save_config(config)
+
+
+def _configure_memory_provider() -> bool:
+    """Launch a radio picker for memory providers. Returns True if changed."""
+    from hermes_cli.curses_ui import curses_radiolist
+
+    current = _get_current_memory_provider()
+    providers = _discover_memory_providers()
+
+    # Build items: "built-in" first, then discovered providers
+    items = ["built-in (default)"]
+    names = [""]  # empty string = built-in
+    selected = 0
+
+    for name, desc in providers:
+        names.append(name)
+        label = f"{name} \u2014 {desc}" if desc else name
+        items.append(label)
+        if name == current:
+            selected = len(items) - 1
+
+    # If current provider isn't in discovered list, add it
+    if current and current not in names:
+        names.append(current)
+        items.append(f"{current} (not found)")
+        selected = len(items) - 1
+
+    choice = curses_radiolist(
+        title="Memory Provider (select one)",
+        items=items,
+        selected=selected,
+    )
+
+    new_provider = names[choice]
+    if new_provider != current:
+        _save_memory_provider(new_provider)
+        return True
+    return False
+
+
+def _configure_context_engine() -> bool:
+    """Launch a radio picker for context engines. Returns True if changed."""
+    from hermes_cli.curses_ui import curses_radiolist
+
+    current = _get_current_context_engine()
+    engines = _discover_context_engines()
+
+    # Build items: "compressor" first (built-in), then discovered engines
+    items = ["compressor (default)"]
+    names = ["compressor"]
+    selected = 0
+
+    for name, desc in engines:
+        names.append(name)
+        label = f"{name} \u2014 {desc}" if desc else name
+        items.append(label)
+        if name == current:
+            selected = len(items) - 1
+
+    # If current engine isn't in discovered list and isn't compressor, add it
+    if current != "compressor" and current not in names:
+        names.append(current)
+        items.append(f"{current} (not found)")
+        selected = len(items) - 1
+
+    choice = curses_radiolist(
+        title="Context Engine (select one)",
+        items=items,
+        selected=selected,
+    )
+
+    new_engine = names[choice]
+    if new_engine != current:
+        _save_context_engine(new_engine)
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Composite plugins UI
+# ---------------------------------------------------------------------------
+
+
 def cmd_toggle() -> None:
-    """Interactive curses checklist to enable/disable installed plugins."""
+    """Interactive composite UI — general plugins + provider plugin categories."""
     from rich.console import Console
 
     try:
@@ -605,18 +750,13 @@ def cmd_toggle() -> None:
     console = Console()
     plugins_dir = _plugins_dir()
 
+    # -- General plugins discovery --
     dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
-    if not dirs:
-        console.print("[dim]No plugins installed.[/dim]")
-        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
-        return
-
     disabled = _get_disabled_set()
 
-    # Build items list: "name — description" for display
-    names = []
-    labels = []
-    selected = set()
+    plugin_names = []
+    plugin_labels = []
+    plugin_selected = set()
 
     for i, d in enumerate(dirs):
         manifest_file = d / "plugin.yaml"
@@ -632,36 +772,335 @@ def cmd_toggle() -> None:
             except Exception:
                 pass
 
-        names.append(name)
-        label = f"{name} — {description}" if description else name
-        labels.append(label)
+        plugin_names.append(name)
+        label = f"{name} \u2014 {description}" if description else name
+        plugin_labels.append(label)
 
         if name not in disabled and d.name not in disabled:
-            selected.add(i)
+            plugin_selected.add(i)
 
-    from hermes_cli.curses_ui import curses_checklist
+    # -- Provider categories --
+    current_memory = _get_current_memory_provider() or "built-in"
+    current_context = _get_current_context_engine()
+    categories = [
+        ("Memory Provider", current_memory, _configure_memory_provider),
+        ("Context Engine", current_context, _configure_context_engine),
+    ]
 
-    result = curses_checklist(
-        title="Plugins — toggle enabled/disabled",
-        items=labels,
-        selected=selected,
-    )
+    has_plugins = bool(plugin_names)
+    has_categories = bool(categories)
 
-    # Compute new disabled set from deselected items
+    if not has_plugins and not has_categories:
+        console.print("[dim]No plugins installed and no provider categories available.[/dim]")
+        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
+        return
+
+    # Non-TTY fallback
+    if not sys.stdin.isatty():
+        console.print("[dim]Interactive mode requires a terminal.[/dim]")
+        return
+
+    # Launch the composite curses UI
+    try:
+        import curses
+        _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+                          disabled, categories, console)
+    except ImportError:
+        _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+                                disabled, categories, console)
+
+
+def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
+                      disabled, categories, console):
+    """Custom curses screen with checkboxes + category action rows."""
+    from hermes_cli.curses_ui import flush_stdin
+
+    chosen = set(plugin_selected)
+    n_plugins = len(plugin_names)
+    # Total rows: plugins + separator + categories
+    # separator is not navigable
+    n_categories = len(categories)
+    total_items = n_plugins + n_categories  # navigable items
+
+    result_holder = {"plugins_changed": False, "providers_changed": False}
+
+    def _draw(stdscr):
+        curses.curs_set(0)
+        if curses.has_colors():
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_GREEN, -1)
+            curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            curses.init_pair(3, curses.COLOR_CYAN, -1)
+            curses.init_pair(4, 8, -1)  # dim gray
+        cursor = 0
+        scroll_offset = 0
+
+        while True:
+            stdscr.clear()
+            max_y, max_x = stdscr.getmaxyx()
+
+            # Header
+            try:
+                hattr = curses.A_BOLD
+                if curses.has_colors():
+                    hattr |= curses.color_pair(2)
+                stdscr.addnstr(0, 0, "Plugins", max_x - 1, hattr)
+                stdscr.addnstr(
+                    1, 0,
+                    "  \u2191\u2193 navigate  SPACE toggle  ENTER configure/confirm  ESC done",
+                    max_x - 1, curses.A_DIM,
+                )
+            except curses.error:
+                pass
+
+            # Build display rows
+            # Row layout:
+            #   [plugins section header] (not navigable, skipped in scroll math)
+            #   plugin checkboxes (navigable, indices 0..n_plugins-1)
+            #   [separator] (not navigable)
+            #   [categories section header] (not navigable)
+            #   category action rows (navigable, indices n_plugins..total_items-1)
+
+            visible_rows = max_y - 4
+            if cursor < scroll_offset:
+                scroll_offset = cursor
+            elif cursor >= scroll_offset + visible_rows:
+                scroll_offset = cursor - visible_rows + 1
+
+            y = 3  # start drawing after header
+
+            # Determine which items are visible based on scroll
+            # We need to map logical cursor positions to screen rows
+            # accounting for non-navigable separator/headers
+
+            draw_row = 0  # tracks navigable item index
+
+            # --- General Plugins section ---
+            if n_plugins > 0:
+                # Section header
+                if y < max_y - 1:
+                    try:
+                        sattr = curses.A_BOLD
+                        if curses.has_colors():
+                            sattr |= curses.color_pair(2)
+                        stdscr.addnstr(y, 0, "  General Plugins", max_x - 1, sattr)
+                    except curses.error:
+                        pass
+                    y += 1
+
+                for i in range(n_plugins):
+                    if y >= max_y - 1:
+                        break
+                    check = "\u2713" if i in chosen else " "
+                    arrow = "\u2192" if i == cursor else " "
+                    line = f" {arrow} [{check}] {plugin_labels[i]}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+                    y += 1
+
+            # --- Separator ---
+            if y < max_y - 1:
+                y += 1  # blank line
+
+            # --- Provider Plugins section ---
+            if n_categories > 0 and y < max_y - 1:
+                try:
+                    sattr = curses.A_BOLD
+                    if curses.has_colors():
+                        sattr |= curses.color_pair(2)
+                    stdscr.addnstr(y, 0, "  Provider Plugins", max_x - 1, sattr)
+                except curses.error:
+                    pass
+                y += 1
+
+                for ci, (cat_name, cat_current, _cat_fn) in enumerate(categories):
+                    if y >= max_y - 1:
+                        break
+                    cat_idx = n_plugins + ci
+                    arrow = "\u2192" if cat_idx == cursor else " "
+                    line = f" {arrow}   {cat_name:<24} \u25b8 {cat_current}"
+                    attr = curses.A_NORMAL
+                    if cat_idx == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(3)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+                    y += 1
+
+            stdscr.refresh()
+            key = stdscr.getch()
+
+            if key in (curses.KEY_UP, ord("k")):
+                if total_items > 0:
+                    cursor = (cursor - 1) % total_items
+            elif key in (curses.KEY_DOWN, ord("j")):
+                if total_items > 0:
+                    cursor = (cursor + 1) % total_items
+            elif key == ord(" "):
+                if cursor < n_plugins:
+                    # Toggle general plugin
+                    chosen.symmetric_difference_update({cursor})
+                else:
+                    # Provider category — launch sub-screen
+                    ci = cursor - n_plugins
+                    if 0 <= ci < n_categories:
+                        curses.endwin()
+                        _cat_name, _cat_cur, cat_fn = categories[ci]
+                        changed = cat_fn()
+                        if changed:
+                            result_holder["providers_changed"] = True
+                            # Refresh current values
+                            categories[ci] = (
+                                _cat_name,
+                                _get_current_memory_provider() or "built-in" if ci == 0
+                                else _get_current_context_engine(),
+                                cat_fn,
+                            )
+                        # Re-enter curses
+                        stdscr = curses.initscr()
+                        curses.noecho()
+                        curses.cbreak()
+                        stdscr.keypad(True)
+                        if curses.has_colors():
+                            curses.start_color()
+                            curses.use_default_colors()
+                            curses.init_pair(1, curses.COLOR_GREEN, -1)
+                            curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                            curses.init_pair(3, curses.COLOR_CYAN, -1)
+                            curses.init_pair(4, 8, -1)
+                        curses.curs_set(0)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if cursor < n_plugins:
+                    # ENTER on a plugin checkbox — confirm and exit
+                    result_holder["plugins_changed"] = True
+                    return
+                else:
+                    # ENTER on a category — same as SPACE, launch sub-screen
+                    ci = cursor - n_plugins
+                    if 0 <= ci < n_categories:
+                        curses.endwin()
+                        _cat_name, _cat_cur, cat_fn = categories[ci]
+                        changed = cat_fn()
+                        if changed:
+                            result_holder["providers_changed"] = True
+                            categories[ci] = (
+                                _cat_name,
+                                _get_current_memory_provider() or "built-in" if ci == 0
+                                else _get_current_context_engine(),
+                                cat_fn,
+                            )
+                        stdscr = curses.initscr()
+                        curses.noecho()
+                        curses.cbreak()
+                        stdscr.keypad(True)
+                        if curses.has_colors():
+                            curses.start_color()
+                            curses.use_default_colors()
+                            curses.init_pair(1, curses.COLOR_GREEN, -1)
+                            curses.init_pair(2, curses.COLOR_YELLOW, -1)
+                            curses.init_pair(3, curses.COLOR_CYAN, -1)
+                            curses.init_pair(4, 8, -1)
+                        curses.curs_set(0)
+            elif key in (27, ord("q")):
+                # Save plugin changes on exit
+                result_holder["plugins_changed"] = True
+                return
+
+    curses.wrapper(_draw)
+    flush_stdin()
+
+    # Persist general plugin changes
     new_disabled = set()
-    for i, name in enumerate(names):
-        if i not in result:
+    for i, name in enumerate(plugin_names):
+        if i not in chosen:
             new_disabled.add(name)
 
     if new_disabled != disabled:
         _save_disabled_set(new_disabled)
-        enabled_count = len(names) - len(new_disabled)
+        enabled_count = len(plugin_names) - len(new_disabled)
         console.print(
-            f"\n[green]✓[/green] {enabled_count} enabled, {len(new_disabled)} disabled. "
-            f"Takes effect on next session."
+            f"\n[green]\u2713[/green] General plugins: {enabled_count} enabled, "
+            f"{len(new_disabled)} disabled."
         )
-    else:
-        console.print("\n[dim]No changes.[/dim]")
+    elif n_plugins > 0:
+        console.print("\n[dim]General plugins unchanged.[/dim]")
+
+    if result_holder["providers_changed"]:
+        new_memory = _get_current_memory_provider() or "built-in"
+        new_context = _get_current_context_engine()
+        console.print(
+            f"[green]\u2713[/green] Memory provider: [bold]{new_memory}[/bold]  "
+            f"Context engine: [bold]{new_context}[/bold]"
+        )
+
+    if n_plugins > 0 or result_holder["providers_changed"]:
+        console.print("[dim]Changes take effect on next session.[/dim]")
+    console.print()
+
+
+def _run_composite_fallback(plugin_names, plugin_labels, plugin_selected,
+                            disabled, categories, console):
+    """Text-based fallback for the composite plugins UI."""
+    from hermes_cli.colors import Colors, color
+
+    print(color("\n  Plugins", Colors.YELLOW))
+
+    # General plugins
+    if plugin_names:
+        chosen = set(plugin_selected)
+        print(color("\n  General Plugins", Colors.YELLOW))
+        print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
+
+        while True:
+            for i, label in enumerate(plugin_labels):
+                marker = color("[\u2713]", Colors.GREEN) if i in chosen else "[ ]"
+                print(f"  {marker} {i + 1:>2}. {label}")
+            print()
+            try:
+                val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
+                if not val:
+                    break
+                idx = int(val) - 1
+                if 0 <= idx < len(plugin_names):
+                    chosen.symmetric_difference_update({idx})
+            except (ValueError, KeyboardInterrupt, EOFError):
+                return
+            print()
+
+        new_disabled = set()
+        for i, name in enumerate(plugin_names):
+            if i not in chosen:
+                new_disabled.add(name)
+        if new_disabled != disabled:
+            _save_disabled_set(new_disabled)
+
+    # Provider categories
+    if categories:
+        print(color("\n  Provider Plugins", Colors.YELLOW))
+        for ci, (cat_name, cat_current, cat_fn) in enumerate(categories):
+            print(f"  {ci + 1}. {cat_name} [{cat_current}]")
+        print()
+        try:
+            val = input(color("  Configure # (or Enter to skip): ", Colors.DIM)).strip()
+            if val:
+                ci = int(val) - 1
+                if 0 <= ci < len(categories):
+                    categories[ci][2]()  # call the configure function
+        except (ValueError, KeyboardInterrupt, EOFError):
+            pass
+
+    print()
 
 
 def plugins_command(args) -> None:

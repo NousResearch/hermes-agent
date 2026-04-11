@@ -2,6 +2,7 @@
 
 import logging
 import os
+import stat
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
@@ -14,14 +15,29 @@ import hermes_logging
 @pytest.fixture(autouse=True)
 def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
-    added by setup_logging() so tests don't leak state."""
+    added by setup_logging() so tests don't leak state.
+
+    Under xdist (-n auto) other test modules may have called setup_logging()
+    in the same worker process, leaving RotatingFileHandlers on the root
+    logger.  We strip ALL RotatingFileHandlers before each test so the count
+    assertions are stable regardless of test ordering.
+    """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
-    original_handlers = list(root.handlers)
+    # Strip ALL RotatingFileHandlers — not just the ones we added — so that
+    # handlers leaked from other test modules in the same xdist worker don't
+    # pollute our counts.
+    pre_existing = []
+    for h in list(root.handlers):
+        if isinstance(h, RotatingFileHandler):
+            root.removeHandler(h)
+            h.close()
+        else:
+            pre_existing.append(h)
     yield
     # Restore — remove any handlers added during the test.
     for h in list(root.handlers):
-        if h not in original_handlers:
+        if h not in pre_existing:
             root.removeHandler(h)
             h.close()
     hermes_logging._logging_initialized = False
@@ -280,6 +296,59 @@ class TestAddRotatingHandler:
         ]
         assert len(rotating_handlers) == 1
         # Clean up
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
+        log_path = tmp_path / "managed-open.log"
+        logger = logging.getLogger("_test_rotating_managed_open")
+        formatter = logging.Formatter("%(message)s")
+
+        old_umask = os.umask(0o022)
+        try:
+            with patch("hermes_cli.config.is_managed", return_value=True):
+                hermes_logging._add_rotating_handler(
+                    logger, log_path,
+                    level=logging.INFO, max_bytes=1024, backup_count=1,
+                    formatter=formatter,
+                )
+        finally:
+            os.umask(old_umask)
+
+        assert log_path.exists()
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
+        for h in list(logger.handlers):
+            if isinstance(h, RotatingFileHandler):
+                logger.removeHandler(h)
+                h.close()
+
+    def test_managed_mode_rollover_sets_group_writable(self, tmp_path):
+        log_path = tmp_path / "managed-rollover.log"
+        logger = logging.getLogger("_test_rotating_managed_rollover")
+        formatter = logging.Formatter("%(message)s")
+
+        old_umask = os.umask(0o022)
+        try:
+            with patch("hermes_cli.config.is_managed", return_value=True):
+                hermes_logging._add_rotating_handler(
+                    logger, log_path,
+                    level=logging.INFO, max_bytes=1, backup_count=1,
+                    formatter=formatter,
+                )
+                handler = next(
+                    h for h in logger.handlers if isinstance(h, RotatingFileHandler)
+                )
+                logger.info("a" * 256)
+                handler.flush()
+        finally:
+            os.umask(old_umask)
+
+        assert log_path.exists()
+        assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
+
         for h in list(logger.handlers):
             if isinstance(h, RotatingFileHandler):
                 logger.removeHandler(h)

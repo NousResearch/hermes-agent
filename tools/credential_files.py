@@ -48,7 +48,8 @@ _config_files: List[Dict[str, str]] | None = None
 
 
 def _resolve_hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
 
 
 def register_credential_file(
@@ -136,42 +137,38 @@ def _load_config_files() -> List[Dict[str, str]]:
 
     result: List[Dict[str, str]] = []
     try:
+        from hermes_cli.config import read_raw_config
         hermes_home = _resolve_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            cred_files = cfg.get("terminal", {}).get("credential_files")
-            if isinstance(cred_files, list):
-                hermes_home_resolved = hermes_home.resolve()
-                for item in cred_files:
-                    if isinstance(item, str) and item.strip():
-                        rel = item.strip()
-                        if os.path.isabs(rel):
-                            logger.warning(
-                                "credential_files: rejected absolute config path %r", rel,
-                            )
-                            continue
-                        host_path = (hermes_home / rel).resolve()
-                        try:
-                            host_path.relative_to(hermes_home_resolved)
-                        except ValueError:
-                            logger.warning(
-                                "credential_files: rejected config path traversal %r "
-                                "(resolves to %s, outside HERMES_HOME %s)",
-                                rel, host_path, hermes_home_resolved,
-                            )
-                            continue
-                        if host_path.is_file():
-                            container_path = f"/root/.hermes/{rel}"
-                            result.append({
-                                "host_path": str(host_path),
-                                "container_path": container_path,
-                            })
+        cfg = read_raw_config()
+        cred_files = cfg.get("terminal", {}).get("credential_files")
+        if isinstance(cred_files, list):
+            hermes_home_resolved = hermes_home.resolve()
+            for item in cred_files:
+                if isinstance(item, str) and item.strip():
+                    rel = item.strip()
+                    if os.path.isabs(rel):
+                        logger.warning(
+                            "credential_files: rejected absolute config path %r", rel,
+                        )
+                        continue
+                    host_path = (hermes_home / rel).resolve()
+                    try:
+                        host_path.relative_to(hermes_home_resolved)
+                    except ValueError:
+                        logger.warning(
+                            "credential_files: rejected config path traversal %r "
+                            "(resolves to %s, outside HERMES_HOME %s)",
+                            rel, host_path, hermes_home_resolved,
+                        )
+                        continue
+                    if host_path.is_file():
+                        container_path = f"/root/.hermes/{rel}"
+                        result.append({
+                            "host_path": str(host_path),
+                            "container_path": container_path,
+                        })
     except Exception as e:
-        logger.debug("Could not read terminal.credential_files from config: %s", e)
+        logger.warning("Could not read terminal.credential_files from config: %s", e)
 
     _config_files = result
     return _config_files
@@ -410,7 +407,3 @@ def clear_credential_files() -> None:
     _get_registered().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_files
-    _config_files = None

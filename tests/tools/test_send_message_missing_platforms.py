@@ -125,7 +125,9 @@ class TestSendMatrix:
         url = call_kwargs[0][0]
         assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/!room:example.com/send/m.room.message/")
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
-        assert call_kwargs[1]["json"] == {"msgtype": "m.text", "body": "hello matrix"}
+        payload = call_kwargs[1]["json"]
+        assert payload["msgtype"] == "m.text"
+        assert payload["body"] == "hello matrix"
 
     def test_http_error(self):
         resp = _make_aiohttp_resp(403, text_data="Forbidden")

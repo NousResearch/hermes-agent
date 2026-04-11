@@ -26,7 +26,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
@@ -42,6 +42,11 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # Per-profile HOME for subprocesses: isolates system tool configs (git,
+    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
+    # this also ensures tool configs land inside the persistent volume.
+    # See hermes_constants.get_subprocess_home() and issue #4426.
+    "home",
 ]
 
 # Files copied during --clone (if they exist in the source)
@@ -102,7 +107,7 @@ _RESERVED_NAMES = frozenset({
 # Hermes subcommands that cannot be used as profile names/aliases
 _HERMES_SUBCOMMANDS = frozenset({
     "chat", "model", "gateway", "setup", "whatsapp", "login", "logout",
-    "status", "cron", "doctor", "config", "pairing", "skills", "tools",
+    "status", "cron", "doctor", "dump", "config", "pairing", "skills", "tools",
     "mcp", "sessions", "insights", "version", "update", "uninstall",
     "profile", "plugins", "honcho", "acp",
 })
@@ -115,16 +120,26 @@ _HERMES_SUBCOMMANDS = frozenset({
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
 
-    Always ``~/.hermes/profiles/`` — anchored to the user's home,
-    NOT to the current HERMES_HOME (which may itself be a profile).
-    This ensures ``coder profile list`` can see all profiles.
+    Anchored to the hermes root, NOT to the current HERMES_HOME
+    (which may itself be a profile).  This ensures ``coder profile list``
+    can see all profiles.
+
+    In Docker/custom deployments where HERMES_HOME points outside
+    ``~/.hermes``, profiles live under ``HERMES_HOME/profiles/`` so
+    they persist on the mounted volume.
     """
-    return Path.home() / ".hermes" / "profiles"
+    return _get_default_hermes_home() / "profiles"
 
 
 def _get_default_hermes_home() -> Path:
-    """Return the default (pre-profile) HERMES_HOME path."""
-    return Path.home() / ".hermes"
+    """Return the default (pre-profile) HERMES_HOME path.
+
+    In standard deployments this is ``~/.hermes``.
+    In Docker/custom deployments where HERMES_HOME is outside ``~/.hermes``
+    (e.g. ``/opt/data``), returns HERMES_HOME directly.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
 
 
 def _get_active_profile_path() -> Path:
@@ -517,7 +532,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     ]
 
     # Check for service
-    from hermes_cli.gateway import _profile_suffix, get_service_name
     wrapper_path = _get_wrapper_dir() / name
     has_wrapper = wrapper_path.exists()
     if has_wrapper:
@@ -1008,7 +1022,7 @@ _hermes_completion() {
 
     # Top-level subcommands
     if [[ "$COMP_CWORD" == 1 ]]; then
-        local commands="chat model gateway setup status cron doctor config skills tools mcp sessions profile update version"
+        local commands="chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version"
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
     fi
 }
@@ -1033,7 +1047,7 @@ _hermes() {
     _arguments \\
         '-p[Profile name]:profile:($profiles)' \\
         '--profile[Profile name]:profile:($profiles)' \\
-        '1:command:(chat model gateway setup status cron doctor config skills tools mcp sessions profile update version)' \\
+        '1:command:(chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version)' \\
         '*::arg:->args'
 
     case $words[1] in

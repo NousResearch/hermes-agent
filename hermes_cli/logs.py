@@ -15,7 +15,6 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
-import os
 import re
 import sys
 import time

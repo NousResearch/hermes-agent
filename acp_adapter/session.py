@@ -262,8 +262,6 @@ class SessionManager:
         if self._db_instance is not None:
             return self._db_instance
         try:
-            import os
-            from pathlib import Path
             from hermes_state import SessionDB
             hermes_home = get_hermes_home()
             self._db_instance = SessionDB(db_path=hermes_home / "state.db")

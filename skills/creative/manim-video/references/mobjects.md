@@ -35,6 +35,52 @@ rrect = RoundedRectangle(corner_radius=0.3, width=4, height=2)
 brace = Brace(rect, DOWN, color=YELLOW)
 ```
 
+## Polygons and Arcs
+
+```python
+# Arbitrary polygon from vertices
+poly = Polygon(LEFT, UP * 2, RIGHT, color=GREEN, fill_opacity=0.3)
+
+# Regular n-sided polygon
+hexagon = RegularPolygon(n=6, color=TEAL, fill_opacity=0.4)
+
+# Triangle (shorthand for RegularPolygon(n=3))
+tri = Triangle(color=YELLOW, fill_opacity=0.5)
+
+# Arc (portion of a circle)
+arc = Arc(radius=2, start_angle=0, angle=PI / 2, color=BLUE)
+
+# Arc between two points
+arc_between = ArcBetweenPoints(LEFT * 2, RIGHT * 2, angle=TAU / 4, color=RED)
+
+# Curved arrow (arc with tip)
+curved_arrow = CurvedArrow(LEFT * 2, RIGHT * 2, color=ORANGE)
+```
+
+## Sectors and Annuli
+
+```python
+# Sector (pie slice)
+sector = Sector(outer_radius=2, start_angle=0, angle=PI / 3, fill_opacity=0.7, color=BLUE)
+
+# Annulus (ring)
+ring = Annulus(inner_radius=1, outer_radius=2, fill_opacity=0.5, color=GREEN)
+
+# Annular sector (partial ring)
+partial_ring = AnnularSector(
+    inner_radius=1, outer_radius=2,
+    angle=PI / 2, start_angle=0,
+    fill_opacity=0.7, color=TEAL
+)
+
+# Cutout (punch holes in a shape)
+background = Square(side_length=4, fill_opacity=1, color=BLUE)
+hole = Circle(radius=0.5)
+cutout = Cutout(background, hole, fill_opacity=1, color=BLUE)
+```
+
+Use cases: pie charts, ring progress indicators, Venn diagrams with arcs, geometric proofs.
+
 ## Positioning
 
 ```python
@@ -98,6 +144,29 @@ class NetworkNode(Group):
         self.label = Text(label_text, font_size=20).move_to(self.circle)
         self.add(self.circle, self.label)
 ```
+
+## Matrix Mobjects
+
+Display matrices as grids of numbers or mobjects:
+
+```python
+# Integer matrix
+m = IntegerMatrix([[1, 2], [3, 4]])
+
+# Decimal matrix (control decimal places)
+m = DecimalMatrix([[1.5, 2.7], [3.1, 4.9]], element_to_mobject_config={"num_decimal_places": 2})
+
+# Mobject matrix (any mobject in each cell)
+m = MobjectMatrix([
+    [MathTex(r"\pi"), MathTex(r"e")],
+    [MathTex(r"\phi"), MathTex(r"\tau")]
+])
+
+# Bracket types: "(" "[" "|" or "\\{"
+m = IntegerMatrix([[1, 0], [0, 1]], left_bracket="[", right_bracket="]")
+```
+
+Use cases: linear algebra, transformation matrices, system-of-equations coefficient display.
 
 ## Constants
 

@@ -25,7 +25,6 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -45,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook",
+    "wecom", "weixin", "sms", "email", "webhook", "bluebubbles",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -92,7 +91,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack"):
+        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
                 logger.info(
@@ -159,7 +158,45 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
+# Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
+_AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a'})
+_VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
+_IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
+
+
+def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict) -> None:
+    """Send extracted MEDIA files as native platform attachments via a live adapter.
+
+    Routes each file to the appropriate adapter method (send_voice, send_image_file,
+    send_video, send_document) based on file extension — mirroring the routing logic
+    in ``BasePlatformAdapter._process_message_background``.
+    """
+    from pathlib import Path
+
+    for media_path, _is_voice in media_files:
+        try:
+            ext = Path(media_path).suffix.lower()
+            if ext in _AUDIO_EXTS:
+                coro = adapter.send_voice(chat_id=chat_id, audio_path=media_path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                coro = adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=metadata)
+            elif ext in _IMAGE_EXTS:
+                coro = adapter.send_image_file(chat_id=chat_id, image_path=media_path, metadata=metadata)
+            else:
+                coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
+
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            result = future.result(timeout=30)
+            if result and not getattr(result, "success", True):
+                logger.warning(
+                    "Job '%s': media send failed for %s: %s",
+                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                )
+        except Exception as e:
+            logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+
+
+def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
@@ -167,16 +204,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    Returns None on success, or an error string on failure.
     """
     target = _resolve_delivery_target(job)
     if not target:
         if job.get("deliver", "local") != "local":
-            logger.warning(
-                "Job '%s' deliver=%s but no concrete delivery target could be resolved",
-                job["id"],
-                job.get("deliver", "local"),
-            )
-        return
+            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            return msg
+        return None  # local-only jobs don't deliver — not a failure
 
     platform_name = target["platform"]
     chat_id = target["chat_id"]
@@ -197,24 +234,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "bluebubbles": Platform.BLUEBUBBLES,
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
-        logger.warning("Job '%s': unknown platform '%s' for delivery", job["id"], platform_name)
-        return
+        msg = f"unknown platform '{platform_name}'"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     try:
         config = load_gateway_config()
     except Exception as e:
-        logger.error("Job '%s': failed to load gateway config for delivery: %s", job["id"], e)
-        return
+        msg = f"failed to load gateway config: {e}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
-        return
+        msg = f"platform '{platform_name}' not configured/enabled"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
@@ -247,20 +289,30 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:
-            future = asyncio.run_coroutine_threadsafe(
-                runtime_adapter.send(chat_id, delivery_content, metadata=send_metadata),
-                loop,
-            )
-            send_result = future.result(timeout=60)
-            if send_result and not getattr(send_result, "success", True):
-                err = getattr(send_result, "error", "unknown")
-                logger.warning(
-                    "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                    job["id"], platform_name, chat_id, err,
+            # Send cleaned text (MEDIA tags stripped) — not the raw content
+            text_to_send = cleaned_delivery_content.strip()
+            adapter_ok = True
+            if text_to_send:
+                future = asyncio.run_coroutine_threadsafe(
+                    runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
+                    loop,
                 )
-            else:
+                send_result = future.result(timeout=60)
+                if send_result and not getattr(send_result, "success", True):
+                    err = getattr(send_result, "error", "unknown")
+                    logger.warning(
+                        "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                        job["id"], platform_name, chat_id, err,
+                    )
+                    adapter_ok = False  # fall through to standalone path
+
+            # Send extracted media files as native attachments via the live adapter
+            if adapter_ok and media_files:
+                _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+
+            if adapter_ok:
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
-                return
+                return None
         except Exception as e:
             logger.warning(
                 "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -282,16 +334,55 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
             future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
             result = future.result(timeout=30)
     except Exception as e:
-        logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
-        return
+        msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
 
     if result and result.get("error"):
-        logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
-    else:
-        logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+        msg = f"delivery error: {result['error']}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
+
+    logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+    return None
 
 
-_SCRIPT_TIMEOUT = 120  # seconds
+_DEFAULT_SCRIPT_TIMEOUT = 120  # seconds
+# Backward-compatible module override used by tests and emergency monkeypatches.
+_SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+
+
+def _get_script_timeout() -> int:
+    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
+    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
+        try:
+            timeout = int(float(_SCRIPT_TIMEOUT))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
+
+    env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
+    if env_value:
+        try:
+            timeout = int(float(env_value))
+            if timeout > 0:
+                return timeout
+        except Exception:
+            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
+
+    try:
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("script_timeout_seconds")
+        if configured is not None:
+            timeout = int(float(configured))
+            if timeout > 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron script timeout from config: %s", exc)
+
+    return _DEFAULT_SCRIPT_TIMEOUT
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -338,16 +429,26 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    script_timeout = _get_script_timeout()
+
     try:
         result = subprocess.run(
             [sys.executable, str(path)],
             capture_output=True,
             text=True,
-            timeout=_SCRIPT_TIMEOUT,
+            timeout=script_timeout,
             cwd=str(path.parent),
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
+
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
 
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
@@ -357,17 +458,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        # Redact any secrets that may appear in script output before
-        # they are injected into the LLM prompt context.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {_SCRIPT_TIMEOUT}s: {path}"
+        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 
@@ -531,11 +625,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
-        # Reasoning config from env or config.yaml
+        # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = os.getenv("HERMES_REASONING_EFFORT", "")
-        if not effort:
-            effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml
@@ -593,6 +685,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             },
         )
 
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+        credential_pool = None
+        runtime_provider = str(turn_route["runtime"].get("provider") or "").strip().lower()
+        if runtime_provider:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(runtime_provider)
+                if pool.has_credentials():
+                    credential_pool = pool
+                    logger.info(
+                        "Job '%s': loaded credential pool for provider %s with %d entries",
+                        job_id,
+                        runtime_provider,
+                        len(pool.entries()),
+                    )
+            except Exception as e:
+                logger.debug("Job '%s': failed to load credential pool for %s: %s", job_id, runtime_provider, e)
+
         agent = AIAgent(
             model=turn_route["model"],
             api_key=turn_route["runtime"].get("api_key"),
@@ -604,6 +714,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,
+            fallback_model=fallback_model,
+            credential_pool=credential_pool,
             providers_allowed=pr.get("only"),
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
@@ -658,7 +770,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False)
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
@@ -821,13 +933,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
+                delivery_error = None
                 if should_deliver:
                     try:
-                        _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
+                        delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-                mark_job_run(job["id"], success, error)
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 executed += 1
 
             except Exception as e:

@@ -18,7 +18,7 @@ Architecture (two transports):
   2. Parent ships both files to the remote environment
   3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
   4. Tool calls are written as request files; a polling thread on the parent
-     reads them via execute_oneshot(), dispatches, and writes response files
+     reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues
 
 In both cases, only the script's stdout is returned to the LLM; intermediate
@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import signal
 import socket
 import subprocess
@@ -246,9 +247,9 @@ def _call(tool_name, args):
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
-import json, os, shlex, time
+import json, os, shlex, tempfile, time
 
-_RPC_DIR = os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")
+_RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")
 _seq = 0
 ''' + _COMMON_HELPERS + '''\
 
@@ -300,7 +301,7 @@ def _call(tool_name, args):
 # ---------------------------------------------------------------------------
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty"}
+_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty", "notify_on_complete", "watch_patterns"}
 
 
 def _rpc_server_loop(
@@ -344,7 +345,7 @@ def _rpc_server_loop(
                 try:
                     request = json.loads(line.decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = json.dumps({"error": f"Invalid RPC request: {exc}"})
+                    resp = tool_error(f"Invalid RPC request: {exc}")
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -396,7 +397,7 @@ def _rpc_server_loop(
                         devnull.close()
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
-                    result = json.dumps({"error": str(exc)})
+                    result = tool_error(str(exc))
 
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
@@ -536,11 +537,28 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     quotes are fine.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    env.execute_oneshot(
-        f"echo '{encoded}' | base64 -d > {remote_path}",
+    quoted_remote_path = shlex.quote(remote_path)
+    env.execute(
+        f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
     )
+
+
+def _env_temp_dir(env: Any) -> str:
+    """Return a writable temp dir for env-backed execute_code sandboxes."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    if callable(get_temp_dir):
+        try:
+            temp_dir = get_temp_dir()
+            if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+                return temp_dir.rstrip("/") or "/"
+        except Exception as exc:
+            logger.debug("Could not resolve execute_code env temp dir: %s", exc)
+    candidate = tempfile.gettempdir()
+    if isinstance(candidate, str) and candidate.startswith("/"):
+        return candidate.rstrip("/") or "/"
+    return "/tmp"
 
 
 def _rpc_poll_loop(
@@ -555,19 +573,20 @@ def _rpc_poll_loop(
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
-    Runs in a background thread.  Uses ``env.execute_oneshot()`` so it can
-    operate concurrently with the script-execution thread that holds
-    ``env.execute()`` (important for persistent-shell backends like SSH).
+    Runs in a background thread.  Each ``env.execute()`` spawns an
+    independent process, so these calls run safely concurrent with the
+    script-execution thread.
     """
     from model_tools import handle_function_call
 
     poll_interval = 0.1  # 100 ms
 
+    quoted_rpc_dir = shlex.quote(rpc_dir)
     while not stop_event.is_set():
         try:
             # List pending request files (skip .tmp partials)
-            ls_result = env.execute_oneshot(
-                f"ls -1 {rpc_dir}/req_* 2>/dev/null || true",
+            ls_result = env.execute(
+                f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
                 timeout=10,
             )
@@ -589,9 +608,10 @@ def _rpc_poll_loop(
 
                 call_start = time.monotonic()
 
+                quoted_req_file = shlex.quote(req_file)
                 # Read request
-                read_result = env.execute_oneshot(
-                    f"cat {req_file}",
+                read_result = env.execute(
+                    f"cat {quoted_req_file}",
                     cwd="/",
                     timeout=10,
                 )
@@ -600,7 +620,7 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
-                    env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
 
                 tool_name = request.get("tool", "")
@@ -608,6 +628,7 @@ def _rpc_poll_loop(
                 seq = request.get("seq", 0)
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
+                quoted_res_file = shlex.quote(res_file)
 
                 # Enforce allow-list
                 if tool_name not in allowed_tools:
@@ -648,7 +669,7 @@ def _rpc_poll_loop(
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
                                      exc, exc_info=True)
-                        tool_result = json.dumps({"error": str(exc)})
+                        tool_result = tool_error(str(exc))
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
@@ -664,15 +685,15 @@ def _rpc_poll_loop(
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
-                env.execute_oneshot(
-                    f"echo '{encoded_result}' | base64 -d > {res_file}.tmp"
-                    f" && mv {res_file}.tmp {res_file}",
+                env.execute(
+                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
+                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
                     cwd="/",
                     timeout=60,
                 )
 
                 # Remove the request file
-                env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -693,7 +714,6 @@ def _execute_remote(
     the remote environment, and tool calls are proxied through a polling
     thread that communicates via request/response files.
     """
-    from tools.terminal_tool import _interrupt_event
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
@@ -708,7 +728,10 @@ def _execute_remote(
     env, env_type = _get_or_create_env(effective_task_id)
 
     sandbox_id = uuid.uuid4().hex[:12]
-    sandbox_dir = f"/tmp/hermes_exec_{sandbox_id}"
+    temp_dir = _env_temp_dir(env)
+    sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
+    quoted_sandbox_dir = shlex.quote(sandbox_dir)
+    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
 
     tool_call_log: list = []
     tool_call_counter = [0]
@@ -718,7 +741,7 @@ def _execute_remote(
 
     try:
         # Verify Python is available on the remote
-        py_check = env.execute_oneshot(
+        py_check = env.execute(
             "command -v python3 >/dev/null 2>&1 && echo OK",
             cwd="/", timeout=15,
         )
@@ -735,8 +758,8 @@ def _execute_remote(
             })
 
         # Create sandbox directory on remote
-        env.execute_oneshot(
-            f"mkdir -p {sandbox_dir}/rpc", cwd="/", timeout=10,
+        env.execute(
+            f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
         )
 
         # Generate and ship files
@@ -760,7 +783,7 @@ def _execute_remote(
 
         # Build environment variable prefix for the script
         env_prefix = (
-            f"HERMES_RPC_DIR={sandbox_dir}/rpc "
+            f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -771,7 +794,7 @@ def _execute_remote(
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
-            f"cd {sandbox_dir} && {env_prefix} python3 script.py",
+            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
             timeout=timeout,
         )
 
@@ -807,8 +830,8 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            env.execute_oneshot(
-                f"rm -rf {sandbox_dir}", cwd="/", timeout=15,
+            env.execute(
+                f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
             )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
@@ -891,7 +914,7 @@ def execute_code(
         })
 
     if not code or not code.strip():
-        return json.dumps({"error": "No code provided."})
+        return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
@@ -996,6 +1019,13 @@ def execute_code(
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()
         if _tz_name:
             child_env["TZ"] = _tz_name
+
+        # Per-profile HOME isolation: redirect system tool configs into
+        # {HERMES_HOME}/home/ when that directory exists.
+        from hermes_constants import get_subprocess_home
+        _profile_home = get_subprocess_home()
+        if _profile_home:
+            child_env["HOME"] = _profile_home
 
         proc = subprocess.Popen(
             [sys.executable, "script.py"],
@@ -1332,7 +1362,7 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="execute_code",
@@ -1344,4 +1374,5 @@ registry.register(
         enabled_tools=kw.get("enabled_tools")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",
+    max_result_size_chars=100_000,
 )

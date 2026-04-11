@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
 from hermes_constants import get_hermes_home
 
@@ -145,10 +145,11 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
+    from gateway.session_context import get_session_env
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
-        or os.getenv("HERMES_SESSION_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
     )
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(

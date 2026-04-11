@@ -455,6 +455,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
+        self._slash_sync_task: Optional[asyncio.Task] = None
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
         # Dedup cache: message_id → timestamp.  Prevents duplicate bot
@@ -558,13 +559,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
-                # Sync slash commands with Discord
-                try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
-                except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
+
+                async def sync_slash_commands():
+                    try:
+                        synced = await adapter_self._client.tree.sync()
+                        logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    except asyncio.CancelledError:  # pragma: no cover - shutdown path
+                        logger.debug("[%s] Slash command sync cancelled", adapter_self.name)
+                        raise
+                    except Exception as e:  # pragma: no cover - defensive logging
+                        logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+
+                adapter_self._slash_sync_task = asyncio.create_task(sync_slash_commands())
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -706,6 +713,16 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        if self._slash_sync_task:
+            self._slash_sync_task.cancel()
+            try:
+                await self._slash_sync_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error while stopping slash sync: %s", self.name, e)
+            self._slash_sync_task = None
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

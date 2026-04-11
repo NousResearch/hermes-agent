@@ -111,6 +111,69 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
 
 @pytest.mark.asyncio
+async def test_connect_sets_ready_before_slash_sync_finishes(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    sync_started = asyncio.Event()
+    allow_sync_to_finish = asyncio.Event()
+    real_wait_for = asyncio.wait_for
+
+    class SlowSyncTree(FakeTree):
+        def __init__(self):
+            super().__init__()
+
+            async def _slow_sync():
+                sync_started.set()
+                await allow_sync_to_finish.wait()
+                return []
+
+            self.sync = AsyncMock(side_effect=_slow_sync)
+
+    class SlowSyncBot:
+        def __init__(self, *, intents):
+            self.intents = intents
+            self.user = SimpleNamespace(id=999, name="Hermes")
+            self._events = {}
+            self.tree = SlowSyncTree()
+
+        def event(self, fn):
+            self._events[fn.__name__] = fn
+            return fn
+
+        async def start(self, token):
+            if "on_ready" in self._events:
+                await self._events["on_ready"]()
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: SlowSyncBot(intents=kwargs["intents"]),
+    )
+
+    async def short_wait_for(awaitable, timeout):
+        return await real_wait_for(awaitable, timeout=0.05)
+
+    monkeypatch.setattr(discord_platform.asyncio, "wait_for", short_wait_for)
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    await real_wait_for(sync_started.wait(), timeout=0.05)
+    allow_sync_to_finish.set()
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
 

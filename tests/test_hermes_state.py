@@ -2,7 +2,6 @@
 
 import time
 import pytest
-from pathlib import Path
 
 from hermes_state import SessionDB
 
@@ -390,6 +389,17 @@ class TestFTS5Search:
         assert isinstance(results2, list)
         assert len(results2) >= 1
 
+    def test_search_broad_or_query_with_hyphenated_term_still_runs(self, db):
+        broad_query = "错题本 OR 错题 OR wrong-book OR mistakes"
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="We built a wrong-book review workflow for mistakes.")
+
+        results = db.search_messages(broad_query)
+
+        assert isinstance(results, list)
+        assert len(results) >= 1
+        assert any(r["session_id"] == "s1" for r in results)
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")
@@ -456,6 +466,10 @@ class TestFTS5Search:
         assert s('"chat-send"') == '"chat-send"'
         # Hyphenated inside a quoted phrase stays as-is
         assert s('"my chat-send thing"') == '"my chat-send thing"'
+        # Non-word hyphenated tokens must not be left bare, or FTS parses them as column filters
+        assert s('wrong-book') == '"wrong-book"'
+        result = s('错题本 OR 错题 OR wrong-book OR mistakes')
+        assert '"wrong-book"' in result
 
     def test_sanitize_fts5_quotes_dotted_terms(self):
         """Dotted terms should be wrapped in quotes to avoid FTS5 query parse edge cases."""

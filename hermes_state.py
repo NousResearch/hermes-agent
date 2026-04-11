@@ -26,7 +26,6 @@ from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
 logger = logging.getLogger(__name__)
-
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
@@ -968,10 +967,19 @@ class SessionDB:
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
 
-        # Step 4: Remove dangling boolean operators at start/end that would
-        # cause syntax errors (e.g. "hello AND" or "OR world")
+        # Step 4: Remove dangling or duplicated boolean operators that would
+        # cause syntax errors (e.g. "hello AND", "OR world", "a AND OR b")
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        while True:
+            collapsed = re.sub(
+                r"(?i)\b(?:AND|OR|NOT)\b\s+\b(?:AND|OR|NOT)\b",
+                lambda m: m.group(0).split()[-1],
+                sanitized,
+            )
+            if collapsed == sanitized:
+                break
+            sanitized = collapsed
 
         # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning

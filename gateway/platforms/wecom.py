@@ -636,6 +636,13 @@ class WeComAdapter(BasePlatformAdapter):
                 if voice_text:
                     text_parts.append(voice_text)
 
+            # Extract appmsg title (filename) for WeCom AI Bot attachments
+            if msgtype == "appmsg":
+                appmsg = body.get("appmsg") if isinstance(body.get("appmsg"), dict) else {}
+                title = str(appmsg.get("title") or "").strip()
+                if title:
+                    text_parts.append(title)
+
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()
         if quote_type == "text":
@@ -668,6 +675,13 @@ class WeComAdapter(BasePlatformAdapter):
                 refs.append(("image", body["image"]))
             if msgtype == "file" and isinstance(body.get("file"), dict):
                 refs.append(("file", body["file"]))
+            # Handle appmsg (WeCom AI Bot attachments with PDF/Word/Excel)
+            if msgtype == "appmsg" and isinstance(body.get("appmsg"), dict):
+                appmsg = body["appmsg"]
+                if isinstance(appmsg.get("file"), dict):
+                    refs.append(("file", appmsg["file"]))
+                elif isinstance(appmsg.get("image"), dict):
+                    refs.append(("image", appmsg["image"]))
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()

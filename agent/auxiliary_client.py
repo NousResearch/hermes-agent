@@ -824,6 +824,19 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     )
 
 
+_MISTRAL_VISION_MODEL = "pixtral-large-latest"
+
+
+def _try_mistral() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Try to create a Mistral client for vision tasks."""
+    mistral_key = os.getenv("MISTRAL_API_KEY")
+    if not mistral_key:
+        return None, None
+    logger.debug("Auxiliary client: Mistral AI")
+    base_url = os.getenv("MISTRAL_BASE_URL", "https://api.mistral.ai/v1")
+    return OpenAI(api_key=mistral_key, base_url=base_url), _MISTRAL_VISION_MODEL
+
+
 def _read_main_model() -> str:
     """Read the user's configured main model from config.yaml.
 
@@ -1580,6 +1593,7 @@ def get_async_text_auxiliary_client(task: str = ""):
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "mistral",
 )
 
 
@@ -1597,6 +1611,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "mistral":
+        return _try_mistral()
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None

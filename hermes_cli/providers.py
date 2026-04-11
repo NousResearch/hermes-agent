@@ -132,6 +132,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
     ),
+    "mistral": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.mistral.ai/v1",
+        base_url_env_var="MISTRAL_BASE_URL",
+    ),
 }
 
 
@@ -221,6 +226,10 @@ ALIASES: Dict[str, str] = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+
+    # mistral
+    "mistral-ai": "mistral",
+    "mistralai": "mistral",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

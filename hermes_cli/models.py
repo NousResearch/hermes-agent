@@ -183,6 +183,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek-chat",
         "deepseek-reasoner",
     ],
+    "mistral": [
+        "mistral-large-latest",
+        "mistral-small-latest",
+        "mistral-large-2512",
+        "mistral-small-2603",
+        "mistral-medium-latest",
+        "codestral-latest",
+        "pixtral-large-latest",
+        "ministral-8b-latest",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",

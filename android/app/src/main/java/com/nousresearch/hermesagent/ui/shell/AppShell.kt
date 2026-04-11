@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.nousresearch.hermesagent.ui.auth.AuthScreen
 import com.nousresearch.hermesagent.ui.boot.BootUiState
 import com.nousresearch.hermesagent.ui.chat.ChatScreen
 import com.nousresearch.hermesagent.ui.portal.NousPortalScreen
@@ -26,6 +27,7 @@ import com.nousresearch.hermesagent.ui.settings.SettingsScreen
 
 enum class AppSection(val label: String) {
     Hermes("Hermes Agent"),
+    Accounts("Accounts"),
     NousPortal("Nous Portal"),
     Settings("Settings"),
 }
@@ -57,6 +59,7 @@ fun AppShellScreen(
                         modifier = Modifier.fillMaxSize(),
                     )
 
+                    AppSection.Accounts -> AuthScreen(modifier = Modifier.fillMaxSize())
                     AppSection.NousPortal -> NousPortalScreen(modifier = Modifier.fillMaxSize())
                     AppSection.Settings -> SettingsScreen(modifier = Modifier.fillMaxSize())
                 }

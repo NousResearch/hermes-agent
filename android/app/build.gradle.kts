@@ -25,10 +25,39 @@ fun hermesVersionName(): String {
     return match?.groupValues?.get(1) ?: "0.1.0"
 }
 
+fun androidVersionName(): String {
+    if (releaseTag.isBlank()) {
+        return hermesVersionName()
+    }
+    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?""").matchEntire(releaseTag)
+    if (semverMatch != null) {
+        return releaseTag.removePrefix("v")
+    }
+    return hermesVersionName()
+}
+
 fun hermesVersionCode(): Int {
     if (releaseTag.isBlank()) {
         return 1
     }
+
+    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:[.-]?(\d+))?)?""").matchEntire(releaseTag)
+    if (semverMatch != null) {
+        val major = semverMatch.groupValues[1].toInt()
+        val minor = semverMatch.groupValues[2].toInt()
+        val patch = semverMatch.groupValues[3].toInt()
+        val prerelease = semverMatch.groupValues[4].lowercase()
+        val prereleaseSeq = semverMatch.groupValues[5].ifBlank { "0" }.toInt().coerceIn(0, 9)
+        val prereleaseRank = when (prerelease) {
+            "alpha" -> 1
+            "beta" -> 2
+            "rc" -> 3
+            "" -> 9
+            else -> 4
+        }
+        return (major * 1_000_000) + (minor * 10_000) + (patch * 100) + (prereleaseRank * 10) + prereleaseSeq
+    }
+
     val releaseMatch = Regex("""v(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?""").matchEntire(releaseTag)
         ?: return 1
     val year = releaseMatch.groupValues[1]
@@ -53,7 +82,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = hermesVersionCode()
-        versionName = hermesVersionName()
+        versionName = androidVersionName()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true

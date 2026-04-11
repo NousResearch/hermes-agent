@@ -6,6 +6,7 @@ data class AppSettings(
     val provider: String = "openrouter",
     val baseUrl: String = "",
     val model: String = "",
+    val corr3xtBaseUrl: String = "",
 )
 
 class AppSettingsStore(context: Context) {
@@ -16,6 +17,7 @@ class AppSettingsStore(context: Context) {
             provider = preferences.getString(KEY_PROVIDER, "openrouter").orEmpty(),
             baseUrl = preferences.getString(KEY_BASE_URL, "").orEmpty(),
             model = preferences.getString(KEY_MODEL, "").orEmpty(),
+            corr3xtBaseUrl = preferences.getString(KEY_CORR3XT_BASE_URL, "").orEmpty(),
         )
     }
 
@@ -24,6 +26,7 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_PROVIDER, settings.provider)
             .putString(KEY_BASE_URL, settings.baseUrl)
             .putString(KEY_MODEL, settings.model)
+            .putString(KEY_CORR3XT_BASE_URL, settings.corr3xtBaseUrl)
             .apply()
     }
 
@@ -32,5 +35,6 @@ class AppSettingsStore(context: Context) {
         private const val KEY_PROVIDER = "provider"
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_MODEL = "model"
+        private const val KEY_CORR3XT_BASE_URL = "corr3xt_base_url"
     }
 }

@@ -2,21 +2,15 @@ package com.nousresearch.hermesagent.auth
 
 import android.content.Context
 import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.ProviderPresets
-import com.nousresearch.hermesagent.data.SecureSecretsStore
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 
 object AuthRuntimeApplier {
-    private val restartScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     fun apply(context: Context, session: AuthSession) {
         if (!session.signedIn || session.scope != AuthScope.RuntimeProvider || session.runtimeProvider.isBlank()) {
             return
@@ -27,17 +21,11 @@ object AuthRuntimeApplier {
         val existingSettings = settingsStore.load()
         val preset = ProviderPresets.find(session.runtimeProvider)
         val resolvedBaseUrl = session.baseUrl.ifBlank { preset?.baseUrl.orEmpty() }
-        val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(session.runtimeProvider, resolvedBaseUrl)
         val resolvedModel = session.model.ifBlank { preset?.modelHint.orEmpty() }
-        val providerCredential = session.apiKey
-            .ifBlank { session.accessToken }
-            .ifBlank { session.sessionToken }
 
-        if (providerCredential.isNotBlank()) {
-            SecureSecretsStore(appContext).saveApiKey(session.runtimeProvider, providerCredential)
+        if (!Python.isStarted()) {
+            Python.start(AndroidPlatform(appContext))
         }
-
-        HermesRuntimeManager.ensurePythonStarted(appContext)
         val python = Python.getInstance()
         python.getModule("hermes_android.auth_bridge").callAttr(
             "write_provider_auth_bundle",
@@ -45,14 +33,12 @@ object AuthRuntimeApplier {
             session.apiKey,
             session.accessToken,
             session.sessionToken,
-            session.refreshToken,
-            resolvedBaseUrl,
         )
         python.getModule("hermes_android.config_bridge").callAttr(
             "write_runtime_config",
             session.runtimeProvider,
             resolvedModel,
-            runtimeConfigBaseUrl,
+            resolvedBaseUrl,
         )
 
         settingsStore.save(
@@ -61,20 +47,9 @@ object AuthRuntimeApplier {
                 baseUrl = resolvedBaseUrl,
                 model = resolvedModel,
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
-                dataSaverMode = existingSettings.dataSaverMode,
-                onDeviceBackend = existingSettings.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
-                languageTag = existingSettings.languageTag,
             )
         )
-        restartRuntimeAsync(appContext)
-    }
-
-    private fun restartRuntimeAsync(context: Context) {
-        val appContext = context.applicationContext
-        restartScope.launch {
-            HermesRuntimeManager.stop()
-            HermesRuntimeManager.ensureStarted(appContext)
-        }
+        HermesRuntimeManager.stop()
+        HermesRuntimeManager.ensureStarted(appContext)
     }
 }

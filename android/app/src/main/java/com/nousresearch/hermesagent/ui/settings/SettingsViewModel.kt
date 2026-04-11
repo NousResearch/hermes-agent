@@ -60,11 +60,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun save() {
         val snapshot = _uiState.value
         viewModelScope.launch {
+            val existingSettings = settingsStore.load()
             settingsStore.save(
                 AppSettings(
                     provider = snapshot.provider,
                     baseUrl = snapshot.baseUrl,
                     model = snapshot.model,
+                    corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                 )
             )
             secretsStore.saveApiKey(snapshot.provider, snapshot.apiKey)

@@ -1,18 +1,11 @@
 package com.nousresearch.hermesagent.ui.auth
 
 import android.app.Application
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.net.Uri
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
 import com.nousresearch.hermesagent.auth.Corr3xtAuthClient
-import com.nousresearch.hermesagent.auth.OpenRouterLoopbackOAuthServer
-import com.nousresearch.hermesagent.auth.OpenRouterOAuthClient
-import com.nousresearch.hermesagent.auth.ProviderSetupProbeResult
-import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.AuthCatalog
@@ -20,22 +13,10 @@ import com.nousresearch.hermesagent.data.AuthOption
 import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
-import com.nousresearch.hermesagent.data.PendingAuthRequest
-import com.nousresearch.hermesagent.data.ProviderPresets
-import com.nousresearch.hermesagent.data.ProviderSetupTarget
-import com.nousresearch.hermesagent.device.BrowserLaunchResult
-import com.nousresearch.hermesagent.device.HermesExternalBrowserLauncher
-import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
-import com.nousresearch.hermesagent.ui.i18n.AppLanguage
-import com.nousresearch.hermesagent.ui.i18n.HermesStrings
-import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.UUID
 
 data class AuthOptionUiState(
@@ -44,47 +25,20 @@ data class AuthOptionUiState(
     val description: String,
     val scope: AuthScope,
     val runtimeProvider: String = "",
-    val credentialInput: String = "",
-    val credentialInputHelp: String = "",
     val signedIn: Boolean = false,
     val status: String = "Not signed in",
     val accountHint: String = "",
-    val supportsApiKeySetup: Boolean = false,
-    val supportsBrowserSignIn: Boolean = true,
-    val browserSignInEnabled: Boolean = true,
-    val providerSetupUrl: String = "",
 )
 
 data class AuthUiState(
-    val corr3xtBaseUrl: String = "",
-    val corr3xtConfigured: Boolean = false,
-    val globalStatus: String = "Configure a reachable Corr3xt URL for app sign-in; providers use secure API keys or tokens in Settings.",
-    val pendingMethodLabel: String = "",
-    val hasPendingRequest: Boolean = false,
-    val apiKeyFallbackMethodId: String = "",
-    val apiKeyFallbackLabel: String = "",
-    val pendingStartUrl: String = "",
+    val corr3xtBaseUrl: String = Corr3xtAuthClient.DEFAULT_BASE_URL,
+    val globalStatus: String = "Use Corr3xt to sign into the app or connect provider accounts.",
     val options: List<AuthOptionUiState> = emptyList(),
 )
 
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val appSettingsStore = AppSettingsStore(application)
     private val authSessionStore = AuthSessionStore(application)
-    private val providerSetupOpenIndexes = mutableMapOf<String, Int>()
-    private val providerCredentialInputs = mutableMapOf<String, String>()
-    private val signedOutStatuses by lazy {
-        buildSet {
-            add("Not signed in")
-            AppLanguage.entries.forEach { language ->
-                add(hermesStringsFor(language).authNotSignedIn())
-            }
-        }
-    }
-
-    private fun currentStrings(): HermesStrings {
-        val settings = appSettingsStore.load()
-        return hermesStringsFor(AppLanguage.fromTag(settings.languageTag))
-    }
 
     private val _uiState = MutableStateFlow(buildState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
@@ -93,477 +47,42 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         _uiState.value = buildState()
     }
 
-    fun updateProviderCredentialInput(methodId: String, value: String) {
-        providerCredentialInputs[methodId] = value
-        val current = _uiState.value
-        _uiState.value = buildState().copy(
-            globalStatus = current.globalStatus,
-            apiKeyFallbackMethodId = current.apiKeyFallbackMethodId,
-            apiKeyFallbackLabel = current.apiKeyFallbackLabel,
-        )
-    }
-
     fun updateCorr3xtBaseUrl(value: String) {
         _uiState.update { it.copy(corr3xtBaseUrl = value) }
     }
 
     fun saveCorr3xtBaseUrl() {
-        val candidate = _uiState.value.corr3xtBaseUrl.trim()
-        if (candidate.isBlank()) {
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authConfigureCorr3xtFirst())
-            }
-            return
-        }
-        val normalized = Corr3xtAuthClient.normalizeConfiguredBaseUrl(candidate)
-        if (normalized == null) {
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authBaseUrlMustBeValid())
-            }
-            return
-        }
-
+        val snapshot = _uiState.value
         val existing = appSettingsStore.load()
         appSettingsStore.save(
             AppSettings(
                 provider = existing.provider,
                 baseUrl = existing.baseUrl,
                 model = existing.model,
-                corr3xtBaseUrl = normalized,
-                dataSaverMode = existing.dataSaverMode,
-                onDeviceBackend = existing.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
-                languageTag = existing.languageTag,
+                corr3xtBaseUrl = snapshot.corr3xtBaseUrl.trim(),
             )
         )
-        _uiState.update {
-            it.copy(
-                corr3xtBaseUrl = normalized,
-                corr3xtConfigured = true,
-                globalStatus = currentStrings().authSavedBaseUrl(),
-            )
-        }
+        _uiState.update { it.copy(globalStatus = "Saved Corr3xt base URL") }
     }
 
-    fun startAuth(methodId: String): Boolean {
-        val option = AuthCatalog.find(methodId) ?: return false
-        if (option.id == "openrouter") {
-            return startOpenRouterOAuth(option)
-        }
-        if (!option.browserSignInSupported && option.scope == AuthScope.RuntimeProvider) {
-            prepareApiKeySetup(methodId)
-            openProviderSetupPage(methodId)
-            return true
-        }
-        val candidateBaseUrl = _uiState.value.corr3xtBaseUrl.trim()
-        if (candidateBaseUrl.isBlank()) {
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authConfigureCorr3xtFirst())
-            }
-            return false
-        }
-        val normalizedBaseUrl = Corr3xtAuthClient.normalizeConfiguredBaseUrl(candidateBaseUrl)
-        if (normalizedBaseUrl == null) {
-            _uiState.update {
-                it.copy(globalStatus = currentStrings().authBaseUrlMustBeValid())
-            }
-            return false
-        }
-
-        val settings = appSettingsStore.load()
+    fun startAuth(methodId: String) {
+        val option = AuthCatalog.find(methodId) ?: return
+        val corr3xtBaseUrl = Corr3xtAuthClient.normalizedBaseUrl(_uiState.value.corr3xtBaseUrl)
         val state = UUID.randomUUID().toString()
-        val pendingRequest = PendingAuthRequest(
-            state = state,
-            methodId = option.id,
-            startUrl = Corr3xtAuthClient.buildStartUri(
-                baseUrl = normalizedBaseUrl,
-                option = option,
+        val startUri = Corr3xtAuthClient.buildStartUri(corr3xtBaseUrl, option, state)
+        authSessionStore.savePendingRequest(
+            com.nousresearch.hermesagent.data.PendingAuthRequest(
                 state = state,
-                languageTag = settings.languageTag,
-            ).toString(),
-        )
-        val startUri = Uri.parse(pendingRequest.startUrl)
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(globalStatus = currentStrings().authCheckingCorr3xt(option.label)) }
-            val probe = withContext(Dispatchers.IO) {
-                Corr3xtAuthClient.probeStartUri(android.net.Uri.parse(pendingRequest.startUrl))
-            }
-            if (!probe.reachable) {
-                authSessionStore.clearPendingRequest()
-                val apiKeyFallbackAvailable = option.scope == AuthScope.RuntimeProvider &&
-                    option.runtimeProvider.isNotBlank()
-                val failureStatus = when (probe.status) {
-                    "unknown_host" -> if (option.scope == AuthScope.AppAccount) {
-                        currentStrings().authAppSignInHostCouldNotBeResolved(probe.host)
-                    } else {
-                        currentStrings().authHostCouldNotBeResolved(probe.host)
-                    }
-                    "network_error" -> if (option.scope == AuthScope.AppAccount) {
-                        currentStrings().authAppSignInPageCouldNotBeReached(probe.errorName)
-                    } else {
-                        currentStrings().authPageCouldNotBeReached(probe.errorName)
-                    }
-                    else -> probe.status.ifBlank { currentStrings().authTryAgain() }
-                }.let { status ->
-                    if (apiKeyFallbackAvailable) {
-                        "$status ${currentStrings().authApiKeyFallbackAvailable(option.label)}"
-                    } else {
-                        status
-                    }
-                }
-                _uiState.update {
-                    it.copy(
-                        corr3xtBaseUrl = normalizedBaseUrl,
-                        globalStatus = failureStatus,
-                        pendingMethodLabel = "",
-                        hasPendingRequest = false,
-                        pendingStartUrl = "",
-                        apiKeyFallbackMethodId = if (apiKeyFallbackAvailable) option.id else "",
-                        apiKeyFallbackLabel = if (apiKeyFallbackAvailable) option.label else "",
-                    )
-                }
-                return@launch
-            }
-
-            authSessionStore.savePendingRequest(pendingRequest)
-            val launch = openAuthStartPage(startUri, "Open ${option.label} sign-in")
-            if (launch.success) {
-                _uiState.update { current ->
-                    current.copy(
-                        corr3xtBaseUrl = normalizedBaseUrl,
-                        globalStatus = currentStrings().authOpenedCorr3xt(option.label),
-                        pendingMethodLabel = option.label,
-                        hasPendingRequest = true,
-                        pendingStartUrl = pendingRequest.startUrl,
-                        apiKeyFallbackMethodId = "",
-                        apiKeyFallbackLabel = "",
-                    )
-                }
-            } else {
-                authSessionStore.clearPendingRequest()
-                copyAuthStartUrl(pendingRequest.startUrl, updateStatus = false)
-                val statusPrefix = if (launch.errorName == "ActivityNotFoundException") {
-                    currentStrings().authNoBrowser()
-                } else {
-                    "${currentStrings().authTryAgain()} (${launch.errorName.ifBlank { "browser_error" }})"
-                }
-                _uiState.update {
-                    it.copy(
-                        globalStatus = "$statusPrefix ${currentStrings().authCopiedSignInUrl()}",
-                        pendingStartUrl = pendingRequest.startUrl,
-                        apiKeyFallbackMethodId = if (option.scope == AuthScope.RuntimeProvider) option.id else "",
-                        apiKeyFallbackLabel = if (option.scope == AuthScope.RuntimeProvider) option.label else "",
-                    )
-                }
-            }
-        }
-        return true
-    }
-
-    private fun startOpenRouterOAuth(option: AuthOption): Boolean {
-        val state = UUID.randomUUID().toString()
-        val callbackUrl = OpenRouterLoopbackOAuthServer.callbackUrlForState(state)
-        val startRequest = OpenRouterOAuthClient.createStartRequest(
-            state = state,
-            callbackUrl = callbackUrl,
-        )
-        val loopback = OpenRouterLoopbackOAuthServer.start(
-            context = getApplication(),
-            pending = startRequest.pendingRequest,
-        )
-        if (!loopback.started) {
-            authSessionStore.clearPendingRequest()
-            copyAuthStartUrl(startRequest.pendingRequest.startUrl, updateStatus = false)
-            _uiState.update {
-                it.copy(
-                    globalStatus = "Unable to start local OpenRouter callback (${loopback.errorName.ifBlank { "loopback_error" }}); copied the sign-in URL. You can still paste an OpenRouter API key below.",
-                    pendingStartUrl = startRequest.pendingRequest.startUrl,
-                    apiKeyFallbackMethodId = option.id,
-                    apiKeyFallbackLabel = option.label,
-                )
-            }
-            return true
-        }
-        authSessionStore.savePendingRequest(startRequest.pendingRequest)
-        val launch = openAuthStartPage(
-            uri = startRequest.startUri,
-            title = "Open OpenRouter sign-in",
-        )
-        if (launch.success) {
-            _uiState.update {
-                it.copy(
-                    globalStatus = "Opened OpenRouter sign-in in your browser. Approve Hermes; the local callback will save the API key securely. Use Copy sign-in URL if the page stalls.",
-                    pendingMethodLabel = option.label,
-                    hasPendingRequest = true,
-                    pendingStartUrl = startRequest.pendingRequest.startUrl,
-                    apiKeyFallbackMethodId = "",
-                    apiKeyFallbackLabel = "",
-                )
-            }
-        } else {
-            loopback.handle?.stop()
-            authSessionStore.clearPendingRequest()
-            copyAuthStartUrl(startRequest.pendingRequest.startUrl, updateStatus = false)
-            _uiState.update {
-                it.copy(
-                    globalStatus = "Unable to open OpenRouter sign-in (${launch.errorName.ifBlank { "browser_error" }}); copied the sign-in URL. You can still paste an OpenRouter API key below.",
-                    pendingStartUrl = startRequest.pendingRequest.startUrl,
-                    apiKeyFallbackMethodId = option.id,
-                    apiKeyFallbackLabel = option.label,
-                )
-            }
-        }
-        return true
-    }
-
-    private fun openAuthStartPage(
-        uri: Uri,
-        title: String,
-    ): BrowserLaunchResult {
-        return HermesExternalBrowserLauncher.open(
-            context = getApplication(),
-            uri = uri,
-            title = title,
-            forceChooser = true,
-        )
-    }
-
-    fun copyPendingSignInUrl() {
-        val startUrl = _uiState.value.pendingStartUrl.ifBlank {
-            authSessionStore.loadPendingRequest()?.startUrl.orEmpty()
-        }
-        copyAuthStartUrl(startUrl, updateStatus = true)
-    }
-
-    private fun copyAuthStartUrl(startUrl: String, updateStatus: Boolean) {
-        val target = startUrl.trim()
-        if (target.isBlank()) {
-            return
-        }
-        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes Corr3xt sign-in URL", target))
-        if (updateStatus) {
-            _uiState.update { it.copy(globalStatus = currentStrings().authCopiedSignInUrl()) }
-        }
-    }
-
-    fun prepareApiKeySetup(methodId: String) {
-        val option = AuthCatalog.find(methodId) ?: return
-        if (option.runtimeProvider.isBlank()) {
-            return
-        }
-        val existing = appSettingsStore.load()
-        appSettingsStore.save(
-            AppSettings(
-                provider = option.runtimeProvider,
-                baseUrl = option.defaultBaseUrl,
-                model = option.defaultModel,
-                corr3xtBaseUrl = existing.corr3xtBaseUrl,
-                dataSaverMode = existing.dataSaverMode,
-                onDeviceBackend = existing.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existing.liteRtLmSpeculativeDecodingMode,
-                languageTag = existing.languageTag,
+                methodId = option.id,
+                startUrl = startUri.toString(),
             )
         )
-        _uiState.update {
-            it.copy(
-                globalStatus = currentStrings().authApiKeySetupReady(option.label),
-                apiKeyFallbackMethodId = "",
-                apiKeyFallbackLabel = "",
-                pendingStartUrl = "",
-            )
+        val browserIntent = Intent(Intent.ACTION_VIEW, startUri).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-    }
-
-    fun saveProviderCredential(methodId: String) {
-        val option = AuthCatalog.find(methodId) ?: return
-        if (option.scope != AuthScope.RuntimeProvider || option.runtimeProvider.isBlank()) {
-            return
-        }
-        val input = providerCredentialInputs[methodId].orEmpty()
-        val parsedCredential = ProviderPresets.parseCredentialInput(option.runtimeProvider, input)
-        if (parsedCredential.apiKey.isBlank()) {
-            _uiState.update {
-                it.copy(globalStatus = "Paste an API key, token, or CLI env line for ${option.label} first.")
-            }
-            return
-        }
-        val preset = ProviderPresets.find(option.runtimeProvider)
-        val resolvedBaseUrl = option.defaultBaseUrl.ifBlank { preset?.baseUrl.orEmpty() }
-        val resolvedModel = option.defaultModel.ifBlank { preset?.modelHint.orEmpty() }
-        val sourceSuffix = parsedCredential.sourceLabel
-            .takeIf { it.isNotBlank() }
-            ?.let { " from $it" }
-            .orEmpty()
-        val session = AuthSession(
-            methodId = option.id,
-            label = option.label,
-            scope = option.scope,
-            runtimeProvider = option.runtimeProvider,
-            signedIn = true,
-            status = "Saved ${option.label} credential$sourceSuffix and queued Hermes runtime restart.",
-            apiKey = parsedCredential.apiKey,
-            baseUrl = resolvedBaseUrl,
-            model = resolvedModel,
-        )
-
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(globalStatus = "Saving ${option.label} credential and restarting Hermes...")
-            }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    authSessionStore.saveSession(session)
-                    AuthRuntimeApplier.apply(getApplication(), session)
-                }
-            }.onSuccess {
-                providerCredentialInputs.remove(methodId)
-                _uiState.value = buildState().copy(
-                    globalStatus = session.status,
-                    apiKeyFallbackMethodId = "",
-                    apiKeyFallbackLabel = "",
-                )
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(globalStatus = "Unable to save ${option.label} credential (${error::class.java.simpleName}).")
-                }
-            }
-        }
-    }
-
-    fun openProviderSetupPage(methodId: String) {
-        val option = AuthCatalog.find(methodId) ?: return
-        val target = nextProviderSetupTarget(option.runtimeProvider) ?: return
-        val uri = Uri.parse(target.url)
-        if (uri.scheme !in setOf("http", "https")) {
-            _uiState.update { it.copy(globalStatus = "Provider setup URL must start with https:// or http://") }
-            return
-        }
-        val launch = HermesProviderSetupWebActivity.open(
-            context = getApplication(),
-            uri = uri,
-            title = "Open ${option.label} setup page",
-        )
-        if (launch.success) {
-            copyProviderSetupUrl(methodId, updateStatus = false)
-            _uiState.update {
-                it.copy(globalStatus = providerSetupOpenedStatus(option.label, option.runtimeProvider, target))
-            }
-            probeProviderSetupPages(option.label, option.runtimeProvider)
-        } else {
-            copyProviderSetupUrl(methodId, updateStatus = false)
-            _uiState.update {
-                it.copy(globalStatus = "Unable to open setup page (${launch.errorName.ifBlank { "setup_page_error" }}); copied the ${option.label} setup URLs.")
-            }
-        }
-    }
-
-    fun checkProviderSetupPages(methodId: String) {
-        val option = AuthCatalog.find(methodId) ?: return
-        val urls = ProviderPresets.setupUrls(option.runtimeProvider)
-        if (urls.isEmpty()) {
-            _uiState.update { it.copy(globalStatus = "No setup URLs are configured for ${option.label}.") }
-            return
-        }
-        copyProviderSetupUrl(methodId, updateStatus = false)
-        _uiState.update { it.copy(globalStatus = "Checking ${option.label} setup pages from this device...") }
-        probeProviderSetupPages(option.label, option.runtimeProvider)
-    }
-
-    private fun probeProviderSetupPages(optionLabel: String, providerId: String) {
-        val urls = ProviderPresets.setupUrls(providerId)
-        if (urls.isEmpty()) {
-            return
-        }
-        viewModelScope.launch {
-            val results = withContext(Dispatchers.IO) {
-                urls.map(ProviderSetupUrlProbe::probe)
-            }
-            val status = providerSetupProbeStatus(optionLabel, results)
-            _uiState.update { it.copy(globalStatus = status) }
-        }
-    }
-
-    private fun providerSetupProbeStatus(
-        optionLabel: String,
-        results: List<ProviderSetupProbeResult>,
-    ): String {
-        val reachable = results.filter { it.reachable }
-        val firstReachable = reachable.firstOrNull()
-        return if (firstReachable != null) {
-            val fallbackHint = if (reachable.size < results.size) {
-                " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
-            } else {
-                ""
-            }
-            "$optionLabel setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
-        } else {
-            val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
-            "No $optionLabel setup page responded from Hermes. Copied all setup URLs. $failureSummary"
-                .take(ProviderSetupUrlProbe.MAX_STATUS_LENGTH)
-        }
-    }
-
-    private fun nextProviderSetupTarget(providerId: String): ProviderSetupTarget? {
-        val nextIndex = providerSetupOpenIndexes[providerId] ?: 0
-        val target = ProviderPresets.setupTarget(providerId, nextIndex) ?: return null
-        providerSetupOpenIndexes[providerId] = target.nextIndex
-        return target
-    }
-
-    private fun providerSetupOpenedStatus(
-        optionLabel: String,
-        providerId: String,
-        target: ProviderSetupTarget,
-    ): String {
-        val cycleHint = if (target.total > 1) {
-            " in your browser ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
-        } else {
-            " in your browser or Hermes fallback. If this page stalls, use Copy setup URL."
-        }
-        val qwenLegacyHint = if (providerId == "qwen-oauth") {
-            " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."
-        } else {
-            ""
-        }
-        return "Opened $optionLabel setup page$cycleHint$qwenLegacyHint"
-    }
-
-    fun copyProviderSetupUrl(methodId: String) {
-        copyProviderSetupUrl(methodId, updateStatus = true)
-    }
-
-    private fun copyProviderSetupUrl(methodId: String, updateStatus: Boolean) {
-        val option = AuthCatalog.find(methodId) ?: return
-        val setupText = ProviderPresets.setupClipboardText(option.runtimeProvider)
-        if (setupText.isBlank()) {
-            return
-        }
-        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes ${option.label} setup URLs", setupText))
-        if (updateStatus) {
-            val fallbackCount = ProviderPresets.setupUrls(option.runtimeProvider).size - 1
-            val suffix = when (fallbackCount) {
-                0 -> ""
-                1 -> " and 1 alternate official page"
-                else -> " and $fallbackCount alternate official pages"
-            }
-            _uiState.update { it.copy(globalStatus = "Copied ${option.label} setup URL$suffix.") }
-        }
-    }
-
-    fun cancelPendingRequest() {
-        authSessionStore.clearPendingRequest()
-        _uiState.update {
-            it.copy(
-                pendingMethodLabel = "",
-                hasPendingRequest = false,
-                apiKeyFallbackMethodId = "",
-                apiKeyFallbackLabel = "",
-                pendingStartUrl = "",
-                globalStatus = currentStrings().authCanceled(),
-            )
+        getApplication<Application>().startActivity(browserIntent)
+        _uiState.update { current ->
+            current.copy(globalStatus = "Opened Corr3xt for ${option.label} sign-in")
         }
     }
 
@@ -582,76 +101,31 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildState(): AuthUiState {
         val settings = appSettingsStore.load()
-        val strings = hermesStringsFor(AppLanguage.fromTag(settings.languageTag))
-        val persistedPending = authSessionStore.loadPendingRequest()
-        val pending = persistedPending?.takeUnless { AuthSessionStore.isPendingRequestExpired(it) }
-        if (persistedPending != null && pending == null) {
-            authSessionStore.clearPendingRequest()
-        }
-
         val corr3xtBaseUrl = Corr3xtAuthClient.normalizedBaseUrl(settings.corr3xtBaseUrl)
-        val corr3xtConfigured = corr3xtBaseUrl.isNotBlank()
-        val sessions = authSessionStore.loadSessions()
-        val sessionsById = sessions.associateBy { it.methodId }
+        val sessionsById = authSessionStore.loadSessions().associateBy { it.methodId }
         val options = AuthCatalog.options.map { option ->
             val session = sessionsById[option.id] ?: defaultSession(option)
-            val localizedStatus = when {
-                session.signedIn -> strings.authSignedInWith(option.label)
-                isSignedOutStatus(session.status) -> strings.authNotSignedIn()
-                else -> session.status
-            }
             AuthOptionUiState(
                 id = option.id,
                 label = option.label,
-                description = strings.authDescription(option.id, option.description),
+                description = option.description,
                 scope = option.scope,
                 runtimeProvider = session.runtimeProvider,
-                credentialInput = providerCredentialInputs[option.id].orEmpty(),
-                credentialInputHelp = if (option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank()) {
-                    ProviderPresets.credentialInputHelp(option.runtimeProvider)
-                } else {
-                    ""
-                },
                 signedIn = session.signedIn,
-                status = localizedStatus,
-                supportsApiKeySetup = option.scope == AuthScope.RuntimeProvider && option.runtimeProvider.isNotBlank(),
-                supportsBrowserSignIn = option.browserSignInSupported,
+                status = session.status,
                 accountHint = listOf(session.displayName, session.email, session.phone)
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),
-                browserSignInEnabled = option.scope != AuthScope.AppAccount || corr3xtConfigured,
-                providerSetupUrl = ProviderPresets.find(option.runtimeProvider)?.apiKeyUrl.orEmpty(),
             )
         }
         val signedInAccounts = options.count { it.signedIn }
-        val latestSessionStatus = sessions
-            .filter { session ->
-                session.updatedAtEpochMs > 0 &&
-                    session.status.isNotBlank() &&
-                    !isSignedOutStatus(session.status)
-            }
-            .maxByOrNull { it.updatedAtEpochMs }
-            ?.status
-        val pendingMethodLabel = pending?.methodId
-            ?.let { AuthCatalog.find(it)?.label ?: it }
-            .orEmpty()
-        val globalStatus = when {
-            pending != null -> strings.authWaitingCallback(pendingMethodLabel)
-            !latestSessionStatus.isNullOrBlank() -> latestSessionStatus
-            signedInAccounts > 0 -> strings.authConnectedMethods(signedInAccounts)
-            !corr3xtConfigured -> strings.authConfigureCorr3xtFirst()
-            else -> strings.authGlobalStatusDefault()
-        }
-
         return AuthUiState(
             corr3xtBaseUrl = corr3xtBaseUrl,
-            corr3xtConfigured = corr3xtConfigured,
-            globalStatus = globalStatus,
-            pendingMethodLabel = pendingMethodLabel,
-            hasPendingRequest = pending != null,
-            pendingStartUrl = pending?.startUrl.orEmpty(),
-            apiKeyFallbackMethodId = "",
-            apiKeyFallbackLabel = "",
+            globalStatus = if (signedInAccounts > 0) {
+                "$signedInAccounts sign-in methods connected"
+            } else {
+                "Use Corr3xt to sign into the app or connect provider accounts."
+            },
             options = options,
         )
     }
@@ -674,12 +148,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             label = option.label,
             scope = option.scope,
             runtimeProvider = option.runtimeProvider,
-            status = currentStrings().authNotSignedIn(),
-            updatedAtEpochMs = 0,
+            status = "Not signed in",
         )
-    }
-
-    private fun isSignedOutStatus(status: String): Boolean {
-        return status.trim() in signedOutStatuses
     }
 }

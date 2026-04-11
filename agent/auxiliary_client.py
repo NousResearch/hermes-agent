@@ -1217,6 +1217,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
+    api_mode: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1240,12 +1241,50 @@ def resolve_provider_client(
             the main agent loop).
         explicit_base_url: Optional direct OpenAI-compatible endpoint.
         explicit_api_key: Optional API key paired with explicit_base_url.
+        api_mode: API mode override.  One of "chat_completions",
+            "codex_responses", or None (auto-detect).  When set to
+            "codex_responses", the client is wrapped in
+            CodexAuxiliaryClient to route through the Responses API.
 
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
+
+    def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
+        """Decide if a plain OpenAI client should be wrapped for Responses API.
+
+        Returns True when api_mode is explicitly "codex_responses", or when
+        auto-detection (api.openai.com + codex-family model) suggests it.
+        Already-wrapped clients (CodexAuxiliaryClient) are skipped.
+        """
+        if isinstance(client_obj, CodexAuxiliaryClient):
+            return False
+        if raw_codex:
+            return False
+        if api_mode == "codex_responses":
+            return True
+        # Auto-detect: api.openai.com + codex model name pattern
+        if api_mode and api_mode != "codex_responses":
+            return False  # explicit non-codex mode
+        normalized_base = (base_url_str or "").strip().lower()
+        if "api.openai.com" in normalized_base and "openrouter" not in normalized_base:
+            model_lower = (model_str or "").lower()
+            if "codex" in model_lower:
+                return True
+        return False
+
+    def _wrap_if_needed(client_obj, final_model_str: str, base_url_str: str = ""):
+        """Wrap a plain OpenAI client in CodexAuxiliaryClient if Responses API is needed."""
+        if _needs_codex_wrap(client_obj, base_url_str, final_model_str):
+            logger.debug(
+                "resolve_provider_client: wrapping client in CodexAuxiliaryClient "
+                "(api_mode=%s, model=%s, base_url=%s)",
+                api_mode or "auto-detected", final_model_str,
+                base_url_str[:60] if base_url_str else "")
+            return CodexAuxiliaryClient(client_obj, final_model_str)
+        return client_obj
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -1336,6 +1375,7 @@ def resolve_provider_client(
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
             client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
+            client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
@@ -1344,6 +1384,8 @@ def resolve_provider_client(
             client, default = try_fn()
             if client is not None:
                 final_model = _normalize_resolved_model(model or default, provider)
+                _cbase = str(getattr(client, "base_url", "") or "")
+                client = _wrap_if_needed(client, final_model, _cbase)
                 return (_to_async_client(client, final_model) if async_mode
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
@@ -1363,6 +1405,7 @@ def resolve_provider_client(
                     provider,
                 )
                 client = OpenAI(api_key=custom_key, base_url=custom_base)
+                client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
                     provider, final_model)
@@ -1442,6 +1485,11 @@ def resolve_provider_client(
             except ImportError:
                 pass
 
+        # Honor api_mode for any API-key provider (e.g. direct OpenAI with
+        # codex-family models).  The copilot-specific wrapping above handles
+        # copilot; this covers the general case (#6800).
+        client = _wrap_if_needed(client, final_model, base_url)
+
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
@@ -1474,12 +1522,13 @@ def get_text_auxiliary_client(task: str = "") -> Tuple[Optional[OpenAI], Optiona
     Callers may override the returned model with a per-task env var
     (e.g. CONTEXT_COMPRESSION_MODEL, AUXILIARY_WEB_EXTRACT_MODEL).
     """
-    provider, model, base_url, api_key = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider,
         model=model,
         explicit_base_url=base_url,
         explicit_api_key=api_key,
+        api_mode=api_mode,
     )
 
 
@@ -1490,13 +1539,14 @@ def get_async_text_auxiliary_client(task: str = ""):
     (AsyncCodexAuxiliaryClient, model) which wraps the Responses API.
     Returns (None, None) when no provider is available.
     """
-    provider, model, base_url, api_key = _resolve_task_provider_model(task or None)
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
         provider,
         model=model,
         async_mode=True,
         explicit_base_url=base_url,
         explicit_api_key=api_key,
+        api_mode=api_mode,
     )
 
 
@@ -1569,7 +1619,7 @@ def resolve_vision_provider_client(
     backends, so users can intentionally force experimental providers. Auto mode
     stays conservative and only tries vision backends known to work today.
     """
-    requested, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
+    requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
     requested = _normalize_vision_provider(requested)
@@ -1791,6 +1841,7 @@ def _get_cached_client(
     async_mode: bool = False,
     base_url: str = None,
     api_key: str = None,
+    api_mode: str = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -1814,7 +1865,7 @@ def _get_cached_client(
             loop_id = id(current_loop)
         except RuntimeError:
             pass
-    cache_key = (provider, async_mode, base_url or "", api_key or "", loop_id)
+    cache_key = (provider, async_mode, base_url or "", api_key or "", api_mode or "", loop_id)
     with _client_cache_lock:
         if cache_key in _client_cache:
             cached_client, cached_default, cached_loop = _client_cache[cache_key]
@@ -1836,6 +1887,7 @@ def _get_cached_client(
         async_mode,
         explicit_base_url=base_url,
         explicit_api_key=api_key,
+        api_mode=api_mode,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -1855,7 +1907,7 @@ def _resolve_task_provider_model(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
-) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
+) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
     """Determine provider + model for a call.
 
     Priority:
@@ -1864,15 +1916,17 @@ def _resolve_task_provider_model(
       3. Config file (auxiliary.{task}.* or compression.*)
       4. "auto" (full auto-detection chain)
 
-    Returns (provider, model, base_url, api_key) where model may be None
-    (use provider default). When base_url is set, provider is forced to
-    "custom" and the task uses that direct endpoint.
+    Returns (provider, model, base_url, api_key, api_mode) where model may
+    be None (use provider default). When base_url is set, provider is forced
+    to "custom" and the task uses that direct endpoint. api_mode is one of
+    "chat_completions", "codex_responses", or None (auto-detect).
     """
     config = {}
     cfg_provider = None
     cfg_model = None
     cfg_base_url = None
     cfg_api_key = None
+    cfg_api_mode = None
 
     if task:
         try:
@@ -1889,6 +1943,7 @@ def _resolve_task_provider_model(
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
         # Backwards compat: compression section has its own keys.
         # The auxiliary.compression defaults to provider="auto", so treat
@@ -1902,30 +1957,32 @@ def _resolve_task_provider_model(
                 cfg_base_url = cfg_base_url or _sbu.strip() or None
 
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
+    env_api_mode = _get_auxiliary_env_override(task, "API_MODE") if task else None
     resolved_model = model or env_model or cfg_model
+    resolved_api_mode = env_api_mode or cfg_api_mode
 
     if base_url:
-        return "custom", resolved_model, base_url, api_key
+        return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
-        return provider, resolved_model, base_url, api_key
+        return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
         env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
         env_api_key = _get_auxiliary_env_override(task, "API_KEY")
         if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key or cfg_api_key
+            return "custom", resolved_model, env_base_url, env_api_key or cfg_api_key, resolved_api_mode
 
         env_provider = _get_auxiliary_provider(task)
         if env_provider != "auto":
-            return env_provider, resolved_model, None, None
+            return env_provider, resolved_model, None, None, resolved_api_mode
 
         if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None
-        return "auto", resolved_model, None, None
+            return cfg_provider, resolved_model, None, None, resolved_api_mode
+        return "auto", resolved_model, None, None, resolved_api_mode
 
-    return "auto", resolved_model, None, None
+    return "auto", resolved_model, None, None, resolved_api_mode
 
 
 _DEFAULT_AUX_TIMEOUT = 30.0
@@ -2035,7 +2092,7 @@ def call_llm(
     Raises:
         RuntimeError: If no provider is configured.
     """
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
 
     if task == "vision":
@@ -2068,6 +2125,7 @@ def call_llm(
             resolved_model,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
         )
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
@@ -2229,7 +2287,7 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
+    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
 
     if task == "vision":
@@ -2263,6 +2321,7 @@ async def async_call_llm(
             async_mode=True,
             base_url=resolved_base_url,
             api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
         )
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()

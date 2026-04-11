@@ -208,8 +208,24 @@ class SmsAdapter(BasePlatformAdapter):
     ) -> bool:
         """Validate ``X-Twilio-Signature`` header (HMAC-SHA1, base64).
 
+        Tries both with and without the default port for the URL scheme,
+        since Twilio may sign with either variant.
+
         Algorithm: https://www.twilio.com/docs/usage/security#validating-requests
         """
+        if self._check_signature(url, post_params, signature):
+            return True
+
+        variant = self._port_variant_url(url)
+        if variant and self._check_signature(variant, post_params, signature):
+            return True
+
+        return False
+
+    def _check_signature(
+        self, url: str, post_params: dict, signature: str,
+    ) -> bool:
+        """Compute and compare a single Twilio signature."""
         data_to_sign = url
         for key in sorted(post_params.keys()):
             data_to_sign += key + post_params[key]
@@ -220,6 +236,36 @@ class SmsAdapter(BasePlatformAdapter):
         )
         computed = base64.b64encode(mac.digest()).decode("utf-8")
         return hmac.compare_digest(computed, signature)
+
+    @staticmethod
+    def _port_variant_url(url: str) -> str | None:
+        """Return the URL with the default port toggled, or None.
+
+        Only toggles default ports (443 for https, 80 for http).
+        Non-standard ports are never modified.
+        """
+        parsed = urllib.parse.urlparse(url)
+        default_ports = {"https": 443, "http": 80}
+        default_port = default_ports.get(parsed.scheme)
+        if default_port is None:
+            return None
+
+        if parsed.port == default_port:
+            # Has explicit default port → strip it
+            return urllib.parse.urlunparse(
+                (parsed.scheme, parsed.hostname, parsed.path,
+                 parsed.params, parsed.query, parsed.fragment)
+            )
+        elif parsed.port is None:
+            # No port → add default
+            netloc = f"{parsed.hostname}:{default_port}"
+            return urllib.parse.urlunparse(
+                (parsed.scheme, netloc, parsed.path,
+                 parsed.params, parsed.query, parsed.fragment)
+            )
+
+        # Non-standard port — no variant
+        return None
 
     # ------------------------------------------------------------------
     # Twilio webhook handler

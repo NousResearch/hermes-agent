@@ -35,10 +35,14 @@ logger = logging.getLogger(__name__)
 
 _CONTEXT_THREAT_PATTERNS = [
     (r'ignore\s+(previous|all|above|prior)\s+instructions', "prompt_injection"),
+    (r'ignore\s+(?:all\s+)?(?:prior|previous)\s+(?:safety\s+)?(?:rules|guardrails|guidelines)', "prompt_injection"),
     (r'do\s+not\s+tell\s+the\s+user', "deception_hide"),
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
+    (r'reveal\s+(?:any|all)?\s*(?:secrets|credentials|tokens|passwords|api\s+keys)', "secret_exfiltration"),
+    (r'(?:state|say|claim)\s+that\s+you\s+are\s+(?:now\s+)?in\s+developer\s+mode', "privilege_escalation"),
+    (r'(?:delete|remove|rm)\s+.+\s+without\s+asking', "unauthorized_destructive"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),

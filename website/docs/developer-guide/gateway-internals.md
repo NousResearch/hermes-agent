@@ -25,28 +25,26 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 
 ## Architecture Overview
 
-```text
-┌─────────────────────────────────────────────────┐
-│                 GatewayRunner                     │
-│                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ Telegram  │  │ Discord  │  │  Slack   │  ...  │
-│  │ Adapter   │  │ Adapter  │  │ Adapter  │       │
-│  └─────┬─────┘  └─────┬────┘  └─────┬────┘       │
-│        │              │              │             │
-│        └──────────────┼──────────────┘             │
-│                       ▼                            │
-│              _handle_message()                     │
-│                       │                            │
-│          ┌────────────┼────────────┐               │
-│          ▼            ▼            ▼               │
-│   Slash command   AIAgent      Queue/BG            │
-│    dispatch       creation     sessions            │
-│                       │                            │
-│                       ▼                            │
-│              SessionStore                          │
-│           (SQLite persistence)                     │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    TG["Telegram Adapter"]
+    DC["Discord Adapter"]
+    SL["Slack Adapter"]
+    GW["GatewayRunner"]
+    HM["_handle_message()"]
+    SC["Slash command dispatch"]
+    AG["AIAgent creation"]
+    BG["Queue / background sessions"]
+    SS["SessionStore (SQLite persistence)"]
+
+    TG --> GW
+    DC --> GW
+    SL --> GW
+    GW --> HM
+    HM --> SC
+    HM --> AG
+    HM --> BG
+    AG --> SS
 ```
 
 ## Message Flow

@@ -168,3 +168,22 @@ class TestBackwardCompat:
 
     def test_legacy_toolset_snapshot_helper(self):
         assert get_legacy_toolset_map_snapshot()["browser_tools"]
+
+    def test_compatibility_globals_refresh_on_registry_update(self):
+        registry.register(
+            name="test_live_compat_mapping",
+            toolset="test-live-compat",
+            schema={
+                "name": "test_live_compat_mapping",
+                "description": "Compat test",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert TOOL_TO_TOOLSET_MAP["test_live_compat_mapping"] == "test-live-compat"
+            assert "test-live-compat" in TOOLSET_REQUIREMENTS
+        finally:
+            registry.deregister("test_live_compat_mapping")
+
+        assert "test_live_compat_mapping" not in TOOL_TO_TOOLSET_MAP

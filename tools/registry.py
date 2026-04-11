@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -73,7 +74,7 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "handler_module",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
@@ -89,6 +90,7 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.handler_module = getattr(handler, "__module__", "")
 
 
 class ToolRegistry:
@@ -139,6 +141,7 @@ class ToolRegistry:
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
+        self._refresh_model_tools_exports()
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -157,6 +160,7 @@ class ToolRegistry:
             ):
                 self._toolset_checks.pop(entry.toolset, None)
             logger.debug("Deregistered tool: %s", name)
+        self._refresh_model_tools_exports()
 
     # ------------------------------------------------------------------
     # Schema retrieval
@@ -251,14 +255,41 @@ class ToolRegistry:
             entry = self._tools.get(name)
             return entry.toolset if entry else None
 
-    def get_tools_for_toolset(self, toolset: str) -> List[str]:
+    def get_tools_for_toolset(self, toolset: str, *, builtin_only: bool = False) -> List[str]:
         """Return the sorted tool names currently registered to *toolset*."""
         with self._lock:
             return sorted(
                 name
                 for name, entry in self._tools.items()
                 if entry.toolset == toolset
+                and (
+                    not builtin_only
+                    or (
+                        entry.handler_module.startswith("tools.")
+                        and entry.handler_module != "tools.mcp_tool"
+                    )
+                )
             )
+
+    def _refresh_model_tools_exports(self) -> None:
+        """Best-effort sync for legacy exported maps in model_tools."""
+        model_tools = sys.modules.get("model_tools")
+        if model_tools is None:
+            return
+        try:
+            if hasattr(model_tools, "TOOL_TO_TOOLSET_MAP"):
+                model_tools.TOOL_TO_TOOLSET_MAP.clear()
+                model_tools.TOOL_TO_TOOLSET_MAP.update(self.get_tool_to_toolset_map())
+            if hasattr(model_tools, "TOOLSET_REQUIREMENTS"):
+                model_tools.TOOLSET_REQUIREMENTS.clear()
+                model_tools.TOOLSET_REQUIREMENTS.update(self.get_toolset_requirements())
+            if hasattr(model_tools, "_LEGACY_TOOLSET_MAP"):
+                from toolsets import get_legacy_toolset_map
+
+                model_tools._LEGACY_TOOLSET_MAP.clear()
+                model_tools._LEGACY_TOOLSET_MAP.update(get_legacy_toolset_map())
+        except Exception:
+            logger.debug("Failed to refresh model_tools compatibility exports", exc_info=True)
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted names of all toolsets currently present in the registry."""

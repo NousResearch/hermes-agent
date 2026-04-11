@@ -349,6 +349,14 @@ def _get_registry_tool_names(toolset_name: str) -> List[str]:
         return []
 
 
+def _get_builtin_registry_tool_names(toolset_name: str) -> List[str]:
+    """Return only built-in direct tool names for a registry-owned toolset."""
+    try:
+        return registry.get_tools_for_toolset(toolset_name, builtin_only=True)
+    except Exception:
+        return []
+
+
 def is_legacy_toolset(name: str) -> bool:
     """Return True when *name* is a backward-compatible toolset alias."""
     return name in LEGACY_TOOLSET_ALIASES
@@ -413,7 +421,11 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
     """
     static_def = TOOLSETS.get(name)
     normalized_name = _normalize_toolset_name(name)
-    registry_tools = _get_registry_tool_names(normalized_name)
+    registry_tools = (
+        _get_builtin_registry_tool_names(normalized_name)
+        if static_def is not None
+        else _get_registry_tool_names(normalized_name)
+    )
 
     if not static_def and not registry_tools:
         return None

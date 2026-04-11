@@ -120,6 +120,18 @@ class TestValidateToolset:
         finally:
             registry.deregister("mcp_web_ping")
 
+    def test_dynamic_toolset_cannot_splice_into_static_bundle(self):
+        registry.register(
+            name="web_dynamic_splice",
+            toolset="web",
+            schema={"name": "web_dynamic_splice", "description": "Dyn", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "web_dynamic_splice" not in resolve_toolset("web")
+        finally:
+            registry.deregister("web_dynamic_splice")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):

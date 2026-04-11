@@ -167,11 +167,23 @@ def get_legacy_toolset_map_snapshot() -> Dict[str, List[str]]:
     return get_legacy_toolset_map()
 
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = get_tool_to_toolset_map_snapshot()
+TOOL_TO_TOOLSET_MAP: Dict[str, str] = {}
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = get_toolset_requirements_snapshot()
+TOOLSET_REQUIREMENTS: Dict[str, dict] = {}
 
-_LEGACY_TOOLSET_MAP = get_legacy_toolset_map_snapshot()
+_LEGACY_TOOLSET_MAP: Dict[str, List[str]] = {}
+
+
+def _refresh_compat_exports() -> None:
+    TOOL_TO_TOOLSET_MAP.clear()
+    TOOL_TO_TOOLSET_MAP.update(get_tool_to_toolset_map_snapshot())
+    TOOLSET_REQUIREMENTS.clear()
+    TOOLSET_REQUIREMENTS.update(get_toolset_requirements_snapshot())
+    _LEGACY_TOOLSET_MAP.clear()
+    _LEGACY_TOOLSET_MAP.update(get_legacy_toolset_map_snapshot())
+
+
+_refresh_compat_exports()
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.

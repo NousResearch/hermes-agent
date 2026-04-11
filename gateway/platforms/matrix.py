@@ -310,6 +310,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Refusing to connect — encrypted rooms would silently fail.",
                     _E2EE_INSTALL_HINT,
                 )
+                await api.session.close()
                 return False
             try:
                 from mautrix.crypto import OlmMachine
@@ -318,15 +319,25 @@ class MatrixAdapter(BasePlatformAdapter):
                 crypto_store = MemoryCryptoStore()
 
                 # Restore persisted crypto state from a previous run.
+                # Uses HMAC to verify integrity before unpickling.
                 pickle_path = _CRYPTO_PICKLE_PATH
                 if pickle_path.exists():
                     try:
-                        import pickle
-                        with open(pickle_path, "rb") as f:
-                            saved = pickle.load(f)  # noqa: S301 — trusted local file
-                        if isinstance(saved, MemoryCryptoStore):
-                            crypto_store = saved
-                            logger.info("Matrix: restored E2EE crypto store from %s", pickle_path)
+                        import hashlib, hmac, pickle
+                        raw = pickle_path.read_bytes()
+                        # Format: 32-byte HMAC-SHA256 signature + pickle data.
+                        if len(raw) > 32:
+                            sig, payload = raw[:32], raw[32:]
+                            # Key is derived from the device_id + user_id (stable per install).
+                            hmac_key = f"{self._user_id}:{self._device_id}".encode()
+                            expected = hmac.new(hmac_key, payload, hashlib.sha256).digest()
+                            if hmac.compare_digest(sig, expected):
+                                saved = pickle.loads(payload)  # noqa: S301
+                                if isinstance(saved, MemoryCryptoStore):
+                                    crypto_store = saved
+                                    logger.info("Matrix: restored E2EE crypto store from %s", pickle_path)
+                            else:
+                                logger.warning("Matrix: crypto store HMAC mismatch — ignoring stale/tampered file")
                     except Exception as exc:
                         logger.warning("Matrix: could not restore crypto store: %s", exc)
 
@@ -349,6 +360,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     "Matrix: failed to create E2EE client: %s. %s",
                     exc, _E2EE_INSTALL_HINT,
                 )
+                await api.session.close()
                 return False
 
         # Register event handlers.
@@ -408,12 +420,14 @@ class MatrixAdapter(BasePlatformAdapter):
         # can decrypt events using sessions from this run.
         if self._client and self._encryption and getattr(self._client, "crypto", None):
             try:
-                import pickle
+                import hashlib, hmac, pickle
                 crypto_store = self._client.crypto.crypto_store
                 _STORE_DIR.mkdir(parents=True, exist_ok=True)
                 pickle_path = _CRYPTO_PICKLE_PATH
-                with open(pickle_path, "wb") as f:
-                    pickle.dump(crypto_store, f)
+                payload = pickle.dumps(crypto_store)
+                hmac_key = f"{self._user_id}:{self._device_id}".encode()
+                sig = hmac.new(hmac_key, payload, hashlib.sha256).digest()
+                pickle_path.write_bytes(sig + payload)
                 logger.info("Matrix: persisted E2EE crypto store to %s", pickle_path)
             except Exception as exc:
                 logger.debug("Matrix: could not persist crypto store on disconnect: %s", exc)

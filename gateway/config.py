@@ -891,6 +891,15 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         if not pconfig.enabled:
             continue
         env_name = _token_env_names.get(platform)
+        if not env_name:
+            # Check plugin registry for required_env
+            try:
+                from gateway.platform_registry import platform_registry
+                entry = platform_registry.get(platform.value)
+                if entry and entry.required_env:
+                    env_name = entry.required_env[0]  # primary env var
+            except Exception:
+                pass
         if env_name and pconfig.token is not None and not pconfig.token.strip():
             logger.warning(
                 "%s is enabled but %s is empty. "

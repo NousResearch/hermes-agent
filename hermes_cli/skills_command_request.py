@@ -57,7 +57,7 @@ def register_skills_subcommands(skills_parser: argparse.ArgumentParser) -> None:
                                help="Filter by source (default: all)")
 
     skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
-    skills_search.add_argument("query", help="Search query")
+    skills_search.add_argument("query", nargs="+", help="Search query")
     skills_search.add_argument("--source", default="all", choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"])
     skills_search.add_argument("--limit", type=int, default=10, help="Max results")
 
@@ -138,7 +138,7 @@ def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest
         page=getattr(args, "page", 1),
         size=getattr(args, "size", 20),
         source_filter=getattr(args, "source", "all"),
-        query=getattr(args, "query", "") or "",
+        query=" ".join(getattr(args, "query", []) or []) if isinstance(getattr(args, "query", ""), list) else (getattr(args, "query", "") or ""),
         limit=getattr(args, "limit", 10),
         identifier=getattr(args, "identifier", "") or "",
         category=getattr(args, "category", "") or "",
@@ -157,7 +157,10 @@ def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest
 
 
 def parse_skills_slash_command(cmd: str) -> SkillsCommandRequest:
-    parts = shlex.split(cmd.strip())
+    try:
+        parts = shlex.split(cmd.strip())
+    except ValueError as exc:
+        return SkillsCommandRequest(action="error", command_source="slash", error=str(exc))
     if parts and parts[0].lower() == "/skills":
         parts = parts[1:]
     if not parts:

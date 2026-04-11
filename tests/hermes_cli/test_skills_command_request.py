@@ -50,6 +50,14 @@ def test_parse_skills_slash_command_uses_same_parser_tree():
     assert request.force is True
 
 
+def test_parse_skills_slash_command_accepts_multiword_search_without_quotes():
+    request = parse_skills_slash_command("/skills search foo bar --limit 5")
+
+    assert request.action == "search"
+    assert request.query == "foo bar"
+    assert request.limit == 5
+
+
 def test_parse_skills_slash_command_marks_config_unavailable():
     request = parse_skills_slash_command("/skills config")
 
@@ -66,6 +74,13 @@ def test_parse_skills_slash_command_tap_defaults_to_list():
 
 def test_parse_skills_slash_command_returns_error_request_on_invalid_input():
     request = parse_skills_slash_command("/skills install")
+
+    assert request.action == "error"
+    assert request.error
+
+
+def test_parse_skills_slash_command_returns_error_request_on_malformed_quotes():
+    request = parse_skills_slash_command('/skills search "unterminated')
 
     assert request.action == "error"
     assert request.error

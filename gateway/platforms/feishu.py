@@ -1554,7 +1554,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 if resp.status_code != 200:
                     logger.warning("[Feishu] Card PATCH failed (%s): %s", resp.status_code, resp.text)
         except Exception as exc:
-            logger.info("[Feishu] Failed to update approval card %s: %s", message_id, exc)
+            logger.error("[Feishu] Failed to update approval card %s: %s", message_id, exc, exc_info=True)
 
     async def send_voice(
         self,

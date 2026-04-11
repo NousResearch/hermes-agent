@@ -5146,6 +5146,8 @@ For more help on a command:
     mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
     mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
+    mcp_add_p.add_argument("--env", nargs="*", default=[], help="Environment variables for stdio servers (KEY=VALUE)")
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")

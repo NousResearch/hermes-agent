@@ -804,7 +804,7 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
-    
+
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
@@ -1534,7 +1534,7 @@ class GatewayRunner:
             )
         except Exception:
             pass
-    
+
     @staticmethod
     def _load_prefill_messages() -> List[Dict[str, Any]]:
         """Load ephemeral prefill messages from config or env var.
@@ -2671,7 +2671,7 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
         
         return True
-    
+
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that finalizes expired sessions.
 
@@ -3212,17 +3212,21 @@ class GatewayRunner:
 
         self._stop_task = asyncio.create_task(_stop_impl())
         await self._stop_task
-    
+
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
-    
+
     def _create_adapter(
         self, 
         platform: Platform, 
         config: Any
     ) -> Optional[BasePlatformAdapter]:
-        """Create the appropriate adapter for a platform."""
+        """Create the appropriate adapter for a platform.
+
+        Checks the platform_registry first (plugin adapters), then falls
+        through to the built-in if/elif chain for core platforms.
+        """
         if hasattr(config, "extra") and isinstance(config.extra, dict):
             config.extra.setdefault(
                 "group_sessions_per_user",
@@ -3232,6 +3236,16 @@ class GatewayRunner:
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
             )
+
+        # ── Plugin-registered platforms (checked first) ──────────────
+        try:
+            from gateway.platform_registry import platform_registry
+            adapter = platform_registry.create_adapter(platform.value, config)
+            if adapter is not None:
+                return adapter
+        except Exception as e:
+            logger.debug("Platform registry lookup for '%s' failed: %s", platform.value, e)
+        # Fall through to built-in adapters below
 
         if platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
@@ -3636,7 +3650,7 @@ class GatewayRunner:
             return "ignore"
 
         return "pair"
-    
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -5659,7 +5673,7 @@ class GatewayRunner:
         finally:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
-    
+
     def _format_session_info(self) -> str:
         """Resolve current model config and return a formatted info block.
 
@@ -5856,7 +5870,7 @@ class GatewayRunner:
         if session_info:
             return f"{header}\n\n{session_info}{_tip_line}"
         return f"{header}{_tip_line}"
-    
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
         from hermes_constants import display_hermes_home
@@ -6005,7 +6019,7 @@ class GatewayRunner:
             lines.append("No active agents or running tasks.")
 
         return "\n".join(lines)
-    
+
     async def _handle_stop_command(self, event: MessageEvent) -> str:
         """Handle /stop command - interrupt a running agent.
 
@@ -6245,7 +6259,7 @@ class GatewayRunner:
         if page != requested_page:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
-    
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -6651,7 +6665,7 @@ class GatewayRunner:
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
         return f"Unknown personality: `{args}`\n\nAvailable: {available}"
-    
+
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
         source = event.source
@@ -6687,7 +6701,7 @@ class GatewayRunner:
         
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
-    
+
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
         source = event.source
@@ -6712,7 +6726,7 @@ class GatewayRunner:
         
         preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
         return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
-    
+
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
         source = event.source
@@ -6733,7 +6747,7 @@ class GatewayRunner:
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
         )
-    
+
     @staticmethod
     def _get_guild_id(event: MessageEvent) -> Optional[int]:
         """Extract Discord guild_id from the raw message object."""

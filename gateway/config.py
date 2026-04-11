@@ -46,7 +46,13 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 
 
 class Platform(Enum):
-    """Supported messaging platforms."""
+    """Supported messaging platforms.
+
+    Built-in platforms have explicit members.  Plugin platforms use dynamic
+    members created on-demand by ``_missing_()`` so that
+    ``Platform("irc")`` works without modifying this enum.  Dynamic members
+    are cached in ``_value2member_map_`` for identity-stable comparisons.
+    """
     LOCAL = "local"
     TELEGRAM = "telegram"
     DISCORD = "discord"
@@ -68,6 +74,27 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    @classmethod
+    def _missing_(cls, value):
+        """Accept unknown platform names for plugin-registered adapters.
+
+        Creates a pseudo-member cached in ``_value2member_map_`` so that
+        ``Platform("irc") is Platform("irc")`` holds True (identity-stable).
+        """
+        if not isinstance(value, str) or not value.strip():
+            return None
+        # Normalise to lowercase to avoid case mismatches in config
+        value = value.strip().lower()
+        # Check cache first (another call may have created it already)
+        if value in cls._value2member_map_:
+            return cls._value2member_map_[value]
+        pseudo = object.__new__(cls)
+        pseudo._value_ = value
+        pseudo._name_ = value.upper().replace("-", "_").replace(" ", "_")
+        # Cache so future lookups return the same object
+        cls._value2member_map_[value] = pseudo
+        cls._member_map_[pseudo._name_] = pseudo
+        return pseudo
 
 
 @dataclass
@@ -337,6 +364,17 @@ class GatewayConfig:
                 config.extra.get("client_secret") or os.getenv("DINGTALK_CLIENT_SECRET")
             ):
                 connected.append(platform)
+            else:
+                # Plugin-registered platform — delegate validation to the
+                # registry entry's validate_config if available.
+                try:
+                    from gateway.platform_registry import platform_registry
+                    entry = platform_registry.get(platform.value)
+                    if entry:
+                        if entry.validate_config is None or entry.validate_config(config):
+                            connected.append(platform)
+                except Exception:
+                    pass  # Registry not yet initialised during early import
         
         return connected
     

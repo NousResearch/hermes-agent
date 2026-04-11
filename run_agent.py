@@ -96,6 +96,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.model_capabilities import get_model_capabilities, validate_preflight, check_model_deprecation, validate_api_key_format
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -765,6 +766,10 @@ class AIAgent:
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+
+        # Pre-flight capability metadata — pure pattern matching, no API calls.
+        # Used for advisory warnings before the first API call in run_conversation().
+        self._model_capabilities = get_model_capabilities(model, provider_name)
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
@@ -992,6 +997,17 @@ class AIAgent:
             else:
                 print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
+
+        # API key format validation — advisory only, never blocks.
+        # Only check when api_key was explicitly provided (not centralized router).
+        try:
+            _key = getattr(self, 'api_key', '') or ''
+            if _key:
+                _key_warning = validate_api_key_format(self.provider, _key)
+                if _key_warning and not self.quiet_mode:
+                    print(f"{self.log_prefix}{_key_warning}")
+        except Exception:
+            pass  # Never let key validation crash the agent
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -7833,6 +7849,30 @@ class AIAgent:
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
+
+        # Pre-flight capability validation — advisory warnings only.
+        # Run once per conversation, before the retry loop starts.
+        # Never blocks or modifies the request.
+        try:
+            _preflight_warnings = validate_preflight(
+                model=self.model,
+                provider=self.provider,
+                tools=self.tools,
+                messages=messages,
+                reasoning_config=self.reasoning_config,
+            )
+            for _pw in _preflight_warnings:
+                self._vprint(f"⚠️  Pre-flight: {_pw}")
+        except Exception:
+            pass  # Never let preflight validation crash the agent
+
+        # Model deprecation check — best-effort advisory warning.
+        try:
+            _deprecation = check_model_deprecation(self.model, self.provider)
+            if _deprecation:
+                self._vprint(f"{self.log_prefix}{_deprecation}", force=True)
+        except Exception:
+            pass  # Never let deprecation check crash the agent
 
         while api_call_count < self.max_iterations and self.iteration_budget.remaining > 0:
             # Reset per-turn checkpoint dedup so each iteration can take one snapshot

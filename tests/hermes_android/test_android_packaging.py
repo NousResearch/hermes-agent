@@ -16,6 +16,12 @@ def test_chaquopy_build_preinstalls_android_stubs():
     assert 'install("-r", "../../requirements-android-chaquopy.txt")' in gradle
 
 
+def test_android_wheel_includes_iteration_limits_module():
+    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+
+    assert "iteration_limits" in pyproject["tool"]["setuptools"]["py-modules"]
+
+
 def test_android_anthropic_stub_matches_project_requirement_floor():
     pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     stub_project = tomllib.loads(

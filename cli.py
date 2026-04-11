@@ -1376,7 +1376,7 @@ _skill_commands = None
 
 def _current_skill_commands() -> dict:
     """Return live skill commands unless a test/override has patched them in."""
-    return _skill_commands if _skill_commands is not None else get_skill_commands()
+    return _skill_commands if _skill_commands is not None else get_skill_commands(force_refresh=True)
 
 
 def _get_plugin_cmd_handler_names() -> set:

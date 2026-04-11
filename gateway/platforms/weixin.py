@@ -758,20 +758,13 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
+    A single response = a single Weixin message.  Only split when the content
+    genuinely exceeds the API limit.  Oversized content is truncated (not
+    broken into multiple messages) to preserve readability.
     """
-    if len(content) <= max_length and "\n" not in content:
+    if len(content) <= max_length:
         return [content]
-
-    chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
-            continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-    return chunks or [content]
+    return [BasePlatformAdapter.truncate_message(content, max_length)]
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:

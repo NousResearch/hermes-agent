@@ -397,3 +397,73 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     )
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+def test_doctor_uses_uv_sync_repair_hint_for_missing_required_packages(monkeypatch, tmp_path, capsys):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='hermes-agent'\n")
+
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("missing openai")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "uv sync --locked --inexact --extra all" in out
+    assert "Install OpenAI SDK: uv pip install openai" not in out
+
+
+def test_doctor_uses_termux_repair_hint_for_missing_required_packages(monkeypatch, tmp_path, capsys):
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+    (project_root / "pyproject.toml").write_text("[project]\nname='hermes-agent'\n")
+
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", hermes_home)
+    monkeypatch.setattr(doctor_mod, "_check_gateway_service_linger", lambda issues: None)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *args, **kwargs: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError("missing openai")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+
+    doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = capsys.readouterr().out
+    assert "python -m pip install -e '.[termux]' -c constraints-termux.txt" in out
+    assert "Repair Hermes project environment (OpenAI SDK missing): uv sync --locked --inexact --extra all" not in out

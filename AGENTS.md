@@ -4,9 +4,11 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 ## Development Environment
 
-```bash
-source venv/bin/activate  # ALWAYS activate before running Python
-```
+This project uses `uv` to manage Python dependencies and to run Python executables.
+Never use `pip` commands.
+There is only one instance in which it is admissible to use `uv pip`: installing the Tinker Atropos dependency.
+Otherwise, it is never necessary to use the `uv pip` subcommand.
+There is never a need to work with virtualenvs directly - `uv run` will automatically run commands in the context of the correct virtualenv.
 
 ## Project Structure
 
@@ -535,6 +537,7 @@ scripts/run_tests.sh                                  # full suite, CI-parity
 scripts/run_tests.sh tests/gateway/                   # one directory
 scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
+HERMES_TEST_NO_SYNC=1 scripts/run_tests.sh tests/ -q  # hot loop after a successful sync
 ```
 
 ### Why the wrapper (and why the old "just call pytest" doesn't work)
@@ -553,14 +556,16 @@ Five real sources of local-vs-CI drift the script closes:
 invocation (including IDE integrations) gets hermetic behavior — but the wrapper
 is belt-and-suspenders.
 
+The wrapper runs a locked exact `uv sync` against the current checkout by default.
+For hot loops after the environment is already synced, set `HERMES_TEST_NO_SYNC=1`.
+
 ### Running without the wrapper (only if you must)
 
 If you can't use the wrapper (e.g. on Windows or inside an IDE that shells
-pytest directly), at minimum activate the venv and pass `-n 4`:
+pytest directly), at minimum run through `uv` and pass `-n 4`:
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/ -q -n 4
+uv run pytest tests/ -q -n 4
 ```
 
 Worker count above 4 will surface test-ordering flakes that CI never sees.

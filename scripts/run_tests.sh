@@ -8,13 +8,15 @@
 #   * Credential env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running `pytest` outside of
 #     our conftest path — e.g. calling pytest on a single file)
-#   * Proper venv activation
+#   * Locked exact `uv sync` + `uv run` in this checkout's project environment
+#   * `HERMES_TEST_NO_SYNC=1` opt-out for hot loops after a successful sync
 #
 # Usage:
 #   scripts/run_tests.sh                     # full suite
 #   scripts/run_tests.sh tests/agent/        # one directory
 #   scripts/run_tests.sh tests/agent/test_foo.py::TestClass::test_method
 #   scripts/run_tests.sh --tb=long -v        # pass-through pytest args
+#   HERMES_TEST_NO_SYNC=1 scripts/run_tests.sh tests/agent/ -q
 
 set -euo pipefail
 
@@ -23,29 +25,20 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Activate venv ───────────────────────────────────────────────────────────
-# Prefer a .venv in the current tree, fall back to the main checkout's venv
-# (useful for worktrees where we don't always duplicate the venv).
-VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
-  fi
-done
-
-if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+# ── Ensure uv is available ──────────────────────────────────────────────────
+if ! command -v uv >/dev/null 2>&1; then
+  echo "error: uv not found on PATH. Install it from https://docs.astral.sh/uv/" >&2
   exit 1
 fi
 
-PYTHON="$VENV/bin/python"
-
-# ── Ensure pytest-split is installed (required for shard-equivalent runs) ──
-if ! "$PYTHON" -c "import pytest_split" 2>/dev/null; then
-  echo "→ installing pytest-split into $VENV"
-  "$PYTHON" -m pip install --quiet "pytest-split>=0.9,<1"
+# ── Select the project env for this checkout ────────────────────────────────
+# Prefer the default `.venv`, preserve legacy `venv` if it already exists,
+# and keep the environment scoped to the current checkout/worktree.
+ENV_DIR="$REPO_ROOT/.venv"
+if [ -d "$REPO_ROOT/venv" ] && [ ! -d "$REPO_ROOT/.venv" ]; then
+  ENV_DIR="$REPO_ROOT/venv"
 fi
+export UV_PROJECT_ENVIRONMENT="$ENV_DIR"
 
 # ── Hermetic environment ────────────────────────────────────────────────────
 # Mirror what CI does in .github/workflows/tests.yml + what conftest.py does.
@@ -87,15 +80,22 @@ WORKERS="${HERMES_TEST_WORKERS:-4}"
 # ── Run pytest ──────────────────────────────────────────────────────────────
 cd "$REPO_ROOT"
 
-# If the first argument starts with `-` treat all args as pytest flags;
-# otherwise treat them as test paths.
+# Pass all arguments straight through to pytest.
 ARGS=("$@")
+
+if [ "${HERMES_TEST_NO_SYNC:-0}" = "1" ]; then
+  echo "▶ skipping uv sync (HERMES_TEST_NO_SYNC=1); using $UV_PROJECT_ENVIRONMENT"
+else
+  echo "▶ syncing locked test environment via uv in $REPO_ROOT"
+  echo "  (env: $UV_PROJECT_ENVIRONMENT)"
+  uv sync --locked --extra all --extra dev
+fi
 
 echo "▶ running pytest with $WORKERS workers, hermetic env, in $REPO_ROOT"
 echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; all credential env vars unset)"
 
 # -o "addopts=" clears pyproject.toml's `-n auto` so our -n wins.
-exec "$PYTHON" -m pytest \
+exec uv run --no-sync pytest \
   -o "addopts=" \
   -n "$WORKERS" \
   --ignore=tests/integration \

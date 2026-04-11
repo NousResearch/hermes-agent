@@ -24,7 +24,7 @@ If you have ever wanted Hermes to use a tool that already exists somewhere else,
 
 ```bash
 cd ~/.hermes/hermes-agent
-uv pip install -e ".[mcp]"
+uv sync --locked --extra mcp
 ```
 
 2. Add an MCP server to `~/.hermes/config.yaml`:
@@ -382,7 +382,7 @@ Check:
 
 ```bash
 # Verify MCP deps are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd ~/.hermes/hermes-agent && uv sync --locked --extra mcp
 
 node --version
 npx --version
@@ -481,7 +481,7 @@ Or if you installed Hermes in a specific location:
 {
   "mcpServers": {
     "hermes": {
-      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
+      "command": "/home/user/.hermes/hermes-agent/.venv/bin/hermes",
       "args": ["mcp", "serve"]
     }
   }

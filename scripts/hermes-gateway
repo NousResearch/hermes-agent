@@ -58,10 +58,11 @@ def get_launchd_plist_path() -> Path:
 
 def get_python_path() -> str:
     """Get the path to the Python interpreter."""
-    # Prefer the venv if it exists
-    venv_python = PROJECT_DIR / "venv" / "bin" / "python"
-    if venv_python.exists():
-        return str(venv_python)
+    # Prefer the project environment if it exists.
+    for candidate in (".venv", "venv"):
+        venv_python = PROJECT_DIR / candidate / "bin" / "python"
+        if venv_python.exists():
+            return str(venv_python)
     return sys.executable
 
 def get_gateway_script_path() -> str:

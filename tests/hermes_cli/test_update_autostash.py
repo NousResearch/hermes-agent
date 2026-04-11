@@ -307,31 +307,72 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
 
 
+def test_preferred_project_env_dir_prefers_dot_venv(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / "venv").mkdir()
+
+    assert hermes_main._preferred_project_env_dir() == tmp_path / ".venv"
+
+
+def test_preferred_project_env_dir_uses_legacy_venv_when_needed(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "venv").mkdir()
+
+    assert hermes_main._preferred_project_env_dir() == tmp_path / "venv"
+
+
+def test_preferred_project_env_dir_defaults_to_dot_venv(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+    assert hermes_main._preferred_project_env_dir() == tmp_path / ".venv"
+
+
+def test_load_installable_optional_extras_uses_curated_all_group(monkeypatch, tmp_path):
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "hermes-agent"
+
+[project.optional-dependencies]
+all = ["hermes-agent[messaging]", "hermes-agent[mcp]"]
+messaging = ["python-telegram-bot"]
+mcp = ["mcp"]
+matrix = ["matrix-nio"]
+""".strip()
+    )
+
+    assert hermes_main._load_installable_optional_extras() == ["messaging", "mcp"]
+
+
 def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypatch, tmp_path, capsys):
-    """When .[all] fails, update should keep base deps and retry extras individually."""
+    """When ``--extra all`` fails, update should retry curated extras cumulatively."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
-    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["matrix", "mcp"])
+    monkeypatch.setattr(hermes_main, "_load_installable_optional_extras", lambda: ["messaging", "matrix", "mcp"])
 
     recorded = []
 
     def fake_run(cmd, **kwargs):
-        recorded.append(cmd)
+        recorded.append((cmd, kwargs))
         if cmd == ["git", "fetch", "origin"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "all", "--quiet"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--quiet"]:
             return SimpleNamespace(returncode=0)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--quiet"]:
+            return SimpleNamespace(returncode=0)
+        if cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--extra", "matrix", "--quiet"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
-        if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"]:
+        if cmd == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--extra", "mcp", "--quiet"]:
             return SimpleNamespace(returncode=0)
         return SimpleNamespace(returncode=0)
 
@@ -339,22 +380,29 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    uv_calls = [(cmd, kwargs) for cmd, kwargs in recorded if cmd and cmd[0] == "/usr/bin/uv"]
+    install_cmds = [cmd for cmd, _ in uv_calls]
     assert install_cmds == [
-        ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[matrix]", "--quiet"],
-        ["/usr/bin/uv", "pip", "install", "-e", ".[mcp]", "--quiet"],
+        ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "all", "--quiet"],
+        ["/usr/bin/uv", "sync", "--locked", "--inexact", "--quiet"],
+        ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--quiet"],
+        ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--extra", "matrix", "--quiet"],
+        ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "messaging", "--extra", "mcp", "--quiet"],
     ]
+    # Every uv sync call must carry UV_PROJECT_ENVIRONMENT pointing at .venv.
+    for cmd, kwargs in uv_calls:
+        assert kwargs.get("env", {}).get("UV_PROJECT_ENVIRONMENT") == str(tmp_path / ".venv"), (
+            f"UV_PROJECT_ENVIRONMENT not set correctly on call: {cmd}"
+        )
 
     out = capsys.readouterr().out
-    assert "retrying extras individually" in out
-    assert "Reinstalled optional extras individually: mcp" in out
+    assert "retrying curated extras cumulatively" in out
+    assert "Re-synced optional extras cumulatively: messaging, mcp" in out
     assert "Skipped optional extras that still failed: matrix" in out
 
 
 def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
-    """When .[all] succeeds, no fallback should be attempted."""
+    """When the curated full sync succeeds, no fallback should be attempted."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
@@ -368,7 +416,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0)
 
@@ -376,9 +424,58 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    install_cmds = [c for c in recorded if "pip" in c and "install" in c]
+    install_cmds = [c for c in recorded if c and c[0] == "/usr/bin/uv"]
     assert len(install_cmds) == 1
-    assert ".[all]" in install_cmds[0]
+    assert install_cmds[0] == ["/usr/bin/uv", "sync", "--locked", "--inexact", "--extra", "all", "--quiet"]
+
+
+def test_cmd_update_fails_clearly_when_uv_missing(monkeypatch, tmp_path, capsys):
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["git", "fetch", "origin"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
+            return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
+            return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
+            return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "uv is required for Hermes source-install updates" in out
+    assert "Install or restore uv" in out
+
+
+def test_update_via_zip_delegates_dep_sync_to_shared_helper(monkeypatch, tmp_path):
+    """_update_via_zip must call _sync_project_dependencies_for_update, not its own logic."""
+    import urllib.request
+    import zipfile
+
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+    # Build a minimal zip that _update_via_zip can extract without network access.
+    def fake_urlretrieve(url, path):
+        with zipfile.ZipFile(path, "w") as zf:
+            zf.writestr("hermes-agent-main/stub.py", "# stub")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", fake_urlretrieve)
+
+    sync_called = []
+    monkeypatch.setattr(hermes_main, "_sync_project_dependencies_for_update", lambda: sync_called.append(True))
+    monkeypatch.setattr(hermes_main, "_clear_bytecode_cache", lambda root: 0)
+    # Skills sync block is inside try/except Exception so no stub needed.
+
+    hermes_main._update_via_zip(SimpleNamespace())
+
+    assert sync_called, "_sync_project_dependencies_for_update was not called by _update_via_zip"
 
 
 # ---------------------------------------------------------------------------

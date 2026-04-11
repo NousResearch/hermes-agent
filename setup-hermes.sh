@@ -10,11 +10,12 @@
 #
 # This script:
 # 1. Detects desktop/server vs Android/Termux setup path
-# 2. Creates a Python 3.11 virtual environment
-# 3. Installs the appropriate dependency set for the platform
-# 4. Creates .env from template (if not exists)
-# 5. Symlinks the 'hermes' CLI command into a user-facing bin dir
-# 6. Runs the setup wizard (optional)
+# 2. Installs uv when needed for desktop/server setup
+# 3. Creates a project environment with Python 3.11
+# 4. Installs the appropriate dependency set for the platform
+# 5. Creates .env from template (if not exists)
+# 6. Symlinks the 'hermes' CLI command into a user-facing bin dir
+# 7. Runs the setup wizard (optional)
 # ============================================================================
 
 set -e
@@ -136,26 +137,29 @@ else
 fi
 
 # ============================================================================
-# Virtual environment
+# Project environment
 # ============================================================================
 
-echo -e "${CYAN}→${NC} Setting up virtual environment..."
+echo -e "${CYAN}→${NC} Setting up project environment..."
 
-if [ -d "venv" ]; then
-    echo -e "${CYAN}→${NC} Removing old venv..."
-    rm -rf venv
+if [ -d ".venv" ]; then
+    echo -e "${CYAN}→${NC} Removing old .venv..."
+    rm -rf .venv
 fi
 
 if is_termux; then
-    "$PYTHON_PATH" -m venv venv
-    echo -e "${GREEN}✓${NC} venv created with stdlib venv"
+    "$PYTHON_PATH" -m venv .venv
+    echo -e "${GREEN}✓${NC} .venv created with stdlib venv"
+    export VIRTUAL_ENV="$SCRIPT_DIR/.venv"
 else
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
-    echo -e "${GREEN}✓${NC} venv created (Python $PYTHON_VERSION)"
+    $UV_CMD venv .venv --python "$PYTHON_VERSION"
+    echo -e "${GREEN}✓${NC} .venv created (Python $PYTHON_VERSION)"
+
+    # Tell uv which project environment to sync (no activation needed)
+    export UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv"
 fi
 
-export VIRTUAL_ENV="$SCRIPT_DIR/venv"
-SETUP_PYTHON="$SCRIPT_DIR/venv/bin/python"
+SETUP_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
 # ============================================================================
 # Dependencies
@@ -177,18 +181,19 @@ if is_termux; then
     fi
     echo -e "${GREEN}✓${NC} Dependencies installed"
 else
-    # Prefer uv sync with lockfile (hash-verified installs) when available,
-    # fall back to pip install for compatibility or when lockfile is stale.
+    # Prefer uv sync with the checked-in lockfile, then fall back to base sync.
     if [ -f "uv.lock" ]; then
         echo -e "${CYAN}→${NC} Using uv.lock for hash-verified installation..."
-        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/venv" $UV_CMD sync --all-extras --locked 2>/dev/null && \
+        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv" $UV_CMD sync --locked --extra all 2>/dev/null && \
             echo -e "${GREEN}✓${NC} Dependencies installed (lockfile verified)" || {
-            echo -e "${YELLOW}⚠${NC} Lockfile install failed (may be outdated), falling back to pip install..."
-            $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+            echo -e "${YELLOW}⚠${NC} Full sync failed, falling back to base project sync..."
+            UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv" $UV_CMD sync --locked
             echo -e "${GREEN}✓${NC} Dependencies installed"
         }
     else
-        $UV_CMD pip install -e ".[all]" || $UV_CMD pip install -e "."
+        # No lockfile present — omit --locked so uv generates/updates it.
+        UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv" $UV_CMD sync --extra all || \
+            UV_PROJECT_ENVIRONMENT="$SCRIPT_DIR/.venv" $UV_CMD sync
         echo -e "${GREEN}✓${NC} Dependencies installed"
     fi
 fi
@@ -284,7 +289,7 @@ fi
 
 echo -e "${CYAN}→${NC} Setting up hermes command..."
 
-HERMES_BIN="$SCRIPT_DIR/venv/bin/hermes"
+HERMES_BIN="$SCRIPT_DIR/.venv/bin/hermes"
 COMMAND_LINK_DIR="$(get_command_link_dir)"
 COMMAND_LINK_DISPLAY_DIR="$(get_command_link_display_dir)"
 mkdir -p "$COMMAND_LINK_DIR"
@@ -341,7 +346,7 @@ mkdir -p "$HERMES_SKILLS_DIR"
 
 echo ""
 echo "Syncing bundled skills to ~/.hermes/skills/ ..."
-if "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
+if "$SCRIPT_DIR/.venv/bin/python" "$SCRIPT_DIR/tools/skills_sync.py" 2>/dev/null; then
     echo -e "${GREEN}✓${NC} Skills synced"
 else
     # Fallback: copy if sync script fails (missing deps, etc.)
@@ -395,5 +400,5 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
     echo ""
     # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    "$SCRIPT_DIR/.venv/bin/python" -m hermes_cli.main setup
 fi

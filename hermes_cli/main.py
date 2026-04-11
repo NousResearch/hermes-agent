@@ -4587,7 +4587,7 @@ def _update_via_zip(args):
                     break
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        preserve = {'.venv', 'venv', 'node_modules', '.git', '.env'}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -4614,42 +4614,17 @@ def _update_via_zip(args):
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
     if removed:
-        print(
-            f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
-        )
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
 
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
+    # Re-sync Python dependencies. Prefer the curated [all] extra, but if one
+    # optional extra breaks on this machine, keep base deps and retry the
+    # remaining curated extras cumulatively so update does not strip capabilities.
     print("→ Updating Python dependencies...")
-
-    uv_bin = shutil.which("uv")
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-    else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        pip_cmd = [sys.executable, "-m", "pip"]
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=PROJECT_ROOT,
-                check=True,
-            )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+    _sync_project_dependencies_for_update()
 
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
+
 
     # Sync skills
     try:
@@ -5162,50 +5137,84 @@ def _load_installable_optional_extras() -> list[str]:
     return referenced
 
 
-def _install_python_dependencies_with_optional_fallback(
-    install_cmd_prefix: list[str],
+
+def _preferred_project_env_dir() -> Path:
+    """Return the project env directory Hermes-owned sync flows should target."""
+    dot_venv = PROJECT_ROOT / ".venv"
+    legacy_venv = PROJECT_ROOT / "venv"
+    if dot_venv.is_dir():
+        return dot_venv
+    if legacy_venv.is_dir():
+        return legacy_venv
+    return dot_venv
+
+
+def _run_uv_sync(
+    extras: list[str],
     *,
-    env: dict[str, str] | None = None,
+    inexact: bool,
+    locked: bool,
+    env_dir: Path,
 ) -> None:
-    """Install base deps plus as many optional extras as the environment supports."""
-    try:
-        subprocess.run(
-            install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],
-            cwd=PROJECT_ROOT,
-            check=True,
-            env=env,
+    """Run ``uv sync`` against the selected project environment."""
+    import shutil
+
+    uv_bin = shutil.which("uv")
+    if not uv_bin:
+        raise RuntimeError(
+            "uv is required for Hermes source-install updates. "
+            "Reinstall uv, then rerun `hermes update` or `uv sync --locked --extra all`."
         )
+
+    cmd = [uv_bin, "sync"]
+    if locked:
+        cmd.append("--locked")
+    if inexact:
+        cmd.append("--inexact")
+    for extra in extras:
+        cmd.extend(["--extra", extra])
+    cmd.append("--quiet")
+
+    sync_env = {
+        **os.environ,
+        "UV_PROJECT_ENVIRONMENT": str(env_dir),
+    }
+    subprocess.run(cmd, cwd=PROJECT_ROOT, check=True, env=sync_env)
+
+
+def _sync_python_dependencies_with_optional_fallback(
+    *,
+    env_dir: Path | None = None,
+    inexact: bool,
+    locked: bool,
+) -> None:
+    """Sync base deps plus as many curated optional extras as the env supports."""
+    selected_env_dir = (env_dir or _preferred_project_env_dir()).resolve()
+    try:
+        _run_uv_sync(["all"], inexact=inexact, locked=locked, env_dir=selected_env_dir)
         return
     except subprocess.CalledProcessError:
         print(
-            "  ⚠ Optional extras failed, reinstalling base dependencies and retrying extras individually..."
+            "  ⚠ Optional extras failed, syncing base dependencies and retrying "
+            "curated extras cumulatively..."
         )
 
-    subprocess.run(
-        install_cmd_prefix + ["install", "-e", ".", "--quiet"],
-        cwd=PROJECT_ROOT,
-        check=True,
-        env=env,
-    )
+    _run_uv_sync([], inexact=inexact, locked=locked, env_dir=selected_env_dir)
 
     failed_extras: list[str] = []
     installed_extras: list[str] = []
+    selected_extras: list[str] = []
     for extra in _load_installable_optional_extras():
         try:
-            subprocess.run(
-                install_cmd_prefix + ["install", "-e", f".[{extra}]", "--quiet"],
-                cwd=PROJECT_ROOT,
-                check=True,
-                env=env,
-            )
+            candidate = [*selected_extras, extra]
+            _run_uv_sync(candidate, inexact=inexact, locked=locked, env_dir=selected_env_dir)
+            selected_extras = candidate
             installed_extras.append(extra)
         except subprocess.CalledProcessError:
             failed_extras.append(extra)
 
     if installed_extras:
-        print(
-            f"  ✓ Reinstalled optional extras individually: {', '.join(installed_extras)}"
-        )
+        print(f"  ✓ Re-synced optional extras cumulatively: {', '.join(installed_extras)}")
     if failed_extras:
         print(
             f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}"
@@ -5244,6 +5253,21 @@ def _update_node_dependencies() -> None:
         stderr = (result.stderr or "").strip()
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
+
+
+def _sync_project_dependencies_for_update() -> None:
+    """Sync Hermes project dependencies for an update, or exit with guidance."""
+    env_dir = _preferred_project_env_dir()
+    try:
+        _sync_python_dependencies_with_optional_fallback(
+            env_dir=env_dir,
+            inexact=True,
+            locked=True,
+        )
+    except RuntimeError as exc:
+        print(f"✗ {exc}")
+        print("  Install or restore uv: https://docs.astral.sh/uv/getting-started/installation/")
+        sys.exit(1)
 
 
 class _UpdateOutputStream:
@@ -5673,36 +5697,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
         if is_fork and branch == "main":
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
-        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-        # breaks on this machine, keep base deps and reinstall the remaining extras
-        # individually so update does not silently strip working capabilities.
+        # Re-sync Python dependencies. Prefer the curated [all] extra, but if one
+        # optional extra breaks on this machine, keep base deps and retry the
+        # remaining curated extras cumulatively so update does not strip capabilities.
         print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env
-            )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
-                )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            _install_python_dependencies_with_optional_fallback(pip_cmd)
+        _sync_project_dependencies_for_update()
 
         _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
@@ -8532,7 +8531,7 @@ Examples:
             acp_main()
         except ImportError:
             print("ACP dependencies not installed.")
-            print("Install them with:  pip install -e '.[acp]'")
+            print("Install them with:  uv sync --locked --inexact --extra acp")
             sys.exit(1)
 
     acp_parser.set_defaults(func=cmd_acp)

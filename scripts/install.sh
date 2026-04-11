@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: install.sh [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --no-venv      Don't create virtual environment"
+            echo "  --no-venv      Don't pre-create the project environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
             echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
@@ -798,34 +798,34 @@ clone_repo() {
 
 setup_venv() {
     if [ "$USE_VENV" = false ]; then
-        log_info "Skipping virtual environment (--no-venv)"
+        log_info "Skipping project environment pre-creation (--no-venv)"
         return 0
     fi
 
     if [ "$DISTRO" = "termux" ]; then
-        log_info "Creating virtual environment with Termux Python..."
+        log_info "Creating project environment with Termux Python..."
 
-        if [ -d "venv" ]; then
-            log_info "Virtual environment already exists, recreating..."
-            rm -rf venv
+        if [ -d ".venv" ]; then
+            log_info "Project environment already exists, recreating..."
+            rm -rf .venv
         fi
 
-        "$PYTHON_PATH" -m venv venv
-        log_success "Virtual environment ready ($(./venv/bin/python --version 2>/dev/null))"
+        "$PYTHON_PATH" -m venv .venv
+        log_success "Project environment ready ($("$INSTALL_DIR/.venv/bin/python" --version 2>/dev/null))"
         return 0
     fi
 
-    log_info "Creating virtual environment with Python $PYTHON_VERSION..."
+    log_info "Creating project environment with Python $PYTHON_VERSION..."
 
-    if [ -d "venv" ]; then
-        log_info "Virtual environment already exists, recreating..."
-        rm -rf venv
+    if [ -d ".venv" ]; then
+        log_info "Project environment already exists, recreating..."
+        rm -rf .venv
     fi
 
-    # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    # uv creates the project env and pins the Python version in one step.
+    $UV_CMD venv .venv --python "$PYTHON_VERSION"
 
-    log_success "Virtual environment ready (Python $PYTHON_VERSION)"
+    log_success "Project environment ready (Python $PYTHON_VERSION)"
 }
 
 install_deps() {
@@ -833,8 +833,8 @@ install_deps() {
 
     if [ "$DISTRO" = "termux" ]; then
         if [ "$USE_VENV" = true ]; then
-            export VIRTUAL_ENV="$INSTALL_DIR/venv"
-            PIP_PYTHON="$INSTALL_DIR/venv/bin/python"
+            export VIRTUAL_ENV="$INSTALL_DIR/.venv"
+            PIP_PYTHON="$INSTALL_DIR/.venv/bin/python"
         else
             PIP_PYTHON="$PYTHON_PATH"
         fi
@@ -871,10 +871,7 @@ install_deps() {
         return 0
     fi
 
-    if [ "$USE_VENV" = true ]; then
-        # Tell uv to install into our venv (no need to activate)
-        export VIRTUAL_ENV="$INSTALL_DIR/venv"
-    fi
+    export UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/.venv"
 
     # On Debian/Ubuntu (including WSL), some Python packages need build tools.
     # Check and offer to install them if missing.
@@ -904,17 +901,17 @@ install_deps() {
         fi
     fi
 
-    # Install the main package in editable mode with all extras.
-    # Try [all] first, fall back to base install if extras have issues.
+    # Sync the locked project environment.
+    # Try the curated [all] extra first, fall back to base if extras have issues.
     ALL_INSTALL_LOG=$(mktemp)
-    if ! $UV_CMD pip install -e ".[all]" 2>"$ALL_INSTALL_LOG"; then
-        log_warn "Full install (.[all]) failed, trying base install..."
+    if ! $UV_CMD sync --locked --extra all 2>"$ALL_INSTALL_LOG"; then
+        log_warn "Full sync (--extra all) failed, trying base install..."
         log_info "Reason: $(tail -5 "$ALL_INSTALL_LOG" | head -3)"
         rm -f "$ALL_INSTALL_LOG"
-        if ! $UV_CMD pip install -e "."; then
-            log_error "Package installation failed."
+        if ! $UV_CMD sync --locked; then
+            log_error "Project dependency sync failed."
             log_info "Check that build tools are installed: sudo apt install build-essential python3-dev"
-            log_info "Then re-run: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+            log_info "Then re-run: cd $INSTALL_DIR && uv sync --locked --extra all"
             exit 1
         fi
     else
@@ -937,7 +934,7 @@ setup_path() {
     log_info "Setting up hermes command..."
 
     if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
+        HERMES_BIN="$INSTALL_DIR/.venv/bin/hermes"
     else
         HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
         if [ -z "$HERMES_BIN" ]; then
@@ -949,11 +946,11 @@ setup_path() {
     # Verify the entry point script was actually generated
     if [ ! -x "$HERMES_BIN" ]; then
         log_warn "hermes entry point not found at $HERMES_BIN"
-        log_info "This usually means the pip install didn't complete successfully."
+        log_info "This usually means the project environment bootstrap didn't complete successfully."
         if [ "$DISTRO" = "termux" ]; then
             log_info "Try: cd $INSTALL_DIR && python -m pip install -e '.[termux]' -c constraints-termux.txt"
         else
-            log_info "Try: cd $INSTALL_DIR && uv pip install -e '.[all]'"
+            log_info "Try: cd $INSTALL_DIR && uv sync --locked --extra all"
         fi
         return 0
     fi
@@ -1102,7 +1099,7 @@ SOUL_EOF
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+    if "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
         log_success "Skills synced to ~/.hermes/skills/"
     else
         # Fallback: simple directory copy if Python sync fails
@@ -1229,7 +1226,7 @@ run_setup_wizard() {
     # Run hermes setup using the venv Python directly (no activation needed).
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
     if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
+        "$INSTALL_DIR/.venv/bin/python" -m hermes_cli.main setup < /dev/tty
     else
         python -m hermes_cli.main setup < /dev/tty
     fi

@@ -159,7 +159,7 @@ class TestLaunchdPlistPath:
     def test_plist_path_includes_venv_bin(self):
         plist = gateway_cli.generate_launchd_plist()
         detected = gateway_cli._detect_venv_dir()
-        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / ".venv" / "bin")
         assert venv_bin in plist
 
     def test_plist_path_starts_with_venv_bin(self):
@@ -170,7 +170,7 @@ class TestLaunchdPlistPath:
                 path_value = lines[i + 1].strip()
                 path_value = path_value.replace("<string>", "").replace("</string>", "")
                 detected = gateway_cli._detect_venv_dir()
-                venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+                venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / ".venv" / "bin")
                 assert path_value.startswith(venv_bin + ":")
                 break
         else:
@@ -196,7 +196,7 @@ class TestLaunchdPlistPath:
 
     def test_plist_path_deduplicates_venv_bin_when_already_in_path(self, monkeypatch):
         detected = gateway_cli._detect_venv_dir()
-        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / "venv" / "bin")
+        venv_bin = str(detected / "bin") if detected else str(gateway_cli.PROJECT_ROOT / ".venv" / "bin")
         monkeypatch.setenv("PATH", f"{venv_bin}:/usr/bin:/bin")
         plist = gateway_cli.generate_launchd_plist()
         lines = plist.splitlines()

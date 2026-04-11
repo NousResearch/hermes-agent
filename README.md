@@ -146,18 +146,16 @@ Quick start for contributors — clone and go with `setup-hermes.sh`:
 ```bash
 git clone https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
+./setup-hermes.sh     # installs uv, syncs the project env, symlinks ~/.local/bin/hermes
+./hermes              # runs from the synced project environment; no activation needed
 ```
 
 Manual path (equivalent to the above):
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv venv --python 3.11
-source venv/bin/activate
-uv pip install -e ".[all,dev]"
-python -m pytest tests/ -q
+uv sync --locked --extra all --extra dev
+scripts/run_tests.sh -q
 ```
 
 > **RL Training (optional):** To work on the RL/Tinker-Atropos integration:

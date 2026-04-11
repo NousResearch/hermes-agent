@@ -230,7 +230,16 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
+            if _is_termux():
+                issues.append(
+                    f"Repair Hermes project environment ({name} missing): "
+                    "python -m pip install -e '.[termux]' -c constraints-termux.txt"
+                )
+            else:
+                issues.append(
+                    f"Repair Hermes project environment ({name} missing): "
+                    "uv sync --locked --inexact --extra all"
+                )
     
     for module, name in optional_packages:
         try:
@@ -623,7 +632,7 @@ def run_doctor(args):
 
         # Determine the venv entry point location
         _venv_bin = None
-        for _venv_name in ("venv", ".venv"):
+        for _venv_name in (".venv", "venv"):
             _candidate = PROJECT_ROOT / _venv_name / "bin" / "hermes"
             if _candidate.exists():
                 _venv_bin = _candidate
@@ -643,10 +652,10 @@ def run_doctor(args):
         if _venv_bin is None:
             check_warn(
                 "Venv entry point not found",
-                "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')"
+                "(hermes not in .venv/bin/ or venv/bin/ — reinstall with uv sync --locked --inexact --extra all)"
             )
             manual_issues.append(
-                f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'"
+                f"Reinstall entry point: cd {PROJECT_ROOT} && uv sync --locked --inexact --extra all"
             )
         else:
             check_ok(f"Venv entry point exists ({_venv_bin.relative_to(PROJECT_ROOT)})")
@@ -774,8 +783,8 @@ def run_doctor(args):
             from daytona import Daytona  # noqa: F401 — SDK presence check
             check_ok("daytona SDK", "(installed)")
         except ImportError:
-            check_fail("daytona SDK not installed", "(pip install daytona)")
-            issues.append("Install daytona SDK: pip install daytona")
+            check_fail("daytona SDK not installed", "(uv sync --locked --inexact --extra daytona)")
+            issues.append("Install daytona SDK: uv sync --locked --inexact --extra daytona")
 
     # Node.js + agent-browser (for browser automation tools)
     if shutil.which("node"):
@@ -991,8 +1000,8 @@ def run_doctor(args):
                 _model_count = len(_br_resp.get("modelSummaries", []))
                 print(f"\r  {color('✓', Colors.GREEN)} {_label} {color(f'({_auth_var}, {_region}, {_model_count} models)', Colors.DIM)}           ")
             except ImportError:
-                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(boto3 not installed — {sys.executable} -m pip install boto3)', Colors.DIM)}           ")
-                issues.append(f"Install boto3 for Bedrock: {sys.executable} -m pip install boto3")
+                print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color('(boto3 not installed — uv sync --locked --inexact --extra bedrock)', Colors.DIM)}           ")
+                issues.append("Install boto3 for Bedrock: uv sync --locked --inexact --extra bedrock")
             except Exception as _e:
                 _err_name = type(_e).__name__
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_err_name}: {_e})', Colors.DIM)}           ")
@@ -1132,7 +1141,7 @@ def run_doctor(args):
                     check_fail("Honcho connection failed", str(_e))
                     issues.append(f"Honcho unreachable: {_e}")
         except ImportError:
-            check_fail("honcho-ai not installed", "pip install honcho-ai")
+            check_fail("honcho-ai not installed", "uv sync --locked --inexact --extra honcho")
             issues.append("Honcho is set as memory provider but honcho-ai is not installed")
         except Exception as _e:
             check_warn("Honcho check failed", str(_e))
@@ -1148,7 +1157,7 @@ def run_doctor(args):
                 check_fail("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)")
                 issues.append("Mem0 is set as memory provider but API key is missing")
         except ImportError:
-            check_fail("Mem0 plugin not loadable", "pip install mem0ai")
+            check_fail("Mem0 plugin not loadable", f"{_python_install_cmd()} mem0ai")
             issues.append("Mem0 is set as memory provider but mem0ai is not installed")
         except Exception as _e:
             check_warn("Mem0 check failed", str(_e))

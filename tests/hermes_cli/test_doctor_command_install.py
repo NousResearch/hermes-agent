@@ -259,6 +259,9 @@ class TestDoctorCommandInstallation:
             TOOLSET_REQUIREMENTS={},
         )
         monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+        monkeypatch.setitem(sys.modules, "discord", types.ModuleType("discord"))
+        monkeypatch.setitem(sys.modules, "telegram", types.ModuleType("telegram"))
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda *args, **kwargs: None)
         try:
             from hermes_cli import auth as _auth_mod
             monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})

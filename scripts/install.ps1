@@ -519,42 +519,45 @@ function Install-Repository {
 
 function Install-Venv {
     if ($NoVenv) {
-        Write-Info "Skipping virtual environment (-NoVenv)"
+        # -NoVenv skips the explicit `uv venv` pre-creation step. uv sync in
+        # Install-Dependencies will still create .venv automatically if it does
+        # not exist, so the project environment ends up at .venv either way.
+        Write-Info "Skipping explicit project environment pre-creation (-NoVenv)"
         return
     }
     
-    Write-Info "Creating virtual environment with Python $PythonVersion..."
+    Write-Info "Creating project environment with Python $PythonVersion..."
     
     Push-Location $InstallDir
     
-    if (Test-Path "venv") {
-        Write-Info "Virtual environment already exists, recreating..."
-        Remove-Item -Recurse -Force "venv"
+    if (Test-Path ".venv") {
+        Write-Info "Project environment already exists, recreating..."
+        Remove-Item -Recurse -Force ".venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
+    # uv creates the project env and pins the Python version in one step
+    & $UvCmd venv .venv --python $PythonVersion
     
     Pop-Location
     
-    Write-Success "Virtual environment ready (Python $PythonVersion)"
+    Write-Success "Project environment ready (Python $PythonVersion)"
 }
 
 function Install-Dependencies {
     Write-Info "Installing dependencies..."
     
     Push-Location $InstallDir
-    
-    if (-not $NoVenv) {
-        # Tell uv to install into our venv (no activation needed)
-        $env:VIRTUAL_ENV = "$InstallDir\venv"
-    }
-    
-    # Install main package with all extras
-    try {
-        & $UvCmd pip install -e ".[all]" 2>&1 | Out-Null
-    } catch {
-        & $UvCmd pip install -e "." | Out-Null
+
+    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\.venv"
+
+    # Sync the main project with the curated extra set first, then fall back to base.
+    & $UvCmd sync --locked --extra all 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warn "Full sync (--extra all) failed, trying base install..."
+        & $UvCmd sync --locked 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "Project dependency sync failed"
+        }
     }
     
     Write-Success "Main package installed"
@@ -580,14 +583,10 @@ function Install-Dependencies {
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
     
-    if ($NoVenv) {
-        $hermesBin = "$InstallDir"
-    } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
-    }
+    $hermesBin = "$InstallDir\.venv\Scripts"
     
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
+    # Add the project env Scripts dir to user PATH so hermes is globally available.
+    # On Windows, the hermes.exe in .venv\Scripts\ has the env Python baked in.
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
     
     if ($currentPath -notlike "*$hermesBin*") {
@@ -686,7 +685,7 @@ Delete the contents (or this file) to use the default personality.
     
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    $pythonExe = "$InstallDir\venv\Scripts\python.exe"
+    $pythonExe = "$InstallDir\.venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
@@ -752,9 +751,9 @@ function Invoke-SetupWizard {
     
     Push-Location $InstallDir
     
-    # Run hermes setup using the venv Python directly (no activation needed)
-    if (-not $NoVenv) {
-        & ".\venv\Scripts\python.exe" -m hermes_cli.main setup
+    # Run hermes setup using the project env Python directly (no activation needed)
+    if (Test-Path ".\.venv\Scripts\python.exe") {
+        & ".\.venv\Scripts\python.exe" -m hermes_cli.main setup
     } else {
         python -m hermes_cli.main setup
     }
@@ -775,7 +774,7 @@ function Start-GatewayIfConfigured {
 
     if (-not $hasMessaging) { return }
 
-    $hermesCmd = "$InstallDir\venv\Scripts\hermes.exe"
+    $hermesCmd = "$InstallDir\.venv\Scripts\hermes.exe"
     if (-not (Test-Path $hermesCmd)) {
         $hermesCmd = "hermes"
     }

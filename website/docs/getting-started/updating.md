@@ -25,9 +25,11 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 When you run `hermes update`, the following steps occur:
 
 1. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-2. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
+2. **Dependency sync** — runs `uv sync --locked --inexact --extra all` to re-sync the project environment from `uv.lock`
 3. **Config migration** — detects new config options added since your version and prompts you to set them
 4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately
+
+If a machine cannot build one of the optional curated extras, `hermes update` falls back to a base sync and then retries the supported extras cumulatively so the environment stays usable instead of failing completely.
 
 Expected output looks like:
 
@@ -98,15 +100,14 @@ If you installed manually (not via the quick installer):
 
 ```bash
 cd /path/to/hermes-agent
-export VIRTUAL_ENV="$(pwd)/venv"
 
 # Pull latest code and submodules
 git pull origin main
 git submodule update --init --recursive
 
-# Reinstall (picks up new dependencies)
-uv pip install -e ".[all]"
-uv pip install -e "./tinker-atropos"
+# Re-sync with the full set of extras you want to keep
+uv sync --locked --extra all
+uv pip install -e "./tinker-atropos"  # optional carve-out
 
 # Check for new config options
 hermes config check
@@ -126,7 +127,7 @@ git log --oneline -10
 # Roll back to a specific commit
 git checkout <commit-hash>
 git submodule update --init --recursive
-uv pip install -e ".[all]"
+uv sync --locked --extra all
 
 # Restart the gateway if running
 hermes gateway restart
@@ -137,7 +138,7 @@ To roll back to a specific release tag:
 ```bash
 git checkout v0.6.0
 git submodule update --init --recursive
-uv pip install -e ".[all]"
+uv sync --locked --extra all
 ```
 
 :::warning

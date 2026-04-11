@@ -941,6 +941,16 @@ class TestGeneratedUnitUsesDetectedVenv:
         # Must NOT contain a hardcoded /venv/ path
         assert "/venv/" not in unit or "/.venv/" in unit
 
+    def test_systemd_unit_defaults_to_dot_venv_when_no_env_detected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/usr/bin/python3")
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        assert f"VIRTUAL_ENV={tmp_path / '.venv'}" in unit
+        assert f"{tmp_path / '.venv' / 'bin'}" in unit
+
 
 class TestGeneratedUnitIncludesLocalBin:
     """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""

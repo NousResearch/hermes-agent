@@ -11,59 +11,10 @@ import pytest
 from gateway.config import PlatformConfig
 
 
-def _ensure_mautrix_mock():
-    """Install mock mautrix modules when mautrix-python isn't available."""
-    if "mautrix" in sys.modules and hasattr(sys.modules["mautrix"], "__file__"):
-        return
-
-    # Root module
-    mautrix_mod = MagicMock()
-
-    # mautrix.types — commonly imported types
-    types_mod = MagicMock()
-    types_mod.EventType = MagicMock()
-    types_mod.RoomID = str
-    types_mod.UserID = str
-    types_mod.EventID = str
-    types_mod.ContentURI = str
-    types_mod.RoomCreatePreset = MagicMock()
-    types_mod.PresenceState = MagicMock()
-    types_mod.PaginationDirection = MagicMock()
-    types_mod.SyncToken = str
-    types_mod.TrustState = MagicMock()
-
-    # mautrix.client
-    client_mod = MagicMock()
-    client_mod.Client = MagicMock()
-    client_mod.InternalEventType = MagicMock()
-
-    # mautrix.client.state_store
-    state_store_mod = MagicMock()
-    state_store_mod.MemoryStateStore = MagicMock()
-    state_store_mod.MemorySyncStore = MagicMock()
-
-    # mautrix.api
-    api_mod = MagicMock()
-    api_mod.HTTPAPI = MagicMock()
-
-    # mautrix.crypto
-    crypto_mod = MagicMock()
-    crypto_mod.OlmMachine = MagicMock()
-    crypto_store_mod = MagicMock()
-    crypto_store_mod.MemoryCryptoStore = MagicMock()
-    crypto_attachments_mod = MagicMock()
-
-    sys.modules.setdefault("mautrix", mautrix_mod)
-    sys.modules.setdefault("mautrix.types", types_mod)
-    sys.modules.setdefault("mautrix.client", client_mod)
-    sys.modules.setdefault("mautrix.client.state_store", state_store_mod)
-    sys.modules.setdefault("mautrix.api", api_mod)
-    sys.modules.setdefault("mautrix.crypto", crypto_mod)
-    sys.modules.setdefault("mautrix.crypto.store", crypto_store_mod)
-    sys.modules.setdefault("mautrix.crypto.attachments", crypto_attachments_mod)
-
-
-_ensure_mautrix_mock()
+# The matrix adapter module is importable without mautrix installed
+# (module-level imports use try/except with stubs).  No need for
+# module-level mock installation — tests that call adapter methods
+# needing real mautrix APIs mock them individually.
 
 
 def _make_adapter(tmp_path=None):
@@ -410,8 +361,9 @@ async def test_auto_thread_tracks_participation(monkeypatch):
 class TestThreadPersistence:
     def test_empty_state_file(self, tmp_path, monkeypatch):
         """No state file → empty set."""
+        from gateway.platforms.matrix import MatrixAdapter
         monkeypatch.setattr(
-            "gateway.platforms.matrix.MatrixAdapter._thread_state_path",
+            MatrixAdapter, "_thread_state_path",
             staticmethod(lambda: tmp_path / "matrix_threads.json"),
         )
         adapter = _make_adapter()
@@ -420,9 +372,10 @@ class TestThreadPersistence:
 
     def test_track_thread_persists(self, tmp_path, monkeypatch):
         """_track_thread writes to disk."""
+        from gateway.platforms.matrix import MatrixAdapter
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            "gateway.platforms.matrix.MatrixAdapter._thread_state_path",
+            MatrixAdapter, "_thread_state_path",
             staticmethod(lambda: state_path),
         )
         adapter = _make_adapter()
@@ -433,10 +386,11 @@ class TestThreadPersistence:
 
     def test_threads_survive_reload(self, tmp_path, monkeypatch):
         """Persisted threads are loaded by a new adapter instance."""
+        from gateway.platforms.matrix import MatrixAdapter
         state_path = tmp_path / "matrix_threads.json"
         state_path.write_text(json.dumps(["$t1", "$t2"]))
         monkeypatch.setattr(
-            "gateway.platforms.matrix.MatrixAdapter._thread_state_path",
+            MatrixAdapter, "_thread_state_path",
             staticmethod(lambda: state_path),
         )
         adapter = _make_adapter()
@@ -445,9 +399,10 @@ class TestThreadPersistence:
 
     def test_cap_max_tracked_threads(self, tmp_path, monkeypatch):
         """Thread set is trimmed to _MAX_TRACKED_THREADS."""
+        from gateway.platforms.matrix import MatrixAdapter
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            "gateway.platforms.matrix.MatrixAdapter._thread_state_path",
+            MatrixAdapter, "_thread_state_path",
             staticmethod(lambda: state_path),
         )
         adapter = _make_adapter()

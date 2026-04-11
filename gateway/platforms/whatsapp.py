@@ -794,6 +794,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             audio_path,
                         )
                 except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    if os.path.exists(converted_path):
+                        os.unlink(converted_path)
                     logger.warning("ffmpeg conversion timed out for %s", audio_path)
                 except Exception as e:
                     logger.debug("ffmpeg conversion error for %s: %s", audio_path, e)

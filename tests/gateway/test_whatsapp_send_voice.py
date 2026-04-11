@@ -5,6 +5,8 @@ causing voice messages to be sent as text instead of native audio.
 """
 
 import asyncio
+import os
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -67,7 +69,7 @@ def test_send_voice_calls_send_media_to_bridge():
         )
         assert result == expected_result
     
-    asyncio.get_event_loop().run_until_complete(run())
+    asyncio.run(run())
 
 
 def test_send_voice_without_caption():
@@ -91,7 +93,163 @@ def test_send_voice_without_caption():
         )
         assert result.success is True
     
-    asyncio.get_event_loop().run_until_complete(run())
+    asyncio.run(run())
+
+
+def test_send_voice_mp3_triggers_ffmpeg_conversion():
+    """Non-ogg/opus files should be converted via ffmpeg before sending."""
+    async def run():
+        import shutil
+
+        adapter = _make_adapter()
+        expected_result = SendResult(success=True, message_id="voice-conv-1")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected_result)
+
+        # Create a real temp file — keep fd OPEN so the method's os.close(fd) succeeds
+        fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 0
+        mock_proc.wait = AsyncMock(return_value=0)
+
+        mock_subprocess = AsyncMock(return_value=mock_proc)
+
+        try:
+            with patch.object(shutil, "which", return_value="/usr/bin/ffmpeg"), \
+                 patch("tempfile.mkstemp", return_value=(fd, ogg_path)), \
+                 patch("asyncio.create_subprocess_exec", mock_subprocess):
+                result = await adapter.send_voice(
+                    chat_id="123456789@c.us",
+                    audio_path="/tmp/test-voice.mp3",
+                )
+
+            # ffmpeg should have been invoked
+            mock_subprocess.assert_called_once()
+            call_args = mock_subprocess.call_args[0]
+            assert call_args[0] == "/usr/bin/ffmpeg"
+            assert "-c:a" in call_args
+            assert "libopus" in call_args
+
+            # The converted ogg path should have been sent
+            sent_path = adapter._send_media_to_bridge.call_args[0][1]
+            assert sent_path.endswith(".ogg")
+            assert result.success is True
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+
+    asyncio.run(run())
+
+
+def test_send_voice_ffmpeg_not_available_sends_original():
+    """When ffmpeg is not installed, send the original file as-is."""
+    async def run():
+        import shutil
+
+        adapter = _make_adapter()
+        expected_result = SendResult(success=True, message_id="voice-noffmpeg")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected_result)
+
+        with patch.object(shutil, "which", return_value=None):
+            result = await adapter.send_voice(
+                chat_id="123456789@c.us",
+                audio_path="/tmp/test-voice.mp3",
+            )
+
+        # Original path should be used
+        adapter._send_media_to_bridge.assert_called_once_with(
+            "123456789@c.us",
+            "/tmp/test-voice.mp3",
+            "audio",
+            None,
+        )
+        assert result.success is True
+
+    asyncio.run(run())
+
+
+def test_send_voice_ffmpeg_failure_sends_original():
+    """When ffmpeg returns non-zero, fall back to the original file."""
+    async def run():
+        import shutil
+
+        adapter = _make_adapter()
+        expected_result = SendResult(success=True, message_id="voice-fail")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected_result)
+
+        mock_proc = AsyncMock()
+        mock_proc.returncode = 1
+        mock_proc.wait = AsyncMock(return_value=1)
+
+        fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+        # Keep fd open so the method's os.close(fd) succeeds
+
+        try:
+            with patch.object(shutil, "which", return_value="/usr/bin/ffmpeg"), \
+                 patch("tempfile.mkstemp", return_value=(fd, ogg_path)), \
+                 patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)):
+                result = await adapter.send_voice(
+                    chat_id="123456789@c.us",
+                    audio_path="/tmp/test-voice.wav",
+                )
+
+            # Should fall back to original path
+            adapter._send_media_to_bridge.assert_called_once_with(
+                "123456789@c.us",
+                "/tmp/test-voice.wav",
+                "audio",
+                None,
+            )
+            assert result.success is True
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+
+    asyncio.run(run())
+
+
+def test_send_voice_ffmpeg_timeout_kills_process():
+    """When ffmpeg times out, the process should be killed and temp file cleaned up."""
+    async def run():
+        import shutil
+
+        adapter = _make_adapter()
+        expected_result = SendResult(success=True, message_id="voice-timeout")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected_result)
+
+        mock_proc = AsyncMock()
+        mock_proc.kill = MagicMock()
+        mock_proc.wait = AsyncMock(return_value=-9)
+
+        fd, ogg_path = tempfile.mkstemp(suffix=".ogg")
+        # Keep fd open so the method's os.close(fd) succeeds
+
+        try:
+            with patch.object(shutil, "which", return_value="/usr/bin/ffmpeg"), \
+                 patch("tempfile.mkstemp", return_value=(fd, ogg_path)), \
+                 patch("asyncio.create_subprocess_exec", AsyncMock(return_value=mock_proc)), \
+                 patch("asyncio.wait_for", side_effect=asyncio.TimeoutError):
+                result = await adapter.send_voice(
+                    chat_id="123456789@c.us",
+                    audio_path="/tmp/test-voice.mp3",
+                )
+
+            # Process should have been killed
+            mock_proc.kill.assert_called_once()
+
+            # Should fall back to original path
+            adapter._send_media_to_bridge.assert_called_once_with(
+                "123456789@c.us",
+                "/tmp/test-voice.mp3",
+                "audio",
+                None,
+            )
+            assert result.success is True
+        finally:
+            if os.path.exists(ogg_path):
+                os.unlink(ogg_path)
+
+    asyncio.run(run())
 
 
 def test_send_voice_method_exists():

@@ -183,10 +183,18 @@ jobs:
           ---
           *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          if ! COMMENT_ERR="$(gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" 2>&1)"; then
+            printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
+            if printf '%s' "$COMMENT_ERR" | grep -Eqi 'resource not accessible by integration|http 403|forbidden'; then
+              echo "::warning::Unable to post PR comment due to token restrictions. Findings were written to the job summary instead."
+            else
+              echo "$COMMENT_ERR" >&2
+              exit 1
+            fi
+          fi
 
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'
         run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment or job summary for details."
           exit 1

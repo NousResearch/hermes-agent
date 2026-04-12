@@ -194,6 +194,11 @@ class TestSignalHelpers:
         monkeypatch.delenv("SIGNAL_ACCOUNT", raising=False)
         assert check_signal_requirements() is False
 
+    def test_sanitize_outbound_text_strips_cursor_and_object_replacement(self):
+        from gateway.platforms.signal import _sanitize_outbound_text
+        text = "hello ▉ world\uFFFC"
+        assert _sanitize_outbound_text(text) == "hello  world"
+
 
 # ---------------------------------------------------------------------------
 # SSE URL Encoding (Bug Fix: phone numbers with + must be URL-encoded)
@@ -728,6 +733,18 @@ class TestSignalSendReturnsMessageId:
 
         assert result.success is True
         assert result.message_id == "1712345678000"
+
+    @pytest.mark.asyncio
+    async def test_send_strips_streaming_cursor_glyph(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello ▉")
+
+        assert result.success is True
+        assert captured[0]["params"]["message"] == "hello "
 
     @pytest.mark.asyncio
     async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):

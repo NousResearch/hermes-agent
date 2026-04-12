@@ -108,7 +108,7 @@ def _ext_to_mime(ext: str) -> str:
 
 
 def _render_mentions(text: str, mentions: list) -> str:
-    """Replace Signal mention placeholders (\\uFFFC) with readable @identifiers.
+    """Replace Signal mention placeholders (\uFFFC) with readable @identifiers.
 
     Signal encodes @mentions as the Unicode object replacement character
     with out-of-band metadata containing the mentioned user's UUID/number.
@@ -126,6 +126,21 @@ def _render_mentions(text: str, mentions: list) -> str:
         replacement = f"@{identifier}"
         text = text[:start] + replacement + text[start + length:]
     return text
+
+
+def _sanitize_outbound_text(text: str) -> str:
+    """Remove known problematic control glyphs before sending to Signal.
+
+    Some Signal clients render unsupported Unicode as tofu squares. In practice,
+    the streaming cursor block (▉) and occasional object replacement character
+    (U+FFFC) can leak into outgoing text when an edit cleanup race occurs.
+    Strip these plus non-printable ASCII control chars.
+    """
+    if not text:
+        return ""
+    cleaned = text.replace("\uFFFC", "").replace("▉", "")
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', cleaned)
+    return cleaned
 
 
 def check_signal_requirements() -> bool:
@@ -600,7 +615,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         params: Dict[str, Any] = {
             "account": self.account,
-            "message": content,
+            "message": _sanitize_outbound_text(content),
         }
 
         if chat_id.startswith("group:"):
@@ -671,7 +686,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         params: Dict[str, Any] = {
             "account": self.account,
-            "message": caption or "",
+            "message": _sanitize_outbound_text(caption or ""),
             "attachments": [file_path],
         }
 
@@ -710,7 +725,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         params: Dict[str, Any] = {
             "account": self.account,
-            "message": caption or "",
+            "message": _sanitize_outbound_text(caption or ""),
             "attachments": [file_path],
         }
 

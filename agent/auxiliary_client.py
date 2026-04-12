@@ -2112,6 +2112,75 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
+# ---------------------------------------------------------------------------
+# Anthropic-compatible endpoint detection + image block conversion
+# ---------------------------------------------------------------------------
+
+# Providers that use Anthropic-compatible endpoints (via OpenAI SDK wrapper).
+# Their image content blocks must use Anthropic format, not OpenAI format.
+_ANTHROPIC_COMPAT_PROVIDERS = frozenset({"minimax", "minimax-cn"})
+
+
+def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
+    """Detect if an endpoint expects Anthropic-format content blocks.
+
+    Returns True for known Anthropic-compatible providers (MiniMax) and
+    any endpoint whose URL contains ``/anthropic`` in the path.
+    """
+    if provider in _ANTHROPIC_COMPAT_PROVIDERS:
+        return True
+    url_lower = (base_url or "").lower()
+    return "/anthropic" in url_lower
+
+
+def _convert_openai_images_to_anthropic(messages: list) -> list:
+    """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
+
+    Only touches messages that have list-type content with ``image_url`` blocks;
+    plain text messages pass through unchanged.
+    """
+    converted = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            converted.append(msg)
+            continue
+        new_content = []
+        changed = False
+        for block in content:
+            if block.get("type") == "image_url":
+                image_url_val = (block.get("image_url") or {}).get("url", "")
+                if image_url_val.startswith("data:"):
+                    # Parse data URI: data:<media_type>;base64,<data>
+                    header, _, b64data = image_url_val.partition(",")
+                    media_type = "image/png"
+                    if ":" in header and ";" in header:
+                        media_type = header.split(":", 1)[1].split(";", 1)[0]
+                    new_content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64data,
+                        },
+                    })
+                else:
+                    # URL-based image
+                    new_content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "url",
+                            "url": image_url_val,
+                        },
+                    })
+                changed = True
+            else:
+                new_content.append(block)
+        converted.append({**msg, "content": new_content} if changed else msg)
+    return converted
+
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -2304,6 +2373,11 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
+    _client_base = str(getattr(client, "base_url", "") or "")
+    if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
+        kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
+
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
         return _validate_llm_response(
@@ -2491,6 +2565,11 @@ async def async_call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
+
+    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
+    _client_base = str(getattr(client, "base_url", "") or "")
+    if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
+        kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     try:
         return _validate_llm_response(

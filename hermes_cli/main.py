@@ -1107,6 +1107,7 @@ def select_provider_and_model(args=None):
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
                 "model": entry.get("model", ""),
+                "api_mode": entry.get("api_mode", ""),
             }
         return custom_provider_map
 
@@ -1955,6 +1956,12 @@ def _model_flow_named_custom(config, provider_info):
     model["base_url"] = base_url
     if api_key:
         model["api_key"] = api_key
+    # Apply api_mode from custom_providers entry, or clear stale value
+    custom_api_mode = provider_info.get("api_mode", "")
+    if custom_api_mode:
+        model["api_mode"] = custom_api_mode
+    else:
+        model.pop("api_mode", None)  # let runtime auto-detect from URL
     save_config(cfg)
     deactivate_provider()
 

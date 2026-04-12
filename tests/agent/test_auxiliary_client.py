@@ -1628,3 +1628,74 @@ class TestStaleBaseUrlWarning:
 
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Warning should not fire a second time"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-compatible image block conversion
+# ---------------------------------------------------------------------------
+
+class TestAnthropicCompatImageConversion:
+    """Tests for _is_anthropic_compat_endpoint and _convert_openai_images_to_anthropic."""
+
+    def test_known_providers_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("minimax", "")
+        assert _is_anthropic_compat_endpoint("minimax-cn", "")
+
+    def test_openrouter_not_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert not _is_anthropic_compat_endpoint("openrouter", "")
+        assert not _is_anthropic_compat_endpoint("anthropic", "")
+
+    def test_url_based_detection(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
+        assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
+        assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
+
+    def test_base64_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][1]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "base64"
+        assert img_block["source"]["media_type"] == "image/png"
+        assert img_block["source"]["data"] == "iVBOR="
+
+    def test_url_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][0]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "url"
+        assert img_block["source"]["url"] == "https://example.com/img.jpg"
+
+    def test_text_only_messages_unchanged(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{"role": "user", "content": "Hello"}]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0] is messages[0]  # same object, not copied
+
+    def test_jpeg_media_type_parsed(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"

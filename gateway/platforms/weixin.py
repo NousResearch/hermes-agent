@@ -499,13 +499,10 @@ async def _upload_ciphertext(
     session: "aiohttp.ClientSession",
     *,
     ciphertext: bytes,
-    cdn_base_url: str,
-    upload_param: str,
-    filekey: str,
+    upload_url: str,
 ) -> str:
-    url = _cdn_upload_url(cdn_base_url, upload_param, filekey)
     timeout = aiohttp.ClientTimeout(total=120)
-    async with session.post(url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
+    async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
         if response.status == 200:
             encrypted_param = response.headers.get("x-encrypted-param")
             if encrypted_param:
@@ -1532,28 +1529,55 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        image_path: str,
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
+        return await self.send_document(chat_id, image_path, caption=caption, metadata=metadata)
 
     async def send_document(
         self,
         chat_id: str,
-        path: str,
+        file_path: str,
         caption: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, path, caption)
+            message_id = await self._send_file(chat_id, file_path, caption)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
             return SendResult(success=False, error=str(exc))
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not self._session or not self._token:
+            return SendResult(success=False, error="Not connected")
+        try:
+            message_id = await self._send_file(chat_id, video_path, caption or "")
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.error("[%s] send_video failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        return await self.send_document(chat_id, audio_path, caption=caption or "", metadata=metadata)
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url
@@ -1570,10 +1594,10 @@ class WeixinAdapter(BasePlatformAdapter):
             handle.write(data)
             return handle.name
 
-    async def _send_file(self, chat_id: str, path: str, caption: str) -> str:
+    async def _send_file(self, chat_id: str, file_path: str, caption: str) -> str:
         assert self._session is not None and self._token is not None
-        plaintext = Path(path).read_bytes()
-        media_type, item_builder = self._outbound_media_builder(path)
+        plaintext = Path(file_path).read_bytes()
+        media_type, item_builder = self._outbound_media_builder(file_path)
         filekey = secrets.token_hex(16)
         aes_key = secrets.token_bytes(16)
         rawsize = len(plaintext)
@@ -1592,34 +1616,28 @@ class WeixinAdapter(BasePlatformAdapter):
         upload_param = str(upload_response.get("upload_param") or "")
         upload_full_url = str(upload_response.get("upload_full_url") or "")
         ciphertext = _aes128_ecb_encrypt(plaintext, aes_key)
-        if upload_param:
-            encrypted_query_param = await _upload_ciphertext(
-                self._session,
-                ciphertext=ciphertext,
-                cdn_base_url=self._cdn_base_url,
-                upload_param=upload_param,
-                filekey=filekey,
-            )
-        elif upload_full_url:
-            timeout = aiohttp.ClientTimeout(total=120)
-            async with self._session.put(
-                upload_full_url,
-                data=ciphertext,
-                headers={"Content-Type": "application/octet-stream"},
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
-                encrypted_query_param = response.headers.get("x-encrypted-param") or filekey
+        if upload_full_url:
+            upload_url = upload_full_url
+        elif upload_param:
+            upload_url = _cdn_upload_url(self._cdn_base_url, upload_param, filekey)
         else:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
 
+        encrypted_query_param = await _upload_ciphertext(
+            self._session,
+            ciphertext=ciphertext,
+            upload_url=upload_url,
+        )
+
         context_token = self._token_store.get(self._account_id, chat_id)
+        rawfilemd5 = hashlib.md5(plaintext).hexdigest()
         media_item = item_builder(
             encrypt_query_param=encrypted_query_param,
-            aes_key_b64=base64.b64encode(aes_key).decode("ascii"),
+            aes_key_hex=aes_key.hex(),
             ciphertext_size=len(ciphertext),
             plaintext_size=rawsize,
-            filename=Path(path).name,
+            filename=Path(file_path).name,
+            video_md5=rawfilemd5,
         )
 
         last_message_id = None
@@ -1658,40 +1676,55 @@ class WeixinAdapter(BasePlatformAdapter):
 
     def _outbound_media_builder(self, path: str):
         mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+
         if mime.startswith("image/"):
-            return MEDIA_IMAGE, lambda **kwargs: {
+            return MEDIA_IMAGE, lambda **kw: {
                 "type": ITEM_IMAGE,
                 "image_item": {
                     "media": {
-                        "encrypt_query_param": kwargs["encrypt_query_param"],
-                        "aes_key": kwargs["aes_key_b64"],
+                        "encrypt_query_param": kw["encrypt_query_param"],
+                        "aes_key": base64.b64encode(kw["aes_key_hex"].encode("ascii")).decode("ascii"),
                         "encrypt_type": 1,
                     },
-                    "mid_size": kwargs["ciphertext_size"],
+                    "mid_size": kw["ciphertext_size"],
                 },
             }
         if mime.startswith("video/"):
-            return MEDIA_VIDEO, lambda **kwargs: {
+            return MEDIA_VIDEO, lambda **kw: {
                 "type": ITEM_VIDEO,
                 "video_item": {
                     "media": {
-                        "encrypt_query_param": kwargs["encrypt_query_param"],
-                        "aes_key": kwargs["aes_key_b64"],
+                        "encrypt_query_param": kw["encrypt_query_param"],
+                        "aes_key": base64.b64encode(kw["aes_key_hex"].encode("ascii")).decode("ascii"),
                         "encrypt_type": 1,
                     },
-                    "video_size": kwargs["ciphertext_size"],
+                    "video_size": kw["ciphertext_size"],
+                    "play_length": kw.get("play_length", 0),
+                    "video_md5": kw.get("video_md5", ""),
                 },
             }
-        return MEDIA_FILE, lambda **kwargs: {
+        if mime.startswith("audio/") or path.endswith(".silk"):
+            return MEDIA_VOICE, lambda **kw: {
+                "type": ITEM_VOICE,
+                "voice_item": {
+                    "media": {
+                        "encrypt_query_param": kw["encrypt_query_param"],
+                        "aes_key": base64.b64encode(kw["aes_key_hex"].encode("ascii")).decode("ascii"),
+                        "encrypt_type": 1,
+                    },
+                    "playtime": kw.get("playtime", 0),
+                },
+            }
+        return MEDIA_FILE, lambda **kw: {
             "type": ITEM_FILE,
             "file_item": {
                 "media": {
-                    "encrypt_query_param": kwargs["encrypt_query_param"],
-                    "aes_key": kwargs["aes_key_b64"],
+                    "encrypt_query_param": kw["encrypt_query_param"],
+                    "aes_key": base64.b64encode(kw["aes_key_hex"].encode("ascii")).decode("ascii"),
                     "encrypt_type": 1,
                 },
-                "file_name": kwargs["filename"],
-                "len": str(kwargs["plaintext_size"]),
+                "file_name": kw["filename"],
+                "len": str(kw["plaintext_size"]),
             },
         }
 
@@ -1762,6 +1795,8 @@ async def send_weixin_direct(
             ext = Path(media_path).suffix.lower()
             if ext in {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}:
                 last_result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}:
+                last_result = await adapter.send_video(chat_id, media_path)
             else:
                 last_result = await adapter.send_document(chat_id, media_path)
             if not last_result.success:

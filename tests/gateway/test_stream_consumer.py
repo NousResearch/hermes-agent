@@ -381,7 +381,7 @@ class TestSegmentBreakOnToolBoundary:
         await task
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
-        assert sent_texts == ["Hello ▉", "Next segment"]
+        assert sent_texts == ["Hello", "Next segment"]
 
     @pytest.mark.asyncio
     async def test_no_message_id_enters_fallback_mode(self):
@@ -436,6 +436,7 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer.already_sent
         # Only one send call (the initial message)
         assert adapter.send.call_count == 1
+        assert adapter.send.call_args[1]["content"] == "Short response."
 
     @pytest.mark.asyncio
     async def test_no_message_id_segment_breaks_do_not_resend(self):
@@ -580,6 +581,24 @@ class TestInterimCommentaryMessages:
         await task
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
-        assert sent_texts == ["Hello ▉", "world"]
+        assert sent_texts == ["Hello", "world"]
         assert consumer.already_sent is True
         assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_first_stream_send_omits_cursor_until_editability_is_known(self):
+        """The initial streamed send should stay cursor-free until the platform
+        proves it returned an editable message id."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+
+        await consumer._send_or_edit("Hello ▉")
+
+        assert adapter.send.call_args[1]["content"] == "Hello"

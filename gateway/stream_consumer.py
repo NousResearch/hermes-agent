@@ -556,9 +556,16 @@ class GatewayStreamConsumer:
                     return False
             else:
                 # First message — send new
+                send_text = text
+                if self.cfg.cursor and send_text.endswith(self.cfg.cursor):
+                    # Keep the first streamed send cursor-free until we know the
+                    # platform returned an editable message id. Platforms that
+                    # cannot edit would otherwise leave a permanent trailing
+                    # cursor block visible to the user.
+                    send_text = send_text[:-len(self.cfg.cursor)]
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=text,
+                    content=send_text,
                     metadata=self.metadata,
                 )
                 if result.success:
@@ -567,7 +574,7 @@ class GatewayStreamConsumer:
                     else:
                         self._edit_supported = False
                     self._already_sent = True
-                    self._last_sent_text = text
+                    self._last_sent_text = send_text
                     if not result.message_id:
                         self._fallback_prefix = self._visible_prefix()
                         self._fallback_final_send = True

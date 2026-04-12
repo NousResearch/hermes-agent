@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="hermes_primary">#5B2E8C</color>
-    <color name="hermes_primary_dark">#241038</color>
-    <color name="hermes_primary_container">#EBDDFF</color>
+    <color name="hermes_primary">#4D2FA4</color>
+    <color name="hermes_primary_dark">#24104A</color>
+    <color name="hermes_primary_container">#E7E0FF</color>
     <color name="hermes_secondary">#E8A93B</color>
-    <color name="hermes_background">#F6F2FB</color>
+    <color name="hermes_background">#F7F4FC</color>
     <color name="hermes_surface">#FFFFFF</color>
     <color name="hermes_on_background">#1F1A24</color>
     <color name="hermes_on_primary">#FFFFFF</color>

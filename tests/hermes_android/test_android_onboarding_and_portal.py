@@ -9,12 +9,10 @@ def test_hermes_home_includes_getting_started_actions():
 
     assert 'Text("Getting started"' in app_shell
     assert 'Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.' in app_shell
-    assert 'Settings: choose a provider, confirm the base URL/model, and save your API key.' in app_shell
-    assert 'Nous Portal: open the full portal experience in your browser' in app_shell
-    assert 'Text("Open Nous Portal")' in app_shell
-    assert 'currentSection = AppSection.Accounts' in app_shell
-    assert 'currentSection = AppSection.Settings' in app_shell
-    assert 'currentSection = AppSection.NousPortal' in app_shell
+    assert 'Device: grant shared-folder access if you want Hermes to edit real mobile files directly.' in app_shell
+    assert 'Hermes chat: use voice input, chat commands, or the cog button' in app_shell
+    assert 'label = "Nous Portal"' in app_shell
+    assert 'label = "Device"' in app_shell
 
 
 def test_settings_screen_includes_new_user_guidance():
@@ -26,15 +24,13 @@ def test_settings_screen_includes_new_user_guidance():
     assert 'Paste the key for the selected provider, then tap Save' in settings
 
 
-def test_portal_screen_defaults_to_external_guidance_and_hardens_webview():
+def test_portal_screen_auto_loads_and_uses_contextual_actions():
     portal = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
 
-    assert 'Text("Portal access"' in portal
-    assert 'Best experience in alpha: open Nous Portal in your browser.' in portal
-    assert 'Text("Open externally")' in portal
-    assert 'Hide embedded preview' in portal
-    assert 'Try embedded preview' in portal
-    assert 'CookieManager.getInstance()' in portal
-    assert 'setAcceptThirdPartyCookies' in portal
-    assert 'PORTAL_EMBED_USER_AGENT' in portal
-    assert 'Embedded preview is experimental in this alpha.' in portal
+    assert 'onContextActionsChanged' in portal
+    assert 'label = "Refresh portal"' in portal
+    assert 'label = "Open externally"' in portal
+    assert 'loadUrl(uiState.portalUrl)' in portal
+    assert 'The embedded portal now auto-loads on this page.' in portal
+    assert 'Try embedded preview' not in portal
+    assert 'Reload preview' not in portal

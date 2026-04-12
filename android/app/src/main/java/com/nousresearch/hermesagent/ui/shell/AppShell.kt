@@ -6,42 +6,47 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.ui.auth.AuthScreen
+import com.nousresearch.hermesagent.ui.auth.AuthViewModel
 import com.nousresearch.hermesagent.ui.boot.BootUiState
 import com.nousresearch.hermesagent.ui.chat.ChatScreen
+import com.nousresearch.hermesagent.ui.chat.ChatViewModel
 import com.nousresearch.hermesagent.ui.device.DeviceScreen
+import com.nousresearch.hermesagent.ui.device.DeviceViewModel
 import com.nousresearch.hermesagent.ui.portal.NousPortalScreen
+import com.nousresearch.hermesagent.ui.portal.NousPortalViewModel
 import com.nousresearch.hermesagent.ui.settings.SettingsScreen
+import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
 import com.nousresearch.hermesagent.ui.theme.HermesTheme
-
-enum class AppSection(val label: String) {
-    Hermes("Hermes"),
-    Accounts("Accounts"),
-    NousPortal("Nous Portal"),
-    Device("Device"),
-    Settings("Settings"),
-}
 
 @Composable
 fun AppShellScreen(
@@ -49,44 +54,133 @@ fun AppShellScreen(
     onRetryHermes: () -> Unit,
 ) {
     var currentSection by rememberSaveable { mutableStateOf(AppSection.Hermes) }
+    var currentActions by remember { mutableStateOf<List<ShellActionItem>>(emptyList()) }
+    var showActionSheet by rememberSaveable { mutableStateOf(false) }
+
+    val authViewModel: AuthViewModel = viewModel()
+    val settingsViewModel: SettingsViewModel = viewModel()
+    val deviceViewModel: DeviceViewModel = viewModel()
+    val portalViewModel: NousPortalViewModel = viewModel()
+    val chatViewModel: ChatViewModel = viewModel()
+
+    fun setActions(actions: List<ShellActionItem>) {
+        currentActions = actions
+        if (actions.isEmpty()) {
+            showActionSheet = false
+        }
+    }
+
+    LaunchedEffect(currentSection) {
+        if (currentSection == AppSection.Settings) {
+            setActions(emptyList())
+        }
+    }
 
     HermesTheme {
-        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                HermesBrandBar()
-                TabRow(selectedTabIndex = currentSection.ordinal) {
-                    AppSection.values().forEach { section ->
-                        Tab(
-                            selected = currentSection == section,
-                            onClick = { currentSection = section },
-                            text = { Text(section.label) },
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = MaterialTheme.colorScheme.background,
+            topBar = {
+                HermesTopBar(
+                    section = currentSection,
+                    bootUiState = bootUiState,
+                )
+            },
+            bottomBar = {
+                HermesBottomNavigation(
+                    currentSection = currentSection,
+                    onSelect = { currentSection = it },
+                )
+            },
+            floatingActionButton = {
+                if (currentActions.isNotEmpty()) {
+                    FloatingActionButton(onClick = { showActionSheet = true }) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_action_cog),
+                            contentDescription = "Open page actions",
                         )
                     }
                 }
-
+            },
+        ) { innerPadding ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                color = MaterialTheme.colorScheme.background,
+            ) {
                 when (currentSection) {
-                    AppSection.Hermes -> HermesSection(
-                        uiState = bootUiState,
-                        onRetry = onRetryHermes,
-                        onOpenAccounts = { currentSection = AppSection.Accounts },
-                        onOpenPortal = { currentSection = AppSection.NousPortal },
-                        onOpenDevice = { currentSection = AppSection.Device },
-                        onOpenSettings = { currentSection = AppSection.Settings },
+                    AppSection.Hermes -> {
+                        if (bootUiState.ready) {
+                            ChatScreen(
+                                modifier = Modifier.fillMaxSize(),
+                                viewModel = chatViewModel,
+                                settingsViewModel = settingsViewModel,
+                                authViewModel = authViewModel,
+                                onNavigateToSection = { currentSection = it },
+                                onContextActionsChanged = ::setActions,
+                            )
+                        } else {
+                            HermesSetupScreen(
+                                uiState = bootUiState,
+                                onRetry = onRetryHermes,
+                                onOpenAccounts = { currentSection = AppSection.Accounts },
+                                onOpenPortal = { currentSection = AppSection.NousPortal },
+                                onOpenDevice = { currentSection = AppSection.Device },
+                                onOpenSettings = { currentSection = AppSection.Settings },
+                                onContextActionsChanged = ::setActions,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        }
+                    }
+
+                    AppSection.Accounts -> AuthScreen(
                         modifier = Modifier.fillMaxSize(),
+                        viewModel = authViewModel,
+                        onContextActionsChanged = ::setActions,
                     )
 
-                    AppSection.Accounts -> AuthScreen(modifier = Modifier.fillMaxSize())
-                    AppSection.NousPortal -> NousPortalScreen(modifier = Modifier.fillMaxSize())
-                    AppSection.Device -> DeviceScreen(modifier = Modifier.fillMaxSize())
-                    AppSection.Settings -> SettingsScreen(modifier = Modifier.fillMaxSize())
+                    AppSection.NousPortal -> NousPortalScreen(
+                        modifier = Modifier.fillMaxSize(),
+                        viewModel = portalViewModel,
+                        onContextActionsChanged = ::setActions,
+                    )
+
+                    AppSection.Device -> DeviceScreen(
+                        modifier = Modifier.fillMaxSize(),
+                        viewModel = deviceViewModel,
+                        onContextActionsChanged = ::setActions,
+                    )
+
+                    AppSection.Settings -> SettingsScreen(
+                        modifier = Modifier.fillMaxSize(),
+                        viewModel = settingsViewModel,
+                        onContextActionsChanged = ::setActions,
+                    )
                 }
+            }
+
+            if (showActionSheet && currentActions.isNotEmpty()) {
+                ContextActionSheet(
+                    section = currentSection,
+                    actions = currentActions,
+                    onDismiss = { showActionSheet = false },
+                )
             }
         }
     }
 }
 
 @Composable
-private fun HermesBrandBar() {
+private fun HermesTopBar(
+    section: AppSection,
+    bootUiState: BootUiState,
+) {
+    val subtitle = if (section == AppSection.Hermes && !bootUiState.ready) {
+        "Runtime setup and onboarding"
+    } else {
+        section.subtitle
+    }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -97,20 +191,17 @@ private fun HermesBrandBar() {
                 .fillMaxWidth()
                 .statusBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Image(
                 painter = painterResource(id = R.drawable.ic_hermes_logo),
                 contentDescription = "Hermes logo",
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier.size(34.dp),
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text("Hermes", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Android alpha · local runtime + portal access",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                Text(section.title, style = MaterialTheme.typography.titleLarge)
+                Text(subtitle, style = MaterialTheme.typography.bodySmall)
             }
             Surface(
                 color = MaterialTheme.colorScheme.secondary,
@@ -128,25 +219,78 @@ private fun HermesBrandBar() {
 }
 
 @Composable
-private fun HermesSection(
+private fun HermesBottomNavigation(
+    currentSection: AppSection,
+    onSelect: (AppSection) -> Unit,
+) {
+    NavigationBar(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
+        tonalElevation = 8.dp,
+    ) {
+        AppSection.values().forEach { section ->
+            NavigationBarItem(
+                selected = currentSection == section,
+                onClick = { onSelect(section) },
+                icon = {
+                    Icon(
+                        painter = painterResource(id = section.iconRes),
+                        contentDescription = section.label,
+                    )
+                },
+                label = { Text(section.label) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun HermesSetupScreen(
     uiState: BootUiState,
     onRetry: () -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenPortal: () -> Unit,
     onOpenDevice: () -> Unit,
     onOpenSettings: () -> Unit,
+    onContextActionsChanged: (List<ShellActionItem>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (uiState.ready) {
-        ChatScreen(modifier = modifier)
-        return
+    LaunchedEffect(uiState.ready, uiState.error, uiState.status) {
+        onContextActionsChanged(
+            listOf(
+                ShellActionItem(
+                    label = "Accounts",
+                    description = "Connect Corr3xt and provider sign-ins.",
+                    iconRes = R.drawable.ic_nav_accounts,
+                    onClick = onOpenAccounts,
+                ),
+                ShellActionItem(
+                    label = "Settings",
+                    description = "Configure provider, model, and API key.",
+                    iconRes = R.drawable.ic_nav_settings,
+                    onClick = onOpenSettings,
+                ),
+                ShellActionItem(
+                    label = "Nous Portal",
+                    description = "Open the portal page while Hermes boots.",
+                    iconRes = R.drawable.ic_nav_portal,
+                    onClick = onOpenPortal,
+                ),
+                ShellActionItem(
+                    label = "Device",
+                    description = "Grant files, Linux tools, and phone controls.",
+                    iconRes = R.drawable.ic_nav_device,
+                    onClick = onOpenDevice,
+                ),
+            )
+        )
     }
 
-    val scrollState = rememberScrollState()
     Column(
         modifier = modifier
-            .verticalScroll(scrollState)
-            .padding(24.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -155,84 +299,46 @@ private fun HermesSection(
             contentDescription = "Hermes logo",
             modifier = Modifier.size(72.dp),
         )
-        Text(
-            text = uiState.status,
-            style = MaterialTheme.typography.headlineSmall,
-        )
+        Text(uiState.status, style = MaterialTheme.typography.headlineSmall)
         if (uiState.baseUrl.isNotBlank()) {
-            Text(text = uiState.baseUrl)
+            Text(uiState.baseUrl, style = MaterialTheme.typography.bodySmall)
         }
         if (uiState.probeResult.isNotBlank()) {
-            Text(text = uiState.probeResult)
+            Text(uiState.probeResult, style = MaterialTheme.typography.bodySmall)
         }
         if (uiState.error.isNotBlank()) {
-            Text(
-                text = uiState.error,
-                color = MaterialTheme.colorScheme.error,
-            )
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                shape = MaterialTheme.shapes.large,
+            ) {
+                Text(
+                    text = uiState.error,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(14.dp),
+                )
+            }
         }
         Button(onClick = onRetry) {
             Text("Retry Hermes")
         }
-        GettingStartedCard(
-            onOpenAccounts = onOpenAccounts,
-            onOpenPortal = onOpenPortal,
-            onOpenDevice = onOpenDevice,
-            onOpenSettings = onOpenSettings,
-        )
-        Text(
-            text = "The Nous Portal and Device sections are available independently while the local Hermes runtime is booting.",
-            style = MaterialTheme.typography.bodyMedium,
-        )
-    }
-}
-
-@Composable
-private fun GettingStartedCard(
-    onOpenAccounts: () -> Unit,
-    onOpenPortal: () -> Unit,
-    onOpenDevice: () -> Unit,
-    onOpenSettings: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        tonalElevation = 2.dp,
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = MaterialTheme.shapes.large,
+            tonalElevation = 1.dp,
         ) {
-            Text("Getting started", style = MaterialTheme.typography.titleMedium)
-            Text("1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.")
-            Text("2. Settings: choose a provider, confirm the base URL/model, and save your API key.")
-            Text("3. Nous Portal: open the full portal experience in your browser if the embedded preview stays limited.")
-            Text("4. Device: import files into the Hermes workspace and enable accessibility controls if you want high-level phone actions.")
-            Text("5. Hermes: return here and tap Retry Hermes after setup changes.")
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Button(onClick = onOpenAccounts, modifier = Modifier.weight(1f)) {
-                    Text("Accounts")
-                }
-                Button(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
-                    Text("Settings")
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(onClick = onOpenPortal, modifier = Modifier.weight(1f)) {
-                    Text("Open Nous Portal")
-                }
-                Button(onClick = onOpenDevice, modifier = Modifier.weight(1f)) {
-                    Text("Device")
-                }
+                Text("Getting started", style = MaterialTheme.typography.titleMedium)
+                Text("1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.")
+                Text("2. Settings: choose a provider, confirm the base URL/model, and save your API key.")
+                Text("3. Device: grant shared-folder access if you want Hermes to edit real mobile files directly.")
+                Text("4. Hermes chat: use voice input, chat commands, or the cog button for page-specific actions once the runtime is ready.")
             }
         }
     }

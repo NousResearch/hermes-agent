@@ -7,6 +7,7 @@ and run_agent.py for pre-flight context checks.
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -70,6 +71,7 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_metadata_lock = threading.Lock()
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 128K (a safe default for most modern models) and step down
@@ -428,8 +430,9 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
-        return _model_metadata_cache
+    with _metadata_lock:
+        if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+            return _model_metadata_cache
 
     try:
         response = requests.get(OPENROUTER_MODELS_URL, timeout=10)
@@ -450,14 +453,16 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
             if canonical and canonical != model_id:
                 _add_model_aliases(cache, canonical, entry)
 
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
+        with _metadata_lock:
+            _model_metadata_cache = cache
+            _model_metadata_cache_time = time.time()
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
         logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        return _model_metadata_cache or {}
+        with _metadata_lock:
+            return _model_metadata_cache.copy() if _model_metadata_cache else {}
 
 
 def fetch_endpoint_model_metadata(
@@ -475,10 +480,11 @@ def fetch_endpoint_model_metadata(
         return {}
 
     if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
-        if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
-            return cached
+        with _metadata_lock:
+            cached = _endpoint_model_metadata_cache.get(normalized)
+            cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
+            if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+                return cached
 
     candidates = [normalized]
     if normalized.endswith("/v1"):
@@ -538,16 +544,18 @@ def fetch_endpoint_model_metadata(
                 except Exception:
                     pass
 
-            _endpoint_model_metadata_cache[normalized] = cache
-            _endpoint_model_metadata_cache_time[normalized] = time.time()
+            with _metadata_lock:
+                _endpoint_model_metadata_cache[normalized] = cache
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
             return cache
         except Exception as exc:
             last_error = exc
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    _endpoint_model_metadata_cache[normalized] = {}
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
+    with _metadata_lock:
+        _endpoint_model_metadata_cache[normalized] = {}
+        _endpoint_model_metadata_cache_time[normalized] = time.time()
     return {}
 
 

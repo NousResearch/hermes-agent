@@ -302,8 +302,9 @@ class LocalEnvironment(BaseEnvironment):
         except (OSError, FileNotFoundError):
             pass
 
-        # Still strip the marker from output so it's not visible
+        # Still strip the markers from output so internal bookkeeping stays hidden.
         self._extract_cwd_from_output(result)
+        self._strip_returncode_marker(result)
 
     def cleanup(self):
         """Clean up temp files."""

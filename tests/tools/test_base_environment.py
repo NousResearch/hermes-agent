@@ -7,7 +7,7 @@ init_session() failure handling, and the CWD marker contract.
 import uuid
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment, _cwd_marker
+from tools.environments.base import BaseEnvironment, _cwd_marker, _rc_marker
 
 
 class _TestableEnv(BaseEnvironment):
@@ -33,7 +33,9 @@ class TestWrapCommand:
         assert "cd /tmp" in wrapped or "cd '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
+        assert "disown -a 2>/dev/null || true" in wrapped
         assert "export -p >" in wrapped
+        assert env._rc_marker in wrapped
         assert "pwd -P >" in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
@@ -66,6 +68,17 @@ class TestWrapCommand:
         wrapped = env._wrap_command("ls", "/nonexistent")
 
         assert "exit 126" in wrapped
+
+    def test_disowns_background_jobs_before_snapshot_update(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("python server.py > server.log 2>&1 &", "/tmp")
+
+        assert "disown -a 2>/dev/null || true" in wrapped
+        assert env._rc_marker in wrapped
+        assert wrapped.index("__hermes_ec=$?") < wrapped.index("disown -a 2>/dev/null || true")
+        assert wrapped.index("disown -a 2>/dev/null || true") < wrapped.index("export -p >")
+        assert wrapped.index("export -p >") < wrapped.index(env._rc_marker)
 
 
 class TestExtractCwdFromOutput:
@@ -109,6 +122,17 @@ class TestExtractCwdFromOutput:
 
         assert "hello" in result["output"]
         assert marker not in result["output"]
+
+    def test_returncode_marker_extracted_and_removed(self):
+        env = _TestableEnv()
+        rc_marker = env._rc_marker
+        result = {
+            "output": f"hello\n{rc_marker}42{rc_marker}\n",
+        }
+
+        assert env._extract_returncode_marker(result["output"]) == 42
+        env._strip_returncode_marker(result)
+        assert rc_marker not in result["output"]
 
 
 class TestEmbedStdinHeredoc:
@@ -172,3 +196,5 @@ class TestCwdMarker:
         env1 = _TestableEnv()
         env2 = _TestableEnv()
         assert env1._cwd_marker != env2._cwd_marker
+
+

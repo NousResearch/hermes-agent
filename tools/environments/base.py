@@ -9,6 +9,7 @@ or a temp file (local).
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -205,6 +206,10 @@ def _cwd_marker(session_id: str) -> str:
     return f"__HERMES_CWD_{session_id}__"
 
 
+def _rc_marker(session_id: str) -> str:
+    return f"__HERMES_RC_{session_id}__"
+
+
 # ---------------------------------------------------------------------------
 # BaseEnvironment
 # ---------------------------------------------------------------------------
@@ -243,6 +248,7 @@ class BaseEnvironment(ABC):
         self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
+        self._rc_marker = _rc_marker(self._session_id)
         self._snapshot_ready = False
 
     # ------------------------------------------------------------------
@@ -316,7 +322,7 @@ class BaseEnvironment(ABC):
 
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
-        re-dumps env vars, and emits CWD markers."""
+        disowns leftover background jobs, re-dumps env vars, and emits CWD markers."""
         escaped = command.replace("'", "'\\''")
 
         parts = []
@@ -334,6 +340,10 @@ class BaseEnvironment(ABC):
         # Run the actual command
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
+        # If the command launched background jobs with "&", explicitly disown
+        # them before the wrapper exits so the shell is not kept alive by its
+        # own job table.
+        parts.append("disown -a 2>/dev/null || true")
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
         if self._snapshot_ready:
@@ -347,6 +357,9 @@ class BaseEnvironment(ABC):
         # injected newline in _extract_cwd_from_output.
         parts.append(
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\""
+        )
+        parts.append(
+            f"printf '{self._rc_marker}%s{self._rc_marker}\n' \"$__hermes_ec\""
         )
         parts.append("exit $__hermes_ec")
 
@@ -375,7 +388,26 @@ class BaseEnvironment(ABC):
 
         def _drain():
             try:
-                for line in proc.stdout:
+                stream = getattr(proc, "stdout", None)
+                if stream is None:
+                    return
+                if os.name != "nt" and hasattr(stream, "fileno"):
+                    fd = stream.fileno()
+                    while True:
+                        ready, _, _ = select.select([fd], [], [], 0.2)
+                        if not ready:
+                            if proc.poll() is not None:
+                                chunk = os.read(fd, 4096)
+                                if not chunk:
+                                    break
+                                output_chunks.append(chunk.decode("utf-8", errors="replace"))
+                            continue
+                        chunk = os.read(fd, 4096)
+                        if not chunk:
+                            break
+                        output_chunks.append(chunk.decode("utf-8", errors="replace"))
+                    return
+                for line in stream:
                     output_chunks.append(line)
             except UnicodeDecodeError:
                 output_chunks.clear()
@@ -390,6 +422,16 @@ class BaseEnvironment(ABC):
         deadline = time.monotonic() + timeout
 
         while proc.poll() is None:
+            current_output = "".join(output_chunks)
+            if self._has_completion_markers(current_output):
+                try:
+                    proc.stdout.close()
+                except Exception:
+                    pass
+                return {
+                    "output": current_output,
+                    "returncode": self._extract_returncode_marker(current_output),
+                }
             if is_interrupted():
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
@@ -417,7 +459,11 @@ class BaseEnvironment(ABC):
         except Exception:
             pass
 
-        return {"output": "".join(output_chunks), "returncode": proc.returncode}
+        output_text = "".join(output_chunks)
+        return {
+            "output": output_text,
+            "returncode": self._extract_returncode_marker(output_text, proc.returncode),
+        }
 
     def _kill_process(self, proc: ProcessHandle):
         """Terminate a process. Subclasses may override for process-group kill."""
@@ -431,8 +477,46 @@ class BaseEnvironment(ABC):
     # ------------------------------------------------------------------
 
     def _update_cwd(self, result: dict):
-        """Extract CWD from command output. Override for local file-based read."""
+        """Extract command metadata from output. Override for local file-based read."""
         self._extract_cwd_from_output(result)
+        self._strip_returncode_marker(result)
+
+    def _has_completion_markers(self, output: str) -> bool:
+        return output.count(self._cwd_marker) >= 2 and output.count(self._rc_marker) >= 2
+
+    def _extract_returncode_marker(self, output: str, fallback: int | None = 0) -> int | None:
+        marker = self._rc_marker
+        last = output.rfind(marker)
+        if last == -1:
+            return fallback
+
+        first = output.rfind(marker, 0, last)
+        if first == -1 or first == last:
+            return fallback
+
+        value = output[first + len(marker) : last].strip()
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _strip_returncode_marker(self, result: dict):
+        output = result.get("output", "")
+        marker = self._rc_marker
+        last = output.rfind(marker)
+        if last == -1:
+            return
+
+        first = output.rfind(marker, 0, last)
+        if first == -1 or first == last:
+            return
+
+        line_start = output.rfind("\n", 0, first)
+        if line_start == -1:
+            line_start = first
+        line_end = output.find("\n", last + len(marker))
+        line_end = line_end + 1 if line_end != -1 else len(output)
+        result["output"] = output[:line_start] + output[line_end:]
 
     def _extract_cwd_from_output(self, result: dict):
         """Parse the __HERMES_CWD_{session}__ marker from stdout output.
@@ -546,4 +630,6 @@ class BaseEnvironment(ABC):
         from tools.terminal_tool import _transform_sudo_command
 
         return _transform_sudo_command(command)
+
+
 

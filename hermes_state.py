@@ -721,12 +721,16 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
+        preview_length: int = 60,
+        full_preview_length: int = 0,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of first user message),
+        message_count, preview (first ``preview_length`` chars of first user message),
         last_active (timestamp of last message).
+        If ``full_preview_length`` > 0, also stores ``_full_preview`` with real
+        newlines preserved (for multi-line display in browsing UIs).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
 
@@ -748,22 +752,39 @@ class SessionDB:
             params.extend(exclude_sources)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
-        query = f"""
-            SELECT s.*,
+        # Fetch 3 extra chars so we know if truncation happened
+        sql_fetch = preview_length + 3
+        # Full preview keeps newlines
+        if full_preview_length > 0:
+            full_select = f""",
                 COALESCE(
-                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                    (SELECT SUBSTR(m.content, 1, {full_preview_length})
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
                      ORDER BY m.timestamp, m.id LIMIT 1),
                     ''
-                ) AS _preview_raw,
+                ) AS _full_preview_raw
+            """
+        else:
+            full_select = ""
+
+        query = f"""
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, {sql_fetch})
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw
+                {full_select},
                 COALESCE(
                     (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
                     s.started_at
                 ) AS last_active
             FROM sessions s
             {where_sql}
-            ORDER BY s.started_at DESC
+            ORDER BY last_active DESC
             LIMIT ? OFFSET ?
         """
         params.extend([limit, offset])
@@ -773,13 +794,17 @@ class SessionDB:
         sessions = []
         for row in rows:
             s = dict(row)
-            # Build the preview from the raw substring
+            # Build the preview from the raw substring (newlines stripped)
             raw = s.pop("_preview_raw", "").strip()
             if raw:
-                text = raw[:60]
-                s["preview"] = text + ("..." if len(raw) > 60 else "")
+                text = raw[:preview_length]
+                s["preview"] = text + ("..." if len(raw) > preview_length else "")
             else:
                 s["preview"] = ""
+            # Build the full preview (newlines preserved) if requested
+            if full_preview_length > 0:
+                raw_full = s.pop("_full_preview_raw", "").strip()
+                s["_full_preview"] = raw_full if raw_full else ""
             sessions.append(s)
 
         return sessions

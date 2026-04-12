@@ -202,7 +202,25 @@ def setup_logging(
     global _logging_initialized
     if _logging_initialized and not force:
         home = hermes_home or get_hermes_home()
-        return home / "logs"
+        log_dir = home / "logs"
+        # Late gateway mode: attach the gateway-specific handler even when
+        # CLI-mode initialisation already ran.  This is the normal path for
+        # ``hermes gateway run``, which enters via hermes_cli/main.py (cli
+        # mode) before gateway/run.py calls us again with mode="gateway".
+        # _add_rotating_handler() is idempotent, so a duplicate call is safe.
+        if mode == "gateway":
+            from agent.redact import RedactingFormatter
+
+            _add_rotating_handler(
+                logging.getLogger(),
+                log_dir / "gateway.log",
+                level=logging.INFO,
+                max_bytes=5 * 1024 * 1024,
+                backup_count=3,
+                formatter=RedactingFormatter(_LOG_FORMAT),
+                log_filter=_ComponentFilter(COMPONENT_PREFIXES["gateway"]),
+            )
+        return log_dir
 
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"

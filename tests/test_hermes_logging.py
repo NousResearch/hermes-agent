@@ -309,6 +309,44 @@ class TestGatewayMode:
         assert "gateway msg" in content
         assert "file msg" in content
 
+    def test_gateway_log_created_after_cli_init(self, hermes_home):
+        """gateway.log handler is attached when CLI mode initializes first.
+
+        This is the normal ``hermes gateway run`` path: hermes_cli/main.py
+        calls setup_logging(mode="cli"), then gateway/run.py calls
+        setup_logging(mode="gateway").  The second call must still create the
+        gateway.log handler even though _logging_initialized is already True.
+        Regression test for #8404.
+        """
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+        root = logging.getLogger()
+
+        gw_handlers = [
+            h for h in root.handlers
+            if isinstance(h, RotatingFileHandler)
+            and "gateway.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(gw_handlers) == 1
+
+    def test_gateway_log_receives_records_after_cli_init(self, hermes_home):
+        """gateway.log receives gateway records even when CLI initialized first.
+
+        Regression test for #8404.
+        """
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
+        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
+
+        gw_logger = logging.getLogger("gateway.platforms.discord")
+        gw_logger.info("discord connected")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        gw_log = hermes_home / "logs" / "gateway.log"
+        assert gw_log.exists()
+        assert "discord connected" in gw_log.read_text()
+
 
 class TestSessionContext:
     """set_session_context / clear_session_context + _SessionFilter."""

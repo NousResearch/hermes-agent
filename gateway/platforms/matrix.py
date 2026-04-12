@@ -18,6 +18,7 @@ Environment variables:
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
+    MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
 """
 
@@ -507,6 +508,19 @@ class MatrixAdapter(BasePlatformAdapter):
                     await crypto_db.stop()
                     await api.session.close()
                     return False
+
+                # Import cross-signing private keys from SSSS and self-sign
+                # the current device. Required after any device-key rotation
+                # (fresh crypto.db, share_keys re-upload) — otherwise the
+                # device's self-signing signature is stale and peers refuse
+                # to share Megolm sessions with the rotated device.
+                recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                if recovery_key:
+                    try:
+                        await olm.verify_with_recovery_key(recovery_key)
+                        logger.info("Matrix: cross-signing verified via recovery key")
+                    except Exception as exc:
+                        logger.warning("Matrix: recovery key verification failed: %s", exc)
 
                 client.crypto = olm
                 logger.info(

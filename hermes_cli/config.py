@@ -50,6 +50,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
+    "MATRIX_RECOVERY_KEY",
 })
 import yaml
 
@@ -1290,6 +1291,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Matrix device ID (stable across restarts)",
         "url": None,
         "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_RECOVERY_KEY": {
+        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
+        "prompt": "Matrix recovery key",
+        "url": None,
+        "password": True,
         "category": "messaging",
         "advanced": True,
     },

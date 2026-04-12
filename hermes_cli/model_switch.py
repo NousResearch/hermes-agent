@@ -917,9 +917,9 @@ def list_authenticated_providers(
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
-            models_list = []
-            if default_model:
-                models_list.append(default_model)
+            models_list = list(ep_cfg.get("models", []))
+            if default_model and default_model not in models_list:
+                models_list.insert(0, default_model)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config
@@ -928,7 +928,7 @@ def list_authenticated_providers(
                 "name": display_name,
                 "is_current": ep_name == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
+                "models": models_list[:max_models],
                 "total_models": len(models_list) if models_list else 0,
                 "source": "user-config",
                 "api_url": api_url,
@@ -954,17 +954,17 @@ def list_authenticated_providers(
             if slug in seen_slugs:
                 continue
 
-            models_list = []
+            models_list = list(entry.get("models", []))
             default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
+            if default_model and default_model not in models_list:
+                models_list.insert(0, default_model)
 
             results.append({
                 "slug": slug,
                 "name": display_name,
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
+                "models": models_list[:max_models],
                 "total_models": len(models_list),
                 "source": "user-config",
                 "api_url": api_url,

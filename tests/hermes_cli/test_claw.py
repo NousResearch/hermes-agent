@@ -58,13 +58,13 @@ class TestFindOpenclawDirs:
     def test_finds_legacy_dirs(self, tmp_path):
         clawdbot = tmp_path / ".clawdbot"
         clawdbot.mkdir()
-        moldbot = tmp_path / ".moldbot"
-        moldbot.mkdir()
+        moltbot = tmp_path / ".moltbot"
+        moltbot.mkdir()
         with patch("pathlib.Path.home", return_value=tmp_path):
             found = claw_mod._find_openclaw_dirs()
         assert len(found) == 2
         assert clawdbot in found
-        assert moldbot in found
+        assert moltbot in found
 
     def test_returns_empty_when_none_exist(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):

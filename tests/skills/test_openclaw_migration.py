@@ -722,3 +722,98 @@ def test_skill_installs_cleanly_under_skills_guard():
     KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "hermes_config_mod"}
     for f in result.findings:
         assert f.pattern_id in KNOWN_FALSE_POSITIVES, f"Unexpected finding: {f}"
+
+
+# ── rebrand_text tests ────────────────────────────────────────
+
+
+def test_rebrand_text_replaces_openclaw_variants():
+    mod = load_module()
+    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hermes prefers Python 3.11"
+    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
+    assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
+    assert mod.rebrand_text("openclaw should always respond concisely") == "Hermes should always respond concisely"
+    assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
+
+
+def test_rebrand_text_replaces_legacy_bot_names():
+    mod = load_module()
+    assert mod.rebrand_text("ClawdBot remembers my timezone") == "Hermes remembers my timezone"
+    assert mod.rebrand_text("clawdbot prefers tabs") == "Hermes prefers tabs"
+    assert mod.rebrand_text("MoltBot was configured for Spanish") == "Hermes was configured for Spanish"
+    assert mod.rebrand_text("moltbot uses Python") == "Hermes uses Python"
+
+
+def test_rebrand_text_preserves_unrelated_content():
+    mod = load_module()
+    text = "User prefers dark mode and lives in Las Vegas"
+    assert mod.rebrand_text(text) == text
+
+
+def test_rebrand_text_handles_multiple_replacements():
+    mod = load_module()
+    text = "OpenClaw said to ask ClawdBot about MoltBot settings"
+    assert mod.rebrand_text(text) == "Hermes said to ask Hermes about Hermes settings"
+
+
+def test_migrate_memory_rebrands_entries(tmp_path):
+    mod = load_module()
+    source_root = tmp_path / "openclaw"
+    source_root.mkdir()
+    workspace = source_root / "workspace"
+    workspace.mkdir()
+    memory_md = workspace / "MEMORY.md"
+    memory_md.write_text(
+        "# Memory\n\n- OpenClaw should use Python 3.11\n- ClawdBot prefers dark mode\n",
+        encoding="utf-8",
+    )
+
+    target_root = tmp_path / "hermes"
+    target_root.mkdir()
+    (target_root / "memories").mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=tmp_path / "report",
+        selected_options={"memory"},
+    )
+    migrator.migrate()
+
+    result = (target_root / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "OpenClaw" not in result
+    assert "ClawdBot" not in result
+    assert "Hermes" in result
+
+
+def test_migrate_soul_rebrands_content(tmp_path):
+    mod = load_module()
+    source_root = tmp_path / "openclaw"
+    source_root.mkdir()
+    workspace = source_root / "workspace"
+    workspace.mkdir()
+    soul_md = workspace / "SOUL.md"
+    soul_md.write_text("You are OpenClaw, an AI assistant made by SparkLab.", encoding="utf-8")
+
+    target_root = tmp_path / "hermes"
+    target_root.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=tmp_path / "report",
+        selected_options={"soul"},
+    )
+    migrator.migrate()
+
+    result = (target_root / "SOUL.md").read_text(encoding="utf-8")
+    assert "OpenClaw" not in result
+    assert "You are Hermes" in result

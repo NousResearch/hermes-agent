@@ -1027,7 +1027,17 @@ def list_authenticated_providers(
             })
 
     # --- 4. Saved custom providers from config ---
+    # Each ``custom_providers`` entry represents one model under a named
+    # provider. Entries sharing the same provider name are grouped into a
+    # single picker row so that e.g. four Ollama Cloud entries
+    # (qwen3-coder, glm-5.1, kimi-k2, minimax-m2.7) appear as one
+    # "Ollama Cloud" row with four models inside instead of four
+    # duplicate "Ollama Cloud" rows. Entries with distinct provider names
+    # still produce separate rows (e.g. Ollama Cloud vs Moonshot).
     if custom_providers and isinstance(custom_providers, list):
+        from collections import OrderedDict
+
+        groups: "OrderedDict[str, dict]" = OrderedDict()
         for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
@@ -1043,23 +1053,28 @@ def list_authenticated_providers(
                 continue
 
             slug = custom_provider_slug(display_name)
+            if slug not in groups:
+                groups[slug] = {
+                    "name": display_name,
+                    "api_url": api_url,
+                    "models": [],
+                }
+            default_model = (entry.get("model") or "").strip()
+            if default_model and default_model not in groups[slug]["models"]:
+                groups[slug]["models"].append(default_model)
+
+        for slug, grp in groups.items():
             if slug in seen_slugs:
                 continue
-
-            models_list = []
-            default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
-
             results.append({
                 "slug": slug,
-                "name": display_name,
+                "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
-                "total_models": len(models_list),
+                "models": grp["models"],
+                "total_models": len(grp["models"]),
                 "source": "user-config",
-                "api_url": api_url,
+                "api_url": grp["api_url"],
             })
             seen_slugs.add(slug)
 

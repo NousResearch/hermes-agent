@@ -384,6 +384,7 @@ class TestWatchUpdateProgress:
             (hermes_home / ".update_prompt.json").write_text(json.dumps(prompt1))
             await asyncio.sleep(0.35)
             (hermes_home / ".update_response").write_text("y")
+            runner._update_prompt_pending.pop(pending["session_key"], None)
             await asyncio.sleep(0.15)
             (hermes_home / ".update_response").unlink(missing_ok=True)
 
@@ -391,6 +392,7 @@ class TestWatchUpdateProgress:
             (hermes_home / ".update_prompt.json").write_text(json.dumps(prompt2))
             await asyncio.sleep(0.35)
             (hermes_home / ".update_response").write_text("n")
+            runner._update_prompt_pending.pop(pending["session_key"], None)
             await asyncio.sleep(0.15)
             (hermes_home / ".update_exit_code").write_text("0")
 

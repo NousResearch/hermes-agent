@@ -4,7 +4,6 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
-import json
 import logging
 import os
 import sys
@@ -14,6 +13,8 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 
+from utils import safe_json_loads
+
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
 _RESET = "\033[0m"
@@ -21,11 +22,73 @@ _RESET = "\033[0m"
 logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
-_ANSI_DIM = "\033[38;2;150;150;150m"
-_ANSI_FILE = "\033[38;2;180;160;255m"
-_ANSI_HUNK = "\033[38;2;120;120;140m"
-_ANSI_MINUS = "\033[38;2;255;255;255;48;2;120;20;20m"
-_ANSI_PLUS = "\033[38;2;255;255;255;48;2;20;90;20m"
+
+# Diff colors — resolved lazily from the skin engine so they adapt
+# to light/dark themes.  Falls back to sensible defaults on import
+# failure.  We cache after first resolution for performance.
+_diff_colors_cached: dict[str, str] | None = None
+
+
+def _diff_ansi() -> dict[str, str]:
+    """Return ANSI escapes for diff display, resolved from the active skin."""
+    global _diff_colors_cached
+    if _diff_colors_cached is not None:
+        return _diff_colors_cached
+
+    # Defaults that work on dark terminals
+    dim = "\033[38;2;150;150;150m"
+    file_c = "\033[38;2;180;160;255m"
+    hunk = "\033[38;2;120;120;140m"
+    minus = "\033[38;2;255;255;255;48;2;120;20;20m"
+    plus = "\033[38;2;255;255;255;48;2;20;90;20m"
+
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        skin = get_active_skin()
+
+        def _hex_fg(key: str, fallback_rgb: tuple[int, int, int]) -> str:
+            h = skin.get_color(key, "")
+            if h and len(h) == 7 and h[0] == "#":
+                r, g, b = int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)
+                return f"\033[38;2;{r};{g};{b}m"
+            r, g, b = fallback_rgb
+            return f"\033[38;2;{r};{g};{b}m"
+
+        dim = _hex_fg("banner_dim", (150, 150, 150))
+        file_c = _hex_fg("session_label", (180, 160, 255))
+        hunk = _hex_fg("session_border", (120, 120, 140))
+        # minus/plus use background colors — derive from ui_error/ui_ok
+        err_h = skin.get_color("ui_error", "#ef5350")
+        ok_h = skin.get_color("ui_ok", "#4caf50")
+        if err_h and len(err_h) == 7:
+            er, eg, eb = int(err_h[1:3], 16), int(err_h[3:5], 16), int(err_h[5:7], 16)
+            # Use a dark tinted version as background
+            minus = f"\033[38;2;255;255;255;48;2;{max(er//2,20)};{max(eg//4,10)};{max(eb//4,10)}m"
+        if ok_h and len(ok_h) == 7:
+            or_, og, ob = int(ok_h[1:3], 16), int(ok_h[3:5], 16), int(ok_h[5:7], 16)
+            plus = f"\033[38;2;255;255;255;48;2;{max(or_//4,10)};{max(og//2,20)};{max(ob//4,10)}m"
+    except Exception:
+        pass
+
+    _diff_colors_cached = {
+        "dim": dim, "file": file_c, "hunk": hunk,
+        "minus": minus, "plus": plus,
+    }
+    return _diff_colors_cached
+
+
+def reset_diff_colors() -> None:
+    """Reset cached diff colors (call after /skin switch)."""
+    global _diff_colors_cached
+    _diff_colors_cached = None
+
+
+# Module-level helpers — each call resolves from the active skin lazily.
+def _diff_dim():   return _diff_ansi()["dim"]
+def _diff_file():  return _diff_ansi()["file"]
+def _diff_hunk():  return _diff_ansi()["hunk"]
+def _diff_minus(): return _diff_ansi()["minus"]
+def _diff_plus():  return _diff_ansi()["plus"]
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
 
@@ -310,9 +373,8 @@ def _result_succeeded(result: str | None) -> bool:
     """Conservatively detect whether a tool result represents success."""
     if not result:
         return False
-    try:
-        data = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    data = safe_json_loads(result)
+    if data is None:
         return False
     if not isinstance(data, dict):
         return False
@@ -361,10 +423,7 @@ def extract_edit_diff(
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
     if tool_name == "patch" and result:
-        try:
-            data = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            data = None
+        data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
@@ -403,19 +462,19 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_ANSI_FILE}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
             continue
         if raw_line.startswith("@@"):
-            rendered.append(f"{_ANSI_HUNK}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_hunk()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_ANSI_MINUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_minus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_ANSI_PLUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_plus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_ANSI_DIM}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_diff_dim()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line:
             rendered.append(raw_line)
@@ -481,7 +540,7 @@ def _summarize_rendered_diff_sections(
         summary = f"… omitted {omitted_lines} diff line(s)"
         if omitted_files:
             summary += f" across {omitted_files} additional file(s)/section(s)"
-        rendered.append(f"{_ANSI_HUNK}{summary}{_ANSI_RESET}")
+        rendered.append(f"{_diff_hunk()}{summary}{_ANSI_RESET}")
 
     return rendered
 
@@ -718,23 +777,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
 
     if tool_name == "terminal":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
     if tool_name == "memory":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()

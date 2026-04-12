@@ -360,19 +360,21 @@ def _render_code_block_element(element: Dict[str, Any]) -> str:
 
 
 def _strip_markdown_to_plain_text(text: str) -> str:
+    """Strip markdown formatting to plain text for Feishu text fallbacks.
+
+    Delegates common markdown stripping to the shared helper and adds
+    Feishu-specific patterns (blockquotes, strikethrough, underline tags,
+    horizontal rules, \\r\\n normalisation).
+    """
+    from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
-    plain = re.sub(r"^#{1,6}\s+", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
-    plain = re.sub(r"```(?:[^\n]*\n)?([\s\S]*?)```", lambda m: m.group(1).strip("\n"), plain)
-    plain = re.sub(r"`([^`\n]+)`", r"\1", plain)
-    plain = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", plain)
-    plain = re.sub(r"\*([^*\n]+)\*", r"\1", plain)
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
-    plain = re.sub(r"\n{3,}", "\n\n", plain)
-    return plain.strip()
+    plain = strip_markdown(plain)
+    return plain
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:

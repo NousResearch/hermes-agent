@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
+from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,7 @@ MAX_MESSAGE_LENGTH = 4000
 # Uses get_hermes_home() so each profile gets its own Matrix store.
 from hermes_constants import get_hermes_dir as _get_hermes_dir
 _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
-_CRYPTO_PICKLE_PATH = _STORE_DIR / "crypto_store.pickle"
+_CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
@@ -164,6 +165,33 @@ def check_matrix_requirements() -> bool:
     return True
 
 
+class _CryptoStateStore:
+    """Adapter that satisfies the mautrix crypto StateStore interface.
+
+    OlmMachine requires a StateStore with ``is_encrypted``,
+    ``get_encryption_info``, and ``find_shared_rooms``.  The basic
+    ``MemoryStateStore`` from ``mautrix.client`` doesn't implement these,
+    so we provide simple implementations that consult the client's room
+    state.
+    """
+
+    def __init__(self, client_state_store: Any, joined_rooms: set):
+        self._ss = client_state_store
+        self._joined_rooms = joined_rooms
+
+    async def is_encrypted(self, room_id: str) -> bool:
+        return (await self.get_encryption_info(room_id)) is not None
+
+    async def get_encryption_info(self, room_id: str):
+        if hasattr(self._ss, "get_encryption_info"):
+            return await self._ss.get_encryption_info(room_id)
+        return None
+
+    async def find_shared_rooms(self, user_id: str) -> list:
+        # Return all joined rooms — simple but correct for a single-user bot.
+        return list(self._joined_rooms)
+
+
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
@@ -198,6 +226,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
         self._client: Any = None  # mautrix.client.Client
+        self._crypto_db: Any = None  # mautrix.util.async_db.Database
         self._sync_task: Optional[asyncio.Task] = None
         self._closing = False
         self._startup_ts: float = 0.0
@@ -216,8 +245,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._pending_megolm: list = []
 
         # Thread participation tracking (for require_mention bypass)
-        self._bot_participated_threads: set = self._load_participated_threads()
-        self._MAX_TRACKED_THREADS = 500
+        self._threads = ThreadParticipationTracker("matrix")
 
         # Mention/thread gating — parsed once from env vars.
         self._require_mention: bool = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
@@ -251,6 +279,92 @@ class MatrixAdapter(BasePlatformAdapter):
         self._processed_events.append(event_id)
         self._processed_events_set.add(event_id)
         return False
+
+    # ------------------------------------------------------------------
+    # E2EE helpers
+    # ------------------------------------------------------------------
+
+    async def _verify_device_keys_on_server(self, client: Any, olm: Any) -> bool:
+        """Verify our device keys are on the homeserver after loading crypto state.
+
+        Returns True if keys are valid or were successfully re-uploaded.
+        Returns False if verification fails (caller should refuse E2EE).
+        """
+        try:
+            resp = await client.query_keys({client.mxid: [client.device_id]})
+        except Exception as exc:
+            logger.error(
+                "Matrix: cannot verify device keys on server: %s — refusing E2EE", exc,
+            )
+            return False
+
+        # query_keys returns typed objects (QueryKeysResponse, DeviceKeys
+        # with KeyID keys).  Normalise to plain strings for comparison.
+        device_keys_map = getattr(resp, "device_keys", {}) or {}
+        our_user_devices = device_keys_map.get(str(client.mxid)) or {}
+        our_keys = our_user_devices.get(str(client.device_id))
+
+        if not our_keys:
+            logger.warning("Matrix: device keys missing from server — re-uploading")
+            olm.account.shared = False
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error("Matrix: failed to re-upload device keys: %s", exc)
+                return False
+            return True
+
+        # DeviceKeys.keys is a dict[KeyID, str].  Iterate to find the
+        # ed25519 key rather than constructing a KeyID for lookup.
+        server_ed25519 = None
+        keys_dict = getattr(our_keys, "keys", {}) or {}
+        for key_id, key_value in keys_dict.items():
+            if str(key_id).startswith("ed25519:"):
+                server_ed25519 = str(key_value)
+                break
+        local_ed25519 = olm.account.identity_keys.get("ed25519")
+
+        if server_ed25519 != local_ed25519:
+            if olm.account.shared:
+                # Restored account from DB but server has different keys — corrupted state.
+                logger.error(
+                    "Matrix: server has different identity keys for device %s — "
+                    "local crypto state is stale. Delete %s and restart.",
+                    client.device_id,
+                    _CRYPTO_DB_PATH,
+                )
+                return False
+
+            # Fresh account (never uploaded). Server has stale keys from a
+            # previous installation. Try to delete the old device and re-upload.
+            logger.warning(
+                "Matrix: server has stale keys for device %s — attempting re-upload",
+                client.device_id,
+            )
+            try:
+                await client.api.request(
+                    client.api.Method.DELETE
+                    if hasattr(client.api, "Method")
+                    else "DELETE",
+                    f"/_matrix/client/v3/devices/{client.device_id}",
+                )
+                logger.info("Matrix: deleted stale device %s from server", client.device_id)
+            except Exception:
+                # Device deletion often requires UIA or may simply not be
+                # permitted — that's fine, share_keys will try to overwrite.
+                pass
+            try:
+                await olm.share_keys()
+            except Exception as exc:
+                logger.error(
+                    "Matrix: cannot upload device keys for %s: %s. "
+                    "Try generating a new access token to get a fresh device.",
+                    client.device_id,
+                    exc,
+                )
+                return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -350,45 +464,54 @@ class MatrixAdapter(BasePlatformAdapter):
                 return False
             try:
                 from mautrix.crypto import OlmMachine
-                from mautrix.crypto.store import MemoryCryptoStore
+                from mautrix.crypto.store.asyncpg import PgCryptoStore
+                from mautrix.util.async_db import Database
 
-                crypto_store = MemoryCryptoStore()
+                _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
-                # Restore persisted crypto state from a previous run.
-                # Uses HMAC to verify integrity before unpickling.
-                pickle_path = _CRYPTO_PICKLE_PATH
-                if pickle_path.exists():
-                    try:
-                        import hashlib, hmac, pickle
-                        raw = pickle_path.read_bytes()
-                        # Format: 32-byte HMAC-SHA256 signature + pickle data.
-                        if len(raw) > 32:
-                            sig, payload = raw[:32], raw[32:]
-                            # Key is derived from the device_id + user_id (stable per install).
-                            hmac_key = f"{self._user_id}:{self._device_id}".encode()
-                            expected = hmac.new(hmac_key, payload, hashlib.sha256).digest()
-                            if hmac.compare_digest(sig, expected):
-                                saved = pickle.loads(payload)  # noqa: S301
-                                if isinstance(saved, MemoryCryptoStore):
-                                    crypto_store = saved
-                                    logger.info("Matrix: restored E2EE crypto store from %s", pickle_path)
-                            else:
-                                logger.warning("Matrix: crypto store HMAC mismatch — ignoring stale/tampered file")
-                    except Exception as exc:
-                        logger.warning("Matrix: could not restore crypto store: %s", exc)
+                # Remove legacy pickle file from pre-SQLite era.
+                legacy_pickle = _STORE_DIR / "crypto_store.pickle"
+                if legacy_pickle.exists():
+                    logger.info("Matrix: removing legacy crypto_store.pickle (migrated to SQLite)")
+                    legacy_pickle.unlink()
 
-                olm = OlmMachine(client, crypto_store, state_store)
+                # Open SQLite-backed crypto store.
+                crypto_db = Database.create(
+                    f"sqlite:///{_CRYPTO_DB_PATH}",
+                    upgrade_table=PgCryptoStore.upgrade_table,
+                )
+                await crypto_db.start()
+                self._crypto_db = crypto_db
 
-                # Set trust policy: accept unverified devices so senders
-                # share Megolm session keys with us automatically.
+                _acct_id = self._user_id or "hermes"
+                _pickle_key = f"{_acct_id}:{self._device_id or 'default'}"
+                crypto_store = PgCryptoStore(
+                    account_id=_acct_id,
+                    pickle_key=_pickle_key,
+                    db=crypto_db,
+                )
+                await crypto_store.open()
+
+                crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
+                olm = OlmMachine(client, crypto_store, crypto_state)
+
+                # Accept unverified devices so senders share Megolm
+                # session keys with us automatically.
                 olm.share_keys_min_trust = TrustState.UNVERIFIED
                 olm.send_keys_min_trust = TrustState.UNVERIFIED
 
                 await olm.load()
+
+                # Verify our device keys are still on the homeserver.
+                if not await self._verify_device_keys_on_server(client, olm):
+                    await crypto_db.stop()
+                    await api.session.close()
+                    return False
+
                 client.crypto = olm
                 logger.info(
                     "Matrix: E2EE enabled (store: %s%s)",
-                    str(_STORE_DIR),
+                    str(_CRYPTO_DB_PATH),
                     f", device_id={client.device_id}" if client.device_id else "",
                 )
             except Exception as exc:
@@ -418,12 +541,26 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(sync_data, dict):
                 rooms_join = sync_data.get("rooms", {}).get("join", {})
                 self._joined_rooms = set(rooms_join.keys())
+                # Store the next_batch token so incremental syncs start
+                # from where the initial sync left off.
+                nb = sync_data.get("next_batch")
+                if nb:
+                    await client.sync_store.put_next_batch(nb)
                 logger.info(
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
                 )
                 # Build DM room cache from m.direct account data.
                 await self._refresh_dm_cache()
+
+                # Dispatch events from the initial sync so the OlmMachine
+                # receives to-device key shares queued while we were offline.
+                try:
+                    tasks = client.handle_sync(sync_data)
+                    if tasks:
+                        await asyncio.gather(*tasks)
+                except Exception as exc:
+                    logger.warning("Matrix: initial sync event dispatch error: %s", exc)
             else:
                 logger.warning("Matrix: initial sync returned unexpected type %s", type(sync_data).__name__)
         except Exception as exc:
@@ -452,21 +589,12 @@ class MatrixAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
 
-        # Persist E2EE crypto store before closing so the next restart
-        # can decrypt events using sessions from this run.
-        if self._client and self._encryption and getattr(self._client, "crypto", None):
+        # Close the SQLite crypto store database.
+        if hasattr(self, "_crypto_db") and self._crypto_db:
             try:
-                import hashlib, hmac, pickle
-                crypto_store = self._client.crypto.crypto_store
-                _STORE_DIR.mkdir(parents=True, exist_ok=True)
-                pickle_path = _CRYPTO_PICKLE_PATH
-                payload = pickle.dumps(crypto_store)
-                hmac_key = f"{self._user_id}:{self._device_id}".encode()
-                sig = hmac.new(hmac_key, payload, hashlib.sha256).digest()
-                pickle_path.write_bytes(sig + payload)
-                logger.info("Matrix: persisted E2EE crypto store to %s", pickle_path)
+                await self._crypto_db.stop()
             except Exception as exc:
-                logger.debug("Matrix: could not persist crypto store on disconnect: %s", exc)
+                logger.debug("Matrix: could not close crypto DB on disconnect: %s", exc)
 
         if self._client:
             try:
@@ -809,21 +937,35 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
+        client = self._client
+        # Resume from the token stored during the initial sync.
+        next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
             try:
-                sync_data = await self._client.sync(timeout=30000)
+                sync_data = await client.sync(
+                    since=next_batch, timeout=30000,
+                )
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
                     if rooms_join:
                         self._joined_rooms.update(rooms_join.keys())
 
-                # Share keys periodically if E2EE is enabled.
-                if self._encryption and getattr(self._client, "crypto", None):
+                    # Advance the sync token so the next request is
+                    # incremental instead of a full initial sync.
+                    nb = sync_data.get("next_batch")
+                    if nb:
+                        next_batch = nb
+                        await client.sync_store.put_next_batch(nb)
+
+                    # Dispatch events to registered handlers so that
+                    # _on_room_message / _on_reaction / _on_invite fire.
                     try:
-                        await self._client.crypto.share_keys()
+                        tasks = client.handle_sync(sync_data)
+                        if tasks:
+                            await asyncio.gather(*tasks)
                     except Exception as exc:
-                        logger.warning("Matrix: E2EE key share failed: %s", exc)
+                        logger.warning("Matrix: sync event dispatch error: %s", exc)
 
                 # Retry any buffered undecrypted events.
                 if self._pending_megolm:
@@ -984,7 +1126,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Require-mention gating.
         if not is_dm:
             is_free_room = room_id in self._free_rooms
-            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+            in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned:
                     return None
@@ -992,7 +1134,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # DM mention-thread.
         if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
             thread_id = event_id
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         # Strip mention from body.
         if is_mentioned:
@@ -1001,7 +1143,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Auto-thread.
         if not is_dm and not thread_id and self._auto_thread:
             thread_id = event_id
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
@@ -1013,7 +1155,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
         if thread_id:
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         self._background_read_receipt(room_id, event_id)
 
@@ -1661,48 +1803,6 @@ class MatrixAdapter(BasePlatformAdapter):
             rid: (rid in dm_room_ids)
             for rid in self._joined_rooms
         }
-
-    # ------------------------------------------------------------------
-    # Thread participation tracking
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _thread_state_path() -> Path:
-        """Path to the persisted thread participation set."""
-        from hermes_cli.config import get_hermes_home
-        return get_hermes_home() / "matrix_threads.json"
-
-    @classmethod
-    def _load_participated_threads(cls) -> set:
-        """Load persisted thread IDs from disk."""
-        path = cls._thread_state_path()
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as e:
-            logger.debug("Could not load matrix thread state: %s", e)
-        return set()
-
-    def _save_participated_threads(self) -> None:
-        """Persist the current thread set to disk (best-effort)."""
-        path = self._thread_state_path()
-        try:
-            thread_list = list(self._bot_participated_threads)
-            if len(thread_list) > self._MAX_TRACKED_THREADS:
-                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
-                self._bot_participated_threads = set(thread_list)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Could not save matrix thread state: %s", e)
-
-    def _track_thread(self, thread_id: str) -> None:
-        """Add a thread to the participation set and persist."""
-        if thread_id not in self._bot_participated_threads:
-            self._bot_participated_threads.add(thread_id)
-            self._save_participated_threads()
 
     # ------------------------------------------------------------------
     # Mention detection helpers

@@ -108,9 +108,9 @@ all = [
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
+  "hermes-agent[line]",
   "hermes-agent[mistral]",
   "hermes-agent[web]",
-  "hermes-agent[line]",
 ]
 
 [project.scripts]

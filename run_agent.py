@@ -2249,7 +2249,7 @@ class AIAgent:
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+            logger.error("Session DB flush failed (messages may be lost): %s", e, exc_info=True)
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

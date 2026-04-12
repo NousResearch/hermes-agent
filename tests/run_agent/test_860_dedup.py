@@ -292,3 +292,76 @@ class TestFlushIdxInit:
         agent._flush_messages_to_session_db(messages, [])
         # Should not crash, idx should remain 0
         assert agent._last_flushed_db_idx == 0
+
+
+# ---------------------------------------------------------------------------
+# Test: flush failure log levels (#8038)
+# ---------------------------------------------------------------------------
+
+class TestFlushErrorLogging:
+    """Verify persistence errors are logged at appropriate severity."""
+
+    def _make_agent(self, session_db):
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+            from run_agent import AIAgent
+            agent = AIAgent(
+                model="test/model",
+                quiet_mode=True,
+                session_db=session_db,
+                session_id="test-session-err",
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        return agent
+
+    def test_flush_failure_logs_error(self, tmp_path):
+        """DB failure during flush should log at ERROR with traceback (#8038)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        agent = self._make_agent(db)
+
+        # Force append_message to raise
+        db.append_message = MagicMock(side_effect=Exception("disk full"))
+
+        messages = [{"role": "user", "content": "test"}]
+        with patch("run_agent.logger") as mock_logger:
+            agent._flush_messages_to_session_db(messages, [])
+            mock_logger.error.assert_called_once()
+            call_args = mock_logger.error.call_args
+            assert "flush failed" in call_args[0][0].lower()
+            assert call_args[1].get("exc_info") is True
+
+    def test_flush_failure_does_not_update_idx(self, tmp_path):
+        """On failure, _last_flushed_db_idx should NOT advance."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        agent = self._make_agent(db)
+
+        db.append_message = MagicMock(side_effect=Exception("lock timeout"))
+
+        messages = [{"role": "user", "content": "test"}]
+        agent._flush_messages_to_session_db(messages, [])
+        assert agent._last_flushed_db_idx == 0, "idx should not advance after failure"
+
+
+class TestAppendToTranscriptErrorLogging:
+    """Verify gateway append_to_transcript logs DB errors at WARNING (#8038)."""
+
+    def test_append_db_failure_logs_warning(self, tmp_path):
+        from gateway.config import GatewayConfig
+        from gateway.session import SessionStore
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = MagicMock()
+        store._db.append_message.side_effect = Exception("db locked")
+        store._loaded = True
+
+        msg = {"role": "user", "content": "test"}
+        with patch("gateway.session.logger") as mock_logger:
+            store.append_to_transcript("sess-1", msg)
+            mock_logger.warning.assert_called_once()
+            assert "append failed" in mock_logger.warning.call_args[0][0].lower()

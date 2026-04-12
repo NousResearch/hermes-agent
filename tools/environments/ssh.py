@@ -58,6 +58,7 @@ class SSHEnvironment(BaseEnvironment):
             upload_fn=self._scp_upload,
             delete_fn=self._ssh_delete,
             bulk_upload_fn=self._ssh_bulk_upload,
+            bulk_download_fn=self._ssh_bulk_download,
         )
         self._sync_manager.sync(force=True)
 
@@ -216,6 +217,18 @@ class SSHEnvironment(BaseEnvironment):
 
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
 
+    def _ssh_bulk_download(self, dest: Path) -> None:
+        """Download remote .hermes/ as a tar archive."""
+        # Tar from / with the full path so archive entries preserve absolute
+        # paths (e.g. home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
+        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        ssh_cmd = self._build_ssh_command()
+        ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")
+        with open(dest, "wb") as f:
+            result = subprocess.run(ssh_cmd, stdout=f, stderr=subprocess.PIPE, timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"SSH bulk download failed: {result.stderr.decode(errors='replace').strip()}")
+
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files in one SSH call."""
         cmd = self._build_ssh_command()
@@ -245,6 +258,10 @@ class SSHEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
+        if self._sync_manager:
+            logger.info("SSH: syncing files from sandbox...")
+            self._sync_manager.sync_back()
+
         if self.control_socket.exists():
             try:
                 cmd = ["ssh", "-o", f"ControlPath={self.control_socket}",

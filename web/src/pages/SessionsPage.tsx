@@ -54,7 +54,7 @@ function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name:
         aria-label={`${open ? "Collapse" : "Expand"} tool call ${toolCall.function.name}`}
       >
         {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-        <span className="font-mono font-medium">{toolCall.function.name}</span>
+        <span className="font-mono-ui font-medium">{toolCall.function.name}</span>
         <span className="text-warning/50 ml-auto">{toolCall.id}</span>
       </button>
       {open && (
@@ -71,7 +71,7 @@ function MessageBubble({ msg }: { msg: SessionMessage }) {
   const label = msg.tool_name ? `Tool: ${msg.tool_name}` : style.label;
 
   return (
-    <div className={`rounded-lg ${style.bg} p-3`}>
+    <div className={`${style.bg} p-3`}>
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {msg.timestamp && (
@@ -125,7 +125,7 @@ function SessionRow({
   const hasTitle = session.title && session.title !== "Untitled";
 
   return (
-    <div className={`rounded-lg border overflow-hidden transition-colors ${
+    <div className={`border overflow-hidden transition-colors ${
       session.is_active
         ? "border-success/30 bg-success/[0.03]"
         : "border-border"
@@ -140,7 +140,7 @@ function SessionRow({
           </div>
           <div className="flex flex-col gap-0.5 min-w-0">
             <div className="flex items-center gap-2">
-              <span className={`text-sm truncate ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}>
+              <span className={`text-sm truncate pr-2 ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}>
                 {hasTitle ? session.title : (session.preview ? session.preview.slice(0, 60) : "Untitled session")}
               </span>
               {session.is_active && (

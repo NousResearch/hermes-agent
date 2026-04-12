@@ -83,13 +83,13 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <BarChart3 className="h-5 w-5 text-muted-foreground" />
           <CardTitle className="text-base">Daily Token Usage</CardTitle>
         </div>
-        <div className="flex items-center gap-4 text-xs text-muted-foreground">
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 rounded-sm bg-blue-500" />
+            <div className="h-2.5 w-2.5 rounded-sm bg-[#ffe6cb]" />
             Input
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 rounded-sm bg-green-500" />
+            <div className="h-2.5 w-2.5 rounded-sm bg-emerald-500" />
             Output
           </div>
         </div>
@@ -122,12 +122,12 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 </div>
                 {/* Input bar */}
                 <div
-                  className="w-full bg-blue-500/80 rounded-t-sm"
+                  className="w-full bg-[#ffe6cb]/70"
                   style={{ height: Math.max(inputH, total > 0 ? 1 : 0) }}
                 />
                 {/* Output bar */}
                 <div
-                  className="w-full bg-green-500/80 rounded-b-sm"
+                  className="w-full bg-emerald-500/70"
                   style={{ height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0) }}
                 />
               </div>
@@ -184,10 +184,10 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <td className="py-2 pr-4 font-medium">{formatDate(d.day)}</td>
                     <td className="text-right py-2 px-4 text-muted-foreground">{d.sessions}</td>
                     <td className="text-right py-2 px-4">
-                      <span className="text-blue-400">{formatTokens(d.input_tokens)}</span>
+                      <span className="text-[#ffe6cb]">{formatTokens(d.input_tokens)}</span>
                     </td>
                     <td className="text-right py-2 px-4">
-                      <span className="text-green-400">{formatTokens(d.output_tokens)}</span>
+                      <span className="text-emerald-400">{formatTokens(d.output_tokens)}</span>
                     </td>
                     <td className="text-right py-2 px-4 text-muted-foreground">
                       {cacheHitPct > 0 ? `${cacheHitPct}%` : "—"}
@@ -236,13 +236,13 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               {sorted.map((m) => (
                 <tr key={m.model} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                   <td className="py-2 pr-4">
-                    <span className="font-mono text-xs">{m.model}</span>
+                    <span className="font-mono-ui text-xs">{m.model}</span>
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
                   <td className="text-right py-2 px-4">
-                    <span className="text-blue-400">{formatTokens(m.input_tokens)}</span>
+                    <span className="text-[#ffe6cb]">{formatTokens(m.input_tokens)}</span>
                     {" / "}
-                    <span className="text-green-400">{formatTokens(m.output_tokens)}</span>
+                    <span className="text-emerald-400">{formatTokens(m.output_tokens)}</span>
                   </td>
                   <td className="text-right py-2 pl-4 text-muted-foreground">
                     {m.estimated_cost > 0 ? formatCost(m.estimated_cost) : "—"}

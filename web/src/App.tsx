@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
@@ -17,7 +17,7 @@ const NAV_ITEMS = [
   { id: "cron", label: "Cron", icon: Clock },
   { id: "skills", label: "Skills", icon: Package },
   { id: "config", label: "Config", icon: Settings },
-  { id: "env", label: "API Keys", icon: KeyRound },
+  { id: "env", label: "Keys", icon: KeyRound },
 ] as const;
 
 type PageId = (typeof NAV_ITEMS)[number]["id"];
@@ -36,10 +36,8 @@ const PAGE_COMPONENTS: Record<PageId, React.FC> = {
 export default function App() {
   const [page, setPage] = useState<PageId>("status");
   const [animKey, setAnimKey] = useState(0);
-  const mainRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    // Trigger fade-in animation on page change
     setAnimKey((k) => k + 1);
   }, [page]);
 
@@ -47,38 +45,73 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
-      <header className="sticky top-0 z-40 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="mx-auto flex h-14 max-w-5xl items-center gap-6 px-6">
-          <span className="text-lg font-bold tracking-tight shrink-0">Hermes Agent</span>
+      {/* Global grain + warm glow (matches landing page) */}
+      <div className="noise-overlay" />
+      <div className="warm-glow" />
 
-          <nav className="flex items-center gap-1 overflow-x-auto scrollbar-none">
+      {/* ---- Header with grid-border nav ---- */}
+      <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-sm">
+        <div className="mx-auto flex h-12 max-w-[1400px] items-stretch">
+          {/* Brand */}
+          <div className="flex items-center border-r border-border px-5 shrink-0">
+            <span className="font-collapse text-xl font-bold tracking-wider uppercase blend-lighter">
+              Hermes<br className="hidden sm:inline" /><span className="sm:hidden"> </span>Agent
+            </span>
+          </div>
+
+          {/* Nav grid — Mondwest labels like the landing page nav */}
+          <nav className="flex items-stretch overflow-x-auto scrollbar-none">
             {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setPage(id)}
-                className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium whitespace-nowrap transition-colors cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+                className={`group relative inline-flex items-center gap-1.5 border-r border-border px-4 py-2 font-display text-[0.8rem] tracking-[0.12em] uppercase whitespace-nowrap transition-colors cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                   page === id
-                    ? "bg-secondary text-secondary-foreground"
-                    : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
+                    ? "text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
                 }`}
               >
-                <Icon className="h-4 w-4" />
+                <Icon className="h-3.5 w-3.5" />
                 {label}
+                {/* Hover highlight */}
+                <span className="absolute inset-0 bg-foreground pointer-events-none transition-opacity duration-150 group-hover:opacity-5 opacity-0" />
+                {/* Active indicator — dither bar */}
+                {page === id && (
+                  <span className="absolute bottom-0 left-0 right-0 h-px bg-foreground" />
+                )}
               </button>
             ))}
           </nav>
+
+          {/* Version badge */}
+          <div className="ml-auto flex items-center px-4 text-muted-foreground">
+            <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
+              Web UI
+            </span>
+          </div>
         </div>
       </header>
 
       <main
-        ref={mainRef}
         key={animKey}
-        className="mx-auto w-full max-w-5xl flex-1 px-6 py-8"
+        className="relative z-2 mx-auto w-full max-w-[1400px] flex-1 px-6 py-8"
         style={{ animation: "fade-in 150ms ease-out" }}
       >
         <PageComponent />
       </main>
+
+      {/* ---- Footer ---- */}
+      <footer className="relative z-2 border-t border-border">
+        <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-3">
+          <span className="font-display text-[0.8rem] tracking-[0.12em] uppercase opacity-50">
+            Hermes Agent
+          </span>
+          <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase text-foreground/40">
+            Nous Research
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }

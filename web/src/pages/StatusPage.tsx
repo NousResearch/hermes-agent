@@ -126,7 +126,7 @@ export default function StatusPage() {
     <div className="flex flex-col gap-6">
       {/* Alert banner — breaks grid monotony for critical states */}
       {alerts.length > 0 && (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/[0.06] p-4">
+        <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
           <div className="flex items-start gap-3">
             <AlertTriangle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
             <div className="flex flex-col gap-2 min-w-0">
@@ -152,7 +152,7 @@ export default function StatusPage() {
             </CardHeader>
 
             <CardContent>
-              <div className="text-2xl font-bold">{value}</div>
+              <div className="text-2xl font-bold font-display">{value}</div>
 
               <Badge variant={badgeVariant} className="mt-2">
                 {badgeVariant === "success" && (
@@ -182,7 +182,7 @@ export default function StatusPage() {
             {activeSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex items-center justify-between rounded-lg border border-border p-3"
+                className="flex items-center justify-between border border-border p-3"
               >
                 <div className="flex flex-col gap-1">
                   <div className="flex items-center gap-2">
@@ -195,7 +195,7 @@ export default function StatusPage() {
                   </div>
 
                   <span className="text-xs text-muted-foreground">
-                    {s.model ?? "unknown"} · {s.message_count} msgs · {timeAgo(s.last_active)}
+                    <span className="font-mono-ui">{s.model ?? "unknown"}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
                   </span>
                 </div>
               </div>
@@ -217,13 +217,13 @@ export default function StatusPage() {
             {recentSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex items-center justify-between rounded-lg border border-border p-3"
+                className="flex items-center justify-between border border-border p-3"
               >
                 <div className="flex flex-col gap-1">
                   <span className="font-medium text-sm">{s.title ?? "Untitled"}</span>
 
                   <span className="text-xs text-muted-foreground">
-                    {s.model ?? "unknown"} · {s.message_count} msgs · {timeAgo(s.last_active)}
+                    <span className="font-mono-ui">{s.model ?? "unknown"}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
                   </span>
 
                   {s.preview && (
@@ -267,7 +267,7 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
           return (
             <div
               key={name}
-              className="flex items-center justify-between rounded-lg border border-border p-3"
+              className="flex items-center justify-between border border-border p-3"
             >
               <div className="flex items-center gap-3">
                 <IconComponent className={`h-4 w-4 ${

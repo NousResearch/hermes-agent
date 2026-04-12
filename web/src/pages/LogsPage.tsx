@@ -154,7 +154,7 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="rounded-lg border border-border bg-background p-4 font-mono text-xs leading-5 overflow-auto max-h-[600px] min-h-[200px]"
+            className="border border-border bg-background p-4 font-mono-ui text-xs leading-5 overflow-auto max-h-[600px] min-h-[200px]"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">No log lines found</p>

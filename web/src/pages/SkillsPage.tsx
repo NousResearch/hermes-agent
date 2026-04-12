@@ -67,8 +67,8 @@ export default function SkillsPage() {
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
-  // Start expanded so toggles are immediately accessible
-  const [collapsedCategories, setCollapsedCategories] = useState<Set<string> | "all">(new Set());
+  // Start collapsed by default
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string> | "all">("all");
   const { toast, showToast } = useToast();
 
   useEffect(() => {
@@ -243,7 +243,7 @@ export default function SkillsPage() {
           <Filter className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <button
             type="button"
-            className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+            className={`inline-flex items-center px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
               !activeCategory
                 ? "bg-primary text-primary-foreground"
                 : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
@@ -256,7 +256,7 @@ export default function SkillsPage() {
             <button
               key={key}
               type="button"
-              className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+              className={`inline-flex items-center px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
                 activeCategory === key
                   ? "bg-primary text-primary-foreground"
                   : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
@@ -315,12 +315,12 @@ export default function SkillsPage() {
 
                 {collapsed ? (
                   /* Peek: show first few skill names so collapsed isn't blank */
-                  <CardContent className="pt-0 px-4 pb-3">
-                    <p className="text-xs text-muted-foreground/60 truncate">
+                  <div className="px-4 pb-3 flex items-center min-h-[28px]">
+                    <p className="text-xs text-muted-foreground/60 truncate leading-normal">
                       {catSkills.slice(0, 4).map((s) => s.name).join(", ")}
                       {catSkills.length > 4 && `, +${catSkills.length - 4} more`}
                     </p>
-                  </CardContent>
+                  </div>
                 ) : (
                   <CardContent className="pt-0 px-4 pb-3">
                     <div className="grid gap-1">
@@ -340,7 +340,7 @@ export default function SkillsPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-0.5">
                               <span
-                                className={`font-mono text-sm ${
+                                className={`font-mono-ui text-sm ${
                                   skill.enabled
                                     ? "text-foreground"
                                     : "text-muted-foreground"

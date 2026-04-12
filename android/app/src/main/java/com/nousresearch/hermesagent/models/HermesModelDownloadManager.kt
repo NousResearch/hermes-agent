@@ -170,7 +170,12 @@ object HermesModelDownloadManager {
         val trimmed = draft.repoOrUrl.trim()
         val explicitFilePath = draft.filePath.trim().trim('/')
         val requestedRevision = draft.revision.trim().ifBlank { "main" }
-        parseHuggingFaceReference(trimmed)?.let { reference ->
+        parseHuggingFaceReference(trimmed)?.let { parsedReference ->
+            val reference = normalizeReferenceForRuntime(
+                reference = parsedReference,
+                runtimeFlavor = draft.runtimeFlavor,
+                explicitFilePath = explicitFilePath,
+            )
             val resolvedRevision = reference.revision ?: requestedRevision
             val resolvedFilePath = explicitFilePath.ifBlank {
                 reference.filePath ?: findCompatibleRepoFile(
@@ -229,6 +234,22 @@ object HermesModelDownloadManager {
         return HuggingFaceReference(repoId = repoId)
     }
 
+    private fun normalizeReferenceForRuntime(
+        reference: HuggingFaceReference,
+        runtimeFlavor: String,
+        explicitFilePath: String,
+    ): HuggingFaceReference {
+        if (explicitFilePath.isNotBlank() || reference.filePath != null || !runtimeFlavor.equals("LiteRT-LM", ignoreCase = true)) {
+            return reference
+        }
+        val aliasRepoId = gemma4LiteRtAlias(reference.repoId) ?: return reference
+        return reference.copy(
+            repoId = aliasRepoId,
+            revision = null,
+            filePath = null,
+        )
+    }
+
     private fun findCompatibleRepoFile(
         repoId: String,
         revision: String,
@@ -241,7 +262,29 @@ object HermesModelDownloadManager {
             .sortedWith(compareBy<String> { compatibleFileRank(it, runtimeFlavor) }.thenBy { it.lowercase(Locale.US) })
 
         return compatible.firstOrNull()
-            ?: throw IllegalArgumentException("No compatible $runtimeFlavor artifact found in huggingface.co/$repoId")
+            ?: throw IllegalArgumentException(noCompatibleArtifactMessage(repoId, runtimeFlavor))
+    }
+
+    private fun noCompatibleArtifactMessage(repoId: String, runtimeFlavor: String): String {
+        val aliasRepoId = gemma4LiteRtAlias(repoId)
+        val normalizedRepoId = repoId.lowercase(Locale.US)
+        return when {
+            runtimeFlavor.equals("GGUF", ignoreCase = true) && normalizedRepoId in GEMMA4_SOURCE_REPOS ->
+                "No compatible GGUF artifact found in huggingface.co/$repoId. Google AI Edge Gallery runs Gemma 4 from LiteRT-LM repos like ${aliasRepoId ?: "litert-community/gemma-4-E2B-it-litert-lm"}, not from the raw google model page."
+
+            runtimeFlavor.equals("LiteRT-LM", ignoreCase = true) && aliasRepoId != null ->
+                "No compatible LiteRT-LM artifact found in huggingface.co/$repoId. Try the mobile-ready repo $aliasRepoId instead."
+
+            else -> "No compatible $runtimeFlavor artifact found in huggingface.co/$repoId"
+        }
+    }
+
+    private fun gemma4LiteRtAlias(repoId: String): String? {
+        return when (repoId.lowercase(Locale.US)) {
+            "google/gemma-4-e2b", "google/gemma-4-e2b-it" -> "litert-community/gemma-4-E2B-it-litert-lm"
+            "google/gemma-4-e4b", "google/gemma-4-e4b-it" -> "litert-community/gemma-4-E4B-it-litert-lm"
+            else -> null
+        }
     }
 
     private fun loadRepoFiles(repoId: String, revision: String, hfToken: String): List<String> {
@@ -412,5 +455,12 @@ object HermesModelDownloadManager {
         val repoId: String,
         val revision: String? = null,
         val filePath: String? = null,
+    )
+
+    private val GEMMA4_SOURCE_REPOS = setOf(
+        "google/gemma-4-e2b",
+        "google/gemma-4-e2b-it",
+        "google/gemma-4-e4b",
+        "google/gemma-4-e4b-it",
     )
 }

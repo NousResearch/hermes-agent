@@ -77,11 +77,69 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         )
     }
 
-    fun updateRepoOrUrl(value: String) = _uiState.update { it.copy(repoOrUrl = value) }
-    fun updateFilePath(value: String) = _uiState.update { it.copy(filePath = value) }
-    fun updateRevision(value: String) = _uiState.update { it.copy(revision = value) }
-    fun updateRuntimeFlavor(value: String) = _uiState.update { it.copy(runtimeFlavor = value) }
-    fun updateHuggingFaceToken(value: String) = _uiState.update { it.copy(huggingFaceToken = value) }
+    fun updateRepoOrUrl(value: String) = _uiState.update {
+        it.copy(
+            repoOrUrl = value,
+            inspectionStatus = "",
+            candidateSummary = "",
+            candidateRamWarning = "",
+        )
+    }
+
+    fun updateFilePath(value: String) = _uiState.update {
+        it.copy(
+            filePath = value,
+            inspectionStatus = "",
+            candidateSummary = "",
+            candidateRamWarning = "",
+        )
+    }
+
+    fun updateRevision(value: String) = _uiState.update {
+        it.copy(
+            revision = value,
+            inspectionStatus = "",
+            candidateSummary = "",
+            candidateRamWarning = "",
+        )
+    }
+
+    fun updateRuntimeFlavor(value: String) = _uiState.update {
+        it.copy(
+            runtimeFlavor = value,
+            inspectionStatus = "",
+            candidateSummary = "",
+            candidateRamWarning = "",
+        )
+    }
+
+    fun updateHuggingFaceToken(value: String) = _uiState.update {
+        it.copy(
+            huggingFaceToken = value,
+            inspectionStatus = "",
+            candidateSummary = "",
+            candidateRamWarning = "",
+        )
+    }
+
+    fun syncSelectedBackend(selectedBackend: String) {
+        val runtimeFlavor = when (selectedBackend) {
+            "llama.cpp" -> "GGUF"
+            "litert-lm" -> "LiteRT-LM"
+            else -> _uiState.value.runtimeFlavor
+        }
+        if (runtimeFlavor != _uiState.value.runtimeFlavor) {
+            updateRuntimeFlavor(runtimeFlavor)
+        } else {
+            _uiState.update {
+                it.copy(
+                    inspectionStatus = "",
+                    candidateSummary = "",
+                    candidateRamWarning = "",
+                )
+            }
+        }
+    }
 
     fun saveHuggingFaceToken() {
         val token = _uiState.value.huggingFaceToken.trim()
@@ -97,10 +155,18 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         }
     }
 
-    fun inspectCandidate() {
+    fun inspectCandidate(runtimeFlavorOverride: String? = null) {
         val context = getApplication<Application>()
         val state = _uiState.value
-        _uiState.update { it.copy(inspectionStatus = "Inspecting model candidate…", candidateSummary = "", candidateRamWarning = "") }
+        val resolvedRuntimeFlavor = runtimeFlavorOverride?.ifBlank { null } ?: state.runtimeFlavor
+        _uiState.update {
+            it.copy(
+                runtimeFlavor = resolvedRuntimeFlavor,
+                inspectionStatus = "Inspecting model candidate…",
+                candidateSummary = "",
+                candidateRamWarning = "",
+            )
+        }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -110,7 +176,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                             repoOrUrl = state.repoOrUrl,
                             filePath = state.filePath,
                             revision = state.revision,
-                            runtimeFlavor = state.runtimeFlavor,
+                            runtimeFlavor = resolvedRuntimeFlavor,
                         ),
                         hfToken = state.huggingFaceToken,
                     )
@@ -135,10 +201,16 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         }
     }
 
-    fun startDownload(dataSaverMode: Boolean) {
+    fun startDownload(dataSaverMode: Boolean, runtimeFlavorOverride: String? = null) {
         val context = getApplication<Application>()
         val state = _uiState.value
-        _uiState.update { it.copy(inspectionStatus = "Preparing download…") }
+        val resolvedRuntimeFlavor = runtimeFlavorOverride?.ifBlank { null } ?: state.runtimeFlavor
+        _uiState.update {
+            it.copy(
+                runtimeFlavor = resolvedRuntimeFlavor,
+                inspectionStatus = "Preparing download…",
+            )
+        }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -149,7 +221,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                             repoOrUrl = state.repoOrUrl,
                             filePath = state.filePath,
                             revision = state.revision,
-                            runtimeFlavor = state.runtimeFlavor,
+                            runtimeFlavor = resolvedRuntimeFlavor,
                         ),
                         hfToken = state.huggingFaceToken,
                         dataSaverMode = dataSaverMode,

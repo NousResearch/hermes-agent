@@ -226,13 +226,15 @@ fun ChatScreen(
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .imePadding(),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .widthIn(max = 960.dp)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .imePadding(),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
                 ChatHeaderCard(
                     title = uiState.activeConversationTitle,
                     onOpenHistory = viewModel::showHistory,
@@ -292,6 +294,7 @@ fun ChatScreen(
             }
         }
     }
+}
 }
 
 @Composable

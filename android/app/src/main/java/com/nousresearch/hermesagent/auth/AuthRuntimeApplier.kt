@@ -47,6 +47,7 @@ object AuthRuntimeApplier {
                 baseUrl = resolvedBaseUrl,
                 model = resolvedModel,
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
+                dataSaverMode = existingSettings.dataSaverMode,
             )
         )
         HermesRuntimeManager.stop()

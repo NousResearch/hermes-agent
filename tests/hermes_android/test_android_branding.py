@@ -60,5 +60,7 @@ def test_app_shell_has_compact_brand_bar_bottom_nav_and_custom_icons():
         'ic_action_external.xml',
         'ic_action_mic.xml',
         'ic_action_speaker.xml',
+        'ic_action_fullscreen.xml',
+        'ic_action_minimize.xml',
     ]:
         assert name in drawable_files

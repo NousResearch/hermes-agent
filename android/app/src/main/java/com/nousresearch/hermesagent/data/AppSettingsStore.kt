@@ -7,6 +7,7 @@ data class AppSettings(
     val baseUrl: String = "",
     val model: String = "",
     val corr3xtBaseUrl: String = "",
+    val dataSaverMode: Boolean = false,
 )
 
 class AppSettingsStore(context: Context) {
@@ -18,6 +19,7 @@ class AppSettingsStore(context: Context) {
             baseUrl = preferences.getString(KEY_BASE_URL, "").orEmpty(),
             model = preferences.getString(KEY_MODEL, "").orEmpty(),
             corr3xtBaseUrl = preferences.getString(KEY_CORR3XT_BASE_URL, "").orEmpty(),
+            dataSaverMode = preferences.getBoolean(KEY_DATA_SAVER_MODE, false),
         )
     }
 
@@ -27,6 +29,7 @@ class AppSettingsStore(context: Context) {
             .putString(KEY_BASE_URL, settings.baseUrl)
             .putString(KEY_MODEL, settings.model)
             .putString(KEY_CORR3XT_BASE_URL, settings.corr3xtBaseUrl)
+            .putBoolean(KEY_DATA_SAVER_MODE, settings.dataSaverMode)
             .apply()
     }
 
@@ -36,5 +39,6 @@ class AppSettingsStore(context: Context) {
         private const val KEY_BASE_URL = "base_url"
         private const val KEY_MODEL = "model"
         private const val KEY_CORR3XT_BASE_URL = "corr3xt_base_url"
+        private const val KEY_DATA_SAVER_MODE = "data_saver_mode"
     }
 }

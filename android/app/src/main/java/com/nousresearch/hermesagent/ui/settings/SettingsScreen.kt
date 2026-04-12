@@ -1,11 +1,13 @@
 package com.nousresearch.hermesagent.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -24,6 +26,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -50,92 +53,99 @@ fun SettingsScreen(
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(scrollState)
-                    .imePadding()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
-                    .padding(bottom = extraBottomSpacing),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                SettingsHelpCard(providerLabel = selectedPreset?.label ?: uiState.provider)
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 920.dp)
+                        .verticalScroll(scrollState)
+                        .imePadding()
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(bottom = extraBottomSpacing),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SettingsHelpCard(providerLabel = selectedPreset?.label ?: uiState.provider)
 
-                ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
-                    OutlinedTextField(
-                        value = uiState.provider,
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Provider") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier
-                            .menuAnchor()
-                            .fillMaxWidth(),
-                    )
-                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                        ProviderPresets.defaults.forEach { preset ->
-                            DropdownMenuItem(
-                                text = { Text(preset.label) },
-                                onClick = {
-                                    viewModel.updateProvider(preset.id)
-                                    if (uiState.baseUrl.isBlank()) {
-                                        viewModel.updateBaseUrl(preset.baseUrl)
-                                    }
-                                    if (uiState.model.isBlank()) {
-                                        viewModel.updateModel(preset.modelHint)
-                                    }
-                                    expanded = false
-                                },
-                            )
+                    ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
+                        OutlinedTextField(
+                            value = uiState.provider,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Provider") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
+                            modifier = Modifier
+                                .menuAnchor()
+                                .fillMaxWidth(),
+                        )
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            ProviderPresets.defaults.forEach { preset ->
+                                DropdownMenuItem(
+                                    text = { Text(preset.label) },
+                                    onClick = {
+                                        viewModel.updateProvider(preset.id)
+                                        if (uiState.baseUrl.isBlank()) {
+                                            viewModel.updateBaseUrl(preset.baseUrl)
+                                        }
+                                        if (uiState.model.isBlank()) {
+                                            viewModel.updateModel(preset.modelHint)
+                                        }
+                                        expanded = false
+                                    },
+                                )
+                            }
                         }
                     }
-                }
-                Text(
-                    "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                    Text(
+                        "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
-                OutlinedTextField(
-                    value = uiState.baseUrl,
-                    onValueChange = viewModel::updateBaseUrl,
-                    label = { Text("Base URL") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Default for ${selectedPreset?.label ?: uiState.provider}: ${selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                    OutlinedTextField(
+                        value = uiState.baseUrl,
+                        onValueChange = viewModel::updateBaseUrl,
+                        label = { Text("Base URL") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Default for ${selectedPreset?.label ?: uiState.provider}: ${selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional"}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
-                OutlinedTextField(
-                    value = uiState.model,
-                    onValueChange = viewModel::updateModel,
-                    label = { Text("Model") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Suggested model: ${selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                    OutlinedTextField(
+                        value = uiState.model,
+                        onValueChange = viewModel::updateModel,
+                        label = { Text("Model") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Suggested model: ${selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model"}",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
-                OutlinedTextField(
-                    value = uiState.apiKey,
-                    onValueChange = viewModel::updateApiKey,
-                    label = { Text("API Key") },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    "Paste the key for the selected provider, then tap Save to restart the local Hermes backend with the new config.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
+                    OutlinedTextField(
+                        value = uiState.apiKey,
+                        onValueChange = viewModel::updateApiKey,
+                        label = { Text("API Key") },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Text(
+                        "Paste the key for the selected provider, then tap Save to restart the local Hermes backend with the new config.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
 
-                ToolProfileCard()
+                    ToolProfileCard()
+                    LocalModelDownloadsSection(
+                        dataSaverMode = uiState.dataSaverMode,
+                        onDataSaverModeChange = viewModel::updateDataSaverMode,
+                    )
 
-                Button(onClick = viewModel::save) {
-                    Text("Save")
-                }
+                    Button(onClick = viewModel::save) {
+                        Text("Save")
+                    }
 
-                if (uiState.status.isNotBlank()) {
-                    Text(uiState.status)
+                    if (uiState.status.isNotBlank()) {
+                        Text(uiState.status)
+                    }
                 }
             }
         }

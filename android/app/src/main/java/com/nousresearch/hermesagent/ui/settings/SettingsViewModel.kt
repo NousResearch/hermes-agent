@@ -21,6 +21,7 @@ data class SettingsUiState(
     val baseUrl: String = "",
     val model: String = "",
     val apiKey: String = "",
+    val dataSaverMode: Boolean = false,
     val status: String = "",
 )
 
@@ -38,6 +39,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             baseUrl = stored.baseUrl,
             model = stored.model,
             apiKey = secretsStore.loadApiKey(stored.provider),
+            dataSaverMode = stored.dataSaverMode,
         )
     }
 
@@ -56,6 +58,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateBaseUrl(value: String) = _uiState.update { it.copy(baseUrl = value) }
     fun updateModel(value: String) = _uiState.update { it.copy(model = value) }
     fun updateApiKey(value: String) = _uiState.update { it.copy(apiKey = value) }
+    fun updateDataSaverMode(enabled: Boolean) = _uiState.update { it.copy(dataSaverMode = enabled) }
 
     fun save() {
         val snapshot = _uiState.value
@@ -67,6 +70,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     baseUrl = snapshot.baseUrl,
                     model = snapshot.model,
                     corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
+                    dataSaverMode = snapshot.dataSaverMode,
                 )
             )
             secretsStore.saveApiKey(snapshot.provider, snapshot.apiKey)
@@ -87,7 +91,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             )
             HermesRuntimeManager.stop()
             HermesRuntimeManager.ensureStarted(getApplication())
-            _uiState.update { it.copy(status = "Settings saved and backend restarted") }
+            _uiState.update {
+                it.copy(
+                    status = if (snapshot.dataSaverMode) {
+                        "Settings saved. Data saver mode now keeps heavy downloads on Wi‑Fi / unmetered networks."
+                    } else {
+                        "Settings saved and backend restarted"
+                    },
+                )
+            }
         }
     }
 }

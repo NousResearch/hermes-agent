@@ -2,6 +2,7 @@ package com.nousresearch.hermesagent.ui.shell
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -190,33 +192,36 @@ private fun HermesTopBar(
         color = MaterialTheme.colorScheme.primaryContainer,
         tonalElevation = 2.dp,
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .statusBarsPadding()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Image(
-                painter = painterResource(id = R.drawable.ic_hermes_logo),
-                contentDescription = "Hermes logo",
-                modifier = Modifier.size(34.dp),
-            )
-            Column(modifier = Modifier.weight(1f)) {
-                Text(section.title, style = MaterialTheme.typography.titleLarge)
-                Text(subtitle, style = MaterialTheme.typography.bodySmall)
-            }
-            Surface(
-                color = MaterialTheme.colorScheme.secondary,
-                shape = MaterialTheme.shapes.small,
+        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 960.dp)
+                    .statusBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "ALPHA",
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    color = MaterialTheme.colorScheme.onSecondary,
-                    style = MaterialTheme.typography.labelMedium,
+                Image(
+                    painter = painterResource(id = R.drawable.ic_hermes_logo),
+                    contentDescription = "Hermes logo",
+                    modifier = Modifier.size(34.dp),
                 )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(section.title, style = MaterialTheme.typography.titleLarge)
+                    Text(subtitle, style = MaterialTheme.typography.bodySmall)
+                }
+                Surface(
+                    color = MaterialTheme.colorScheme.secondary,
+                    shape = MaterialTheme.shapes.small,
+                ) {
+                    Text(
+                        text = "ALPHA",
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        color = MaterialTheme.colorScheme.onSecondary,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                }
             }
         }
     }

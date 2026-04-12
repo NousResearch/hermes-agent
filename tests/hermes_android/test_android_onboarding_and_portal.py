@@ -35,5 +35,7 @@ def test_portal_screen_auto_loads_and_uses_contextual_actions():
     assert 'loadUrl(uiState.portalUrl)' in portal
     assert 'The embedded portal now auto-loads on this page.' in portal
     assert 'extraBottomSpacing' in portal
+    assert 'Full screen portal' in portal
+    assert 'Minimize portal' in portal
     assert 'Try embedded preview' not in portal
     assert 'Reload preview' not in portal

@@ -70,6 +70,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 baseUrl = existing.baseUrl,
                 model = existing.model,
                 corr3xtBaseUrl = normalized,
+                dataSaverMode = existing.dataSaverMode,
             )
         )
         _uiState.update {

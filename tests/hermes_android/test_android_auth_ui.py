@@ -6,8 +6,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_app_shell_has_accounts_tab_and_auth_screen():
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
+    shell_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/ShellModels.kt").read_text(encoding="utf-8")
 
-    assert 'Accounts("Accounts")' in app_shell
+    assert 'Accounts(' in shell_models
+    assert 'label = "Accounts"' in shell_models
     assert 'AppSection.Accounts -> AuthScreen' in app_shell
 
 

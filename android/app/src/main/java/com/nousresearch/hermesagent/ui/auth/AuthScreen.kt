@@ -14,19 +14,47 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nousresearch.hermesagent.R
+import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 
 @Composable
 fun AuthScreen(
     modifier: Modifier = Modifier,
     viewModel: AuthViewModel = viewModel(),
+    onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val scrollState = rememberScrollState()
+
+    SideEffect {
+        val actions = buildList {
+            add(
+                ShellActionItem(
+                    label = "Refresh auth state",
+                    description = "Reload local Corr3xt and provider auth status.",
+                    iconRes = R.drawable.ic_action_refresh,
+                    onClick = viewModel::refresh,
+                )
+            )
+            if (uiState.hasPendingRequest) {
+                add(
+                    ShellActionItem(
+                        label = "Cancel pending sign-in",
+                        description = "Stop waiting for the current Corr3xt callback.",
+                        iconRes = R.drawable.ic_nav_settings,
+                        onClick = viewModel::cancelPendingRequest,
+                    )
+                )
+            }
+        }
+        onContextActionsChanged(actions)
+    }
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {

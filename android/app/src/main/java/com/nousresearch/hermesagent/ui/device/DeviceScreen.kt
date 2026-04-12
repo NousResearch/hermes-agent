@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -22,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -29,13 +29,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.device.HermesGlobalAction
+import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun DeviceScreen(
     modifier: Modifier = Modifier,
     viewModel: DeviceViewModel = viewModel(),
+    onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -59,13 +62,45 @@ fun DeviceScreen(
         pendingExportFile = null
     }
 
+    SideEffect {
+        onContextActionsChanged(
+            listOf(
+                ShellActionItem(
+                    label = "Refresh device state",
+                    description = "Reload shared-folder, Linux suite, and accessibility status.",
+                    iconRes = R.drawable.ic_action_refresh,
+                    onClick = viewModel::refresh,
+                ),
+                ShellActionItem(
+                    label = "Grant shared folder",
+                    description = "Pick a real Android folder for direct Hermes file access.",
+                    iconRes = R.drawable.ic_nav_device,
+                    onClick = { sharedFolderLauncher.launch(null) },
+                ),
+                ShellActionItem(
+                    label = "Import file",
+                    description = "Bring a file into the Hermes workspace for scratch edits.",
+                    iconRes = R.drawable.ic_nav_device,
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                ),
+                ShellActionItem(
+                    label = "Accessibility settings",
+                    description = "Open Android accessibility settings for Hermes controls.",
+                    iconRes = R.drawable.ic_nav_settings,
+                    onClick = {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    },
+                ),
+            )
+        )
+    }
+
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .navigationBarsPadding()
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {

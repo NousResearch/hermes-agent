@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
 )
+from gateway.session import SessionEntry
 
 
 class TestSessionSourceRoundtrip:
@@ -1010,3 +1011,58 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestSuspendRecentlyActive:
+    """suspend_recently_active must compare datetime to datetime, not float."""
+
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_suspends_recent_session(self, store):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=now - timedelta(seconds=30),
+            updated_at=now - timedelta(seconds=30),
+        )
+        store._entries = {"k1": entry}
+        count = store.suspend_recently_active(max_age_seconds=120)
+        assert count == 1
+        assert entry.suspended is True
+
+    def test_skips_old_session(self, store):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=now - timedelta(hours=1),
+            updated_at=now - timedelta(hours=1),
+        )
+        store._entries = {"k1": entry}
+        count = store.suspend_recently_active(max_age_seconds=120)
+        assert count == 0
+        assert entry.suspended is False
+
+    def test_no_type_error(self, store):
+        """Regression: must not raise 'datetime >= float' TypeError."""
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=now,
+            updated_at=now,
+        )
+        store._entries = {"k1": entry}
+        # Should not raise TypeError
+        store.suspend_recently_active(max_age_seconds=120)

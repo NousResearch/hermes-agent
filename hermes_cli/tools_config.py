@@ -60,6 +60,8 @@ CONFIGURABLE_TOOLSETS = [
     ("todo",            "📋 Task Planning",             "todo"),
     ("memory",          "💾 Memory",                    "persistent memory across sessions"),
     ("session_search",  "🔎 Session Search",            "search past conversations"),
+    ("execution_receipts", "🧾 Execution Receipts",     "list/query/prune/reconcile delegated receipts + cron-backed maintenance install/status/remove"),
+    ("execution_work_orders", "🛫 Execution Work Orders", "enqueue/query/run/retry/resume durable direct work orders + cron-backed runner install/status/remove"),
     ("clarify",         "❓ Clarifying Questions",      "clarify"),
     ("delegation",      "👥 Task Delegation",           "delegate_task"),
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),

@@ -4060,6 +4060,18 @@ def cmd_cron(args):
     cron_command(args)
 
 
+def cmd_receipts(args):
+    """Execution receipt ledger management."""
+    from hermes_cli.receipts import receipts_command
+    receipts_command(args)
+
+
+def cmd_workorders(args):
+    """Durable execution work-order management."""
+    from hermes_cli.work_orders import work_orders_command
+    work_orders_command(args)
+
+
 def cmd_webhook(args):
     """Webhook subscription management."""
     from hermes_cli.webhook import webhook_command
@@ -6964,6 +6976,104 @@ For more help on a command:
     cron_subparsers.add_parser("tick", help="Run due jobs once and exit")
 
     cron_parser.set_defaults(func=cmd_cron)
+
+    # =========================================================================
+    # receipts command
+    # =========================================================================
+    receipts_parser = subparsers.add_parser(
+        "receipts",
+        help="Execution receipt ledger management",
+        description="Inspect and maintain the execution receipt ledger"
+    )
+    receipts_subparsers = receipts_parser.add_subparsers(dest="receipts_command")
+
+    receipts_list = receipts_subparsers.add_parser("list", help="List recent execution receipts")
+    receipts_list.add_argument("--limit", type=int, default=10, help="Maximum receipts to show")
+    receipts_list.add_argument("--status", help="Optional status filter")
+    receipts_list.add_argument("--parent-session-id", dest="parent_session_id", help="Optional parent session filter")
+    receipts_list.add_argument("--child-session-id", dest="child_session_id", help="Optional child session filter")
+
+    receipts_reconcile = receipts_subparsers.add_parser("reconcile", help="Reconcile receipt files with the SQLite ledger")
+    receipts_reconcile.add_argument("--keep-missing-rows", action="store_true", help="Do not remove index rows whose files are missing")
+
+    receipts_prune = receipts_subparsers.add_parser("prune", help="Prune old execution receipts")
+    receipts_prune.add_argument("max_age_seconds", type=float, help="Delete receipts older than this many seconds")
+    receipts_prune.add_argument("--limit", type=int, default=100, help="Maximum receipts to delete in one pass")
+    receipts_prune.add_argument("--include-failed", action="store_true", help="Also prune failed receipts older than the cutoff")
+
+    receipts_subparsers.add_parser("status", help="Show execution receipt maintenance status")
+
+    receipts_install = receipts_subparsers.add_parser("install", help="Install or update cron-backed receipt maintenance")
+    receipts_install.add_argument("--schedule", help="Cron schedule string (default: every 6h)")
+    receipts_install.add_argument("--prune-completed-after-seconds", dest="prune_completed_after_seconds", type=float, help="Retention for completed/non-failed receipts")
+    receipts_install.add_argument("--prune-failed-after-seconds", dest="prune_failed_after_seconds", type=float, help="Retention for failed receipts")
+    receipts_install.add_argument("--keep-missing-rows", action="store_true", help="Do not delete stale index rows during reconcile")
+    receipts_install.add_argument("--limit", type=int, help="Maximum receipts to prune in each pass")
+    receipts_install.add_argument("--model", help="Optional model override for the maintenance job")
+    receipts_install.add_argument("--provider", help="Optional provider override for the maintenance job")
+    receipts_install.add_argument("--base-url", dest="base_url", help="Optional base URL override for the maintenance job")
+
+    receipts_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove cron-backed receipt maintenance")
+
+    receipts_parser.set_defaults(func=cmd_receipts)
+
+    # =========================================================================
+    # workorders command
+    # =========================================================================
+    workorders_parser = subparsers.add_parser(
+        "workorders",
+        help="Durable execution work-order management",
+        description="Inspect, enqueue, run, and maintain H007 direct execution work orders",
+    )
+    workorders_subparsers = workorders_parser.add_subparsers(dest="work_orders_command")
+
+    workorders_list = workorders_subparsers.add_parser("list", help="List recent execution work orders")
+    workorders_list.add_argument("--limit", type=int, default=10, help="Maximum work orders to show")
+    workorders_list.add_argument("--status", help="Optional status filter")
+    workorders_list.add_argument("--work-order-id", dest="work_order_id", help="Optional work-order ID filter")
+
+    workorders_enqueue = workorders_subparsers.add_parser("enqueue", help="Enqueue a new direct execution work order")
+    workorders_enqueue.add_argument("--goal", required=True, help="Human-readable goal/label")
+    workorders_enqueue.add_argument("--command", required=True, help="Exact terminal command for the direct work order")
+    workorders_enqueue.add_argument("--context", help="Optional free-form context")
+    workorders_enqueue.add_argument("--timeout-seconds", dest="timeout_seconds", type=int, help="Optional command timeout")
+    workorders_enqueue.add_argument("--workdir", help="Optional explicit workdir")
+    workorders_enqueue.add_argument("--schedule", help="Optional one-shot schedule like '30m' or ISO timestamp")
+    workorders_enqueue.add_argument("--delay-seconds", dest="delay_seconds", type=float, help="Optional relative delay before the work order becomes due")
+    workorders_enqueue.add_argument("--max-attempts", dest="max_attempts", type=int, default=1, help="Total attempts before the work order ends as failed")
+    workorders_enqueue.add_argument("--retry-delay-seconds", dest="retry_delay_seconds", type=float, default=0.0, help="Delay before the next automatic retry after a failed attempt")
+
+    workorders_run = workorders_subparsers.add_parser("run", help="Execute due work orders now")
+    workorders_run.add_argument("--limit", type=int, default=10, help="Maximum due work orders to execute")
+    workorders_run.add_argument("--claim-ttl-seconds", dest="claim_ttl_seconds", type=float, help="Lease TTL before a running work order becomes reclaimable")
+
+    workorders_reclaim = workorders_subparsers.add_parser("reclaim", help="Requeue expired running work orders")
+    workorders_reclaim.add_argument("--limit", type=int, default=50, help="Maximum stale running work orders to reclaim")
+
+    workorders_retry = workorders_subparsers.add_parser("retry", help="Manually requeue a finished work order")
+    workorders_retry.add_argument("work_order_id", help="Target work-order ID")
+    workorders_retry.add_argument("--delay-seconds", dest="delay_seconds", type=float, help="Optional delay before it becomes due again")
+
+    workorders_resume = workorders_subparsers.add_parser("resume", help="Resume a failed/cancelled/expired-running work order")
+    workorders_resume.add_argument("work_order_id", help="Target work-order ID")
+    workorders_resume.add_argument("--delay-seconds", dest="delay_seconds", type=float, help="Optional delay before it becomes due again")
+
+    workorders_cancel = workorders_subparsers.add_parser("cancel", help="Cancel a queued or reclaimable work order")
+    workorders_cancel.add_argument("work_order_id", help="Target work-order ID")
+
+    workorders_subparsers.add_parser("status", help="Show work-order runner status")
+
+    workorders_install = workorders_subparsers.add_parser("install", help="Install or update the cron-backed work-order runner")
+    workorders_install.add_argument("--schedule", help="Cron schedule string (default: every 5m)")
+    workorders_install.add_argument("--limit", type=int, help="Maximum due work orders to execute per pass")
+    workorders_install.add_argument("--reclaim-limit", dest="reclaim_limit", type=int, help="Maximum stale running work orders to reclaim per pass")
+    workorders_install.add_argument("--claim-ttl-seconds", dest="claim_ttl_seconds", type=float, help="Lease TTL before a running work order becomes reclaimable")
+    workorders_install.add_argument("--model", help="Optional model override for the runner job")
+    workorders_install.add_argument("--provider", help="Optional provider override for the runner job")
+    workorders_install.add_argument("--base-url", dest="base_url", help="Optional base URL override for the runner job")
+
+    workorders_subparsers.add_parser("remove", aliases=["rm", "delete"], help="Remove the cron-backed work-order runner")
+    workorders_parser.set_defaults(func=cmd_workorders)
 
     # =========================================================================
     # webhook command

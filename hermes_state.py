@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -329,6 +329,13 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add dream column for cross-session pattern distillation
+                try:
+                    cursor.execute("ALTER TABLE sessions ADD COLUMN dream TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -408,6 +415,27 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    def update_session_dream(self, session_id: str, dream: str) -> None:
+        """Store dream (cross-session pattern distillation) from compression."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET dream = ? WHERE id = ?",
+                (dream, session_id),
+            )
+        self._execute_write(_do)
+
+    def get_session_dream(self, session_id: str) -> Optional[str]:
+        """Retrieve dream content for a session, or None if not set."""
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT dream FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+            if row:
+                return row["dream"] if isinstance(row, sqlite3.Row) else row[0]
+            return None
+        return self._execute_read(_do)
 
     def update_token_counts(
         self,

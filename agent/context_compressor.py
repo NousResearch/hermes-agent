@@ -19,6 +19,7 @@ Improvements over v2:
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -30,6 +31,35 @@ from agent.model_metadata import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CompressionResult:
+    """Result of a context compression operation.
+
+    Provides list-like access (backward compatible) plus the distilled_turns
+    field for the new dreaming feature.
+    """
+
+    compressed: List[Dict[str, Any]]
+    distilled_turns: List[Dict[str, Any]]
+
+    # ── list-like access (backward compatible) ──
+
+    def __iter__(self):
+        return iter(self.compressed)
+
+    def __len__(self):
+        return len(self.compressed)
+
+    def __getitem__(self, index):
+        return self.compressed[index]
+
+    def append(self, item):
+        return self.compressed.append(item)
+
+    def insert(self, index, item):
+        return self.compressed.insert(index, item)
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
@@ -652,8 +682,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> CompressionResult:
         """Compress conversation messages by summarizing middle turns.
+
+        Returns:
+            A 2-tuple: (compressed_messages, distilled_turns).
+            distilled_turns is the list of middle-turn messages that were just
+            summarized — pass these to dream() to extract cross-session patterns.
+            Returns (messages, []) when no compression was performed.
 
         Algorithm:
           1. Prune old tool results (cheap pre-pass, no LLM call)
@@ -668,7 +704,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Args:
             focus_topic: Optional focus string for guided compression.  When
                 provided, the summariser will prioritise preserving information
-                related to this topic and be more aggressive about compressing
+                related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
@@ -700,7 +736,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
-            return messages
+            return CompressionResult(compressed=messages, distilled_turns=[])
 
         turns_to_summarize = messages[compress_start:compress_end]
 
@@ -806,4 +842,87 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
             logger.info("Compression #%d complete", self.compression_count)
 
-        return compressed
+        return CompressionResult(compressed=compressed, distilled_turns=turns_to_summarize)
+
+    # ------------------------------------------------------------------
+    # Dreaming — post-compression pattern distillation
+    # ------------------------------------------------------------------
+
+    _DREAM_PROMPT_TEMPLATE = """You are a reflection agent. After a conversation was context-compacted (earlier turns summarized to free context space), extract the most important patterns and distilled wisdom.
+
+Extract across these dimensions:
+
+## Decisions
+Technical choices made, WHY they were made, alternatives considered. Include specific file paths, command outputs, error messages, and values.
+
+## Lessons Learned
+What worked well, what didn't, what the assistant or user discovered about the problem or approach.
+
+## User Preferences
+Stated or implied user preferences — coding style, communication style, tools preferred, workflow habits.
+
+## Recurring Patterns
+Themes that appeared across multiple turns or sessions — same error type, repeated approach, systemic issue.
+
+## Cross-Session Insights
+Anything that seems like it would be useful in future sessions with this user or on this project.
+
+Be specific. Include actual values, paths, commands, and error messages rather than vague descriptions.
+Aim for density — every line should contain verifiable detail.
+
+CONVERSATION TO ANALYZE:
+{turns}
+
+Target ~{budget} tokens. Output ONLY the reflection body — no preamble, no closing statement."""
+
+    def dream(self, turns_to_distill: List[Dict[str, Any]], budget_tokens: int = 600) -> Optional[str]:
+        """Distill patterns and lessons from conversation turns into cross-session memory.
+
+        Called after compress() extracts the middle turns.  Uses a separate (cheap)
+        LLM call to surface decisions, preferences, and recurring patterns that would
+        otherwise be lost after compression.
+
+        Returns None on failure — never blocks compression.  Results are stored
+        externally by the caller (typically in the session DB).
+
+        Args:
+            turns_to_distill: The original message list (or slice) that was just
+                compressed.  Typically this is the ``turns_to_summarize`` extracted
+                in compress() before the summary is generated.
+            budget_tokens: Target output length (default 600 ≈ ~300 words).
+        """
+        if not turns_to_distill or len(turns_to_distill) < 2:
+            return None
+
+        serialized = self._serialize_for_summary(turns_to_distill)
+        if len(serialized) < 200:
+            return None
+
+        prompt = self._DREAM_PROMPT_TEMPLATE.format(
+            turns=serialized,
+            budget=budget_tokens,
+        )
+
+        try:
+            call_kwargs = {
+                "task": "dream",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": budget_tokens * 2,
+            }
+            if self.summary_model:
+                call_kwargs["model"] = self.summary_model
+            response = call_llm(**call_kwargs)
+            content = response.choices[0].message.content
+            if not isinstance(content, str):
+                content = str(content) if content else ""
+            result = content.strip()
+            if result:
+                logger.info("Dream distillation complete: %d chars", len(result))
+                return result
+            return None
+        except RuntimeError:
+            logger.debug("Dream: no provider available")
+            return None
+        except Exception as e:
+            logger.warning("Dream distillation failed: %s", e)
+            return None

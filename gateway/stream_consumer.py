@@ -287,6 +287,9 @@ class GatewayStreamConsumer:
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    _THINK_BLOCK_RE = re.compile(r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>", re.IGNORECASE)
+    _THINK_TAG_RE = re.compile(r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>", re.IGNORECASE)
+    _COMMENT_THINK_RE = re.compile(r"/\*\*[\s\S]*?\*/")
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -299,9 +302,13 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = text or ""
+        cleaned = GatewayStreamConsumer._THINK_BLOCK_RE.sub("", cleaned)
+        cleaned = GatewayStreamConsumer._THINK_TAG_RE.sub("", cleaned)
+        cleaned = GatewayStreamConsumer._COMMENT_THINK_RE.sub("", cleaned)
+        if "MEDIA:" not in cleaned and "[[audio_as_voice]]" not in cleaned:
+            return cleaned
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

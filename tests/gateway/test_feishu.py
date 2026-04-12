@@ -101,6 +101,37 @@ class TestGatewayIntegration(unittest.TestCase):
 
 
 class TestFeishuPostParsing(unittest.TestCase):
+    def test_build_interactive_card_payload_uses_lark_md_and_strips_thinking(self):
+        from gateway.platforms.feishu import _build_interactive_card_payload
+
+        payload = json.loads(
+            _build_interactive_card_payload(
+                "[[HERMES_STATUS:thinking]]\n<think>internal</think>\n## 已完成\n正文 **保留**"
+            )
+        )
+
+        self.assertEqual(payload["header"]["title"]["content"], "思考中 | 已完成")
+        self.assertEqual(payload["elements"][0]["tag"], "div")
+        self.assertEqual(payload["elements"][0]["text"]["tag"], "lark_md")
+        self.assertEqual(payload["elements"][0]["text"]["content"], "**状态：思考中**")
+        self.assertEqual(payload["elements"][1]["tag"], "div")
+        self.assertEqual(payload["elements"][1]["text"]["tag"], "lark_md")
+        self.assertNotIn("<think>", payload["elements"][1]["text"]["content"])
+        self.assertIn("正文 **保留**", payload["elements"][1]["text"]["content"])
+
+    def test_build_interactive_card_payload_converts_markdown_tables(self):
+        from gateway.platforms.feishu import _build_interactive_card_payload
+
+        payload = json.loads(
+            _build_interactive_card_payload(
+                "[[HERMES_STATUS:completed]]\n| A | B |\n| - | - |\n| 1 | 2 |"
+            )
+        )
+
+        self.assertEqual(payload["elements"][1]["text"]["tag"], "lark_md")
+        self.assertIn("```text", payload["elements"][1]["text"]["content"])
+        self.assertIn("A | B", payload["elements"][1]["text"]["content"])
+
     def test_parse_post_content_extracts_text_mentions_and_media_refs(self):
         from gateway.platforms.feishu import parse_feishu_post_content
 
@@ -461,7 +492,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
         )
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"HOME": "/home/butterfly443"}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -503,6 +534,16 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             captured["calls"][1].request_body.content,
             json.dumps({"text": "可以用 粗体 和 斜体。"}, ensure_ascii=False),
         )
+
+    @patch.dict(os.environ, {"HOME": "/home/butterfly443"}, clear=True)
+    def test_format_message_strips_thinking_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        content = "<think>internal</think>\n/** hidden */\n可见内容"
+        self.assertEqual(adapter.format_message(content), "可见内容")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):

@@ -84,6 +84,14 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_think_blocks_stripped(self):
+        """Reasoning tags and comment-style thinking blocks must not leak."""
+        text = "<think>internal</think>\n/** hidden */\nVisible answer"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "<think>" not in result
+        assert "hidden" not in result
+        assert result.strip() == "Visible answer"
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 

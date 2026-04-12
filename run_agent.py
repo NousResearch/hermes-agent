@@ -962,6 +962,7 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._new_session_recall_done = False  # True after first-session recall fires
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -1856,13 +1857,20 @@ class AIAgent:
         """Remove reasoning/thinking blocks from content, returning only visible text."""
         if not content:
             return ""
-        # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>
-        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
-        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
+        # Strip block and orphaned tag variants, including case-insensitive tags
+        # with attributes like <think type="summary">…</think>.
+        content = re.sub(
+            r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)\b[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>',
+            '',
+            content,
+            flags=re.IGNORECASE,
+        )
+        content = re.sub(
+            r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)\b[^>]*>\s*',
+            '',
+            content,
+            flags=re.IGNORECASE,
+        )
         return content
 
     def _looks_like_codex_intermediate_ack(
@@ -5521,6 +5529,83 @@ class AIAgent:
 
     # ── Per-turn primary restoration ─────────────────────────────────────
 
+    def _session_start_recall(self, messages: list) -> None:
+        """Inject relevant past-session context at the start of a new session.
+
+        Searches recent session titles from the session DB, uses them as a query
+        for session_search, and injects the results as a recall block before the
+        first user message.  Runs once per fresh session (not on continuation).
+        """
+        if not self._session_db:
+            return
+        try:
+            recent = self._session_db.list_sessions_rich(limit=4, current_session_id=None)
+            recent_data = json.loads(recent) if isinstance(recent, str) else recent
+        except Exception:
+            return
+
+        results = recent_data.get("results", []) if isinstance(recent_data, dict) else []
+        if not results:
+            return
+
+        titles = [
+            r.get("title", "")
+            for r in results
+            if r.get("title")
+        ]
+        if not titles:
+            return
+
+        query = " ".join(f'"{t}"' for t in titles[:3])
+        try:
+            from tools.session_search_tool import session_search
+            recall_text = session_search(
+                query=query,
+                limit=3,
+                db=self._session_db,
+                current_session_id=self.session_id,
+            )
+            recall_parsed = json.loads(recall_text) if isinstance(recall_text, str) else recall_text
+        except Exception:
+            return
+
+        if not isinstance(recall_parsed, dict):
+            return
+        recall_results = recall_parsed.get("results", [])
+        if not recall_results:
+            return
+
+        summaries = []
+        for r in recall_results[:3]:
+            title = r.get("title") or "Past Session"
+            summary = r.get("summary") or r.get("preview", "")
+            if summary:
+                summaries.append(f"## {title}\n{summary[:500]}")
+            else:
+                summaries.append(f"## {title}\n[No summary available]")
+
+        if not summaries:
+            return
+
+        recall_block = (
+            "<session-recall>\n"
+            "[System: The following are relevant past sessions. "
+            "Use this context to continue unfinished work, avoid repeating mistakes, "
+            "and build on previous progress.]\n\n"
+            + "\n\n".join(summaries)
+            + "\n</session-recall>"
+        )
+        # Inject as a user-role message before the first user message
+        # so it is part of the API call but kept separate from user input.
+        user_msg_idx = next(
+            (i for i, m in enumerate(messages) if m.get("role") == "user"),
+            -1,
+        )
+        if user_msg_idx > 0:
+            messages.insert(user_msg_idx, {"role": "user", "content": recall_block})
+        elif user_msg_idx == 0:
+            messages.insert(0, {"role": "user", "content": recall_block})
+
     def _restore_primary_runtime(self) -> bool:
         """Restore the primary runtime at the start of a new turn.
 
@@ -6576,7 +6661,21 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compression_result = self.context_compressor.compress(
+            messages, current_tokens=approx_tokens, focus_topic=focus_topic,
+        )
+        compressed = compression_result.compressed
+        distilled_turns = compression_result.distilled_turns
+
+        # ── Dreaming: post-compression pattern distillation ──
+        # Extract decisions, lessons, and preferences from the just-compacted
+        # turns so they survive beyond context window limits.
+        _dream_result = None
+        if distilled_turns:
+            try:
+                _dream_result = self.context_compressor.dream(distilled_turns)
+            except Exception:
+                pass
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
@@ -6609,6 +6708,23 @@ class AIAgent:
                     except (ValueError, Exception) as e:
                         logger.debug("Could not propagate title on compression: %s", e)
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+
+                # Store dream (cross-session pattern distillation) in session DB
+                if _dream_result:
+                    self._session_db.update_session_dream(self.session_id, _dream_result)
+                    # Inject dream into the system prompt so it travels with future context
+                    _dream_block = (
+                        "\n\n<cross-session-dream>\n"
+                        "[System: Patterns and lessons distilled from earlier conversation "
+                        "context that was just compacted. Use these as persistent background "
+                        "knowledge for this session.]\n\n"
+                        f"{_dream_result}\n"
+                        "</cross-session-dream>"
+                    )
+                    new_system_prompt += _dream_block
+                    self._cached_system_prompt = new_system_prompt
+                    self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
             except Exception as e:
@@ -7689,6 +7805,13 @@ class AIAgent:
                     )
                 except Exception as exc:
                     logger.warning("on_session_start hook failed: %s", exc)
+
+                # ── Session Start Recall ──
+                # Automatically recall relevant past sessions for new sessions.
+                # Skip on continuation (stored_prompt already set) and when no DB.
+                if self._session_db and not self._new_session_recall_done:
+                    self._session_start_recall(messages)
+                    self._new_session_recall_done = True
 
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:

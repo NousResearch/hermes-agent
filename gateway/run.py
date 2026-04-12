@@ -305,6 +305,28 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+def _format_usage_compact(value: int) -> str:
+    value = int(value or 0)
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m".replace(".0m", "m")
+    if value >= 100_000:
+        return f"{value / 1_000:.0f}k"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k".replace(".0k", "k")
+    return str(value)
+
+
+def _format_elapsed_compact(seconds: float) -> str:
+    total_seconds = max(0, int(round(seconds or 0)))
+    minutes, secs = divmod(total_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances."""
     from hermes_cli.runtime_provider import (
@@ -984,6 +1006,74 @@ class GatewayRunner:
 
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
+
+    def _build_feishu_usage_footer(
+        self,
+        *,
+        source: SessionSource,
+        agent_result: Dict[str, Any],
+        response_time: float,
+    ) -> str:
+        if source.platform != Platform.FEISHU:
+            return ""
+
+        model = str(agent_result.get("model") or _resolve_gateway_model() or "unknown").strip()
+        input_tokens = int(agent_result.get("input_tokens") or 0)
+        output_tokens = int(agent_result.get("output_tokens") or 0)
+        cache_read = int(agent_result.get("cache_read_tokens") or 0)
+        cache_write = int(agent_result.get("cache_write_tokens") or 0)
+        last_prompt_tokens = int(agent_result.get("last_prompt_tokens") or 0)
+
+        context_length = 0
+        try:
+            from agent.model_metadata import get_model_context_length
+
+            runtime = _resolve_runtime_agent_kwargs()
+            context_length = int(
+                get_model_context_length(
+                    model=model,
+                    provider=runtime.get("provider") or "",
+                    base_url=runtime.get("base_url") or "",
+                    api_key=runtime.get("api_key") or "",
+                ) or 0
+            )
+        except Exception:
+            context_length = 0
+
+        cache_base = input_tokens + cache_read + cache_write
+        cache_pct = min(100, (cache_read / cache_base * 100)) if cache_base > 0 else 0
+        line1 = f"已完成 · 耗时 {_format_elapsed_compact(response_time)} · {model}"
+        line2 = (
+            f"↑ {_format_usage_compact(input_tokens)}"
+            f" ↓ {_format_usage_compact(output_tokens)}"
+            f" · 缓存 {_format_usage_compact(cache_read)}/{_format_usage_compact(cache_write)} ({cache_pct:.0f}%)"
+        )
+        if context_length > 0:
+            context_pct = min(100, (last_prompt_tokens / context_length * 100))
+            line2 += (
+                f" · 上下文 {_format_usage_compact(last_prompt_tokens)}"
+                f"/{_format_usage_compact(context_length)} ({context_pct:.0f}%)"
+            )
+        return f"{line1}\n{line2}"
+
+    def _append_feishu_usage_footer(
+        self,
+        response: str,
+        *,
+        source: SessionSource,
+        agent_result: Dict[str, Any],
+        response_time: float,
+    ) -> str:
+        if not response or source.platform != Platform.FEISHU:
+            return response
+        footer = self._build_feishu_usage_footer(
+            source=source,
+            agent_result=agent_result,
+            response_time=response_time,
+        )
+        if not footer:
+            return response
+        return f"[[HERMES_STATUS:completed]]\n{response.rstrip()}\n\n---\n{footer}"
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
@@ -3551,7 +3641,7 @@ class GatewayRunner:
                 )
             except Exception:
                 _show_reasoning_effective = getattr(self, "_show_reasoning", False)
-            if _show_reasoning_effective and response:
+            if _show_reasoning_effective and response and source.platform != Platform.FEISHU:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -3562,6 +3652,14 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            if response:
+                response = self._append_feishu_usage_footer(
+                    response,
+                    source=source,
+                    agent_result=agent_result,
+                    response_time=_response_time,
+                )
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -7559,8 +7657,8 @@ class GatewayRunner:
                 if _plat_streaming is None
                 else bool(_plat_streaming)
             )
-            _want_stream_deltas = _streaming_enabled
-            _want_interim_messages = interim_assistant_messages_enabled
+            _want_stream_deltas = _streaming_enabled and source.platform != Platform.FEISHU
+            _want_interim_messages = interim_assistant_messages_enabled and source.platform != Platform.FEISHU
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:
                 try:
@@ -7857,11 +7955,15 @@ class GatewayRunner:
             _last_prompt_toks = 0
             _input_toks = 0
             _output_toks = 0
+            _cache_read_toks = 0
+            _cache_write_toks = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _cache_read_toks = getattr(_agent, "session_cache_read_tokens", 0)
+                _cache_write_toks = getattr(_agent, "session_cache_write_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -7875,6 +7977,8 @@ class GatewayRunner:
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
+                    "cache_read_tokens": _cache_read_toks,
+                    "cache_write_tokens": _cache_write_toks,
                     "model": _resolved_model,
                 }
             
@@ -7964,6 +8068,8 @@ class GatewayRunner:
                 "last_prompt_tokens": _last_prompt_toks,
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
+                "cache_read_tokens": _cache_read_toks,
+                "cache_write_tokens": _cache_write_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),

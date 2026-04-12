@@ -115,6 +115,15 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_HERMES_STATUS_RE = re.compile(r"^\[\[HERMES_STATUS:(thinking|completed|ended)\]\]\s*", re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>", re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>", re.IGNORECASE)
+_COMMENT_THINK_BLOCK_RE = re.compile(r"/\*\*[\s\S]*?\*/")
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?ms)(^ *\|.+\|\s*$\n^ *\|(?:[-: ]+\|)+\s*$\n(?:^ *\|.+\|\s*$\n?)*)"
+)
+_MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -367,6 +376,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     horizontal rules, \\r\\n normalisation).
     """
     from gateway.platforms.helpers import strip_markdown
+    _, text = _extract_status_marker(text)
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
@@ -397,6 +407,8 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    _, content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
+    content = _convert_markdown_tables_to_code_blocks(content)
     return json.dumps(
         {
             "zh_cn": {
@@ -412,6 +424,155 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _extract_status_marker(content: str) -> tuple[str, str]:
+    text = content or ""
+    match = _HERMES_STATUS_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).lower(), text[match.end():]
+
+
+def _status_presentation(status: str) -> tuple[str, str, str]:
+    normalized = (status or "").strip().lower()
+    if normalized == "thinking":
+        return "思考中", "blue", "状态：思考中"
+    if normalized == "completed":
+        return "已完成", "green", "状态：已完成"
+    if normalized == "ended":
+        return "已结束", "grey", "状态：已结束"
+    return "", "blue", ""
+
+
+def _strip_reasoning_for_display(text: str) -> str:
+    cleaned = text or ""
+    cleaned = _THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = _THINK_TAG_RE.sub("", cleaned)
+    cleaned = _COMMENT_THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _render_markdown_tables_for_feishu(text: str) -> str:
+    """Render markdown tables as code blocks so Feishu keeps them readable."""
+    if "|" not in (text or ""):
+        return text or ""
+
+    def _replace(match: re.Match[str]) -> str:
+        block = match.group(1).strip("\n")
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return block
+
+        header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+        if not header_cells:
+            return block
+
+        body_rows = [
+            [cell.strip() for cell in row.strip("|").split("|")]
+            for row in lines[2:]
+        ]
+        widths = [len(cell) for cell in header_cells]
+        for row in body_rows:
+            for idx, cell in enumerate(row):
+                if idx >= len(widths):
+                    widths.append(len(cell))
+                else:
+                    widths[idx] = max(widths[idx], len(cell))
+
+        def _fmt(row: List[str]) -> str:
+            padded = list(row) + [""] * (len(widths) - len(row))
+            return " | ".join(
+                cell.ljust(widths[idx]) for idx, cell in enumerate(padded[: len(widths)])
+            )
+
+        rendered = [_fmt(header_cells), "-+-".join("-" * width for width in widths)]
+        rendered.extend(_fmt(row) for row in body_rows)
+        return "```text\n" + "\n".join(rendered).rstrip() + "\n```"
+
+    return _MARKDOWN_TABLE_BLOCK_RE.sub(_replace, text)
+
+
+def _contains_status_marker(content: str) -> bool:
+    status, _ = _extract_status_marker(content or "")
+    return bool(status)
+
+
+def _convert_markdown_tables_to_code_blocks(text: str) -> str:
+    lines = (text or "").splitlines()
+    converted: List[str] = []
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
+        if (
+            idx + 1 < len(lines)
+            and _MARKDOWN_TABLE_ROW_RE.match(line or "")
+            and _MARKDOWN_TABLE_SEPARATOR_RE.match(lines[idx + 1] or "")
+        ):
+            table_lines = [line, lines[idx + 1]]
+            idx += 2
+            while idx < len(lines) and _MARKDOWN_TABLE_ROW_RE.match(lines[idx] or ""):
+                table_lines.append(lines[idx])
+                idx += 1
+            converted.append("```text")
+            converted.extend(table_lines)
+            converted.append("```")
+            continue
+        converted.append(line)
+        idx += 1
+    return "\n".join(converted)
+
+
+def _extract_card_title(content: str) -> str:
+    _, content = _extract_status_marker(content)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = _strip_markdown_to_plain_text(line)
+        return line[:60] if line else "Hermes"
+    return "Hermes"
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    status, body_content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
+    status_title, template, status_line = _status_presentation(status)
+    body_content = _convert_markdown_tables_to_code_blocks(body_content)
+    title = _extract_card_title(body_content)
+    if status_title:
+        title = f"{status_title} | {title}"
+    card = {
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": template,
+        },
+        "elements": [],
+    }
+    if status_line:
+        card["elements"].append(
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": f"**{status_line}**",
+                },
+            }
+        )
+    card["elements"].append(
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": body_content or " ",
+            },
+        }
+    )
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
@@ -1061,6 +1222,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._ack_reaction_ids: Dict[str, str] = {}
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
@@ -1350,19 +1512,54 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        logger.warning(
+                            "[Feishu] Interactive card send failed; falling back to post: %s",
+                            exc,
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="post",
+                            payload=_build_markdown_post_payload(chunk),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    else:
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning(
+                        "[Feishu] Interactive card rejected by API response; falling back to post: code=%s msg=%s",
+                        getattr(response, "code", None),
+                        getattr(response, "msg", None),
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        msg_type="post",
+                        payload=_build_markdown_post_payload(chunk),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
+                    getattr(response, "success", lambda: True)() is False
+                    and (
+                        msg_type == "post"
+                        or (
+                            msg_type == "interactive"
+                            and not self._response_succeeded(response)
+                        )
+                    )
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
                     logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
@@ -1396,6 +1593,18 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
+            if not result.success and msg_type == "interactive":
+                logger.warning(
+                    "[Feishu] Interactive card update failed; falling back to post: %s",
+                    result.error or getattr(response, "msg", None) or "unknown error",
+                )
+                fallback_body = self._build_update_message_body(
+                    msg_type="post",
+                    content=_build_markdown_post_payload(content),
+                )
+                fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(fallback_response, "update failed")
             if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
@@ -1734,7 +1943,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        return _render_markdown_tables_for_feishu(_strip_reasoning_for_display(content))
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = self._ack_reaction_ids.pop(message_id, None)
+        if reaction_id:
+            await self._remove_ack_reaction(message_id, reaction_id)
 
     # =========================================================================
     # Inbound event handlers
@@ -2043,7 +2260,9 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                reaction_id = await self._add_ack_reaction(message_id)
+                if reaction_id:
+                    self._ack_reaction_ids[message_id] = reaction_id
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
@@ -2079,6 +2298,37 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str, reaction_id: str) -> None:
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Removed ack reaction %s from %s", reaction_id, message_id)
+                return
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s",
+                reaction_id,
+                message_id,
+                exc_info=True,
+            )
 
     # =========================================================================
     # Webhook server and security
@@ -3156,10 +3406,12 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        cleaned = _strip_reasoning_for_display(content)
+        if _contains_status_marker(content):
+            return "interactive", _build_interactive_card_payload(content)
+        if _MARKDOWN_HINT_RE.search(cleaned):
+            return "post", _build_markdown_post_payload(cleaned)
+        return "text", json.dumps({"text": _strip_markdown_to_plain_text(cleaned)}, ensure_ascii=False)
 
     async def _send_uploaded_file_message(
         self,

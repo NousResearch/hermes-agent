@@ -312,6 +312,20 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
+    # If ACP command is set AND the caller did not explicitly override the provider,
+    # switch the child agent to the copilot-acp provider so _create_openai_client()
+    # routes to CopilotACPClient instead of the parent's HTTP provider.  The Copilot
+    # client is protocol-agnostic — it spawns any stdio JSON-RPC agent binary and
+    # speaks standard ACP.
+    if effective_acp_command and not override_provider:
+        effective_provider = "copilot-acp"
+        effective_base_url = "acp://copilot"
+        # CopilotACPClient doesn't need a real API key (auth is handled by the
+        # spawned binary itself).  But AIAgent credential plumbing requires a
+        # non-empty string.
+        if not effective_api_key:
+            effective_api_key = "acp-child-agent"
+
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
@@ -354,8 +368,11 @@ def _build_child_agent(
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, '_session_db', None),
         parent_session_id=getattr(parent_agent, 'session_id', None),
-        providers_allowed=parent_agent.providers_allowed,
-        providers_ignored=parent_agent.providers_ignored,
+        # Bypass parent provider filtering when ACP switch is active — the
+        # parent may restrict providers to e.g. ["anthropic"] which would block
+        # the synthetic "copilot-acp" provider we injected.
+        providers_allowed=(None if (effective_acp_command and not override_provider) else parent_agent.providers_allowed),
+        providers_ignored=(None if (effective_acp_command and not override_provider) else parent_agent.providers_ignored),
         providers_order=parent_agent.providers_order,
         provider_sort=parent_agent.provider_sort,
         tool_progress_callback=child_progress_cb,

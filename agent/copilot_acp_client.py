@@ -1,9 +1,15 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim that forwards Hermes requests to any ACP-over-stdio agent.
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
-back into the minimal shape Hermes expects from an OpenAI client.
+Despite the name, this client is NOT Copilot-specific.  It spawns whatever binary
+is passed via acp_command / command (e.g. 'copilot --acp --stdio',
+'claude-agent-acp', or any other ACP-compatible stdio agent) and speaks standard
+ACP JSON-RPC.  The class name is kept as CopilotACPClient for backwards
+compatibility with existing imports; a generic alias ``ACPStdioClient`` is also
+exported at module level.
+
+Each request starts a short-lived ACP session, sends the formatted conversation
+as a single prompt, collects text chunks, and converts the result back into the
+minimal shape Hermes expects from an OpenAI client.
 """
 
 from __future__ import annotations
@@ -273,7 +279,14 @@ class CopilotACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        # Respect explicit empty lists — ``[] or x`` is ``x`` in Python because
+        # empty list is falsy, so use ``is not None`` checks instead.
+        if acp_args is not None:
+            self._acp_args = list(acp_args)
+        elif args is not None:
+            self._acp_args = list(args)
+        else:
+            self._acp_args = list(_resolve_args())
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
@@ -568,3 +581,7 @@ class CopilotACPClient:
         process.stdin.write(json.dumps(response) + "\n")
         process.stdin.flush()
         return True
+
+
+# Generic alias — use this name for new code.
+ACPStdioClient = CopilotACPClient

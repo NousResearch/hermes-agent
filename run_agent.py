@@ -4005,12 +4005,17 @@ class AIAgent:
         return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+        base_url_str = str(client_kwargs.get("base_url", ""))
+        is_acp = (
+            self.provider == "copilot-acp"
+            or base_url_str.startswith("acp://")  # generic ACP marker
+        )
+        if is_acp:
             from agent.copilot_acp_client import CopilotACPClient
 
             client = CopilotACPClient(**client_kwargs)
             logger.info(
-                "Copilot ACP client created (%s, shared=%s) %s",
+                "ACP client created (%s, shared=%s) %s",
                 reason,
                 shared,
                 self._client_log_context(),

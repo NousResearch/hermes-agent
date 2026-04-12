@@ -5569,6 +5569,52 @@ For more help on a command:
     sessions_parser.set_defaults(func=cmd_sessions)
 
     # =========================================================================
+    # resume command — interactive session picker, then launch chat
+    # =========================================================================
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Browse and resume a previous session interactively",
+        description="Show recent sessions, pick one to resume, then launch the Hermes chat."
+    )
+    resume_parser.add_argument("--limit", type=int, default=2000, help="Max sessions to load (default: 2000)")
+    resume_parser.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
+    resume_parser.add_argument("-m", "--model", help="Model to use (e.g. anthropic/claude-sonnet-4)")
+    resume_parser.add_argument(
+        "--provider",
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        default=None,
+        help="Inference provider (default: auto)"
+    )
+    resume_parser.add_argument("-t", "--toolsets", help="Comma-separated toolsets to enable")
+    resume_parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    resume_parser.add_argument("-Q", "--quiet", action="store_true", help="Quiet mode")
+
+    def cmd_resume(args):
+        """Launch Hermes with the resume panel open -- identical to /resume."""
+        os.environ["HERMES_OPEN_RESUME"] = "1"
+        if getattr(args, "source", None):
+            os.environ["HERMES_RESUME_SOURCE"] = args.source
+        if not hasattr(args, "model"):
+            args.model = None
+        if not hasattr(args, "provider"):
+            args.provider = None
+        if not hasattr(args, "toolsets"):
+            args.toolsets = None
+        if not hasattr(args, "verbose"):
+            args.verbose = False
+        if not hasattr(args, "worktree"):
+            args.worktree = False
+        if not hasattr(args, "quiet"):
+            args.quiet = False
+        if not hasattr(args, "query"):
+            args.query = None
+        args.resume = None
+        args.continue_last = None
+        cmd_chat(args)
+
+    resume_parser.set_defaults(func=cmd_resume)
+
+    # =========================================================================
     # insights command
     # =========================================================================
     insights_parser = subparsers.add_parser(

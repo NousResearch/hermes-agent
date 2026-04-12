@@ -619,6 +619,25 @@ class Migrator:
         self.overflow_dir = self.output_dir / "overflow" if self.output_dir else None
         self.items: List[ItemResult] = []
 
+        # Resolve the configured workspace directory from openclaw.json.
+        # Many users (especially those who started before the OpenClaw rebrand)
+        # have a custom workspace path (e.g. ~/clawd/) that differs from the
+        # default ~/.openclaw/workspace/.  Reading agents.defaults.workspace
+        # lets source_candidate() find files in the actual workspace.
+        self._custom_workspace: Optional[Path] = None
+        oc_config = self._load_openclaw_config_early()
+        ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
+        if ws:
+            ws_path = Path(ws).expanduser().resolve()
+            # Only use it if it exists and is outside the source_root tree
+            # (otherwise the standard relative-path logic already covers it).
+            if ws_path.is_dir():
+                try:
+                    ws_path.relative_to(self.source_root)
+                except ValueError:
+                    # ws_path is outside source_root — use it as custom workspace
+                    self._custom_workspace = ws_path
+
         config = load_yaml_file(self.target_root / "config.yaml")
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
@@ -631,6 +650,18 @@ class Migrator:
                 + ". Valid modes: "
                 + ", ".join(sorted(SKILL_CONFLICT_MODES))
             )
+
+    def _load_openclaw_config_early(self) -> Dict[str, Any]:
+        """Load openclaw.json during __init__ (before migrate() is called)."""
+        for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
+            config_path = self.source_root / name
+            if config_path.exists():
+                try:
+                    data = json.loads(config_path.read_text(encoding="utf-8"))
+                    return data if isinstance(data, dict) else {}
+                except json.JSONDecodeError:
+                    continue
+        return {}
 
     def is_selected(self, option_id: str) -> bool:
         return option_id in self.selected_options
@@ -673,6 +704,23 @@ class Migrator:
                 alt = self.source_root / "workspace-main" / suffix
                 if alt.exists():
                     return alt
+
+        # Final fallback: check the configured workspace directory from
+        # agents.defaults.workspace in openclaw.json.  Users who started
+        # before the OpenClaw rebrand (when the project was named clawd /
+        # clawdbot) often have a custom workspace path outside ~/.openclaw/.
+        if self._custom_workspace:
+            for rel in relative_paths:
+                # Strip the leading "workspace/" or "workspace.default/"
+                # prefix to get the bare filename/subpath.
+                for prefix in ("workspace/", "workspace.default/"):
+                    if rel.startswith(prefix):
+                        suffix = rel[len(prefix):]
+                        alt = self._custom_workspace / suffix
+                        if alt.exists():
+                            return alt
+                        break
+
         return None
 
     def resolve_skill_destination(self, destination: Path) -> Path:

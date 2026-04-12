@@ -7990,7 +7990,7 @@ class GatewayRunner:
                 # Add metadata
                 metadata = {
                     "session_id": effective_session_id,
-                    "platform": source.platform if hasattr(source, 'platform') else "unknown",
+                    "platform": str(source.platform) if hasattr(source, 'platform') else "unknown",
                     "user_id": source.user_id if hasattr(source, 'user_id') else "unknown",
                     "chat_id": source.chat_id if hasattr(source, 'chat_id') else "unknown",
                     "model": _resolved_model,

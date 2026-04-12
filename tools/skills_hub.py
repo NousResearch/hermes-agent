@@ -296,9 +296,19 @@ class GitHubSource(SkillSource):
         self.taps = list(self.DEFAULT_TAPS)
         if extra_taps:
             self.taps.extend(extra_taps)
+        # Per-instance cache: repo -> (default_branch, tree_entries)
+        # Survives within a single search/install flow, avoiding redundant API calls.
+        self._tree_cache: Dict[str, Tuple[str, List[dict]]] = {}
+        # Set when GitHub returns 403 with rate limit exhausted
+        self._rate_limited: bool = False
 
     def source_id(self) -> str:
         return "github"
+
+    @property
+    def is_rate_limited(self) -> bool:
+        """Whether GitHub API rate limit was hit during operations."""
+        return self._rate_limited
 
     def trust_level_for(self, identifier: str) -> str:
         # identifier format: "owner/repo/path/to/skill"
@@ -443,6 +453,69 @@ class GitHubSource(SkillSource):
         self._write_cache(cache_key, [self._meta_to_dict(s) for s in skills])
         return skills
 
+    # -- Repo tree cache (avoids redundant API calls) --
+
+    def _get_repo_tree(self, repo: str) -> Optional[Tuple[str, List[dict]]]:
+        """Get cached or fresh repo tree.
+
+        Returns ``(default_branch, tree_entries)`` or ``None``.
+        A single install can call ``_download_directory_via_tree`` and
+        ``_find_skill_in_repo_tree`` multiple times for the same repo — this
+        cache eliminates the redundant ``GET /repos/{repo}`` +
+        ``GET /repos/{repo}/git/trees/{branch}`` round-trips (previously up to
+        6 duplicated pairs per install, consuming ~12 of the 60/hr
+        unauthenticated rate limit for nothing).
+        """
+        if repo in self._tree_cache:
+            return self._tree_cache[repo]
+
+        headers = self.auth.get_headers()
+
+        # Resolve default branch
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}",
+                headers=headers, timeout=15, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            default_branch = resp.json().get("default_branch", "main")
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        # Fetch recursive tree
+        try:
+            resp = httpx.get(
+                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+                params={"recursive": "1"},
+                headers=headers, timeout=30, follow_redirects=True,
+            )
+            if resp.status_code != 200:
+                self._check_rate_limit_response(resp)
+                return None
+            tree_data = resp.json()
+            if tree_data.get("truncated"):
+                logger.debug("Git tree truncated for %s, cannot cache", repo)
+                return None
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        entries = tree_data.get("tree", [])
+        self._tree_cache[repo] = (default_branch, entries)
+        return (default_branch, entries)
+
+    def _check_rate_limit_response(self, resp: "httpx.Response") -> None:
+        """Flag the instance as rate-limited when GitHub returns 403 + exhausted quota."""
+        if resp.status_code == 403:
+            remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            if remaining == "0":
+                self._rate_limited = True
+                logger.warning(
+                    "GitHub API rate limit exhausted (unauthenticated: 60 req/hr). "
+                    "Set GITHUB_TOKEN or install the gh CLI to raise the limit to 5,000/hr."
+                )
+
     def _download_directory(self, repo: str, path: str) -> Dict[str, str]:
         """Recursively download all text files from a GitHub directory.
 
@@ -458,40 +531,34 @@ class GitHubSource(SkillSource):
         return self._download_directory_recursive(repo, path)
 
     def _download_directory_via_tree(self, repo: str, path: str) -> Optional[Dict[str, str]]:
-        """Download an entire directory using the Git Trees API (single request)."""
+        """Download an entire directory using the Git Trees API (single request).
+
+        Returns:
+            dict of files if the path exists and has content,
+            empty dict ``{}`` if the tree is cached but the path doesn't exist
+            (prevents unnecessary Contents API fallback),
+            ``None`` if the tree couldn't be fetched (triggers Contents API fallback).
+        """
         path = path.rstrip("/")
-        headers = self.auth.get_headers()
 
-        # Resolve the default branch via the repo endpoint
-        try:
-            repo_url = f"https://api.github.com/repos/{repo}"
-            resp = httpx.get(repo_url, headers=headers, timeout=15, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
+        _default_branch, tree_entries = cached
 
-        # Fetch the full recursive tree (branch name works as tree-ish)
-        try:
-            tree_url = f"https://api.github.com/repos/{repo}/git/trees/{default_branch}"
-            resp = httpx.get(
-                tree_url, params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-            if tree_data.get("truncated"):
-                logger.debug("Git tree truncated for %s, falling back to Contents API", repo)
-                return None
-        except (httpx.HTTPError, ValueError):
-            return None
+        # Check if ANY entry lives under the target path
+        prefix = f"{path}/"
+        has_entries = any(
+            item.get("path", "").startswith(prefix) for item in tree_entries
+        )
+        if not has_entries:
+            # Path definitively doesn't exist in the repo — return empty
+            # instead of None to skip the Contents API fallback.
+            return {}
 
         # Filter to blobs under our target path and fetch content
-        prefix = f"{path}/"
         files: Dict[str, str] = {}
-        for item in tree_data.get("tree", []):
+        for item in tree_entries:
             if item.get("type") != "blob":
                 continue
             item_path = item.get("path", "")
@@ -548,38 +615,14 @@ class GitHubSource(SkillSource):
         handles deeply nested directory structures like
         ``cli-tool/components/skills/development/<skill>/SKILL.md``.
         """
-        # Get default branch
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}",
-                headers=self.auth.get_headers(),
-                timeout=15,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, json.JSONDecodeError):
+        cached = self._get_repo_tree(repo)
+        if cached is None:
             return None
-
-        # Get recursive tree (single API call for the entire repo)
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
-                params={"recursive": "1"},
-                headers=self.auth.get_headers(),
-                timeout=30,
-                follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                return None
-            tree_data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
-            return None
+        _default_branch, tree_entries = cached
 
         # Look for SKILL.md files inside directories named <skill_name>
         skill_md_suffix = f"/{skill_name}/SKILL.md"
-        for entry in tree_data.get("tree", []):
+        for entry in tree_entries:
             if entry.get("type") != "blob":
                 continue
             path = entry.get("path", "")
@@ -601,6 +644,7 @@ class GitHubSource(SkillSource):
             )
             if resp.status_code == 200:
                 return resp.text
+            self._check_rate_limit_response(resp)
         except httpx.HTTPError as e:
             logger.debug("GitHub contents API fetch failed: %s", e)
         return None

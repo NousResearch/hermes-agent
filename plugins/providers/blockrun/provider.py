@@ -47,6 +47,10 @@ BLOCKRUN_BASE_URL        = "https://blockrun.ai/api/v1"
 BLOCKRUN_BASE_TESTNET    = "https://testnet.blockrun.ai/api/v1"
 BLOCKRUN_SOLANA_URL      = "https://sol.blockrun.ai/api/v1"
 
+# ── ClawRouter (local routing proxy) ─────────────────────────────────────────
+CLAWROUTER_DEFAULT_PORT  = 8402
+CLAWROUTER_DEFAULT_URL   = f"http://localhost:{CLAWROUTER_DEFAULT_PORT}/v1"
+
 # ── Env var names ─────────────────────────────────────────────────────────────
 _BASE_KEY_VARS   = ("BLOCKRUN_WALLET_KEY", "BASE_CHAIN_WALLET_KEY")
 _SOLANA_KEY_VARS = ("SOLANA_WALLET_KEY", "BLOCKRUN_SOLANA_KEY")
@@ -330,6 +334,28 @@ def create_async_client(
 # Provider resolver — called from hermes_cli/runtime_provider.py
 # ---------------------------------------------------------------------------
 
+def _detect_clawrouter_url() -> str | None:
+    """Check if ClawRouter local proxy is configured or running."""
+    # Explicit env var takes priority
+    port = os.environ.get("CLAWROUTER_PORT")
+    if port:
+        return f"http://localhost:{port}/v1"
+
+    # Check if ClawRouter is running on default port
+    try:
+        import httpx
+        resp = httpx.get(
+            f"{CLAWROUTER_DEFAULT_URL}/models",
+            timeout=1.0,
+        )
+        if resp.status_code == 200:
+            return CLAWROUTER_DEFAULT_URL
+    except Exception:
+        pass
+
+    return None
+
+
 def resolve_blockrun_provider(
     *,
     explicit_api_key: str | None,
@@ -338,6 +364,12 @@ def resolve_blockrun_provider(
 ) -> dict[str, Any]:
     """
     Resolve BlockRun / ClawRouter runtime provider config.
+
+    Resolution order for base_url:
+      1. explicit_base_url (from CLI)
+      2. BLOCKRUN_BASE_URL env var
+      3. ClawRouter local proxy (if running on localhost:8402 or CLAWROUTER_PORT)
+      4. Direct BlockRun API (blockrun.ai or sol.blockrun.ai)
 
     Chain selection (in priority order):
       1. `chain` argument (from cli-config.yaml model.chain)
@@ -370,14 +402,23 @@ def resolve_blockrun_provider(
             f"  • Run the `blockrun_wallet_setup` tool to create one automatically."
         )
 
-    base_url = explicit_base_url or os.environ.get("BLOCKRUN_BASE_URL") or default_url
+    # URL priority: explicit > env > ClawRouter local proxy > direct API
+    base_url = (
+        explicit_base_url
+        or os.environ.get("BLOCKRUN_BASE_URL")
+        or _detect_clawrouter_url()
+        or default_url
+    )
+
+    # Track whether we're routing through ClawRouter
+    is_clawrouter = "localhost" in base_url or "127.0.0.1" in base_url
 
     return {
         "provider": "blockrun",
         "api_mode": "chat_completions",
         "base_url": base_url,
         "api_key": "x402-wallet",
-        "source": f"blockrun_{resolved_chain}_wallet_key",
+        "source": f"{'clawrouter' if is_clawrouter else 'blockrun'}_{resolved_chain}_wallet_key",
         # Extra metadata for the inference layer
         "blockrun_chain": resolved_chain,
         "blockrun_private_key": private_key,

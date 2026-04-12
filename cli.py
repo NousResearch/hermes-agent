@@ -5019,7 +5019,15 @@ class HermesCLI:
                     print(f"  Skills: {', '.join(job['skills'])}")
                 print(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                    _status = job.get("last_status", "?")
+                    _status_display = {
+                        "ok": "ok",
+                        "error": "error",
+                        "warning": "warning — empty response (check model/API config)",
+                    }.get(_status, _status)
+                    _last_err = job.get("last_error")
+                    _err_suffix = f": {_last_err}" if _status == "warning" and _last_err else ""
+                    print(f"  Last run: {job['last_run_at']} ({_status_display}{_err_suffix})")
                 print()
             return
 

@@ -578,23 +578,33 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None, empty_response: bool = False):
     """
     Mark a job as having been run.
-    
+
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+
+    ``empty_response`` flags runs where the agent completed without producing
+    any output (e.g. invalid model name causing a silent API 404).  These are
+    stored as ``last_status="warning"`` so they are distinguishable from
+    genuine successes in job listings and monitoring.
     """
     jobs = load_jobs()
     for i, job in enumerate(jobs):
         if job["id"] == job_id:
             now = _hermes_now().isoformat()
             job["last_run_at"] = now
-            job["last_status"] = "ok" if success else "error"
-            job["last_error"] = error if not success else None
+            if not success:
+                job["last_status"] = "error"
+            elif empty_response:
+                job["last_status"] = "warning"
+            else:
+                job["last_status"] = "ok"
+            job["last_error"] = error if (not success or empty_response) else None
             # Track delivery failures separately — cleared on successful delivery
             job["last_delivery_error"] = delivery_error
             

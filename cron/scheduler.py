@@ -946,6 +946,21 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
                 success, output, final_response, error = run_job(job)
 
+                # A completed run with no agent response (e.g. an invalid model
+                # name silently producing a 404) must not be reported as "ok".
+                # Flag it so mark_job_run() stores last_status="warning" instead,
+                # making the silent failure visible in job listings and /cron list.
+                empty_response = success and not final_response
+                if empty_response:
+                    error = (
+                        "Agent completed without producing a response — "
+                        "check model name, API key, and provider configuration"
+                    )
+                    logger.warning(
+                        "Job '%s' produced an empty response; recording as warning",
+                        job.get("name", job["id"]),
+                    )
+
                 output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
@@ -967,7 +982,8 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error,
+                             empty_response=empty_response)
                 executed += 1
 
             except Exception as e:

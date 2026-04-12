@@ -369,6 +369,28 @@ class TestMarkJobRun:
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
 
+    def test_empty_response_sets_warning_status(self, tmp_cron_dir):
+        """A run that completes but produces no agent response is stored as
+        'warning', not 'ok', so silent API failures are visible in job listings."""
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        mark_job_run(
+            job["id"],
+            success=True,
+            error="Agent completed without producing a response — check model/API config",
+            empty_response=True,
+        )
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "warning"
+        assert updated["last_error"] is not None
+
+    def test_empty_response_warning_does_not_override_real_ok(self, tmp_cron_dir):
+        """Ensure empty_response=False keeps last_status as 'ok' (non-regression)."""
+        job = create_job(prompt="Ping", schedule="every 1h")
+        mark_job_run(job["id"], success=True, empty_response=False)
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["last_error"] is None
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""

@@ -1118,6 +1118,14 @@ class DiscordAdapter(BasePlatformAdapter):
                         guild_id,
                     )
 
+            @self._client.event
+            async def on_raw_reaction_add(payload):
+                await adapter_self._handle_inbound_reaction(payload, "added")
+
+            @self._client.event
+            async def on_raw_reaction_remove(payload):
+                await adapter_self._handle_inbound_reaction(payload, "removed")
+
             # Register slash commands
             if self._slash_commands:
                 self._register_slash_commands()

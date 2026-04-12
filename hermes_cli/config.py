@@ -522,6 +522,14 @@ DEFAULT_CONFIG = {
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
+    "startup": {
+        # When true, `hermes` checks whether the current git checkout is behind
+        # origin/main before launching chat. If the checkout is clean and on
+        # main, Hermes runs the normal update flow first, then re-execs itself
+        # so the interactive session starts on the freshly updated code.
+        "auto_update_on_launch": False,
+    },
+
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
@@ -707,7 +715,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -1563,7 +1571,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "display", "startup", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 

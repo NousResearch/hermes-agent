@@ -119,6 +119,7 @@ def _configured_platforms() -> list[str]:
         "dingtalk": "DINGTALK_CLIENT_ID",
         "feishu": "FEISHU_APP_ID",
         "wecom": "WECOM_BOT_ID",
+        "wecom_callback": "WECOM_CALLBACK_CORP_ID",
         "weixin": "WEIXIN_ACCOUNT_ID",
     }
     return [name for name, env in checks.items() if os.getenv(env)]

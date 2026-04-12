@@ -16,7 +16,7 @@ crashes due to a bad timezone string.
 import logging
 import os
 from datetime import datetime
-from hermes_constants import get_hermes_home
+from hermes_constants import get_config_path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -48,8 +48,7 @@ def _resolve_timezone_name() -> str:
     # 2. config.yaml ``timezone`` key
     try:
         import yaml
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
+        config_path = get_config_path()
         if config_path.exists():
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}

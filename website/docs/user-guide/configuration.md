@@ -480,7 +480,9 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 | `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
 | any | set | Use the custom endpoint directly (provider ignored) |
 
-The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
+:::warning Summary model context length requirement
+The `summary_model` **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override `summary_model`, verify its context length meets or exceeds your main model's.
+:::
 
 ## Context Engine
 
@@ -798,7 +800,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ## Tool-Use Enforcement
 
-Some models (especially GPT-family) occasionally describe intended actions as text instead of making tool calls. Tool-use enforcement injects guidance that steers the model back to actually calling tools.
+Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.
 
 ```yaml
 agent:
@@ -807,12 +809,31 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for GPT models (`gpt-`, `openai/gpt-`) and disabled for all others. |
-| `true` | Always enabled for all models. |
-| `false` | Always disabled. |
-| `["gpt-", "o1-", "custom-model"]` | Enabled only for models whose name contains one of the listed substrings. |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
+| `false` | Always disabled, regardless of model. |
+| `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
 
-When enabled, the system prompt includes guidance reminding the model to make actual tool calls rather than describing what it would do. This is transparent to the user and has no effect on models that already use tools reliably.
+### What it injects
+
+When enabled, three layers of guidance may be added to the system prompt:
+
+1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
+
+2. **OpenAI execution discipline** (GPT and Codex models only) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
+
+3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
+
+These are transparent to the user and only affect the system prompt. Models that already use tools reliably (like Claude) don't need this guidance, which is why `"auto"` excludes them.
+
+### When to turn it on
+
+If you're using a model not in the default auto list and notice it frequently describes what it *would* do instead of doing it, set `tool_use_enforcement: true` or add the model substring to the list:
+
+```yaml
+agent:
+  tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
+```
 
 ## TTS Configuration
 
@@ -844,6 +865,7 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   tool_progress_overrides: {}  # Per-platform overrides (see below)
+  interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -878,6 +900,8 @@ display:
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`.
+
+`interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
 ## Privacy
 
@@ -968,6 +992,8 @@ streaming:
 ```
 
 When enabled, the bot sends a message on the first token, then progressively edits it as more tokens arrive. Platforms that don't support message editing (Signal, Email, Home Assistant) are auto-detected on the first attempt — streaming is gracefully disabled for that session with no flood of messages.
+
+For separate natural mid-turn assistant updates without progressive token editing, set `display.interim_assistant_messages: true`.
 
 **Overflow handling:** If the streamed text exceeds the platform's message length limit (~4096 chars), the current message is finalized and a new one starts automatically.
 

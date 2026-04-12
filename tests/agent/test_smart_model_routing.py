@@ -59,3 +59,95 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+# -- api_mode passthrough tests -----------------------------------------------
+
+
+def test_resolve_turn_route_prefers_route_api_mode(monkeypatch):
+    """api_mode from cheap_model config takes priority over runtime default."""
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "sk-local",
+            "base_url": "http://127.0.0.1:8000",
+            "provider": "custom",
+            "api_mode": "chat_completions",  # runtime default
+        },
+    )
+    cfg = {
+        **_BASE_CONFIG,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "local-9b",
+            "base_url": "http://127.0.0.1:8000",
+            "api_mode": "anthropic_messages",  # explicit config
+        },
+    }
+    result = resolve_turn_route(
+        "hello",
+        cfg,
+        {"model": "strong-model", "provider": "openrouter"},
+    )
+    assert result["runtime"]["api_mode"] == "anthropic_messages"
+
+
+def test_resolve_turn_route_falls_back_to_runtime_api_mode(monkeypatch):
+    """When cheap_model has no api_mode, fall back to runtime-resolved value."""
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "sk-local",
+            "base_url": "http://127.0.0.1:8000",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+        },
+    )
+    cfg = {
+        **_BASE_CONFIG,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "local-9b",
+            # no api_mode — should fall back to runtime
+        },
+    }
+    result = resolve_turn_route(
+        "hello",
+        cfg,
+        {"model": "strong-model", "provider": "openrouter"},
+    )
+    assert result["runtime"]["api_mode"] == "chat_completions"
+
+
+def test_api_mode_reflected_in_signature(monkeypatch):
+    """api_mode should be included in the routing signature for cache keying."""
+    from agent.smart_model_routing import resolve_turn_route
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "sk-local",
+            "base_url": "http://127.0.0.1:8000",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+        },
+    )
+    cfg = {
+        **_BASE_CONFIG,
+        "cheap_model": {
+            "provider": "custom",
+            "model": "local-9b",
+            "api_mode": "anthropic_messages",
+        },
+    }
+    result = resolve_turn_route(
+        "hi",
+        cfg,
+        {"model": "strong-model", "provider": "openrouter"},
+    )
+    # Signature tuple should contain effective api_mode
+    assert "anthropic_messages" in result["signature"]

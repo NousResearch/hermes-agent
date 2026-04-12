@@ -5303,7 +5303,7 @@ class AIAgent:
                 effective_reason = FailoverReason.billing
             elif status_code == 429:
                 effective_reason = FailoverReason.rate_limit
-            elif status_code == 401:
+            elif status_code in (401, 403):
                 effective_reason = FailoverReason.auth
 
         if effective_reason == FailoverReason.billing:

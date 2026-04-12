@@ -1822,6 +1822,8 @@ class HermesCLI:
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
+        self._pending_tool_info: dict = {}  # function_name -> list of (preview, args) for stacked scrollback
+        self._last_scrollback_tool: str = ""  # last tool name printed to scrollback (for "new" dedup)
         self._command_running = False
         self._command_status = ""
         self._attached_images: list[Path] = []
@@ -6560,10 +6562,36 @@ class HermesCLI:
         On tool.started, records a monotonic timestamp so get_spinner_text()
         can show a live elapsed timer (the TUI poll loop already invalidates
         every ~0.15s, so the counter updates automatically).
+
+        When tool_progress_mode is "all" or "new", also prints a persistent
+        stacked line to scrollback on tool.completed so users can see the
+        full history of tool calls (not just the current one in the spinner).
         """
         if event_type == "tool.completed":
             import time as _time
             self._tool_start_time = 0.0
+            # Print stacked scrollback line for "all" / "new" modes
+            if function_name and self.tool_progress_mode in ("all", "new"):
+                duration = kwargs.get("duration", 0.0)
+                is_error = kwargs.get("is_error", False)
+                # Pop stored args from tool.started for this function
+                stored = self._pending_tool_info.get(function_name)
+                stored_args = stored.pop(0) if stored else {}
+                if stored is not None and not stored:
+                    del self._pending_tool_info[function_name]
+                # "new" mode: skip consecutive repeats of the same tool
+                if self.tool_progress_mode == "new" and function_name == self._last_scrollback_tool:
+                    self._invalidate()
+                    return
+                self._last_scrollback_tool = function_name
+                try:
+                    from agent.display import get_cute_tool_message
+                    line = get_cute_tool_message(function_name, stored_args, duration)
+                    if is_error:
+                        line = f"{line} [error]"
+                    _cprint(f"  {line}")
+                except Exception:
+                    pass
             self._invalidate()
             return
         if event_type != "tool.started":
@@ -6579,6 +6607,10 @@ class HermesCLI:
                 label = label[:_pl - 3] + "..."
             self._spinner_text = f"{emoji} {label}"
             self._tool_start_time = _time.monotonic()
+            # Store args for stacked scrollback line on completion
+            self._pending_tool_info.setdefault(function_name, []).append(
+                function_args if function_args is not None else {}
+            )
             self._invalidate()
 
         if not self._voice_mode:
@@ -9419,6 +9451,8 @@ class HermesCLI:
                         self._agent_running = False
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
+                        self._pending_tool_info.clear()
+                        self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
 

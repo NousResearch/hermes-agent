@@ -23,7 +23,9 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
+import sys
+if sys.platform != "win32":
+    import fcntl
 import json
 import logging
 import os
@@ -146,10 +148,23 @@ class MemoryStore:
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         fd = open(lock_path, "w")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            import msvcrt
+            # Windows: use msvcrt locking (LK_LOCK = 1, LK_UNLCK = 0)
+            # Retry locking for up to 10 seconds
+            for _ in range(100):
+                try:
+                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    break
+                except IOError:
+                    import time
+                    time.sleep(0.1)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            try:
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            except (ImportError, OSError):
+                pass
             fd.close()
 
     @staticmethod

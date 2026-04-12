@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms import weixin
-from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
+from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter, _upload_ciphertext_full_url
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -374,3 +374,109 @@ class TestWeixinRemoteMediaSafety:
                 assert "Blocked unsafe URL" in str(exc)
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
+
+
+class TestWeixinMediaSendHelpers:
+    def test_send_image_file_accepts_keyword_image_path(self):
+        adapter = _make_adapter()
+        adapter.send_document = AsyncMock(return_value="ok")
+
+        asyncio.run(adapter.send_image_file(chat_id="wxid_test123", image_path="/tmp/demo.png"))
+
+        adapter.send_document.assert_awaited_once_with(
+            "wxid_test123",
+            "/tmp/demo.png",
+            caption="",
+            metadata=None,
+        )
+
+    def test_send_document_accepts_keyword_file_path(self):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._send_file = AsyncMock(return_value="msg-123")
+
+        result = asyncio.run(adapter.send_document(chat_id="wxid_test123", file_path="/tmp/demo.pdf"))
+
+        assert result.success is True
+        assert result.message_id == "msg-123"
+        adapter._send_file.assert_awaited_once_with("wxid_test123", "/tmp/demo.pdf", "")
+
+
+class _FakeAsyncResponse:
+    def __init__(self, status=200, headers=None, body=""):
+        self.status = status
+        self.headers = headers or {}
+        self._body = body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def read(self):
+        return self._body.encode("utf-8")
+
+    async def text(self):
+        return self._body
+
+
+class _FakeUploadSession:
+    def __init__(self, response):
+        self.response = response
+        self.calls = []
+
+    def post(self, url, **kwargs):
+        self.calls.append(("post", url, kwargs))
+        return self.response
+
+    def put(self, url, **kwargs):
+        self.calls.append(("put", url, kwargs))
+        return self.response
+
+
+class TestWeixinUploadHelpers:
+    def test_upload_full_url_uses_post_and_returns_header(self):
+        session = _FakeUploadSession(
+            _FakeAsyncResponse(status=200, headers={"x-encrypted-param": "enc-param"})
+        )
+
+        result = asyncio.run(
+            _upload_ciphertext_full_url(
+                session,
+                ciphertext=b"abc",
+                upload_full_url="https://cdn.example.com/c2c/upload?token=1",
+            )
+        )
+
+        assert result == "enc-param"
+        assert session.calls[0][0] == "post"
+        assert session.calls[0][1] == "https://cdn.example.com/c2c/upload?token=1"
+
+    @patch("gateway.platforms.weixin._api_post", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._get_upload_url", new_callable=AsyncMock)
+    def test_send_file_prefers_upload_full_url_over_legacy_upload_param(self, get_upload_url_mock, api_post_mock, tmp_path):
+        image_path = tmp_path / "demo.jpg"
+        image_path.write_bytes(b"fake-image-bytes")
+
+        get_upload_url_mock.return_value = {
+            "upload_full_url": "https://cdn.example.com/c2c/upload?token=1",
+            "upload_param": "legacy-param",
+        }
+        api_post_mock.return_value = {}
+
+        adapter = _make_adapter()
+        adapter._session = _FakeUploadSession(
+            _FakeAsyncResponse(status=200, headers={"x-encrypted-param": "enc-param"})
+        )
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda *_args: None
+
+        message_id = asyncio.run(adapter._send_file("wxid_test123", str(image_path), ""))
+
+        assert message_id.startswith("hermes-weixin-")
+        assert adapter._session.calls[0][0] == "post"
+        assert "cdn.example.com" in adapter._session.calls[0][1]
+        api_post_mock.assert_awaited_once()

@@ -517,6 +517,30 @@ async def _upload_ciphertext(
         raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
 
 
+async def _upload_ciphertext_full_url(
+    session: "aiohttp.ClientSession",
+    *,
+    ciphertext: bytes,
+    upload_full_url: str,
+) -> str:
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with session.post(
+        upload_full_url,
+        data=ciphertext,
+        headers={"Content-Type": "application/octet-stream"},
+        timeout=timeout,
+    ) as response:
+        if response.status == 200:
+            encrypted_param = response.headers.get("x-encrypted-param")
+            if encrypted_param:
+                await response.read()
+                return encrypted_param
+            raw = await response.text()
+            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
+        raw = await response.text()
+        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+
+
 async def _download_bytes(
     session: "aiohttp.ClientSession",
     *,
@@ -1532,24 +1556,24 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        image_path: str,
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
+        return await self.send_document(chat_id, image_path, caption=caption, metadata=metadata)
 
     async def send_document(
         self,
         chat_id: str,
-        path: str,
+        file_path: str,
         caption: str = "",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, path, caption)
+            message_id = await self._send_file(chat_id, file_path, caption)
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -1592,7 +1616,13 @@ class WeixinAdapter(BasePlatformAdapter):
         upload_param = str(upload_response.get("upload_param") or "")
         upload_full_url = str(upload_response.get("upload_full_url") or "")
         ciphertext = _aes128_ecb_encrypt(plaintext, aes_key)
-        if upload_param:
+        if upload_full_url:
+            encrypted_query_param = await _upload_ciphertext_full_url(
+                self._session,
+                ciphertext=ciphertext,
+                upload_full_url=upload_full_url,
+            )
+        elif upload_param:
             encrypted_query_param = await _upload_ciphertext(
                 self._session,
                 ciphertext=ciphertext,
@@ -1600,16 +1630,6 @@ class WeixinAdapter(BasePlatformAdapter):
                 upload_param=upload_param,
                 filekey=filekey,
             )
-        elif upload_full_url:
-            timeout = aiohttp.ClientTimeout(total=120)
-            async with self._session.put(
-                upload_full_url,
-                data=ciphertext,
-                headers={"Content-Type": "application/octet-stream"},
-                timeout=timeout,
-            ) as response:
-                response.raise_for_status()
-                encrypted_query_param = response.headers.get("x-encrypted-param") or filekey
         else:
             raise RuntimeError(f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}")
 

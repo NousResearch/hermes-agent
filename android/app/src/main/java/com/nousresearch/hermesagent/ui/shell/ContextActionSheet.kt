@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 
@@ -28,6 +29,7 @@ fun ContextActionSheet(
     actions: List<ShellActionItem>,
     onDismiss: () -> Unit,
 ) {
+    val strings = LocalHermesStrings.current
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(
             modifier = Modifier
@@ -46,8 +48,8 @@ fun ContextActionSheet(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text(section.title, style = MaterialTheme.typography.headlineSmall)
-                    Text(section.subtitle, style = MaterialTheme.typography.bodySmall)
+                    Text(section.title(strings), style = MaterialTheme.typography.headlineSmall)
+                    Text(section.subtitle(strings), style = MaterialTheme.typography.bodySmall)
                     HorizontalDivider()
                 }
             }

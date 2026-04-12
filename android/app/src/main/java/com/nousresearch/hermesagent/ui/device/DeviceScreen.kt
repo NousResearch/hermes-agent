@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.device.HermesGlobalAction
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
@@ -47,6 +48,7 @@ fun DeviceScreen(
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val strings = LocalHermesStrings.current
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -77,7 +79,7 @@ fun DeviceScreen(
         onContextActionsChanged(
             listOf(
                 ShellActionItem(
-                    label = "Refresh device state",
+                    label = strings.refresh.ifBlank { "Refresh" },
                     description = "Reload shared-folder, Linux suite, and phone-control status.",
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = viewModel::refresh,

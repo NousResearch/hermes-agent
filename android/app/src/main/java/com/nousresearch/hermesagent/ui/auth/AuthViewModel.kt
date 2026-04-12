@@ -71,6 +71,8 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
                 model = existing.model,
                 corr3xtBaseUrl = normalized,
                 dataSaverMode = existing.dataSaverMode,
+                onDeviceBackend = existing.onDeviceBackend,
+                languageTag = existing.languageTag,
             )
         )
         _uiState.update {

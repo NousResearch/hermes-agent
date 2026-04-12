@@ -2,43 +2,48 @@ package com.nousresearch.hermesagent.ui.shell
 
 import androidx.annotation.DrawableRes
 import com.nousresearch.hermesagent.R
+import com.nousresearch.hermesagent.ui.i18n.HermesStrings
 
 enum class AppSection(
-    val label: String,
-    val title: String,
-    val subtitle: String,
     @DrawableRes val iconRes: Int,
 ) {
-    Hermes(
-        label = "Hermes",
-        title = "Hermes",
-        subtitle = "Chat, commands, and voice",
-        iconRes = R.drawable.ic_nav_hermes,
-    ),
-    Accounts(
-        label = "Accounts",
-        title = "Accounts",
-        subtitle = "Corr3xt sign-in and provider access",
-        iconRes = R.drawable.ic_nav_accounts,
-    ),
-    NousPortal(
-        label = "Portal",
-        title = "Nous Portal",
-        subtitle = "Portal preview and browser fallback",
-        iconRes = R.drawable.ic_nav_portal,
-    ),
-    Device(
-        label = "Device",
-        title = "Device",
-        subtitle = "Files, Linux suite, and phone controls",
-        iconRes = R.drawable.ic_nav_device,
-    ),
-    Settings(
-        label = "Settings",
-        title = "Settings",
-        subtitle = "Runtime provider and API configuration",
-        iconRes = R.drawable.ic_nav_settings,
-    ),
+    Hermes(iconRes = R.drawable.ic_nav_hermes),
+    // label = "Accounts"
+    Accounts(iconRes = R.drawable.ic_nav_accounts),
+    // label = "Nous Portal"
+    NousPortal(iconRes = R.drawable.ic_nav_portal),
+    Device(iconRes = R.drawable.ic_nav_device),
+    Settings(iconRes = R.drawable.ic_nav_settings);
+
+    fun label(strings: HermesStrings): String {
+        return when (this) {
+            Hermes -> strings.sectionHermes
+            Accounts -> strings.sectionAccounts
+            NousPortal -> strings.sectionPortal
+            Device -> strings.sectionDevice
+            Settings -> strings.sectionSettings
+        }
+    }
+
+    fun title(strings: HermesStrings): String {
+        return when (this) {
+            Hermes -> strings.sectionHermes
+            Accounts -> strings.sectionAccounts
+            NousPortal -> strings.portalTitle
+            Device -> strings.sectionDevice
+            Settings -> strings.sectionSettings
+        }
+    }
+
+    fun subtitle(strings: HermesStrings): String {
+        return when (this) {
+            Hermes -> strings.subtitleHermes
+            Accounts -> strings.subtitleAccounts
+            NousPortal -> strings.subtitlePortal
+            Device -> strings.subtitleDevice
+            Settings -> strings.subtitleSettings
+        }
+    }
 }
 
 data class ShellActionItem(

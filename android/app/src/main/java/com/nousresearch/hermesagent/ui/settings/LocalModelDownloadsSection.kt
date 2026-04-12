@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 
 @Composable
 fun LocalModelDownloadsSection(
@@ -31,6 +32,7 @@ fun LocalModelDownloadsSection(
     viewModel: LocalModelDownloadsViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val strings = LocalHermesStrings.current
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -44,9 +46,11 @@ fun LocalModelDownloadsSection(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Hugging Face local model downloads", style = MaterialTheme.typography.titleMedium)
+            Text(strings.localDownloadsTitle.ifBlank { "Hugging Face local model downloads" }, style = MaterialTheme.typography.titleMedium)
             Text(
-                "Download full model files directly to the phone, keep progress in Android's system download manager, and resume safely after network loss or a phone restart. PocketPal AI is a good reference for the kind of mobile-local model hub Hermes is moving toward.",
+                strings.localDownloadsDescription.ifBlank {
+                    "Download full model files directly to the phone, keep progress in Android's system download manager, and resume safely after network loss or a phone restart. PocketPal AI is a good reference for the kind of mobile-local model hub Hermes is moving toward."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             Row(
@@ -55,9 +59,11 @@ fun LocalModelDownloadsSection(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Data saver mode", style = MaterialTheme.typography.titleSmall)
+                    Text(strings.dataSaverModeTitle.ifBlank { "Data saver mode" }, style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "When enabled, large model downloads wait for Wi‑Fi / unmetered connectivity so Hermes uses only minimal mobile data.",
+                        strings.dataSaverModeDescription.ifBlank {
+                            "When enabled, large model downloads wait for Wi‑Fi / unmetered connectivity so Hermes uses only minimal mobile data."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -69,7 +75,7 @@ fun LocalModelDownloadsSection(
             OutlinedTextField(
                 value = uiState.huggingFaceToken,
                 onValueChange = viewModel::updateHuggingFaceToken,
-                label = { Text("Hugging Face token (optional)") },
+                label = { Text(strings.huggingFaceTokenOptional.ifBlank { "Hugging Face token (optional)" }) },
                 modifier = Modifier.fillMaxWidth(),
             )
             FlowRow(
@@ -77,41 +83,45 @@ fun LocalModelDownloadsSection(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(onClick = viewModel::saveHuggingFaceToken) {
-                    Text("Save token")
+                    Text(strings.saveToken.ifBlank { "Save token" })
                 }
                 Button(onClick = viewModel::refreshDownloads) {
-                    Text("Refresh downloads")
+                    Text(strings.refreshDownloads.ifBlank { "Refresh downloads" })
                 }
             }
             HorizontalDivider()
             OutlinedTextField(
                 value = uiState.repoOrUrl,
                 onValueChange = viewModel::updateRepoOrUrl,
-                label = { Text("Repo ID or direct URL") },
+                label = { Text(strings.repoIdOrDirectUrl.ifBlank { "Repo ID or direct URL" }) },
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(
                 value = uiState.filePath,
                 onValueChange = viewModel::updateFilePath,
-                label = { Text("File path inside repo") },
+                label = { Text(strings.filePathInsideRepo.ifBlank { "File path inside repo" }) },
                 modifier = Modifier.fillMaxWidth(),
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = uiState.revision,
-                    onValueChange = viewModel::updateRevision,
-                    label = { Text("Revision") },
-                    modifier = Modifier.weight(1f),
-                )
-                OutlinedTextField(
-                    value = uiState.runtimeFlavor,
-                    onValueChange = viewModel::updateRuntimeFlavor,
-                    label = { Text("Runtime target") },
-                    modifier = Modifier.weight(1f),
-                )
+            OutlinedTextField(
+                value = uiState.revision,
+                onValueChange = viewModel::updateRevision,
+                label = { Text(strings.revision.ifBlank { "Revision" }) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(strings.runtimeTarget.ifBlank { "Runtime target" }, style = MaterialTheme.typography.titleSmall)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = { viewModel.updateRuntimeFlavor("GGUF") }, enabled = uiState.runtimeFlavor != "GGUF") {
+                    Text("GGUF")
+                }
+                Button(onClick = { viewModel.updateRuntimeFlavor("LiteRT-LM") }, enabled = uiState.runtimeFlavor != "LiteRT-LM") {
+                    Text("LiteRT-LM")
+                }
             }
             Text(
-                "Examples: repo `unsloth/gemma-3-1b-it-GGUF` with file `gemma-3-1b-it-Q4_K_M.gguf`, or paste any direct model URL. GGUF is the safest current mobile-local target.",
+                "Examples: repo `unsloth/gemma-3-1b-it-GGUF` with file `gemma-3-1b-it-Q4_K_M.gguf`, or a LiteRT-LM repo like `litert-community/Gemma3-1B-IT` with a `.litertlm` artifact. GGUF is the safest current mobile-local target.",
                 style = MaterialTheme.typography.bodySmall,
             )
             FlowRow(
@@ -119,10 +129,10 @@ fun LocalModelDownloadsSection(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(onClick = viewModel::inspectCandidate) {
-                    Text("Inspect")
+                    Text(strings.inspect.ifBlank { "Inspect" })
                 }
                 Button(onClick = { viewModel.startDownload(dataSaverMode) }) {
-                    Text("Download")
+                    Text(strings.download.ifBlank { "Download" })
                 }
             }
             if (uiState.inspectionStatus.isNotBlank()) {
@@ -135,13 +145,13 @@ fun LocalModelDownloadsSection(
                 Text(uiState.candidateRamWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             HorizontalDivider()
-            Text("Download manager", style = MaterialTheme.typography.titleSmall)
+            Text(strings.downloadManagerTitle.ifBlank { "Download manager" }, style = MaterialTheme.typography.titleSmall)
             Text(
                 "Unexpected connection loss is handled safely by Android DownloadManager. If the phone shuts down mid-download, Hermes reloads the saved progress after restart and can continue where the system download left off.",
                 style = MaterialTheme.typography.bodySmall,
             )
             if (uiState.downloads.isEmpty()) {
-                Text("No local model downloads yet.", style = MaterialTheme.typography.bodySmall)
+                Text(strings.noLocalModelDownloadsYet.ifBlank { "No local model downloads yet." }, style = MaterialTheme.typography.bodySmall)
             } else {
                 uiState.downloads.forEach { item ->
                     Surface(
@@ -165,7 +175,7 @@ fun LocalModelDownloadsSection(
                                     Text("${item.runtimeFlavor} · ${item.statusLabel}", style = MaterialTheme.typography.labelMedium)
                                 }
                                 if (item.isPreferred) {
-                                    Text("Preferred local model", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
+                                    Text(strings.preferredLocalModel.ifBlank { "Preferred local model" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
                                 }
                             }
                             LinearProgressIndicator(
@@ -184,11 +194,11 @@ fun LocalModelDownloadsSection(
                             ) {
                                 if (!item.isPreferred && item.statusLabel == "completed") {
                                     Button(onClick = { viewModel.setPreferredDownload(item.id) }) {
-                                        Text("Set preferred")
+                                        Text(strings.setPreferred.ifBlank { "Set preferred" })
                                     }
                                 }
                                 Button(onClick = { viewModel.removeDownload(item.id) }) {
-                                    Text("Remove")
+                                    Text(strings.remove.ifBlank { "Remove" })
                                 }
                             }
                         }

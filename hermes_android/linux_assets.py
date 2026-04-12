@@ -34,6 +34,7 @@ ROOT_PACKAGES = [
     "grep",
     "gzip",
     "less",
+    "llama-cpp",
     "procps",
     "sed",
     "tar",

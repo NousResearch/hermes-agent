@@ -6,7 +6,10 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import os
+import sys
 import threading
+import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -203,6 +206,110 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+
+class TestEmbeddedDaemonStartup:
+    def test_build_embedded_daemon_env_defaults_force_cpu_on_darwin(self, monkeypatch):
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"mode": "local_embedded", "llm_provider": "openai", "llm_model": "gpt-4o-mini"}
+        monkeypatch.setattr("plugins.memory.hindsight.sys.platform", "darwin")
+        monkeypatch.delenv("HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU", raising=False)
+        monkeypatch.delenv("HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU", raising=False)
+
+        env = p._build_embedded_daemon_env({})
+
+        assert env == {
+            "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU": "true",
+            "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU": "true",
+        }
+
+    def test_embedded_daemon_startup_exports_force_cpu_env_and_restores_it(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "local_embedded",
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "llm_api_key": "test-llm-key",
+            "bank_id": "test-bank",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("plugins.memory.hindsight.sys.platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU", raising=False)
+        monkeypatch.delenv("HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU", raising=False)
+
+        ensure_env = {}
+        fake_client = SimpleNamespace(
+            _manager=SimpleNamespace(
+                is_running=lambda _profile: False,
+                stop=lambda _profile: None,
+            )
+        )
+
+        def _ensure_started():
+            ensure_env["embeddings"] = os.environ.get("HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU")
+            ensure_env["reranker"] = os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU")
+
+        fake_client._ensure_started = _ensure_started
+
+        fake_hindsight_embed = types.ModuleType("hindsight_embed")
+        fake_dem = types.ModuleType("hindsight_embed.daemon_embed_manager")
+        fake_dem.console = None
+        fake_hindsight_embed.daemon_embed_manager = fake_dem
+
+        fake_rich = types.ModuleType("rich")
+        fake_rich_console = types.ModuleType("rich.console")
+        fake_rich_console.Console = lambda **_kwargs: object()
+        fake_rich.console = fake_rich_console
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+
+            def start(self):
+                if self._target:
+                    self._target()
+
+        with (
+            patch("plugins.memory.hindsight.HindsightMemoryProvider._get_client", return_value=fake_client),
+            patch("plugins.memory.hindsight.threading.Thread", _ImmediateThread),
+            patch.dict(
+                sys.modules,
+                {
+                    "hindsight_embed": fake_hindsight_embed,
+                    "hindsight_embed.daemon_embed_manager": fake_dem,
+                    "rich": fake_rich,
+                    "rich.console": fake_rich_console,
+                },
+            ),
+        ):
+            p = HindsightMemoryProvider()
+            p.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        assert ensure_env == {"embeddings": "true", "reranker": "true"}
+        assert os.environ.get("HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU") is None
+        assert os.environ.get("HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU") is None
+
+        profile_env = tmp_path / ".hindsight" / "profiles" / "hermes.env"
+        contents = profile_env.read_text()
+        assert "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU=true" in contents
+        assert "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU=true" in contents
+
+    def test_embedded_daemon_env_honors_explicit_override(self, monkeypatch):
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {"mode": "local_embedded", "llm_provider": "openai", "llm_model": "gpt-4o-mini"}
+        monkeypatch.setattr("plugins.memory.hindsight.sys.platform", "darwin")
+        monkeypatch.setenv("HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU", "false")
+
+        env = p._build_embedded_daemon_env({})
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] == "false"
+        assert env["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] == "true"
 
 
 # ---------------------------------------------------------------------------

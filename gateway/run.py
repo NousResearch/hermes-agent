@@ -10963,7 +10963,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _msg_cfg = _load_gateway_config()
                     _msg_model_cfg = _msg_cfg.get("model", {})
                     if isinstance(_msg_model_cfg, dict):
-                        _msg_raw_ctx = _msg_model_cfg.get("context_length")
+                        _msg_raw_ctx = _msg_model_cfg.get("context_length") or _msg_model_cfg.get("context_window")
                         if _msg_raw_ctx is not None:
                             _msg_config_ctx = int(_msg_raw_ctx)
                     try:
@@ -11464,7 +11464,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _hyg_model = _model_cfg.get("default") or _model_cfg.get("model") or _hyg_model
                         # Read explicit context_length override from model config
                         # (same as run_agent.py lines 995-1005)
-                        _raw_ctx = _model_cfg.get("context_length")
+                        _raw_ctx = _model_cfg.get("context_length") or _model_cfg.get("context_window")
                         if _raw_ctx is not None:
                             try:
                                 _hyg_config_context_length = int(_raw_ctx)
@@ -11524,7 +11524,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if isinstance(_cp_models, dict):
                                     _cp_model_cfg = _cp_models.get(_hyg_model, {})
                                     if isinstance(_cp_model_cfg, dict):
-                                        _cp_ctx = _cp_model_cfg.get("context_length")
+                                        _cp_ctx = _cp_model_cfg.get("context_length") or _cp_model_cfg.get("context_window")
                                         if _cp_ctx is not None:
                                             _hyg_config_context_length = int(_cp_ctx)
                                 break
@@ -12771,7 +12771,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if data:
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
+                    raw_ctx = model_cfg.get("context_length") or model_cfg.get("context_window")
                     if raw_ctx is not None:
                         try:
                             config_context_length = int(raw_ctx)
@@ -12799,7 +12799,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         cp_models = cp.get("models") or {}
                         # Match provider model to current model
                         if cp_model and cp_model == model:
-                            raw_cp_ctx = cp.get("context_length")
+                            raw_cp_ctx = cp.get("context_length") or cp.get("context_window")
                             if raw_cp_ctx is not None:
                                 try:
                                     config_context_length = int(raw_cp_ctx)
@@ -12810,7 +12810,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if isinstance(cp_models, dict):
                             model_entry = cp_models.get(model)
                             if isinstance(model_entry, dict):
-                                model_ctx = model_entry.get("context_length")
+                                model_ctx = model_entry.get("context_length") or model_entry.get("context_window")
                             else:
                                 model_ctx = model_entry
                             if model_ctx is not None and isinstance(model_ctx, (int, float)):
@@ -16304,6 +16304,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # Add more here as new baked-at-construction config settings are added.
     _CACHE_BUSTING_CONFIG_KEYS: tuple = (
         ("model", "context_length"),
+        ("model", "context_window"),
         ("model", "max_tokens"),
         ("compression", "enabled"),
         ("compression", "threshold"),

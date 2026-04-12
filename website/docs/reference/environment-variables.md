@@ -259,6 +259,14 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
+| `IMESSAGE_ENABLED` | Enable the iMessage adapter (`true`/`false`, requires macOS + `imsg` CLI) |
+| `IMESSAGE_ALLOWED_USERS` | Comma-separated phone numbers or Apple IDs allowed to message the bot |
+| `IMESSAGE_ALLOW_ALL_USERS` | Allow all iMessage senders without an allowlist (`true`/`false`) |
+| `IMESSAGE_HOME_CHANNEL` | Phone number or Apple ID for cron delivery and notifications |
+| `IMESSAGE_HOME_CHANNEL_NAME` | Display name for the iMessage home channel |
+| `IMESSAGE_WATCH_CHAT_IDS` | Comma-separated chat IDs to watch (omit to watch all) |
+| `IMESSAGE_WATCH_MODE` | Watch mode: `auto` (default), `fsevents`, or `poll` |
+| `IMESSAGE_POLL_INTERVAL` | Seconds between polls in poll mode (default: `3.0`) |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

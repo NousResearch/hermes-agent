@@ -85,6 +85,8 @@ class ProcessSession:
     # Watcher/notification metadata (persisted for crash recovery)
     watcher_platform: str = ""
     watcher_chat_id: str = ""
+    watcher_user_id: str = ""
+    watcher_user_name: str = ""
     watcher_thread_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
@@ -133,6 +135,10 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+
+        # Track sessions whose completion was already consumed by the agent
+        # via wait/poll/log.  Drain loops skip notifications for these.
+        self._completion_consumed: set = set()
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -611,6 +617,10 @@ class ProcessRegistry:
 
     # ----- Query Methods -----
 
+    def is_completion_consumed(self, session_id: str) -> bool:
+        """Check if a completion notification was already consumed via wait/poll/log."""
+        return session_id in self._completion_consumed
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
         with self._lock:
@@ -638,6 +648,7 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
@@ -663,13 +674,16 @@ class ProcessRegistry:
         else:
             selected = lines[offset:offset + limit]
 
-        return {
+        result = {
             "session_id": session.id,
             "status": "exited" if session.exited else "running",
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
         }
+        if session.exited:
+            self._completion_consumed.add(session_id)
+        return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
         """
@@ -684,7 +698,7 @@ class ProcessRegistry:
             and output snapshot.
         """
         from tools.ansi_strip import strip_ansi
-        from tools.terminal_tool import _interrupt_event
+        from tools.interrupt import is_interrupted as _is_interrupted
 
         try:
             default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -712,6 +726,7 @@ class ProcessRegistry:
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
             if session.exited:
+                self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,
@@ -721,7 +736,7 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            if _interrupt_event.is_set():
+            if _is_interrupted():
                 result = {
                     "status": "interrupted",
                     "output": strip_ansi(session.output_buffer[-1000:]),
@@ -970,6 +985,8 @@ class ProcessRegistry:
                             "session_key": s.session_key,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
+                            "watcher_user_id": s.watcher_user_id,
+                            "watcher_user_name": s.watcher_user_name,
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
@@ -1031,6 +1048,8 @@ class ProcessRegistry:
                     detached=True,  # Can't read output, but can report status + kill
                     watcher_platform=entry.get("watcher_platform", ""),
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
+                    watcher_user_id=entry.get("watcher_user_id", ""),
+                    watcher_user_name=entry.get("watcher_user_name", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
@@ -1049,6 +1068,8 @@ class ProcessRegistry:
                         "session_key": session.session_key,
                         "platform": session.watcher_platform,
                         "chat_id": session.watcher_chat_id,
+                        "user_id": session.watcher_user_id,
+                        "user_name": session.watcher_user_name,
                         "thread_id": session.watcher_thread_id,
                         "notify_on_complete": session.notify_on_complete,
                     })

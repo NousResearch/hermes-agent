@@ -1214,3 +1214,115 @@ def test_openrouter_provider_not_affected_by_custom_fix(monkeypatch):
 
     resolved = rp.resolve_runtime_provider(requested="openrouter")
     assert resolved["provider"] == "openrouter"
+
+
+# ------------------------------------------------------------------
+# fix #7828 — custom_providers model field must propagate to runtime
+# ------------------------------------------------------------------
+
+
+def test_get_named_custom_provider_includes_model(monkeypatch):
+    """_get_named_custom_provider should include the model field from config."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "custom_providers": [{
+            "name": "my-dashscope",
+            "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+            "model": "qwen3.6-plus",
+        }],
+    })
+
+    result = rp._get_named_custom_provider("my-dashscope")
+    assert result is not None
+    assert result["model"] == "qwen3.6-plus"
+
+
+def test_get_named_custom_provider_excludes_empty_model(monkeypatch):
+    """Empty or whitespace-only model field should not appear in result."""
+    for model_val in ["", "   ", None]:
+        entry = {
+            "name": "test-ep",
+            "base_url": "https://example.com/v1",
+            "api_key": "key",
+        }
+        if model_val is not None:
+            entry["model"] = model_val
+
+        monkeypatch.setattr(rp, "load_config", lambda e=entry: {
+            "custom_providers": [e],
+        })
+
+        result = rp._get_named_custom_provider("test-ep")
+        assert result is not None
+        assert "model" not in result, (
+            f"model field {model_val!r} should not be included in result"
+        )
+
+
+def test_named_custom_runtime_propagates_model_direct_path(monkeypatch):
+    """Model should propagate through the direct (non-pool) resolution path."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "qwen3.6-plus",
+        },
+    )
+    # Ensure pool doesn't intercept
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["model"] == "qwen3.6-plus"
+    assert resolved["provider"] == "custom"
+
+
+def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
+    """Model should propagate even when credential pool handles credentials."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+            "model": "qwen3.6-plus",
+        },
+    )
+    # Pool returns a result (intercepting the normal path)
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-server",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert resolved["model"] == "qwen3.6-plus", (
+        "model must be injected into pool result"
+    )
+    assert resolved["api_key"] == "pool-key", "pool credentials should be used"
+
+
+def test_named_custom_runtime_no_model_when_absent(monkeypatch):
+    """When custom_providers entry has no model field, runtime should not either."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-server",
+            "base_url": "http://localhost:8000/v1",
+            "api_key": "test-key",
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-server")
+    assert "model" not in resolved

@@ -504,6 +504,247 @@ class AIAgent:
     _context_pressure_last_warned: dict = {}
     _CONTEXT_PRESSURE_COOLDOWN = 300  # seconds between re-warning same session
 
+    def create_prd(self, task: str) -> list:
+        """Break a high-level task into a numbered, actionable step list.
+
+        Sends a planning prompt to the LLM and parses the response into a
+        list of step dicts: ``[{"step": str, "done": bool}, ...]``.
+        """
+        prompt = f"""
+Break this task into clear step-by-step actionable items.
+
+Task:
+{task}
+
+Return as a numbered list.
+"""
+        response = self.run(prompt)
+        steps = [s.strip() for s in response.split("\n") if s.strip()]
+        return [{"step": s, "done": False} for s in steps]
+
+    def execute_task(self, task: str, max_iters: int = 15,
+                     state_file: str = "agent_state.json"):
+        """Execute *task* via a structured PRD loop with persistence and git.
+
+        Workflow:
+        1. Load saved state from *state_file* if it exists (resume), otherwise
+           call :meth:`create_prd` to decompose the task.
+        2. Skip steps already marked ``done`` (resume support).
+        3. Error-aware retry: appends a correction hint to the prompt when the
+           previous response contained the word "error".
+        4. Auto-validates Python files by running them after each response.
+        5. Saves progress to *state_file* and commits to git after each step.
+
+        Returns the PRD list with ``done`` flags updated.
+        """
+        # ── Resume or plan ────────────────────────────────────────────
+        prd = self.load_state(state_file) or self.create_prd(task)
+
+        print("\n\U0001f4cb Task Plan:")
+        for i, item in enumerate(prd):
+            status = "\u2705" if item.get("done") else "\u25cb"
+            print(f"  {status} {i + 1}. {item['step']}")
+
+        # ── Step loop ─────────────────────────────────────────────────
+        for i, item in enumerate(prd):
+            if item.get("done"):
+                print(f"\n\u23ed\ufe0f  Skipping Step {i + 1} (already done): {item['step']}")
+                continue
+
+            print(f"\n\U0001f680 Working on Step {i + 1}/{len(prd)}: {item['step']}")
+
+            base_prompt = f"""
+You are an autonomous coding agent executing step {i + 1} of {len(prd)}.
+
+Step:
+{item['step']}
+
+Rules:
+- Use read_file to inspect existing files before writing
+- Use write_file to create or overwrite files with complete content
+- Use search_files to discover what already exists in the workspace
+- Modify files instead of rewriting from scratch when possible
+- Build real, working code — not pseudocode or placeholders
+- Do not restart. Continue progress from previous attempts.
+"""
+            prompt = base_prompt
+
+            for attempt in range(max_iters):
+                print(f"  Attempt {attempt + 1}/{max_iters}")
+                response = self.run(prompt)
+                print("\n\U0001f916 Response:\n", response)
+
+                # Auto-validate: run any Python file mentioned in the response
+                if "python" in response.lower() or ".py" in response.lower():
+                    import re as _re
+                    py_files = _re.findall(r'[\w/\\.-]+\.py', response)
+                    for py_file in py_files[:1]:
+                        print(f"\n\u26a1 Auto-validating: {py_file}")
+                        output = self.run_python_file(py_file)
+                        print("\u26a1 Execution Output:\n", output)
+
+                if self._is_task_complete(response):
+                    item["done"] = True
+                    print(f"\u2705 Step {i + 1} completed")
+                    # Persist progress and commit to git
+                    self.save_state(prd, state_file)
+                    self.git_commit(f"[auto] Step {i + 1}: {item['step'][:72]}")
+                    break
+
+                # Error-aware retry: inject correction hint into next prompt
+                if "error" in response.lower():
+                    prompt = base_prompt + "\nThe previous attempt produced an error. Fix the error and try again."
+                else:
+                    prompt = base_prompt
+            else:
+                print(f"\u26a0\ufe0f  Step {i + 1} hit max retries ({max_iters}) — moving on")
+                self.save_state(prd, state_file)  # Save partial progress
+
+        completed = sum(1 for item in prd if item.get("done"))
+        print(f"\n\U0001f389 TASK EXECUTION COMPLETE — {completed}/{len(prd)} steps done")
+        if completed == len(prd):
+            # Clean up saved state on full completion
+            import os as _os
+            try:
+                _os.remove(state_file)
+            except OSError:
+                pass
+        return prd
+
+
+    def _is_task_complete(self, response: str) -> bool:
+        """Ask the LLM whether the step response counts as done.
+
+        Falls back to keyword matching when the LLM call itself fails,
+        so a broken completion-check never silently kills the loop.
+        """
+        prompt = f"""
+Determine if this task step is completed.
+
+Response:
+{response}
+
+Answer ONLY: YES or NO
+"""
+        try:
+            result = self.run(prompt)
+            return "yes" in result.lower()
+        except Exception:
+            # Fallback: keyword heuristic
+            keywords = ["task completed", "done", "successfully built", "finished", "working solution"]
+            return any(k in response.lower() for k in keywords)
+
+    def _refine_task(self, task: str, response: str) -> str:
+        return f"""
+    Original task:
+    {task}
+
+    Previous attempt:
+    {response}
+
+    Fix errors and continue the task.
+    Do not restart. Continue from where you left off.
+    """
+
+    def run_python_file(self, path: str, timeout: int = 30) -> str:
+        """Execute a Python file in a subprocess and return its output.
+
+        Safe wrapper around subprocess.run — captures stdout + stderr,
+        enforces a *timeout* (default 30 s), and never raises; returns the
+        error description as a string instead so the execution loop can
+        keep going even when a script crashes.
+        """
+        import subprocess
+        try:
+            result = subprocess.run(
+                ["python", path],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            output = (result.stdout + result.stderr).strip()
+            return output or "(no output)"
+        except subprocess.TimeoutExpired:
+            return f"Timed out after {timeout}s — script may be running an infinite loop."
+        except FileNotFoundError:
+            return f"File not found: {path}"
+        except Exception as exc:
+            return str(exc)
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def save_state(self, prd: list, filename: str = "agent_state.json") -> None:
+        """Persist the PRD list to *filename* so the task can be resumed."""
+        import json as _json
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                _json.dump(prd, f, indent=2, ensure_ascii=False)
+            logger.debug("Agent state saved to %s", filename)
+        except Exception as exc:
+            logger.warning("Could not save agent state to %s: %s", filename, exc)
+
+    def load_state(self, filename: str = "agent_state.json") -> list | None:
+        """Load a previously saved PRD list from *filename*.
+
+        Returns ``None`` when the file does not exist or is unreadable,
+        so callers can fall back to :meth:`create_prd` transparently.
+        """
+        import json as _json
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if isinstance(data, list):
+                print(f"\U0001f504 Resuming from saved state: {filename} ({len(data)} steps)")
+                return data
+        except (FileNotFoundError, _json.JSONDecodeError):
+            pass
+        except Exception as exc:
+            logger.warning("Could not load agent state from %s: %s", filename, exc)
+        return None
+
+    # ── Git helpers ───────────────────────────────────────────────────────
+
+    def git_commit(self, message: str) -> str:
+        """Stage all changes and create a git commit with *message*.
+
+        Returns a status string (success or error) — never raises so the
+        execution loop continues even in non-git workspaces.
+        """
+        import subprocess as _sp
+        try:
+            _sp.run(["git", "add", "."], check=True, capture_output=True, text=True)
+            result = _sp.run(
+                ["git", "commit", "-m", message],
+                check=True, capture_output=True, text=True,
+            )
+            msg = result.stdout.strip() or "Commit successful"
+            logger.debug("git commit: %s", msg)
+            return msg
+        except _sp.CalledProcessError as exc:
+            # "nothing to commit" is not a real error
+            stderr = (exc.stderr or "").lower()
+            if "nothing to commit" in stderr or "nothing added" in stderr:
+                return "Nothing to commit."
+            return f"git commit failed: {exc.stderr or exc}"
+        except FileNotFoundError:
+            return "git not found — skipping commit."
+        except Exception as exc:
+            return str(exc)
+
+    def git_status(self) -> str:
+        """Return the current ``git status`` output as a string."""
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                ["git", "status"],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout or result.stderr or "(no output)"
+        except FileNotFoundError:
+            return "git not found."
+        except Exception as exc:
+            return str(exc)
+
     @property
     def base_url(self) -> str:
         return self._base_url

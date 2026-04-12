@@ -9446,7 +9446,18 @@ class HermesCLI:
                             if app.is_running:
                                 app.exit()
                         continue
-                    
+
+                    # ✨ AUTO command — iterative task loop via execute_task()
+                    if isinstance(user_input, str) and user_input.startswith("auto "):
+                        task = user_input[len("auto "):].strip()
+                        if task:
+                            _cprint(f"\n🔄 AUTO mode: {task}")
+                            if self.agent is not None:
+                                self.agent.execute_task(task)
+                            else:
+                                _cprint("  ⚠ Agent not initialized yet — send a normal message first.")
+                        continue
+
                     # Expand paste references back to full content
                     import re as _re
                     _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')

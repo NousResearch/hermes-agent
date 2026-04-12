@@ -75,9 +75,97 @@ class TestCodeGeneration:
             code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
         assert len(pending) == 1
-        assert pending[0]["code"] == code
+        # list_pending no longer returns the original code — it returns a
+        # truncated hash prefix.  Verify the metadata is correct instead.
         assert pending[0]["user_id"] == "user1"
         assert pending[0]["user_name"] == "Alice"
+        # The code field is now a hash prefix, not the original plaintext code
+        assert pending[0]["code"] != code
+
+
+# ---------------------------------------------------------------------------
+# Hashed storage
+# ---------------------------------------------------------------------------
+
+
+class TestHashedStorage:
+    def test_pending_file_contains_hash_and_salt(self, tmp_path):
+        """Stored entries must have 'hash' and 'salt', never the plaintext code."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+
+        assert len(raw) == 1
+        entry = next(iter(raw.values()))
+        # Must have hash and salt fields
+        assert "hash" in entry
+        assert "salt" in entry
+        # Hash must be a valid hex SHA-256 digest (64 hex chars)
+        assert len(entry["hash"]) == 64
+        assert all(c in "0123456789abcdef" for c in entry["hash"])
+        # Salt must be a valid hex string (32 hex chars for 16 bytes)
+        assert len(entry["salt"]) == 32
+        assert all(c in "0123456789abcdef" for c in entry["salt"])
+        # The plaintext code must NOT appear as a key or value anywhere
+        assert code not in raw  # not a key
+        for key, val in raw.items():
+            assert code != key
+            for field_val in val.values():
+                if isinstance(field_val, str):
+                    assert field_val != code
+
+    def test_plaintext_code_not_stored(self, tmp_path):
+        """The raw JSON file must not contain the plaintext code anywhere."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1")
+            raw_text = (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+        assert code not in raw_text
+
+    def test_valid_code_verifies_against_hash(self, tmp_path):
+        """approve_code with the correct code should succeed."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Bob")
+            result = store.approve_code("telegram", code)
+        assert result is not None
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Bob"
+
+    def test_invalid_code_rejected(self, tmp_path):
+        """approve_code with a wrong code should fail."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1")
+            result = store.approve_code("telegram", "ZZZZZZZZ")
+        assert result is None
+
+    def test_different_salts_per_entry(self, tmp_path):
+        """Each pending entry should have a unique salt."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user0")
+            store.generate_code("telegram", "user1")
+            store.generate_code("telegram", "user2")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+        salts = [entry["salt"] for entry in raw.values()]
+        assert len(set(salts)) == 3  # all unique
+
+    def test_hash_code_static_method(self, tmp_path):
+        """_hash_code should be deterministic for the same code+salt."""
+        salt = os.urandom(16)
+        h1 = PairingStore._hash_code("ABCD1234", salt)
+        h2 = PairingStore._hash_code("ABCD1234", salt)
+        assert h1 == h2
+        # Different salt should produce a different hash
+        salt2 = os.urandom(16)
+        h3 = PairingStore._hash_code("ABCD1234", salt2)
+        assert h3 != h1
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +388,10 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Manually expire the code
+            # Manually expire all pending entries
             pending = store._load_json(store._pending_path("telegram"))
-            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            for entry_id in pending:
+                pending[entry_id]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
 
             # Cleanup happens on next operation
@@ -314,9 +403,10 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Expire it
+            # Expire all entries
             pending = store._load_json(store._pending_path("telegram"))
-            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            for entry_id in pending:
+                pending[entry_id]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
 
             result = store.approve_code("telegram", code)

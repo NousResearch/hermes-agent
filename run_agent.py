@@ -2496,7 +2496,11 @@ class AIAgent:
         """
         if not self.save_trajectories:
             return
-        
+
+        # Strip API-only synthetic content (e.g. native-vision base64 images)
+        # before writing to trajectory so the file stays human-readable.
+        self._apply_persist_user_message_override(messages)
+
         trajectory = self._convert_to_trajectory_format(messages, user_query, completed)
         _save_trajectory_to_file(trajectory, self.model, completed)
     
@@ -5715,7 +5719,7 @@ class AIAgent:
         if env_override == "false":
             return False
 
-        if api_mode == "anthropic_messages":
+        if api_mode in ("anthropic_messages", "codex_responses"):
             return False
 
         model_id = (model or "").lower()

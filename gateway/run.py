@@ -2845,26 +2845,38 @@ class GatewayRunner:
                     _parts = []
                     if message_text:
                         _parts.append({"type": "text", "text": message_text})
+
+                    def _encode_image_for_native_vision(_img_path: str) -> Dict[str, Any]:
+                        import base64
+                        from pathlib import Path
+
+                        _path = Path(_img_path)
+                        _img_data = _path.read_bytes()
+                        _b64 = base64.b64encode(_img_data).decode("ascii")
+                        _suffix = _path.suffix.lower()
+                        _mime = {
+                            ".png": "image/png",
+                            ".gif": "image/gif",
+                            ".webp": "image/webp",
+                            ".bmp": "image/bmp",
+                        }.get(_suffix, "image/jpeg")
+                        return {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{_mime};base64,{_b64}"},
+                        }
+
+                    _encode_failed = False
                     for _img_path in image_paths:
                         try:
-                            import base64
-                            from pathlib import Path
-                            _img_data = Path(_img_path).read_bytes()
-                            _b64 = base64.b64encode(_img_data).decode("ascii")
-                            _suffix = Path(_img_path).suffix.lower()
-                            _mime = {
-                                ".png": "image/png",
-                                ".gif": "image/gif",
-                                ".webp": "image/webp",
-                                ".bmp": "image/bmp",
-                            }.get(_suffix, "image/jpeg")
-                            _parts.append({
-                                "type": "image_url",
-                                "image_url": {"url": f"data:{_mime};base64,{_b64}"},
-                            })
+                            _parts.append(
+                                await asyncio.to_thread(_encode_image_for_native_vision, _img_path)
+                            )
                         except Exception as _img_err:
+                            _encode_failed = True
                             logger.warning("Failed to encode image for native vision: %s", _img_err)
-                    if len(_parts) > 1 or (_parts and _parts[0].get("type") == "image_url"):
+                            break
+
+                    if not _encode_failed and (len(_parts) > 1 or (_parts and _parts[0].get("type") == "image_url")):
                         message_content = _parts
                     else:
                         message_text = await self._enrich_message_with_vision(

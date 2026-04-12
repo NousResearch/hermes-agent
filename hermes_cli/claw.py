@@ -229,6 +229,34 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
     return findings
 
 
+def _check_openclaw_running() -> list:
+    """Check if any OpenClaw processes or services are still running."""
+    import subprocess
+    running = []
+    # Check systemd service
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.stdout.strip() == "active":
+            running.append("systemd service: openclaw-gateway.service")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    # Check running processes
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "openclaw"],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            pids = result.stdout.strip().split()
+            running.append(f"openclaw process(es) running (PIDs: {', '.join(pids)})")
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return running
+
+
 def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
     """Rename an OpenClaw directory to .pre-migration.
 
@@ -500,6 +528,21 @@ def _cmd_cleanup(args):
         print()
         print_success("No OpenClaw directories found. Nothing to clean up.")
         return
+    # Warn if OpenClaw is still running
+    running = _check_openclaw_running()
+    if running:
+        print()
+        print_warning("OpenClaw appears to be still running:")
+        for proc in running:
+            print_warning(f"  • {proc}")
+        print_warning("Archiving .openclaw/ while the service is active may cause it to")
+        print_warning("immediately recreate an empty skeleton directory, destroying your config.")
+        print_warning("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
+        print()
+        if not auto_yes:
+            if not prompt_yes_no("Proceed anyway?", default=False):
+                print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
+                return
 
     total_archived = 0
 

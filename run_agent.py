@@ -5846,86 +5846,6 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/go" in base
 
-    def _is_google_api(self) -> bool:
-        """Return True when the base URL targets Google's Gemini API."""
-        return "generativelanguage.googleapis.com" in self._base_url_lower
-
-    @staticmethod
-    def _sanitize_google_schema(schema: dict) -> dict:
-        """Recursively sanitize a JSON Schema dict for Google compatibility.
-
-        Google's Gemini API rejects several JSON Schema features that are
-        valid in OpenAI's tool format:
-          - ``additionalProperties``
-          - ``anyOf`` / ``oneOf`` / ``allOf`` / ``$ref``
-          - ``default`` values on properties
-          - top-level schemas without ``type``
-
-        This method returns a *new* dict with unsupported keys removed and
-        ``type``/``properties`` guaranteed on object schemas.
-        """
-        if not isinstance(schema, dict):
-            return schema
-
-        # Keys that Google's FunctionDeclaration parameters reject.
-        _UNSUPPORTED = {
-            "additionalProperties", "anyOf", "oneOf", "allOf",
-            "$ref", "$schema", "default", "title",
-        }
-
-        cleaned: dict = {}
-        for key, value in schema.items():
-            if key in _UNSUPPORTED:
-                continue
-            if key == "properties" and isinstance(value, dict):
-                cleaned[key] = {
-                    k: AIAgent._sanitize_google_schema(v)
-                    for k, v in value.items()
-                }
-            elif key == "items" and isinstance(value, dict):
-                cleaned[key] = AIAgent._sanitize_google_schema(value)
-            else:
-                cleaned[key] = value
-
-        # Ensure object schemas always have type + properties.
-        if cleaned.get("properties") and "type" not in cleaned:
-            cleaned["type"] = "object"
-        if cleaned.get("type") == "object" and "properties" not in cleaned:
-            cleaned["properties"] = {}
-
-        return cleaned
-
-    def _convert_tools_for_google(self, tools: list) -> list:
-        """Convert OpenAI-format tools to Google-native function declarations.
-
-        Google's ``/v1beta/openai`` endpoint and native API both expect::
-
-            [{"function_declarations": [
-                {"name": "...", "description": "...", "parameters": {...}},
-            ]}]
-
-        The OpenAI wrapper (``{"type": "function", "function": {...}}``) is
-        NOT accepted by Google's protobuf validator — it rejects ``type``
-        and ``function`` as unknown fields on the ``Tool`` message.
-
-        Returns a list suitable for passing via ``extra_body["tools"]``.
-        """
-        if not tools:
-            return []
-        declarations = []
-        for tool in tools:
-            fn = tool.get("function", tool) if isinstance(tool, dict) else {}
-            name = fn.get("name")
-            if not isinstance(name, str) or not name.strip():
-                continue
-            params = fn.get("parameters", {"type": "object", "properties": {}})
-            declarations.append({
-                "name": name,
-                "description": fn.get("description", ""),
-                "parameters": self._sanitize_google_schema(params),
-            })
-        return [{"function_declarations": declarations}] if declarations else []
-
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
         return "portal.qwen.ai" in self._base_url_lower
@@ -6166,12 +6086,7 @@ class AIAgent:
                 "sessionId": self.session_id or "hermes",
                 "promptId": str(uuid.uuid4()),
             }
-        # Google's Gemini API rejects OpenAI-format tool wrappers
-        # ({"type": "function", "function": {...}}).  Convert to native
-        # function_declarations and pass via extra_body so the OpenAI SDK
-        # doesn't re-validate the schema.
-        _is_google = self._is_google_api()
-        if self.tools and not _is_google:
+        if self.tools:
             api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
@@ -6251,10 +6166,6 @@ class AIAgent:
 
         if self._is_qwen_portal():
             extra_body["vl_high_resolution_images"] = True
-
-        # Google: pass tools as native function_declarations via extra_body.
-        if _is_google and self.tools:
-            extra_body["tools"] = self._convert_tools_for_google(self.tools)
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

@@ -137,8 +137,12 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            # Ensure schema always has a "name" field — use entry.name as fallback
-            schema_with_name = {**entry.schema, "name": entry.name}
+            # Unwrap if the plugin already provided an OpenAI-wrapped schema
+            # ({"type": "function", "function": {...}}) to prevent double-wrapping.
+            raw = entry.schema
+            if raw.get("type") == "function" and "function" in raw:
+                raw = raw["function"]
+            schema_with_name = {**raw, "name": entry.name}
             result.append({"type": "function", "function": schema_with_name})
         return result
 

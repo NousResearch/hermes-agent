@@ -921,26 +921,35 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from persistent config, falling back to runtime.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Disk config (config.yaml) is authoritative. Runtime config (cli.py
+    CLI_CONFIG) is only used to fill keys missing from disk. This prevents
+    long-running processes (gateway, cron) from using stale runtime defaults
+    that mask edits made to config.yaml after startup.
     """
-    try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
+    disk_cfg = {}
     try:
         from hermes_cli.config import load_config
-        full = load_config()
-        return full.get("delegation", {})
+        disk_cfg = load_config().get("delegation", {}) or {}
     except Exception:
-        return {}
+        pass
+
+    runtime_cfg = {}
+    try:
+        from cli import CLI_CONFIG
+        runtime_cfg = CLI_CONFIG.get("delegation", {}) or {}
+    except Exception:
+        pass
+
+    # Prefer disk config; runtime only fills missing keys so that
+    # CLI_CONFIG defaults (e.g. max_iterations) do not overwrite
+    # newer config.yaml edits in long-lived processes.
+    merged = dict(disk_cfg)
+    for k, v in runtime_cfg.items():
+        if k not in merged and v not in (None, ""):
+            merged[k] = v
+    return merged
 
 
 # ---------------------------------------------------------------------------

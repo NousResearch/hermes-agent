@@ -1278,5 +1278,56 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
+class TestLoadConfigMerge(unittest.TestCase):
+    """Tests for _load_config disk-first + runtime-fill behavior."""
+
+    def test_disk_config_used_when_runtime_empty(self):
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {}}
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")
+                self.assertEqual(cfg["provider"], "zai-customize")
+
+    def test_runtime_fills_missing_keys(self):
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"max_iterations": 50, "reasoning_effort": "low"}}
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")
+                self.assertEqual(cfg["provider"], "zai-customize")
+                self.assertEqual(cfg["max_iterations"], 50)
+                self.assertEqual(cfg["reasoning_effort"], "low")
+
+    def test_runtime_does_not_override_disk(self):
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"model": "glm-4.7", "max_iterations": 99}}
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")  # disk wins
+                self.assertEqual(cfg["provider"], "zai-customize")
+                self.assertEqual(cfg["max_iterations"], 99)  # runtime fills missing
+
+    def test_empty_runtime_values_ignored(self):
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"model": "", "provider": None}}
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")
+                self.assertEqual(cfg["provider"], "zai-customize")
+
+
 if __name__ == "__main__":
     unittest.main()

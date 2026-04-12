@@ -167,6 +167,29 @@ class TestBlueBubblesWebhookParsing:
             chat_identifier = sender
         assert chat_identifier == "user@example.com"
 
+    def test_webhook_uses_chat_guid_from_chats_array(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello",
+                "chats": [{"guid": "iMessage;-;+1234"}],
+            }
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        record_chat_guid = None
+        if isinstance(record.get("chats"), list):
+            record_chat_guid = record["chats"][0].get("guid")
+
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            record_chat_guid,
+        )
+        assert chat_guid == "iMessage;-;+1234"
+
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {

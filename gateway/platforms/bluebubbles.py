@@ -857,12 +857,29 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
+        record_chat_guid = None
+        record_chats = record.get("chats")
+        if isinstance(record_chats, list):
+            for chat in record_chats:
+                if isinstance(chat, dict) and chat.get("guid"):
+                    record_chat_guid = chat.get("guid")
+                    break
+
+        payload_chat_guid = None
+        payload_chats = payload.get("chats")
+        if isinstance(payload_chats, list):
+            for chat in payload_chats:
+                if isinstance(chat, dict) and chat.get("guid"):
+                    payload_chat_guid = chat.get("guid")
+                    break
+
         chat_guid = self._value(
             record.get("chatGuid"),
             payload.get("chatGuid"),
             record.get("chat_guid"),
             payload.get("chat_guid"),
-            payload.get("guid"),
+            record_chat_guid,
+            payload_chat_guid,
         )
         chat_identifier = self._value(
             record.get("chatIdentifier"),
@@ -923,4 +940,3 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             asyncio.create_task(self.mark_read(session_chat_id))
 
         return web.Response(text="ok")
-

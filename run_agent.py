@@ -6141,6 +6141,48 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    # ── Tool control helpers (Phase A4) ─────────────────────────────────
+    def _evaluate_tool_control(self, tool_name: str, args: dict) -> dict:
+        """Run pre_tool_call hooks and resolve into a control decision."""
+        hook_results = []
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "pre_tool_call", tool_name=tool_name, args=args,
+                task_id="", session_id=self.session_id or "", tool_call_id="",
+            ) or []
+        except Exception as exc:
+            hook_results = [{
+                "action": "deny",
+                "reason": f"Tool control unavailable: {exc}",
+            }]
+
+        try:
+            from agent.tool_control import resolve_pre_tool_control
+            return resolve_pre_tool_control(hook_results, args)
+        except Exception as exc:
+            return {"action": "deny", "reason": f"Tool control failed: {exc}"}
+
+    def _tool_control_targets_agent_loop(self, function_name: str) -> bool:
+        return function_name in {"todo", "session_search", "memory", "clarify", "delegate_task"}
+
+    def _tool_control_targets_memory_provider(self, function_name: str) -> bool:
+        return bool(self._memory_manager and self._memory_manager.has_tool(function_name))
+
+    def _finalize_tool_result(self, tool_name: str, args: dict, result: str) -> str:
+        """Run post_tool_call hooks and resolve modify_result chain."""
+        try:
+            from hermes_cli.plugins import invoke_hook
+            from agent.tool_control import resolve_post_tool_control
+            post_results = invoke_hook(
+                "post_tool_call", tool_name=tool_name, args=args,
+                result=result, task_id="", session_id=self.session_id or "",
+                tool_call_id="",
+            ) or []
+            return resolve_post_tool_control(post_results, result)
+        except Exception:
+            return result
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -6149,9 +6191,24 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # --- Pre-tool control for agent-loop tools (Phase A4) ---
+        _is_agent_loop = self._tool_control_targets_agent_loop(function_name)
+        if _is_agent_loop:
+            control = self._evaluate_tool_control(function_name, function_args)
+            action = control.get("action", "allow")
+            if action == "deny":
+                return json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "short_circuit":
+                return control.get("result", "")
+            if action == "ask":
+                return json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "modify" and "args" in control:
+                function_args = control["args"]
+
+        _agent_loop_result = None
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
+            _agent_loop_result = _todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
@@ -6160,7 +6217,7 @@ class AIAgent:
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
+            _agent_loop_result = _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
@@ -6170,7 +6227,7 @@ class AIAgent:
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
+            _agent_loop_result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
                 content=function_args.get("content"),
@@ -6187,19 +6244,18 @@ class AIAgent:
                     )
                 except Exception:
                     pass
-            return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            _agent_loop_result = self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
+            _agent_loop_result = _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
+            _agent_loop_result = _delegate_task(
                 goal=function_args.get("goal"),
                 context=function_args.get("context"),
                 toolsets=function_args.get("toolsets"),
@@ -6207,6 +6263,10 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+
+        # --- Post-tool control for agent-loop tools (Phase A4) ---
+        if _agent_loop_result is not None:
+            return self._finalize_tool_result(function_name, function_args, _agent_loop_result)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -6526,7 +6586,32 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if function_name == "todo":
+            control_managed_tool = (
+                self._tool_control_targets_agent_loop(function_name)
+                or self._tool_control_targets_memory_provider(function_name)
+            )
+            control_action = None
+            if control_managed_tool:
+                control = self._evaluate_tool_control(function_name, function_args)
+                control_action = control.get("action", "allow")
+                if control_action == "deny":
+                    function_result = json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+                    tool_duration = time.time() - tool_start_time
+                elif control_action == "short_circuit":
+                    function_result = control.get("result", "")
+                    tool_duration = time.time() - tool_start_time
+                elif control_action == "ask":
+                    function_result = json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+                    tool_duration = time.time() - tool_start_time
+                else:
+                    if control_action == "modify" and "args" in control:
+                        function_args = control["args"]
+                    control_action = None
+
+            if control_action is not None:
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
@@ -6670,6 +6755,9 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+
+            if control_managed_tool and control_action is None:
+                function_result = self._finalize_tool_result(function_name, function_args, function_result)
 
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result

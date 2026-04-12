@@ -74,6 +74,16 @@ class TestHandleFunctionCall:
             ),
         ]
 
+    def test_pre_tool_control_resolver_failure_denies(self):
+        with (
+            patch("hermes_cli.plugins.invoke_hook", return_value=[{"action": "allow"}]),
+            patch("agent.tool_control.resolve_pre_tool_control", side_effect=RuntimeError("boom")),
+        ):
+            result = json.loads(handle_function_call("web_search", {"q": "test"}))
+
+        assert "error" in result
+        assert "工具控制失败" in result["error"]
+
 
 # =========================================================================
 # Agent loop tools

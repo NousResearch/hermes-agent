@@ -979,4 +979,7 @@ registry.register(
     handler=send_message_tool,
     check_fn=_check_send_message,
     emoji="📨",
+    mutates_external_world=True,
+    requires_confirmation_default=True,
+    risk_level="critical",
 )

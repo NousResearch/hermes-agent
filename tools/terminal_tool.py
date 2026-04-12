@@ -1754,4 +1754,7 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    risk_level="high",
+    mutates_local_fs=True,
+    mutates_external_world=True,
 )

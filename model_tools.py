@@ -497,18 +497,38 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        # --- Pre-tool control (Phase A3) ---
+        pre_hook_results = []
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook(
+            pre_hook_results = invoke_hook(
                 "pre_tool_call",
                 tool_name=function_name,
                 args=function_args,
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
-            )
-        except Exception:
-            pass
+            ) or []
+        except Exception as exc:
+            pre_hook_results = [{
+                "action": "deny",
+                "reason": f"Tool control unavailable: {exc}",
+            }]
+
+        try:
+            from agent.tool_control import resolve_pre_tool_control
+            control = resolve_pre_tool_control(pre_hook_results, function_args)
+            action = control.get("action", "allow")
+            if action == "deny":
+                return json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "short_circuit":
+                return control.get("result", "")
+            if action == "ask":
+                return json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "modify" and "args" in control:
+                function_args = control["args"]
+        except Exception as exc:
+            return json.dumps({"error": f"工具控制失败，已拒绝执行: {exc}"}, ensure_ascii=False)
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
@@ -526,9 +546,11 @@ def handle_function_call(
                 user_task=user_task,
             )
 
+        # --- Post-tool control (Phase A3) ---
+        post_hook_results = []
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook(
+            post_hook_results = invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
                 args=function_args,
@@ -536,7 +558,13 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
-            )
+            ) or []
+        except Exception:
+            pass
+
+        try:
+            from agent.tool_control import resolve_post_tool_control
+            result = resolve_post_tool_control(post_hook_results, result)
         except Exception:
             pass
 

@@ -2122,6 +2122,8 @@ registry.register(
     handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👆",
+    mutates_browser_session=True,
+    risk_level="medium",
 )
 registry.register(
     name="browser_type",
@@ -2130,6 +2132,8 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+    mutates_browser_session=True,
+    risk_level="medium",
 )
 registry.register(
     name="browser_scroll",

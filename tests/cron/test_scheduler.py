@@ -1218,6 +1218,8 @@ class TestSendMediaViaAdapter:
         adapter.send_image_file.assert_called_once()
 
 
+
+
 class TestEmptyResponseWarning:
     """tick() must mark jobs with empty agent responses as 'warning', not 'ok'.
 
@@ -1227,56 +1229,39 @@ class TestEmptyResponseWarning:
     the failure invisible in /cron list output.
     """
 
-    def test_empty_final_response_stored_as_warning(self, tmp_path, monkeypatch):
+    _MINIMAL_JOB = {
+        "id": "job-test-001",
+        "name": "test-job",
+        "prompt": "summarise logs",
+        "schedule": "every 1h",
+        "schedule_display": "every 1h",
+        "enabled": True,
+        "origin": {},
+        "repeat": {"times": None, "completed": 0},
+        "next_run_at": None,
+        "last_run_at": None,
+        "last_status": None,
+        "last_error": None,
+        "last_delivery_error": None,
+        "state": "scheduled",
+    }
+
+    def test_empty_final_response_stored_as_warning(self, monkeypatch):
         """When run_job returns success=True but final_response is empty,
         tick() must call mark_job_run with empty_response=True so the job
         shows last_status='warning' rather than 'ok'."""
-        from cron import jobs as _jobs_mod
-
-        # Patch run_job to simulate a successful-but-empty run (e.g. 404 on model)
-        monkeypatch.setattr(
-            "cron.scheduler.run_job",
-            lambda job: (True, "# Cron Job: test\n\n(No response generated)", "", None),
-        )
-        # Patch save_job_output to avoid disk I/O
-        monkeypatch.setattr("cron.scheduler.save_job_output", lambda *a, **kw: str(tmp_path / "out.md"))
-
         captured = {}
 
-        original_mark = _jobs_mod.mark_job_run
-
-        def capturing_mark(job_id, success, error=None, delivery_error=None, empty_response=False):
+        def fake_mark(job_id, success, error=None, delivery_error=None, empty_response=False):
             captured["empty_response"] = empty_response
             captured["error"] = error
-            original_mark(job_id, success, error=error,
-                          delivery_error=delivery_error, empty_response=empty_response)
 
-        monkeypatch.setattr("cron.scheduler.mark_job_run", capturing_mark)
+        monkeypatch.setattr("cron.scheduler.run_job",
+                            lambda job: (True, "# Cron Job\n\n(No response generated)", "", None))
+        monkeypatch.setattr("cron.scheduler.save_job_output", lambda *a, **kw: "/tmp/out.md")
+        monkeypatch.setattr("cron.scheduler.mark_job_run", fake_mark)
         monkeypatch.setattr("cron.scheduler._deliver_result", lambda *a, **kw: None)
-
-        # Build a minimal job dict that tick() would pass to run_job
-        job = {
-            "id": "job-test-001",
-            "name": "test-job",
-            "prompt": "summarise logs",
-            "schedule": "every 1h",
-            "schedule_display": "every 1h",
-            "enabled": True,
-            "origin": {},
-            "repeat": {"times": None, "completed": 0},
-            "next_run_at": None,
-            "last_run_at": None,
-            "last_status": None,
-            "last_error": None,
-            "last_delivery_error": None,
-            "state": "scheduled",
-        }
-
-        # Patch jobs layer to return our single job and persist writes to tmp_path
-        jobs_file = tmp_path / "jobs.json"
-        jobs_file.write_text(json.dumps([job]))
-        monkeypatch.setattr("cron.jobs.JOBS_PATH", jobs_file)
-        monkeypatch.setattr("cron.scheduler.get_due_jobs", lambda: [job])
+        monkeypatch.setattr("cron.scheduler.get_due_jobs", lambda: [dict(self._MINIMAL_JOB)])
         monkeypatch.setattr("cron.scheduler.advance_next_run", lambda jid: None)
 
         from cron.scheduler import tick
@@ -1287,5 +1272,27 @@ class TestEmptyResponseWarning:
             "run_job returns success=True with an empty final_response"
         )
         assert captured.get("error") is not None, (
-            "An explanatory error message must be provided alongside the warning"
+            "tick() should supply a diagnostic error message with the warning"
+        )
+
+    def test_non_empty_response_not_flagged_as_warning(self, monkeypatch):
+        """A run that produces a real response must still be stored as 'ok'."""
+        captured = {}
+
+        def fake_mark(job_id, success, error=None, delivery_error=None, empty_response=False):
+            captured["empty_response"] = empty_response
+
+        monkeypatch.setattr("cron.scheduler.run_job",
+                            lambda job: (True, "# Cron Job\n\nAll done.", "All done.", None))
+        monkeypatch.setattr("cron.scheduler.save_job_output", lambda *a, **kw: "/tmp/out.md")
+        monkeypatch.setattr("cron.scheduler.mark_job_run", fake_mark)
+        monkeypatch.setattr("cron.scheduler._deliver_result", lambda *a, **kw: None)
+        monkeypatch.setattr("cron.scheduler.get_due_jobs", lambda: [dict(self._MINIMAL_JOB)])
+        monkeypatch.setattr("cron.scheduler.advance_next_run", lambda jid: None)
+
+        from cron.scheduler import tick
+        tick(adapters={}, loop=None, verbose=False)
+
+        assert captured.get("empty_response") is False, (
+            "tick() must NOT set empty_response=True when final_response is non-empty"
         )

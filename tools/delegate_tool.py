@@ -25,6 +25,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
+from toolsets import TOOLSETS
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -35,8 +37,46 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
     "execute_code",    # children should reason step-by-step, not write scripts
 ])
 
-MAX_CONCURRENT_CHILDREN = 3
+# Build a description fragment listing toolsets available for subagents.
+# Excludes toolsets where ALL tools are blocked, composite/platform toolsets
+# (hermes-* prefixed), and scenario toolsets.
+_EXCLUDED_TOOLSET_NAMES = frozenset({"debugging", "safe", "delegation", "moa", "rl"})
+_SUBAGENT_TOOLSETS = sorted(
+    name for name, defn in TOOLSETS.items()
+    if name not in _EXCLUDED_TOOLSET_NAMES
+    and not name.startswith("hermes-")
+    and not all(t in DELEGATE_BLOCKED_TOOLS for t in defn.get("tools", []))
+)
+_TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
+
+_DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
+
+
+def _get_max_concurrent_children() -> int:
+    """Read delegation.max_concurrent_children from config, falling back to
+    DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
+
+    Uses the same ``_load_config()`` path that the rest of ``delegate_task``
+    uses, keeping config priority consistent (config.yaml > env > default).
+    """
+    cfg = _load_config()
+    val = cfg.get("max_concurrent_children")
+    if val is not None:
+        try:
+            return max(1, int(val))
+        except (TypeError, ValueError):
+            logger.warning(
+                "delegation.max_concurrent_children=%r is not a valid integer; "
+                "using default %d", val, _DEFAULT_MAX_CONCURRENT_CHILDREN,
+            )
+    env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_MAX_CONCURRENT_CHILDREN
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -286,6 +326,25 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
+    # Resolve reasoning config: delegation override > parent inherit
+    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
+    child_reasoning = parent_reasoning
+    try:
+        delegation_cfg = _load_config()
+        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        if delegation_effort:
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(delegation_effort)
+            if parsed is not None:
+                child_reasoning = parsed
+            else:
+                logger.warning(
+                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                    delegation_effort,
+                )
+    except Exception as exc:
+        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -296,7 +355,7 @@ def _build_child_agent(
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=getattr(parent_agent, "reasoning_config", None),
+        reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -552,6 +611,15 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+        # Close tool resources (terminal sandboxes, browser daemons,
+        # background processes, httpx clients) so subagent subprocesses
+        # don't outlive the delegation.
+        try:
+            if hasattr(child, 'close'):
+                child.close()
+        except Exception:
+            logger.debug("Failed to close child agent after delegation")
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -600,8 +668,17 @@ def delegate_task(
         return tool_error(str(exc))
 
     # Normalize to task list
+    max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
-        task_list = tasks[:MAX_CONCURRENT_CHILDREN]
+        if len(tasks) > max_children:
+            return tool_error(
+                f"Too many tasks: {len(tasks)} provided, but "
+                f"max_concurrent_children is {max_children}. "
+                f"Either reduce the task count, split into multiple "
+                f"delegate_task calls, or increase "
+                f"delegation.max_concurrent_children in config.yaml."
+            )
+        task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
@@ -661,7 +738,7 @@ def delegate_task(
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
 
-        with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+        with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
             for i, t, child in children:
                 future = executor.submit(
@@ -936,9 +1013,10 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Toolsets to enable for this subagent. "
                     "Default: inherits your enabled toolsets. "
+                    f"Available toolsets: {_TOOLSET_LIST_STR}. "
                     "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['terminal', 'file', 'web'] for "
-                    "full-stack tasks."
+                    "['web'] for research, ['browser'] for web interaction, "
+                    "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
             "tasks": {
@@ -951,7 +1029,7 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
+                            "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -965,9 +1043,11 @@ DELEGATE_TASK_SCHEMA = {
                     },
                     "required": ["goal"],
                 },
-                "maxItems": 3,
+                # No maxItems — the runtime limit is configurable via
+                # delegation.max_concurrent_children (default 3) and
+                # enforced with a clear error in delegate_task().
                 "description": (
-                    "Batch mode: up to 3 tasks to run in parallel. Each gets "
+                    "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
                 ),

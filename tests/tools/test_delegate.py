@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
-    MAX_CONCURRENT_CHILDREN,
+    _get_max_concurrent_children,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -67,7 +67,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
-        self.assertEqual(props["tasks"]["maxItems"], 3)
+        self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -168,10 +168,13 @@ class TestDelegateTask(unittest.TestCase):
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
         }
         parent = _make_mock_parent()
-        tasks = [{"goal": f"Task {i}"} for i in range(5)]
+        limit = _get_max_concurrent_children()
+        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
-        self.assertEqual(mock_run.call_count, 3)
+        # Should return an error instead of silently truncating
+        self.assertIn("error", result)
+        self.assertIn("Too many tasks", result["error"])
+        mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -562,7 +565,7 @@ class TestBlockedTools(unittest.TestCase):
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
-        self.assertEqual(MAX_CONCURRENT_CHILDREN, 3)
+        self.assertEqual(_get_max_concurrent_children(), 3)
         self.assertEqual(MAX_DEPTH, 2)
 
 
@@ -1205,6 +1208,74 @@ class TestDelegateHeartbeat(unittest.TestCase):
         self.assertTrue(
             any("API call #5 completed" in desc for desc in touch_calls),
             f"Heartbeat should include last_activity_desc: {touch_calls}")
+
+
+class TestDelegationReasoningEffort(unittest.TestCase):
+    """Tests for delegation.reasoning_effort config override."""
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_inherits_parent_reasoning_when_no_override(self, MockAgent, mock_cfg):
+        """With no delegation.reasoning_effort, child inherits parent's config."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": ""}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "xhigh"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_override_reasoning_effort_from_config(self, MockAgent, mock_cfg):
+        """delegation.reasoning_effort overrides the parent's level."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_override_reasoning_effort_none_disables(self, MockAgent, mock_cfg):
+        """delegation.reasoning_effort: 'none' disables thinking for subagents."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "none"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": False})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_invalid_reasoning_effort_falls_back_to_parent(self, MockAgent, mock_cfg):
+        """Invalid delegation.reasoning_effort falls back to parent's config."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "banana"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
 if __name__ == "__main__":

@@ -56,6 +56,18 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
+
+def _codex_curated_models() -> list[str]:
+    """Derive the openai-codex curated list from codex_models.py.
+
+    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
+    This keeps the gateway /model picker in sync with the CLI `hermes model`
+    flow without maintaining a separate static list.
+    """
+    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
+    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
@@ -86,12 +98,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
-    "openai-codex": [
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-codex-max",
-    ],
+    "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -129,6 +136,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    "xai": [
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4.20-multi-agent-0309",
+        "grok-4-1-fast-reasoning",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-4-0709",
+        "grok-code-fast-1",
+        "grok-3",
+        "grok-3-mini",
+    ],
     "kimi-coding": [
         "kimi-for-coding",
         "kimi-k2.5",
@@ -144,22 +164,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
-        "MiniMax-M1",
-        "MiniMax-M1-40k",
-        "MiniMax-M1-80k",
-        "MiniMax-M1-128k",
-        "MiniMax-M1-256k",
-        "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.5",
+        "MiniMax-M2.1",
+        "MiniMax-M2",
     ],
     "minimax-cn": [
-        "MiniMax-M1",
-        "MiniMax-M1-40k",
-        "MiniMax-M1-80k",
-        "MiniMax-M1-128k",
-        "MiniMax-M1-256k",
-        "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.5",
+        "MiniMax-M2.1",
+        "MiniMax-M2",
     ],
     "anthropic": [
         "claude-opus-4-6",
@@ -173,6 +187,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-chat",
         "deepseek-reasoner",
+    ],
+    "xiaomi": [
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+        "mimo-v2-flash",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -479,6 +498,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "xiaomi": "Xiaomi MiMo",
     "custom": "Custom endpoint",
 }
 
@@ -521,7 +541,23 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "mimo": "xiaomi",
+    "xiaomi-mimo": "xiaomi",
 }
+
+
+def get_default_model_for_provider(provider: str) -> str:
+    """Return the default model for a provider, or empty string if unknown.
+
+    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
+    model a user would be offered first in the ``hermes model`` picker.
+
+    Used as a fallback when the user has configured a provider but never
+    selected a model (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``).
+    """
+    models = _PROVIDER_MODELS.get(provider, [])
+    return models[0] if models else ""
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
@@ -805,7 +841,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
-        "qwen-oauth",
+        "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
@@ -1786,6 +1822,35 @@ def validate_requested_model(
             "recognized": False,
             "message": message,
         }
+
+    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
+    if normalized == "openai-codex":
+        try:
+            codex_models = provider_model_ids("openai-codex")
+        except Exception:
+            codex_models = []
+        if codex_models:
+            if requested_for_lookup in set(codex_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    f"It may still work if your account has access to it."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)

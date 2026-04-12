@@ -50,7 +50,8 @@ class TestEstimateTokensRough:
         assert estimate_tokens_rough("a" * 400) == 100
 
     def test_short_text(self):
-        assert estimate_tokens_rough("hello") == 1
+        # "hello" = 5 chars → ceil(5/4) = 2
+        assert estimate_tokens_rough("hello") == 2
 
     def test_proportional(self):
         short = estimate_tokens_rough("hello world")
@@ -68,10 +69,11 @@ class TestEstimateMessagesTokensRough:
         assert estimate_messages_tokens_rough([]) == 0
 
     def test_single_message_concrete_value(self):
-        """Verify against known str(msg) length."""
+        """Verify against known str(msg) length (ceiling division)."""
         msg = {"role": "user", "content": "a" * 400}
         result = estimate_messages_tokens_rough([msg])
-        expected = len(str(msg)) // 4
+        n = len(str(msg))
+        expected = (n + 3) // 4
         assert result == expected
 
     def test_multiple_messages_additive(self):
@@ -80,7 +82,8 @@ class TestEstimateMessagesTokensRough:
             {"role": "assistant", "content": "Hi there, how can I help?"},
         ]
         result = estimate_messages_tokens_rough(msgs)
-        expected = sum(len(str(m)) for m in msgs) // 4
+        n = sum(len(str(m)) for m in msgs)
+        expected = (n + 3) // 4
         assert result == expected
 
     def test_tool_call_message(self):
@@ -89,7 +92,7 @@ class TestEstimateMessagesTokensRough:
                "tool_calls": [{"id": "1", "function": {"name": "terminal", "arguments": "{}"}}]}
         result = estimate_messages_tokens_rough([msg])
         assert result > 0
-        assert result == len(str(msg)) // 4
+        assert result == (len(str(msg)) + 3) // 4
 
     def test_message_with_list_content(self):
         """Vision messages with multimodal content arrays."""
@@ -98,7 +101,7 @@ class TestEstimateMessagesTokensRough:
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
         ]}
         result = estimate_messages_tokens_rough([msg])
-        assert result == len(str(msg)) // 4
+        assert result == (len(str(msg)) + 3) // 4
 
 
 # =========================================================================
@@ -221,6 +224,24 @@ class TestGetModelContextLength:
     def test_partial_match_in_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("openai/gpt-4o") == 128000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_plus_context_length(self, mock_fetch):
+        """qwen3-coder-plus has a 1M context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder-plus") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_context_length(self, mock_fetch):
+        """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen_generic_context_length(self, mock_fetch):
+        """Generic qwen models still get the 128K default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-plus") == 131072
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):

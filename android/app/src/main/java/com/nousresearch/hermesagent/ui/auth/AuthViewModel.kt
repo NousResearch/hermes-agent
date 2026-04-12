@@ -14,6 +14,9 @@ import com.nousresearch.hermesagent.data.AuthScope
 import com.nousresearch.hermesagent.data.AuthSession
 import com.nousresearch.hermesagent.data.AuthSessionStore
 import com.nousresearch.hermesagent.data.PendingAuthRequest
+import com.nousresearch.hermesagent.ui.i18n.AppLanguage
+import com.nousresearch.hermesagent.ui.i18n.HermesStrings
+import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,6 +45,11 @@ data class AuthUiState(
 class AuthViewModel(application: Application) : AndroidViewModel(application) {
     private val appSettingsStore = AppSettingsStore(application)
     private val authSessionStore = AuthSessionStore(application)
+
+    private fun currentStrings(): HermesStrings {
+        val settings = appSettingsStore.load()
+        return hermesStringsFor(AppLanguage.fromTag(settings.languageTag))
+    }
 
     private val _uiState = MutableStateFlow(buildState())
     val uiState: StateFlow<AuthUiState> = _uiState.asStateFlow()
@@ -117,12 +125,12 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: ActivityNotFoundException) {
             authSessionStore.clearPendingRequest()
             _uiState.update {
-                it.copy(globalStatus = "Unable to open Corr3xt: no browser is available")
+                it.copy(globalStatus = currentStrings().authNoBrowser())
             }
         } catch (_: RuntimeException) {
             authSessionStore.clearPendingRequest()
             _uiState.update {
-                it.copy(globalStatus = "Unable to open Corr3xt. Check the auth URL and try again.")
+                it.copy(globalStatus = currentStrings().authTryAgain())
             }
         }
     }
@@ -133,7 +141,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             it.copy(
                 pendingMethodLabel = "",
                 hasPendingRequest = false,
-                globalStatus = "Canceled pending Corr3xt sign-in",
+                globalStatus = currentStrings().authCanceled(),
             )
         }
     }
@@ -153,6 +161,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun buildState(): AuthUiState {
         val settings = appSettingsStore.load()
+        val strings = hermesStringsFor(AppLanguage.fromTag(settings.languageTag))
         val persistedPending = authSessionStore.loadPendingRequest()
         val pending = persistedPending?.takeUnless { AuthSessionStore.isPendingRequestExpired(it) }
         if (persistedPending != null && pending == null) {
@@ -164,14 +173,19 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         val sessionsById = sessions.associateBy { it.methodId }
         val options = AuthCatalog.options.map { option ->
             val session = sessionsById[option.id] ?: defaultSession(option)
+            val localizedStatus = when {
+                session.signedIn -> strings.authSignedInWith(option.label)
+                session.status == "Not signed in" -> strings.authNotSignedIn()
+                else -> session.status
+            }
             AuthOptionUiState(
                 id = option.id,
                 label = option.label,
-                description = option.description,
+                description = strings.authDescription(option.id, option.description),
                 scope = option.scope,
                 runtimeProvider = session.runtimeProvider,
                 signedIn = session.signedIn,
-                status = session.status,
+                status = localizedStatus,
                 accountHint = listOf(session.displayName, session.email, session.phone)
                     .firstOrNull { it.isNotBlank() }
                     .orEmpty(),
@@ -179,17 +193,17 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
         }
         val signedInAccounts = options.count { it.signedIn }
         val latestSessionStatus = sessions
-            .filter { it.updatedAtEpochMs > 0 && it.status.isNotBlank() && it.status != "Not signed in" }
+            .filter { it.updatedAtEpochMs > 0 && it.status.isNotBlank() && it.status != strings.authNotSignedIn() }
             .maxByOrNull { it.updatedAtEpochMs }
             ?.status
         val pendingMethodLabel = pending?.methodId
             ?.let { AuthCatalog.find(it)?.label ?: it }
             .orEmpty()
         val globalStatus = when {
-            pending != null -> "Waiting for Corr3xt callback for $pendingMethodLabel"
+            pending != null -> strings.authWaitingCallback(pendingMethodLabel)
             !latestSessionStatus.isNullOrBlank() -> latestSessionStatus
-            signedInAccounts > 0 -> "$signedInAccounts sign-in methods connected"
-            else -> "Use Corr3xt to sign into the app or connect provider accounts."
+            signedInAccounts > 0 -> strings.authConnectedMethods(signedInAccounts)
+            else -> strings.authGlobalStatusDefault()
         }
 
         return AuthUiState(
@@ -219,7 +233,7 @@ class AuthViewModel(application: Application) : AndroidViewModel(application) {
             label = option.label,
             scope = option.scope,
             runtimeProvider = option.runtimeProvider,
-            status = "Not signed in",
+            status = currentStrings().authNotSignedIn(),
             updatedAtEpochMs = 0,
         )
     }

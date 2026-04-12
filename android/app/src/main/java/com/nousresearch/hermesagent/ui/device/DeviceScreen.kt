@@ -142,6 +142,13 @@ fun DeviceScreen(
                     onOpenBluetooth = ::handleBluetoothAction,
                     onOpenConnectedDevices = { viewModel.performSystemAction("open_connected_devices_settings") },
                 )
+                RadioControlCard(
+                    uiState = uiState,
+                    onOpenMobileNetwork = { viewModel.performSystemAction("open_mobile_network_settings") },
+                    onOpenDataUsage = { viewModel.performSystemAction("open_data_usage_settings") },
+                    onOpenHotspot = { viewModel.performSystemAction("open_hotspot_settings") },
+                    onOpenAirplaneMode = { viewModel.performSystemAction("open_airplane_mode_settings") },
+                )
                 InterfaceCard(
                     uiState = uiState,
                     onOpenNfc = { viewModel.performSystemAction("open_nfc_settings") },
@@ -180,6 +187,7 @@ fun DeviceScreen(
 
 @Composable
 private fun DeviceGuideCard(workspacePath: String) {
+    val strings = LocalHermesStrings.current
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier
@@ -187,13 +195,13 @@ private fun DeviceGuideCard(workspacePath: String) {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("How to use this alpha", style = MaterialTheme.typography.titleMedium)
-            Text("1. Hermes now ships a local Linux command suite inside the Android app. Ask Hermes to call android_device_status first, then use terminal/process for full CLI execution.")
-            Text("2. Grant a shared folder from Android's native picker if you want Hermes to edit the real files in place with android_shared_folder_list/read/write.")
-            Text("3. Import files into the workspace only when you want scratch copies or staging files.")
-            Text("4. Enable Hermes accessibility if you want Hermes to inspect the visible UI and trigger targeted actions in addition to Home / Back / Recents / Notifications / Quick settings.")
+            Text(strings.deviceGuideTitle(), style = MaterialTheme.typography.titleMedium)
+            Text(strings.deviceGuideStep(1))
+            Text(strings.deviceGuideStep(2))
+            Text(strings.deviceGuideStep(3))
+            Text(strings.deviceGuideStep(4))
             if (workspacePath.isNotBlank()) {
-                Text("Workspace path: $workspacePath", style = MaterialTheme.typography.bodySmall)
+                Text(strings.deviceWorkspacePath(workspacePath), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -291,6 +299,94 @@ private fun ConnectivityCard(
                 }
                 Button(onClick = onOpenConnectedDevices) {
                     Text("Connected devices")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RadioControlCard(
+    uiState: DeviceUiState,
+    onOpenMobileNetwork: () -> Unit,
+    onOpenDataUsage: () -> Unit,
+    onOpenHotspot: () -> Unit,
+    onOpenAirplaneMode: () -> Unit,
+) {
+    val strings = LocalHermesStrings.current
+    val title = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "蜂窝网络与无线电控制"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Controles celulares y de radio"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Mobilfunk- und Funksteuerung"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Controles celulares e de rádio"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Contrôles cellulaires et radio"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Cellular + radio controls"
+    }
+    val summary = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "当前网络：${uiState.activeNetworkLabel} · 计量网络：${if (uiState.activeNetworkMetered) "是" else "否"} · 省流模式：${if (uiState.dataSaverEnabled) "开" else "关"} · 飞行模式：${if (uiState.airplaneModeEnabled) "开" else "关"}。由于 Android 限制，Hermes 使用系统面板而不是不受支持的直接无线电切换。"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Red actual: ${uiState.activeNetworkLabel} · medida: ${if (uiState.activeNetworkMetered) "sí" else "no"} · ahorro de datos: ${if (uiState.dataSaverEnabled) "activo" else "inactivo"} · modo avión: ${if (uiState.airplaneModeEnabled) "activo" else "inactivo"}. Por las restricciones de Android, Hermes usa paneles del sistema en lugar de toggles directos no soportados."
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Aktives Netzwerk: ${uiState.activeNetworkLabel} · getaktet: ${if (uiState.activeNetworkMetered) "ja" else "nein"} · Datensparen: ${if (uiState.dataSaverEnabled) "aktiv" else "inaktiv"} · Flugmodus: ${if (uiState.airplaneModeEnabled) "aktiv" else "inaktiv"}. Wegen Android-Beschränkungen nutzt Hermes Systemansichten statt nicht unterstützter Direktumschaltungen."
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Rede atual: ${uiState.activeNetworkLabel} · limitada: ${if (uiState.activeNetworkMetered) "sim" else "não"} · economia de dados: ${if (uiState.dataSaverEnabled) "ativa" else "inativa"} · modo avião: ${if (uiState.airplaneModeEnabled) "ativo" else "inativo"}. Devido às restrições do Android, o Hermes usa painéis do sistema em vez de alternâncias diretas não suportadas."
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Réseau actif : ${uiState.activeNetworkLabel} · limité : ${if (uiState.activeNetworkMetered) "oui" else "non"} · économie de données : ${if (uiState.dataSaverEnabled) "active" else "inactive"} · mode avion : ${if (uiState.airplaneModeEnabled) "actif" else "inactif"}. En raison des limites Android, Hermes utilise des panneaux système plutôt que des bascules radio directes non prises en charge."
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Active network: ${uiState.activeNetworkLabel} · metered: ${if (uiState.activeNetworkMetered) "yes" else "no"} · data saver: ${if (uiState.dataSaverEnabled) "enabled" else "disabled"} · airplane mode: ${if (uiState.airplaneModeEnabled) "enabled" else "disabled"}. Because of Android platform limits, Hermes uses system panels instead of unsupported direct radio toggles."
+    }
+    val mobileNetworkLabel = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "移动网络"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Red móvil"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Mobilfunk"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Rede móvel"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Réseau mobile"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Mobile network"
+    }
+    val dataUsageLabel = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "数据使用"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Uso de datos"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Datennutzung"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Uso de dados"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Utilisation des données"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Data usage"
+    }
+    val hotspotLabel = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "热点 / 共享"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Punto de acceso"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Hotspot / Tethering"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Hotspot / ancoragem"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Point d’accès / partage"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Hotspot / tethering"
+    }
+    val airplaneLabel = when (strings.language) {
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.CHINESE -> "飞行模式"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Modo avión"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.GERMAN -> "Flugmodus"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Modo avião"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Mode avion"
+        com.nousresearch.hermesagent.ui.i18n.AppLanguage.ENGLISH -> "Airplane mode"
+    }
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(summary, style = MaterialTheme.typography.bodySmall)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenMobileNetwork) {
+                    Text(mobileNetworkLabel)
+                }
+                Button(onClick = onOpenDataUsage) {
+                    Text(dataUsageLabel)
+                }
+                Button(onClick = onOpenHotspot) {
+                    Text(hotspotLabel)
+                }
+                Button(onClick = onOpenAirplaneMode) {
+                    Text(airplaneLabel)
                 }
             }
         }

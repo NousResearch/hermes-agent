@@ -4,18 +4,21 @@ import android.app.Application
 import android.text.format.Formatter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import com.nousresearch.hermesagent.data.SecureSecretsStore
 import com.nousresearch.hermesagent.models.HermesModelDownloadManager
 import com.nousresearch.hermesagent.models.ModelDownloadDraft
 import com.nousresearch.hermesagent.models.ModelDownloadInspection
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class LocalModelDownloadItemUi(
     val id: String,
@@ -43,6 +46,7 @@ data class LocalModelDownloadsUiState(
 )
 
 class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(application) {
+    private val settingsStore = AppSettingsStore(application)
     private val secretsStore = SecureSecretsStore(application)
     private val downloadStore = LocalModelDownloadStore(application)
 
@@ -62,8 +66,14 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
     }
 
     private fun loadInitialState(): LocalModelDownloadsUiState {
+        val settings = settingsStore.load()
+        val initialRuntimeFlavor = when (settings.onDeviceBackend) {
+            "litert-lm" -> "LiteRT-LM"
+            else -> "GGUF"
+        }
         return LocalModelDownloadsUiState(
             huggingFaceToken = secretsStore.loadApiKey("huggingface"),
+            runtimeFlavor = initialRuntimeFlavor,
         )
     }
 
@@ -90,18 +100,21 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
     fun inspectCandidate() {
         val context = getApplication<Application>()
         val state = _uiState.value
+        _uiState.update { it.copy(inspectionStatus = "Inspecting model candidate…", candidateSummary = "", candidateRamWarning = "") }
         viewModelScope.launch {
             runCatching {
-                HermesModelDownloadManager.inspectCandidate(
-                    context,
-                    draft = ModelDownloadDraft(
-                        repoOrUrl = state.repoOrUrl,
-                        filePath = state.filePath,
-                        revision = state.revision,
-                        runtimeFlavor = state.runtimeFlavor,
-                    ),
-                    hfToken = state.huggingFaceToken,
-                )
+                withContext(Dispatchers.IO) {
+                    HermesModelDownloadManager.inspectCandidate(
+                        context,
+                        draft = ModelDownloadDraft(
+                            repoOrUrl = state.repoOrUrl,
+                            filePath = state.filePath,
+                            revision = state.revision,
+                            runtimeFlavor = state.runtimeFlavor,
+                        ),
+                        hfToken = state.huggingFaceToken,
+                    )
+                }
             }.onSuccess { inspection ->
                 _uiState.update {
                     it.copy(
@@ -125,20 +138,23 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
     fun startDownload(dataSaverMode: Boolean) {
         val context = getApplication<Application>()
         val state = _uiState.value
+        _uiState.update { it.copy(inspectionStatus = "Preparing download…") }
         viewModelScope.launch {
             runCatching {
-                HermesModelDownloadManager.enqueueDownload(
-                    context = context,
-                    store = downloadStore,
-                    draft = ModelDownloadDraft(
-                        repoOrUrl = state.repoOrUrl,
-                        filePath = state.filePath,
-                        revision = state.revision,
-                        runtimeFlavor = state.runtimeFlavor,
-                    ),
-                    hfToken = state.huggingFaceToken,
-                    dataSaverMode = dataSaverMode,
-                )
+                withContext(Dispatchers.IO) {
+                    HermesModelDownloadManager.enqueueDownload(
+                        context = context,
+                        store = downloadStore,
+                        draft = ModelDownloadDraft(
+                            repoOrUrl = state.repoOrUrl,
+                            filePath = state.filePath,
+                            revision = state.revision,
+                            runtimeFlavor = state.runtimeFlavor,
+                        ),
+                        hfToken = state.huggingFaceToken,
+                        dataSaverMode = dataSaverMode,
+                    )
+                }
             }.onSuccess { record ->
                 refreshDownloads()
                 _uiState.update {
@@ -158,7 +174,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
 
     fun refreshDownloads() {
         val context = getApplication<Application>()
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val refreshed = HermesModelDownloadManager.refreshDownloads(context, downloadStore)
             _uiState.update { it.copy(downloads = refreshed.toUiItems(context, downloadStore.preferredDownloadId())) }
         }

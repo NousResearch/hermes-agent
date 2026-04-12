@@ -25,6 +25,18 @@ enum class AppSection(
         }
     }
 
+    fun navigationLabel(strings: HermesStrings): String {
+        return when (this) {
+            Device -> when (strings.language) {
+                com.nousresearch.hermesagent.ui.i18n.AppLanguage.SPANISH -> "Equipo"
+                com.nousresearch.hermesagent.ui.i18n.AppLanguage.PORTUGUESE -> "Aparelho"
+                com.nousresearch.hermesagent.ui.i18n.AppLanguage.FRENCH -> "Appareil"
+                else -> label(strings)
+            }
+            else -> label(strings)
+        }
+    }
+
     fun title(strings: HermesStrings): String {
         return when (this) {
             Hermes -> strings.sectionHermes

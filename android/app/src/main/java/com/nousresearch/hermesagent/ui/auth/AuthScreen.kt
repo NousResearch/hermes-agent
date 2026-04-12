@@ -116,7 +116,7 @@ fun AuthScreen(
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Button(onClick = viewModel::cancelPendingRequest) {
-                                Text("Cancel pending sign-in")
+                                Text(strings.cancelPendingSignIn())
                             }
                         }
                     }

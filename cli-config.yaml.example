@@ -787,7 +787,7 @@ display:
 
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
-  # terminal(background=true, check_interval=...) from Telegram/Discord/etc.
+  # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
   #   off:     No watcher messages at all
   #   result:  Only the final completion message
   #   error:   Only the final message when exit code != 0

@@ -2922,3 +2922,248 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+class TestRequireMentionConfig(unittest.TestCase):
+    """Tests for the require_mention config flag (global + per-group)."""
+
+    # ------------------------------------------------------------------
+    # Global require_mention=false via env var
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {
+        "FEISHU_GROUP_POLICY": "open",
+        "FEISHU_REQUIRE_MENTION": "false",
+    }, clear=True)
+    def test_global_require_mention_false_passes_without_at(self):
+        """Any group message passes when FEISHU_REQUIRE_MENTION=false."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, "oc_chat"))
+
+    @patch.dict(os.environ, {
+        "FEISHU_GROUP_POLICY": "open",
+        "FEISHU_REQUIRE_MENTION": "true",
+    }, clear=True)
+    def test_global_require_mention_true_blocks_without_at(self):
+        """Message without @bot is blocked when FEISHU_REQUIRE_MENTION=true."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, "oc_chat"))
+
+    # ------------------------------------------------------------------
+    # Per-group require_mention override
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_per_group_require_mention_false_overrides_global_true(self):
+        """Per-group require_mention=false bypasses @mention even when global=true."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter, FeishuGroupRule
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # Global default is True; override for this specific group.
+        adapter._group_rules = {
+            "oc_target": FeishuGroupRule(policy="open", require_mention=False),
+        }
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        # Target group: passes without @mention.
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, "oc_target"))
+        # Other group: still requires @mention.
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, "oc_other"))
+
+    @patch.dict(os.environ, {
+        "FEISHU_GROUP_POLICY": "open",
+        "FEISHU_REQUIRE_MENTION": "false",
+    }, clear=True)
+    def test_per_group_require_mention_true_overrides_global_false(self):
+        """Per-group require_mention=true re-enables gate even when global=false."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter, FeishuGroupRule
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._group_rules = {
+            "oc_strict": FeishuGroupRule(policy="open", require_mention=True),
+        }
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        # Global=false but per-group=true → still blocked.
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id, "oc_strict"))
+        # Other group not in rules → falls through to global=false → passes.
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, "oc_other"))
+
+    # ------------------------------------------------------------------
+    # Auto-detection via member_count
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_member_count_2_skips_mention_gate(self):
+        """member_count=2 (1 human + bot) auto-bypasses the @mention gate."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        self.assertTrue(
+            adapter._should_accept_group_message(message, sender_id, "oc_chat", member_count=2)
+        )
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_member_count_3_requires_mention(self):
+        """member_count>=3 keeps the standard @mention gate."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        self.assertFalse(
+            adapter._should_accept_group_message(message, sender_id, "oc_chat", member_count=3)
+        )
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_member_count_none_falls_back_to_require_mention_default(self):
+        """When member_count is unknown (None) the global default (True) applies."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            content='{"text":"hello"}',
+            mentions=[],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        # No member_count supplied → falls back to global require_mention=True → blocked.
+        self.assertFalse(
+            adapter._should_accept_group_message(message, sender_id, "oc_chat", member_count=None)
+        )
+
+    # ------------------------------------------------------------------
+    # No duplicate processing: @mention in a small group still yields 1 reply
+    # ------------------------------------------------------------------
+
+    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
+    def test_member_count_2_with_bot_mention_still_accepted_once(self):
+        """member_count=2 + explicit @bot mention → passes (no double-fire risk)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._bot_open_id = "ou_bot"
+        mention = SimpleNamespace(
+            id=SimpleNamespace(open_id="ou_bot", user_id=None),
+            name="Bot",
+        )
+        message = SimpleNamespace(
+            content='{"text":"@Bot hello"}',
+            mentions=[mention],
+            message_type="text",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None)
+        # Should pass exactly once — member_count gate fires first (returns True early),
+        # the @mention check is never reached.
+        self.assertTrue(
+            adapter._should_accept_group_message(message, sender_id, "oc_chat", member_count=2)
+        )
+
+    # ------------------------------------------------------------------
+    # get_chat_info includes member_count when API returns it
+    # ------------------------------------------------------------------
+
+    def test_get_chat_info_extracts_member_count(self):
+        """get_chat_info() stores member_count from API response in cache."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        mock_data = SimpleNamespace(
+            chat_type="group",
+            name="Test Group",
+            member_count=2,
+        )
+        mock_response = SimpleNamespace(
+            data=mock_data,
+            success=lambda: True,
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    chat=SimpleNamespace(get=lambda req: mock_response)
+                )
+            )
+        )
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            info = asyncio.run(adapter.get_chat_info("oc_test"))
+
+        self.assertEqual(info.get("member_count"), 2)
+        self.assertEqual(info.get("type"), "group")
+
+    def test_get_chat_info_omits_member_count_when_absent(self):
+        """get_chat_info() doesn't add member_count key when API omits it."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        mock_data = SimpleNamespace(
+            chat_type="group",
+            name="No Count",
+            # member_count intentionally absent
+        )
+        mock_response = SimpleNamespace(
+            data=mock_data,
+            success=lambda: True,
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    chat=SimpleNamespace(get=lambda req: mock_response)
+                )
+            )
+        )
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            info = asyncio.run(adapter.get_chat_info("oc_nocount"))
+
+        self.assertNotIn("member_count", info)

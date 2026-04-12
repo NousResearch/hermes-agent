@@ -278,6 +278,7 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    require_mention: bool = True  # global default; False = no @mention needed in any group
 
 
 @dataclass
@@ -287,6 +288,7 @@ class FeishuGroupRule:
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    require_mention: Optional[bool] = None  # None = inherit global setting
 
 
 @dataclass
@@ -1075,10 +1077,15 @@ class FeishuAdapter(BasePlatformAdapter):
             for chat_id, rule_cfg in raw_group_rules.items():
                 if not isinstance(rule_cfg, dict):
                     continue
+                raw_rm = rule_cfg.get("require_mention")
+                per_group_require_mention: Optional[bool] = None
+                if raw_rm is not None:
+                    per_group_require_mention = _to_boolean(raw_rm)
                 group_rules[str(chat_id)] = FeishuGroupRule(
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    require_mention=per_group_require_mention,
                 )
 
         # Bot-level admins
@@ -1087,6 +1094,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+
+        # Global require_mention: env FEISHU_REQUIRE_MENTION overrides config key
+        _env_require_mention = os.getenv("FEISHU_REQUIRE_MENTION", "").strip().lower()
+        if _env_require_mention:
+            require_mention = _env_require_mention != "false"
+        else:
+            raw_cfg_rm = extra.get("require_mention")
+            require_mention = True if raw_cfg_rm is None else _to_boolean(raw_cfg_rm)
 
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1144,6 +1159,7 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            require_mention=require_mention,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1158,6 +1174,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
+        self._require_mention = settings.require_mention
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
@@ -1720,12 +1737,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
             data = getattr(response, "data", None)
             raw_chat_type = str(getattr(data, "chat_type", "") or "").strip().lower()
-            info = {
+            raw_member_count = getattr(data, "member_count", None)
+            info: Dict[str, Any] = {
                 "chat_id": chat_id,
                 "name": str(getattr(data, "name", None) or chat_id),
                 "type": self._map_chat_type(raw_chat_type),
                 "raw_type": raw_chat_type or None,
             }
+            if raw_member_count is not None:
+                try:
+                    info["member_count"] = int(raw_member_count)
+                except (TypeError, ValueError):
+                    pass
             self._chat_info_cache[chat_id] = info
             return dict(info)
         except Exception:
@@ -1772,9 +1795,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
         chat_type = getattr(message, "chat_type", "p2p")
         chat_id = getattr(message, "chat_id", "") or ""
-        if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
-            logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
-            return
+        if chat_type != "p2p":
+            # Pre-fetch chat info (cached) to obtain member_count for auto-detection.
+            chat_info = await self.get_chat_info(chat_id)
+            member_count: Optional[int] = chat_info.get("member_count")
+            if not self._should_accept_group_message(
+                message, sender_id, chat_id, member_count=member_count
+            ):
+                logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
+                return
         await self._process_inbound_message(
             data=data,
             message=message,
@@ -3022,10 +3051,48 @@ class FeishuAdapter(BasePlatformAdapter):
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
-    def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+    def _should_accept_group_message(
+        self,
+        message: Any,
+        sender_id: Any,
+        chat_id: str = "",
+        member_count: Optional[int] = None,
+    ) -> bool:
+        """Decide whether a group message should enter the agent.
+
+        Mention requirement priority (highest wins):
+          1. Per-group ``require_mention`` in ``group_rules`` config.
+          2. Global ``require_mention`` setting / ``FEISHU_REQUIRE_MENTION`` env.
+          3. Auto-detection: if the chat has exactly 2 members (one human + bot),
+             act like a DM and skip the @mention gate.
+          4. Default: require @mention.
+        """
         if not self._allow_group_message(sender_id, chat_id):
             return False
+
+        # --- Resolve effective require_mention ---
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule is not None and rule.require_mention is not None:
+            # Per-group explicit override wins.
+            effective_require_mention = rule.require_mention
+        elif not self._require_mention:
+            # Global flag disabled.
+            effective_require_mention = False
+        elif member_count is not None and member_count <= 2:
+            # Auto-detect: only 1 human + bot → behave like a DM.
+            logger.debug(
+                "[Feishu] Skipping @mention gate for small group %s (member_count=%d)",
+                chat_id,
+                member_count,
+            )
+            effective_require_mention = False
+        else:
+            effective_require_mention = True
+
+        if not effective_require_mention:
+            return True
+
+        # --- Standard @mention check ---
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

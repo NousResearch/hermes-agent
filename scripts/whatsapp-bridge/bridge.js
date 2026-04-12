@@ -228,8 +228,13 @@ async function startSocket() {
       }
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
-        continue;
+      if (!msg.key.fromMe) {
+        if (WHATSAPP_MODE === 'self-chat') {
+          continue;
+        }
+        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+          continue;
+        }
       }
 
       const messageContent = getMessageContent(msg);

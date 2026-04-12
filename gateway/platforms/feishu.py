@@ -1972,7 +1972,8 @@ class FeishuAdapter(BasePlatformAdapter):
             sender_profile = await self._resolve_sender_profile(sender_id)
             user_name = sender_profile.get("user_name") or open_id
 
-            # Resolve the approval — unblocks the agent thread
+            await self._update_approval_card(state.get("message_id", ""), f"Processing: {label}...", user_name, choice)
+
             try:
                 from tools.approval import resolve_gateway_approval
                 count = resolve_gateway_approval(state["session_key"], choice)
@@ -1983,7 +1984,6 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
-            # Update the card to show the decision
             await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
             return
 

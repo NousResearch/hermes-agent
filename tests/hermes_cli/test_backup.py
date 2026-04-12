@@ -233,6 +233,44 @@ class TestBackup:
 
 
 # ---------------------------------------------------------------------------
+# _validate_backup_zip tests
+# ---------------------------------------------------------------------------
+
+class TestValidateBackupZip:
+    def _make_zip(self, zip_path: Path, filenames: list[str]) -> None:
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            for name in filenames:
+                zf.writestr(name, "dummy")
+
+    def test_state_db_passes(self, tmp_path):
+        """A zip containing state.db is accepted as a valid Hermes backup."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "backup.zip"
+        self._make_zip(zip_path, ["state.db", "sessions/abc.json"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert ok, reason
+
+    def test_old_wrong_db_name_fails(self, tmp_path):
+        """A zip with only hermes_state.db (old wrong name) is rejected."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "old.zip"
+        self._make_zip(zip_path, ["hermes_state.db", "memory_store.db"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert not ok
+
+    def test_config_yaml_passes(self, tmp_path):
+        """A zip containing config.yaml is accepted (existing behaviour preserved)."""
+        from hermes_cli.backup import _validate_backup_zip
+        zip_path = tmp_path / "backup.zip"
+        self._make_zip(zip_path, ["config.yaml", "skills/x/SKILL.md"])
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            ok, reason = _validate_backup_zip(zf)
+        assert ok, reason
+
+
+# ---------------------------------------------------------------------------
 # Import tests
 # ---------------------------------------------------------------------------
 

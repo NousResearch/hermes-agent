@@ -67,6 +67,8 @@ try:
         ReplyMessageRequestBody,
         UpdateMessageRequest,
         UpdateMessageRequestBody,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
     )
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
@@ -280,6 +282,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
 
 
+
 @dataclass
 class FeishuGroupRule:
     """Per-group policy rule for controlling which users may interact with the bot."""
@@ -360,21 +363,19 @@ def _render_code_block_element(element: Dict[str, Any]) -> str:
 
 
 def _strip_markdown_to_plain_text(text: str) -> str:
-    """Strip markdown formatting to plain text for Feishu text fallbacks.
-
-    Delegates common markdown stripping to the shared helper and adds
-    Feishu-specific patterns (blockquotes, strikethrough, underline tags,
-    horizontal rules, \\r\\n normalisation).
-    """
-    from gateway.platforms.helpers import strip_markdown
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
+    plain = re.sub(r"^#{1,6}\s+", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
     plain = re.sub(r"^\s*---+\s*$", "---", plain, flags=re.MULTILINE)
+    plain = re.sub(r"```(?:[^\n]*\n)?([\s\S]*?)```", lambda m: m.group(1).strip("\n"), plain)
+    plain = re.sub(r"`([^`\n]+)`", r"\1", plain)
+    plain = re.sub(r"\*\*([^*\n]+)\*\*", r"\1", plain)
+    plain = re.sub(r"\*([^*\n]+)\*", r"\1", plain)
     plain = re.sub(r"~~([^~\n]+)~~", r"\1", plain)
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
-    plain = strip_markdown(plain)
-    return plain
+    plain = re.sub(r"\n{3,}", "\n\n", plain)
+    return plain.strip()
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -946,6 +947,96 @@ def _unique_lines(lines: List[str]) -> List[str]:
     return unique
 
 
+def _patch_ws_card_actions(ws_client: Any) -> None:
+    """Monkey-patch the Feishu WS client to handle MessageType.CARD events.
+
+    lark-oapi ≤1.5.x ``_handle_data_frame`` silently ``return``s for CARD
+    messages.  We replace that method so CARD events are dispatched through
+    ``do_without_validation`` just like EVENT events, enabling interactive
+    card buttons (e.g. approval buttons) in WebSocket mode.
+    """
+    try:
+        from lark_oapi.ws.client import MessageType  # noqa: F811
+    except ImportError:
+        return
+
+    original_handle = ws_client._handle_data_frame
+
+    async def _patched_handle_data_frame(frame: Any) -> None:
+        """Patched handler that routes CARD events through the EventDispatcher."""
+        import base64 as _b64
+        import http as _http
+        import time as _time
+
+        try:
+            from lark_oapi.ws.model import Response  # type: ignore
+        except ImportError:
+            return await original_handle(frame)
+
+        try:
+            from lark_oapi.core.json import JSON  # type: ignore
+        except ImportError:
+            return await original_handle(frame)
+
+        # Extract header values the same way the SDK does.
+        hs = frame.headers
+        type_val = None
+        for h in hs:
+            if h.key == "type":
+                type_val = h.value
+                break
+        if type_val is None:
+            return await original_handle(frame)
+
+        try:
+            message_type = MessageType(type_val)
+        except (ValueError, KeyError):
+            return await original_handle(frame)
+
+        if message_type != MessageType.CARD:
+            # Not a card event — delegate to original handler.
+            return await original_handle(frame)
+
+        # --- Card event: process it like an EVENT ---
+        pl = frame.payload
+        # Handle multi-part reassembly.
+        sum_val = seq_val = None
+        msg_id = None
+        for h in hs:
+            if h.key == "sum":
+                sum_val = h.value
+            elif h.key == "seq":
+                seq_val = h.value
+            elif h.key == "message_id":
+                msg_id = h.value
+
+        if sum_val and int(sum_val) > 1:
+            pl = ws_client._combine(msg_id, int(sum_val), int(seq_val), pl)
+            if pl is None:
+                return
+
+        resp = Response(code=_http.HTTPStatus.OK)
+        result = None
+        try:
+            start = int(round(_time.time() * 1000))
+            result = ws_client._event_handler.do_without_validation(pl)
+            end = int(round(_time.time() * 1000))
+            h = hs.add()
+            h.key = "biz_rt"
+            h.value = str(end - start)
+            if result is not None:
+                resp.data = _b64.b64encode(JSON.marshal(result).encode("utf-8"))
+        except Exception as e:
+            logger.error("[Feishu] Card action handling failed in WS patch: %s", e)
+            resp = Response(code=_http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+        frame.payload = JSON.marshal(resp).encode("utf-8")
+        await ws_client._write_message(frame.SerializeToString())
+
+    ws_client._handle_data_frame = _patched_handle_data_frame
+    logger.info("[Feishu] Patched WS client to handle card action events")
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
@@ -1482,11 +1573,21 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    async def _update_approval_card(
-        self, message_id: str, label: str, user_name: str, choice: str,
+    async def _delay_update_approval_card(
+        self, callback_token: str, label: str, user_name: str, choice: str,
+        open_id: str = "",
     ) -> None:
-        """Replace the approval card with a resolved status card."""
-        if not self._client or not message_id:
+        """Delay-update the approval card using the callback token (Method 2).
+
+        Calls ``POST /interactive/v1/card/update`` with the token obtained from
+        the ``card.action.trigger`` callback.  This is the official "delayed card
+        update" API — the token is valid for 30 min and can be used up to 2 times.
+
+        Must be called **after** the callback response has been sent (Method 1).
+        """
+        if not self._client or not callback_token:
+            logger.warning("[Feishu] Cannot delay-update approval card: client=%s token=%r",
+                           bool(self._client), bool(callback_token))
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
@@ -1503,12 +1604,26 @@ class FeishuAdapter(BasePlatformAdapter):
             ],
         }
         try:
-            payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            from lark_oapi.core.model.base_request import BaseRequest
+            from lark_oapi.core.enum import HttpMethod, AccessTokenType
+
+            request = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.POST)
+                .uri("/open-apis/interactive/v1/card/update")
+                .token_types({AccessTokenType.TENANT})
+                .body({"token": callback_token, "card": {**card, "open_ids": [open_id]} if open_id else card})
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.request, request)
+            code = getattr(response, "code", None)
+            msg = getattr(response, "msg", None)
+            if code == 0:
+                logger.info("[Feishu] Approval card delay-updated via token → %s", label)
+            else:
+                logger.warning("[Feishu] Delay-update approval card failed: code=%s msg=%s", code, msg)
         except Exception as exc:
-            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
+            logger.warning("[Feishu] Delay-update approval card exception: %s", exc)
 
     async def send_voice(
         self,
@@ -1837,7 +1952,18 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Schedule Feishu card actions on the adapter loop and acknowledge immediately."""
+        """Schedule Feishu card actions on the adapter loop and acknowledge immediately.
+
+        Returns a ``P2CardActionTriggerResponse`` with both a toast and an
+        inline card replacement so the Feishu client updates instantly —
+        no need for a separate PATCH API call.
+        """
+        # Extract action info synchronously so we can build the response card.
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+
         loop = self._loop
         if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
@@ -1847,9 +1973,67 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop,
             )
             future.add_done_callback(self._log_background_failure)
+
         if P2CardActionTriggerResponse is None:
             return None
-        return P2CardActionTriggerResponse()
+
+        resp = P2CardActionTriggerResponse()
+
+        # Build inline card replacement for approval actions so the client
+        # updates immediately without waiting for a PATCH API call.
+        if hermes_action:
+            choice_map = {
+                "approve_once": ("once", "Approved once"),
+                "approve_session": ("session", "Approved for session"),
+                "approve_always": ("always", "Approved permanently"),
+                "deny": ("deny", "Denied"),
+            }
+            choice, label = choice_map.get(hermes_action, ("deny", "Denied"))
+            icon = "❌" if choice == "deny" else "✅"
+            template_color = "red" if choice == "deny" else "green"
+
+            try:
+                from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackCard
+                card = CallBackCard()
+                card.type = "raw"
+                card.data = {
+                    "config": {"wide_screen_mode": True},
+                    "header": {
+                        "title": {"content": f"{icon} {label}", "tag": "plain_text"},
+                        "template": template_color,
+                    },
+                    "elements": [
+                        {
+                            "tag": "markdown",
+                            "content": f"{icon} **{label}**",
+                        },
+                    ],
+                }
+                resp.card = card
+            except Exception:
+                pass
+
+            # Also add a toast as fallback feedback.
+            try:
+                from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackToast
+                toast = CallBackToast()
+                toast.type = "success" if choice != "deny" else "error"
+                toast.content = f"{icon} {label}"
+                resp.toast = toast
+            except Exception:
+                pass
+        else:
+            # Non-approval card action — just toast.
+            try:
+                from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackToast
+                toast = CallBackToast()
+                toast.type = "info"
+                toast.content = "✅ Processing..."
+                resp.toast = toast
+            except Exception:
+                pass
+
+        return resp
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -1967,10 +2151,24 @@ class FeishuAdapter(BasePlatformAdapter):
             }
             label = label_map.get(choice, "Resolved")
 
-            # Resolve sender name for the status card
+            # Resolve sender name for the status card.
+            # Prefer the display name from the gateway session (which may
+            # incorporate Hermes user-profile overrides) over the raw Feishu
+            # contact API name (often a generic placeholder like "用户375404").
             sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
             sender_profile = await self._resolve_sender_profile(sender_id)
             user_name = sender_profile.get("user_name") or open_id
+            # Check if the agent's memory has a better name for this user
+            try:
+                from hermes_constants import get_hermes_home
+                import re
+                user_md_path = get_hermes_home() / "memories" / "USER.md"
+                if user_md_path.exists():
+                    m = re.search(r"\*\*Name:\*\*\s*(.+)", user_md_path.read_text())
+                    if m:
+                        user_name = m.group(1).strip()
+            except Exception:
+                pass
 
             # Resolve the approval — unblocks the agent thread
             try:
@@ -1983,8 +2181,14 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
-            # Update the card to show the decision
-            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
+            # Delay-update the card as a fallback (Method 2).
+            # Method 1 (callback response with card) fires synchronously in
+            # _on_card_action_trigger.  This delayed call uses the callback token
+            # and must execute *after* the callback response has been sent.
+            if token:
+                await asyncio.sleep(2)  # ensure callback response is sent first
+                logger.debug("[Feishu] Delay-updating approval card via token → %s", label)
+                await self._delay_update_approval_card(token, label, user_name, choice, open_id=open_id)
             return
 
         synthetic_text = f"/card {action_tag}"
@@ -3335,6 +3539,13 @@ class FeishuAdapter(BasePlatformAdapter):
             event_handler=self._event_handler,
             domain=domain,
         )
+        # --- Monkey-patch: enable card action handling in WebSocket mode ---
+        # lark-oapi ≤1.5.x WS client silently drops MessageType.CARD events
+        # (``return`` without processing).  Patch _handle_data_frame so CARD
+        # events are routed through the EventDispatcherHandler just like EVENT,
+        # which allows interactive approval buttons to work.
+        _patch_ws_card_actions(self._ws_client)
+
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,

@@ -508,6 +508,19 @@ class MatrixAdapter(BasePlatformAdapter):
                     await api.session.close()
                     return False
 
+                # Import cross-signing private keys from SSSS and self-sign
+                # the current device. Required after any device-key rotation
+                # (fresh crypto.db, share_keys re-upload) — otherwise the
+                # device's self-signing signature is stale and peers refuse
+                # to share Megolm sessions with the rotated device.
+                recovery_key = os.getenv("MATRIX_RECOVERY_KEY", "").strip()
+                if recovery_key:
+                    try:
+                        await olm.verify_with_recovery_key(recovery_key)
+                        logger.info("Matrix: cross-signing verified via recovery key")
+                    except Exception as exc:
+                        logger.warning("Matrix: recovery key verification failed: %s", exc)
+
                 client.crypto = olm
                 logger.info(
                     "Matrix: E2EE enabled (store: %s%s)",

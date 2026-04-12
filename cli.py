@@ -1065,8 +1065,18 @@ def _cprint(text: str):
     Raw ANSI escapes written via print() are swallowed by patch_stdout's
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
+
+    Falls back to plain print() on Windows non-native consoles (e.g. Git Bash /
+    mintty) where Win32 console APIs are unavailable.
     """
-    _pt_print(_PT_ANSI(text))
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        # Git Bash / mintty on Windows: no Win32 console screen buffer.
+        # Strip ANSI escapes for clean output, or keep them if terminal supports it.
+        import re as _re
+        plain = _re.sub(r'\x1b\[[0-9;]*m', '', text)
+        print(plain)
 
 
 # ---------------------------------------------------------------------------

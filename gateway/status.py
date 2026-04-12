@@ -306,6 +306,9 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                 os.kill(existing_pid, 0)
             except (ProcessLookupError, PermissionError):
                 stale = True
+            except OSError:
+                # Windows: os.kill(pid, 0) raises OSError for non-existent PIDs
+                stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
                 if (
@@ -408,6 +411,10 @@ def get_running_pid() -> Optional[int]:
     try:
         os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
     except (ProcessLookupError, PermissionError):
+        remove_pid_file()
+        return None
+    except OSError:
+        # Windows: os.kill(pid, 0) raises OSError for non-existent PIDs
         remove_pid_file()
         return None
 

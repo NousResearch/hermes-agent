@@ -8046,8 +8046,16 @@ class GatewayRunner:
                     if hasattr(_adapter, 'has_pending_interrupt') and _adapter.has_pending_interrupt(session_key):
                         agent = agent_holder[0]
                         if agent:
-                            pending_event = _adapter.get_pending_message(session_key)
-                            pending_text = pending_event.text if pending_event else None
+                            # Peek at the pending message text WITHOUT consuming it.
+                            # The message must remain in _pending_messages so the
+                            # post-run dequeue at _dequeue_pending_event() can
+                            # retrieve the full MessageEvent (with media metadata).
+                            # If we pop here, a race exists: the agent may finish
+                            # before checking _interrupt_requested, and the message
+                            # is lost — neither the interrupt path nor the dequeue
+                            # path finds it.
+                            _peek_event = _adapter._pending_messages.get(session_key)
+                            pending_text = _peek_event.text if _peek_event else None
                             logger.debug("Interrupt detected from adapter, signaling agent...")
                             agent.interrupt(pending_text)
                             _interrupt_detected.set()
@@ -8138,7 +8146,7 @@ class GatewayRunner:
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
                                 and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter.get_pending_message(session_key)
+                            _bp_event = _backup_adapter._pending_messages.get(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
                             logger.info(
                                 "Backup interrupt detected for session %s "
@@ -8198,7 +8206,7 @@ class GatewayRunner:
                         if (_backup_adapter and _backup_agent
                                 and hasattr(_backup_adapter, 'has_pending_interrupt')
                                 and _backup_adapter.has_pending_interrupt(session_key)):
-                            _bp_event = _backup_adapter.get_pending_message(session_key)
+                            _bp_event = _backup_adapter._pending_messages.get(session_key)
                             _bp_text = _bp_event.text if _bp_event else None
                             logger.info(
                                 "Backup interrupt detected for session %s "

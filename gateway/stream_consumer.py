@@ -343,9 +343,20 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
+                        sent_length = 0
                         for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
-                        self._accumulated = ""
+                            if not self._clean_for_display(chunk).strip():
+                                # Chunk is empty after removing media/whitespace
+                                # markers — advance past it
+                                sent_length += len(chunk)
+                                continue
+                            reply_id = self._message_id
+                            new_id = await self._send_new_chunk(chunk, reply_id)
+                            if new_id is not None and new_id != reply_id:
+                                sent_length += len(chunk)
+                            else:
+                                break
+                        self._accumulated = self._accumulated[sent_length:]
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:

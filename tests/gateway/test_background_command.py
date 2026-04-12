@@ -455,6 +455,188 @@ class TestRunBackgroundTask:
 
 
 # ---------------------------------------------------------------------------
+# _run_background_task inactivity watchdog + cancellation (PR #8298)
+# ---------------------------------------------------------------------------
+
+
+def _sent_contents(mock_adapter):
+    """Collect the text content of every adapter.send() call (positional or kw)."""
+    out = []
+    for call in mock_adapter.send.call_args_list:
+        content = call.kwargs.get("content")
+        if content is None and len(call.args) > 1:
+            content = call.args[1]
+        out.append(content or "")
+    return out
+
+
+def _prime_worker_runner(runner, monkeypatch):
+    """Wire the resolve helpers so _run_background_task reaches run_sync (which
+    builds the real agent via the patched AIAgent and populates agent_holder)."""
+    from gateway import run as gateway_run
+
+    runner._resolve_session_agent_runtime = MagicMock(
+        return_value=("test-model", {"api_key": "test-key"})
+    )
+    runner._resolve_session_reasoning_config = MagicMock(return_value=None)
+    runner._load_service_tier = MagicMock(return_value=None)
+    runner._resolve_turn_agent_config = MagicMock(
+        return_value={
+            "model": "test-model",
+            "runtime": {"api_key": "test-key"},
+            "request_overrides": None,
+        }
+    )
+    runner._refresh_fallback_model = MagicMock(return_value=None)
+    runner._cleanup_agent_resources = MagicMock()
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+
+
+class TestBackgroundWatchdog:
+    """The /background inactivity watchdog + cancellation handling."""
+
+    @pytest.mark.asyncio
+    async def test_inactivity_warning_fires_once(self, monkeypatch):
+        """A single idle-warning message is sent while the agent stays idle,
+        even though the poller ticks several times before the run completes."""
+        import time as _time
+
+        monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "9999")   # never time out
+        monkeypatch.setenv("HERMES_AGENT_TIMEOUT_WARNING", "0.01")
+        monkeypatch.setenv("HERMES_BG_POLL_INTERVAL", "0.02")
+
+        runner = _make_runner()
+        _prime_worker_runner(runner, monkeypatch)
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done late"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done late"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, user_id="12345", chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_agent = MagicMock()
+        mock_agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 999.0, "current_tool": "shell",
+        }
+        mock_agent.run_conversation.side_effect = lambda **kw: (
+            _time.sleep(0.12) or {"final_response": "done late", "messages": []}
+        )
+        mock_agent.shutdown_memory_provider = MagicMock()
+        mock_agent.close = MagicMock()
+
+        with patch("run_agent.AIAgent", return_value=mock_agent):
+            await runner._run_background_task("do slow thing", source, "bg_test")
+
+        contents = _sent_contents(mock_adapter)
+        warnings = [c for c in contents if "no activity for" in c and "time out soon" in c]
+        completions = [c for c in contents if "Background task complete" in c]
+        assert len(warnings) == 1, f"expected exactly one idle warning, got {contents}"
+        assert len(completions) == 1, f"expected the result to still be delivered, got {contents}"
+
+    @pytest.mark.asyncio
+    async def test_inactivity_timeout_interrupts_and_notifies(self, monkeypatch):
+        """When idle exceeds the timeout, the agent is interrupted and a
+        timeout diagnostic is delivered (instead of hanging forever)."""
+        import threading
+
+        monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "0.05")
+        monkeypatch.setenv("HERMES_AGENT_TIMEOUT_WARNING", "0.01")
+        monkeypatch.setenv("HERMES_BG_POLL_INTERVAL", "0.02")
+
+        runner = _make_runner()
+        _prime_worker_runner(runner, monkeypatch)
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, user_id="12345", chat_id="67890",
+            user_name="testuser",
+        )
+
+        released = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.get_activity_summary.return_value = {
+            "seconds_since_activity": 999.0, "current_tool": "shell",
+        }
+        # Block until interrupt() releases us (or a safety timeout), mimicking a
+        # wedged worker thread that only unwinds once interrupted.
+        mock_agent.run_conversation.side_effect = lambda **kw: (
+            released.wait(timeout=5.0) and None
+            or {"final_response": "late", "messages": []}
+        )
+        mock_agent.interrupt.side_effect = lambda *a, **k: released.set()
+        mock_agent.shutdown_memory_provider = MagicMock()
+        mock_agent.close = MagicMock()
+
+        with patch("run_agent.AIAgent", return_value=mock_agent):
+            await runner._run_background_task("wedge please", source, "bg_test")
+
+        mock_agent.interrupt.assert_called()
+        contents = _sent_contents(mock_adapter)
+        assert any("timed out" in c for c in contents), contents
+        assert any("`shell`" in c for c in contents), contents
+        # Let the released worker thread unwind so its future is consumed cleanly.
+        await asyncio.sleep(0.05)
+
+    @pytest.mark.asyncio
+    async def test_cancellation_interrupts_and_notifies(self, monkeypatch):
+        """Cancelling the background task (gateway shutdown) interrupts the
+        in-flight agent and notifies the user rather than dying silently."""
+        import threading
+
+        monkeypatch.setenv("HERMES_AGENT_TIMEOUT", "9999")   # not a timeout test
+        monkeypatch.setenv("HERMES_BG_POLL_INTERVAL", "0.02")
+
+        runner = _make_runner()
+        _prime_worker_runner(runner, monkeypatch)
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM, user_id="12345", chat_id="67890",
+            user_name="testuser",
+        )
+
+        started = threading.Event()
+        released = threading.Event()
+        mock_agent = MagicMock()
+        mock_agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        mock_agent.run_conversation.side_effect = lambda **kw: (
+            started.set() or released.wait(timeout=5.0)
+            or {"final_response": "late", "messages": []}
+        )
+        mock_agent.interrupt.side_effect = lambda *a, **k: released.set()
+        mock_agent.shutdown_memory_provider = MagicMock()
+        mock_agent.close = MagicMock()
+
+        with patch("run_agent.AIAgent", return_value=mock_agent):
+            task = asyncio.ensure_future(
+                runner._run_background_task("long job", source, "bg_test")
+            )
+            # Wait until the worker is actually running (agent_holder populated).
+            for _ in range(200):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set(), "worker never started"
+            task.cancel()
+            await task  # handler swallows CancelledError after notifying
+
+        mock_agent.interrupt.assert_called()
+        contents = _sent_contents(mock_adapter)
+        assert any("was cancelled" in c for c in contents), contents
+
+
+# ---------------------------------------------------------------------------
 # /background in help and known_commands
 # ---------------------------------------------------------------------------
 

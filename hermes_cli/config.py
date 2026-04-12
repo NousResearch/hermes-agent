@@ -534,7 +534,7 @@ DEFAULT_CONFIG = {
         },
         "cartesia": {
             "model": "sonic-3",
-            "voice_id": "a0e99841-438c-4a64-b679-ae501e7d6091",  # Default voice
+            "voice_id": "6f9d531e-144f-4749-87db-f84e7c6ab800",  # Barbershop Man
             "language": "en",
         },
         "neutts": {

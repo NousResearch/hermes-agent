@@ -93,7 +93,7 @@ DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_CARTESIA_MODEL = "sonic-3"
-DEFAULT_CARTESIA_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default Cartesia voice
+DEFAULT_CARTESIA_VOICE_ID = "6f9d531e-144f-4749-87db-f84e7c6ab800"  # Barbershop Man
 DEFAULT_CARTESIA_BASE_URL = "https://api.cartesia.ai"
 
 def _get_default_output_dir() -> str:

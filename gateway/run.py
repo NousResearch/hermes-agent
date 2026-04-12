@@ -206,6 +206,15 @@ if _config_path.exists():
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
+# Apply IPv4 preference if configured (before any HTTP clients are created).
+try:
+    from hermes_constants import apply_ipv4_preference
+    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
+    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
+        apply_ipv4_preference(force=True)
+except Exception:
+    pass
+
 # Validate config structure early — log warnings so gateway operators see problems
 try:
     from hermes_cli.config import print_config_warnings

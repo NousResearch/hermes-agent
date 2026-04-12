@@ -151,6 +151,18 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+# Apply IPv4 preference early, before any HTTP clients are created.
+try:
+    from hermes_cli.config import load_config as _load_config_early
+    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+    _early_cfg = _load_config_early()
+    _net = _early_cfg.get("network", {})
+    if isinstance(_net, dict) and _net.get("force_ipv4"):
+        _apply_ipv4(force=True)
+    del _early_cfg, _net
+except Exception:
+    pass  # best-effort — don't crash if config isn't available yet
+
 import logging
 import time as _time
 from datetime import datetime

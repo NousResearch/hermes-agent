@@ -334,6 +334,15 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Tool-call loop detection — warning at 3 repeats, context pruning at 5.
+        # Addresses token-level anchoring where repeated wrong tool names in
+        # context bias the model toward the same wrong answer.
+        "tool_loop_detection": {
+            "enabled": True,
+            "warning_threshold": 3,
+            "critical_threshold": 5,
+            "window_size": 30,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

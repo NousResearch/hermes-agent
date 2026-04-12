@@ -1707,6 +1707,17 @@ class HermesCLI:
         else:
             self.max_turns = 90
         
+        # Tool-loop detection config
+        _loop_cfg = CLI_CONFIG["agent"].get("tool_loop_detection", {})
+        if isinstance(_loop_cfg, dict) and _loop_cfg.get("enabled", True):
+            self._tool_loop_detection_cfg = {
+                "warning_threshold": int(_loop_cfg.get("warning_threshold", 3)),
+                "critical_threshold": int(_loop_cfg.get("critical_threshold", 5)),
+                "window_size": int(_loop_cfg.get("window_size", 30)),
+            }
+        else:
+            self._tool_loop_detection_cfg = None
+        
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:
@@ -2913,6 +2924,13 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Wire up tool-loop detection config
+            if self._tool_loop_detection_cfg and hasattr(self.agent, '_tool_loop_detector'):
+                det = self.agent._tool_loop_detector
+                det.warning_threshold = self._tool_loop_detection_cfg["warning_threshold"]
+                det.critical_threshold = self._tool_loop_detection_cfg["critical_threshold"]
+                det.window_size = self._tool_loop_detection_cfg["window_size"]
+                det._history = type(det._history)(maxlen=det.window_size)
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),

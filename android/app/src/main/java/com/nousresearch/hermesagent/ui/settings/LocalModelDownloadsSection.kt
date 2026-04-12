@@ -36,12 +36,14 @@ fun LocalModelDownloadsSection(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
+    val effectiveRuntimeFlavor = when (selectedBackend) {
+        "llama.cpp" -> "GGUF"
+        "litert-lm" -> "LiteRT-LM"
+        else -> uiState.runtimeFlavor
+    }
 
     LaunchedEffect(selectedBackend) {
-        when (selectedBackend) {
-            "llama.cpp" -> if (uiState.runtimeFlavor != "GGUF") viewModel.updateRuntimeFlavor("GGUF")
-            "litert-lm" -> if (uiState.runtimeFlavor != "LiteRT-LM") viewModel.updateRuntimeFlavor("LiteRT-LM")
-        }
+        viewModel.syncSelectedBackend(selectedBackend)
     }
 
     Surface(
@@ -126,28 +128,28 @@ fun LocalModelDownloadsSection(
                 Button(onClick = {
                     viewModel.updateRuntimeFlavor("GGUF")
                     onRuntimeFlavorSelected("GGUF")
-                }, enabled = uiState.runtimeFlavor != "GGUF") {
+                }, enabled = effectiveRuntimeFlavor != "GGUF") {
                     Text("GGUF")
                 }
                 Button(onClick = {
                     viewModel.updateRuntimeFlavor("LiteRT-LM")
                     onRuntimeFlavorSelected("LiteRT-LM")
-                }, enabled = uiState.runtimeFlavor != "LiteRT-LM") {
+                }, enabled = effectiveRuntimeFlavor != "LiteRT-LM") {
                     Text("LiteRT-LM")
                 }
             }
             Text(
-                "Examples: repo `unsloth/gemma-3-1b-it-GGUF` with file `gemma-3-1b-it-Q4_K_M.gguf`, or a LiteRT-LM repo like `litert-community/Gemma3-1B-IT` with a `.litertlm` artifact. GGUF is the safest current mobile-local target.",
+                "Examples: repo `unsloth/gemma-3-1b-it-GGUF` with file `gemma-3-1b-it-Q4_K_M.gguf`, or LiteRT-LM repos like `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm` with `.litertlm` artifacts. Google AI Edge Gallery's Gemma 4 support uses those LiteRT community repos instead of the raw `google/gemma-4-E2B` page.",
                 style = MaterialTheme.typography.bodySmall,
             )
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(onClick = viewModel::inspectCandidate) {
+                Button(onClick = { viewModel.inspectCandidate(runtimeFlavorOverride = effectiveRuntimeFlavor) }) {
                     Text(strings.inspect.ifBlank { "Inspect" })
                 }
-                Button(onClick = { viewModel.startDownload(dataSaverMode) }) {
+                Button(onClick = { viewModel.startDownload(dataSaverMode, runtimeFlavorOverride = effectiveRuntimeFlavor) }) {
                     Text(strings.download.ifBlank { "Download" })
                 }
             }

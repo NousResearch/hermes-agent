@@ -82,19 +82,11 @@ object LiteRtLmOpenAiProxy {
         requestedModelName: String,
         port: Int,
     ) : NanoHTTPD("127.0.0.1", port) {
-        private val engine = Engine(
-            EngineConfig(
-                modelPath = modelPath,
-                backend = Backend.CPU(),
-                cacheDir = context.cacheDir.absolutePath,
-            )
-        )
+        private val initializedEngine = initializeEngine(context, modelPath)
+        private val engine = initializedEngine.first
+        private val runtimeBackendLabel = initializedEngine.second
 
         val modelName: String = requestedModelName.ifBlank { File(modelPath).name }
-
-        init {
-            engine.initialize()
-        }
 
         override fun serve(session: IHTTPSession): Response {
             return try {
@@ -103,6 +95,7 @@ object LiteRtLmOpenAiProxy {
                         JSONObject().apply {
                             put("status", "ok")
                             put("backend", "litert-lm")
+                            put("accelerator", runtimeBackendLabel)
                             put("model", modelName)
                         }
                     )
@@ -126,6 +119,31 @@ object LiteRtLmOpenAiProxy {
         fun shutdown() {
             kotlin.runCatching { stop() }
             kotlin.runCatching { engine.close() }
+        }
+
+        private fun initializeEngine(context: Context, modelPath: String): Pair<Engine, String> {
+            var lastError: Throwable? = null
+            val backends = listOf(
+                Backend.GPU() to "gpu",
+                Backend.CPU() to "cpu",
+            )
+            for ((backend, label) in backends) {
+                val candidate = Engine(
+                    EngineConfig(
+                        modelPath = modelPath,
+                        backend = backend,
+                        cacheDir = context.cacheDir.absolutePath,
+                    )
+                )
+                try {
+                    candidate.initialize()
+                    return candidate to label
+                } catch (error: Throwable) {
+                    lastError = error
+                    kotlin.runCatching { candidate.close() }
+                }
+            }
+            throw lastError ?: IllegalStateException("LiteRT-LM engine initialization failed")
         }
 
         private fun handleChatCompletions(session: IHTTPSession): Response {

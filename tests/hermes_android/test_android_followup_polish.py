@@ -44,10 +44,32 @@ def test_settings_backend_toggles_sync_with_download_runtime_target_controls():
     assert 'selectedBackend = uiState.onDeviceBackend' in settings
     assert 'onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor' in settings
     assert 'LaunchedEffect(selectedBackend)' in downloads_section
+    assert 'effectiveRuntimeFlavor' in downloads_section
     assert 'onRuntimeFlavorSelected("GGUF")' in downloads_section
     assert 'onRuntimeFlavorSelected("LiteRT-LM")' in downloads_section
     assert 'fun syncOnDeviceBackendWithRuntimeFlavor(' in settings_view_model
+    assert 'fun syncSelectedBackend(' in downloads_view_model
     assert 'AppSettingsStore(application)' in downloads_view_model
+
+
+def test_gemma4_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
+    download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
+    litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
+
+    assert 'gemma-4-E2B-it-litert-lm' in downloads_section
+    assert 'Google AI Edge Gallery' in downloads_section
+    assert 'runtimeFlavorOverride = effectiveRuntimeFlavor' in downloads_section
+    assert 'inspectionStatus = ""' in downloads_view_model
+    assert 'candidateSummary = ""' in downloads_view_model
+    assert 'runtimeFlavorOverride' in downloads_view_model
+    assert 'litert-community/gemma-4-E2B-it-litert-lm' in download_manager
+    assert 'litert-community/gemma-4-E4B-it-litert-lm' in download_manager
+    assert 'No compatible GGUF artifact found in huggingface.co/' in download_manager
+    assert 'Backend.GPU() to "gpu"' in litert_proxy
+    assert 'Backend.CPU() to "cpu"' in litert_proxy
+    assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy
 
 
 def test_hugging_face_inspect_download_flow_runs_off_main_thread_and_supports_repo_page_resolution():

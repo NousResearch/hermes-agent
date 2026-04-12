@@ -5004,7 +5004,15 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                new_name = tc_delta.function.name
+                                existing = entry["function"]["name"]
+                                # Some providers (Fireworks, Kimi) send the full tool name
+                                # in each chunk rather than a delta.  Only append if this is
+                                # truly a new fragment (not a repeat of the full name).
+                                if not existing or (new_name and not existing.endswith(new_name)):
+                                    entry["function"]["name"] += new_name
+                                elif not existing and new_name:
+                                    entry["function"]["name"] = new_name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)

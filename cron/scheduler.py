@@ -219,6 +219,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
+    # Diagnostic: log thread_id for topic-aware delivery debugging
+    origin = job.get("origin") or {}
+    origin_thread = origin.get("thread_id")
+    if origin_thread and not thread_id:
+        logger.warning(
+            "Job '%s': origin has thread_id=%s but delivery target lost it "
+            "(deliver=%s, target=%s)",
+            job["id"], origin_thread, job.get("deliver", "local"), target,
+        )
+    elif thread_id:
+        logger.debug(
+            "Job '%s': delivering to %s:%s thread_id=%s",
+            job["id"], platform_name, chat_id, thread_id,
+        )
+
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 

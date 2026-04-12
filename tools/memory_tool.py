@@ -50,6 +50,27 @@ def get_memory_dir() -> Path:
 MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
+DEFAULT_MEMORY_TYPE = "uncategorized"
+EXPLICIT_MEMORY_TYPES = ("user", "feedback", "project", "reference")
+ALL_MEMORY_TYPES = EXPLICIT_MEMORY_TYPES + (DEFAULT_MEMORY_TYPE,)
+
+
+def _normalize_memory_type(
+    memory_type: Optional[str],
+    *,
+    default: Optional[str] = None,
+) -> Optional[str]:
+    """Normalize and validate a memory type."""
+    if memory_type is None:
+        return default
+
+    normalized = memory_type.strip().lower()
+    if not normalized:
+        return default
+    if normalized not in ALL_MEMORY_TYPES:
+        allowed = ", ".join(ALL_MEMORY_TYPES)
+        raise ValueError(f"Invalid type '{memory_type}'. Use one of: {allowed}.")
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +132,8 @@ class MemoryStore:
     def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
+        self.memory_entry_types: Dict[str, str] = {}
+        self.user_entry_types: Dict[str, str] = {}
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
@@ -127,6 +150,12 @@ class MemoryStore:
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
         self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.memory_entry_types = self._read_types_file(
+            self._types_path_for("memory"), self.memory_entries
+        )
+        self.user_entry_types = self._read_types_file(
+            self._types_path_for("user"), self.user_entries
+        )
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -159,6 +188,11 @@ class MemoryStore:
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
 
+    @classmethod
+    def _types_path_for(cls, target: str) -> Path:
+        base = cls._path_for(target)
+        return base.with_name(f"{base.stem}.types.json")
+
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
 
@@ -167,11 +201,13 @@ class MemoryStore:
         fresh = self._read_file(self._path_for(target))
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
+        self._set_types(target, self._read_types_file(self._types_path_for(target), fresh))
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
         get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
+        self._write_types_file(self._types_path_for(target), self._entries_for(target), self._types_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -184,6 +220,31 @@ class MemoryStore:
         else:
             self.memory_entries = entries
 
+    def _types_for(self, target: str) -> Dict[str, str]:
+        if target == "user":
+            return self.user_entry_types
+        return self.memory_entry_types
+
+    def _set_types(self, target: str, entry_types: Dict[str, str]):
+        if target == "user":
+            self.user_entry_types = entry_types
+        else:
+            self.memory_entry_types = entry_types
+
+    def _entry_type(self, target: str, content: str) -> str:
+        return self._types_for(target).get(content, DEFAULT_MEMORY_TYPE)
+
+    def _typed_entries(self, target: str, entries: Optional[List[str]] = None) -> List[Dict[str, str]]:
+        selected = self._entries_for(target) if entries is None else entries
+        return [
+            {
+                "type": self._entry_type(target, entry),
+                "content": entry,
+                "display": f"[{self._entry_type(target, entry)}] {entry}",
+            }
+            for entry in selected
+        ]
+
     def _char_count(self, target: str) -> int:
         entries = self._entries_for(target)
         if not entries:
@@ -195,8 +256,18 @@ class MemoryStore:
             return self.user_char_limit
         return self.memory_char_limit
 
-    def add(self, target: str, content: str) -> Dict[str, Any]:
+    def add(
+        self,
+        target: str,
+        content: str,
+        memory_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
+        try:
+            resolved_type = _normalize_memory_type(memory_type, default=DEFAULT_MEMORY_TYPE)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
         content = content.strip()
         if not content:
             return {"success": False, "error": "Content cannot be empty."}
@@ -236,12 +307,26 @@ class MemoryStore:
 
             entries.append(content)
             self._set_entries(target, entries)
+            entry_types = self._types_for(target).copy()
+            entry_types[content] = resolved_type
+            self._set_types(target, entry_types)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry added.")
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
+    def replace(
+        self,
+        target: str,
+        old_text: str,
+        new_content: str,
+        memory_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
+        try:
+            resolved_type = _normalize_memory_type(memory_type, default=None)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
@@ -277,6 +362,8 @@ class MemoryStore:
 
             idx = matches[0][0]
             limit = self._char_limit(target)
+            old_entry = entries[idx]
+            final_type = resolved_type or self._entry_type(target, old_entry)
 
             # Check that replacement doesn't blow the budget
             test_entries = entries.copy()
@@ -294,6 +381,11 @@ class MemoryStore:
 
             entries[idx] = new_content
             self._set_entries(target, entries)
+            entry_types = self._types_for(target).copy()
+            if old_entry not in entries:
+                entry_types.pop(old_entry, None)
+            entry_types[new_content] = final_type
+            self._set_types(target, entry_types)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry replaced.")
@@ -326,11 +418,76 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
+            removed_entry = entries.pop(idx)
             self._set_entries(target, entries)
+            entry_types = self._types_for(target).copy()
+            if removed_entry not in entries:
+                entry_types.pop(removed_entry, None)
+            self._set_types(target, entry_types)
             self.save_to_disk(target)
 
         return self._success_response(target, "Entry removed.")
+
+    def read(self, target: str, memory_type: Optional[str] = None) -> Dict[str, Any]:
+        """Return current entries, optionally filtered by type."""
+        try:
+            resolved_type = _normalize_memory_type(memory_type, default=None)
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            if resolved_type is None:
+                entries = None
+            else:
+                entries = [
+                    entry for entry in self._entries_for(target)
+                    if self._entry_type(target, entry) == resolved_type
+                ]
+
+        return self._success_response(
+            target,
+            "Entries read.",
+            entries=entries,
+            type_filter=resolved_type,
+        )
+
+    def bulk_update_types(self, target: str, updates: Dict[str, str]) -> Dict[str, Any]:
+        """Update entry types by exact content match. Used by migration tooling."""
+        normalized_updates: Dict[str, str] = {}
+        try:
+            for content, memory_type in updates.items():
+                normalized_updates[content] = _normalize_memory_type(
+                    memory_type,
+                    default=DEFAULT_MEMORY_TYPE,
+                )
+        except ValueError as exc:
+            return {"success": False, "error": str(exc)}
+
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            entries = self._entries_for(target)
+            entry_types = self._types_for(target).copy()
+            applied = 0
+            skipped = []
+
+            for content, memory_type in normalized_updates.items():
+                if content not in entries:
+                    skipped.append(content)
+                    continue
+                if entry_types.get(content) != memory_type:
+                    entry_types[content] = memory_type
+                    applied += 1
+
+            self._set_types(target, entry_types)
+            self.save_to_disk(target)
+
+        return {
+            "success": True,
+            "target": target,
+            "applied": applied,
+            "skipped": skipped,
+        }
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """
@@ -347,8 +504,15 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
-        entries = self._entries_for(target)
+    def _success_response(
+        self,
+        target: str,
+        message: str = None,
+        entries: Optional[List[str]] = None,
+        type_filter: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        live_entries = self._entries_for(target)
+        result_entries = live_entries if entries is None else entries
         current = self._char_count(target)
         limit = self._char_limit(target)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
@@ -356,10 +520,15 @@ class MemoryStore:
         resp = {
             "success": True,
             "target": target,
-            "entries": entries,
+            "entries": result_entries,
+            "typed_entries": self._typed_entries(target, result_entries),
             "usage": f"{pct}% — {current:,}/{limit:,} chars",
-            "entry_count": len(entries),
+            "entry_count": len(result_entries),
         }
+        if entries is not None:
+            resp["total_entry_count"] = len(live_entries)
+        if type_filter is not None:
+            resp["type_filter"] = type_filter
         if message:
             resp["message"] = message
         return resp
@@ -405,6 +574,32 @@ class MemoryStore:
         return [e for e in entries if e]
 
     @staticmethod
+    def _read_types_file(path: Path, entries: List[str]) -> Dict[str, str]:
+        """Read the sidecar type mapping for the current entries."""
+        if not entries:
+            return {}
+
+        raw_types: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    raw_types = loaded
+            except (OSError, IOError, json.JSONDecodeError, TypeError):
+                raw_types = {}
+
+        normalized: Dict[str, str] = {}
+        for entry in entries:
+            try:
+                normalized[entry] = _normalize_memory_type(
+                    raw_types.get(entry),
+                    default=DEFAULT_MEMORY_TYPE,
+                )
+            except ValueError:
+                normalized[entry] = DEFAULT_MEMORY_TYPE
+        return normalized
+
+    @staticmethod
     def _write_file(path: Path, entries: List[str]):
         """Write entries to a memory file using atomic temp-file + rename.
 
@@ -435,12 +630,40 @@ class MemoryStore:
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
+    @staticmethod
+    def _write_types_file(path: Path, entries: List[str], entry_types: Dict[str, str]):
+        """Write entry type metadata to a sidecar JSON file."""
+        payload = {
+            entry: entry_types.get(entry, DEFAULT_MEMORY_TYPE)
+            for entry in entries
+        }
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(path.parent), suffix=".tmp", prefix=".mem_types_"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(payload, f, ensure_ascii=False, indent=2, sort_keys=True)
+                    f.write("\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(path))
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except (OSError, IOError) as e:
+            raise RuntimeError(f"Failed to write memory type file {path}: {e}")
+
 
 def memory_tool(
     action: str,
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    memory_type: Optional[str] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -457,22 +680,25 @@ def memory_tool(
     if action == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
-        result = store.add(target, content)
+        result = store.add(target, content, memory_type=memory_type)
 
     elif action == "replace":
         if not old_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
             return tool_error("content is required for 'replace' action.", success=False)
-        result = store.replace(target, old_text, content)
+        result = store.replace(target, old_text, content, memory_type=memory_type)
 
     elif action == "remove":
         if not old_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
+    elif action == "read":
+        result = store.read(target, memory_type=memory_type)
+
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -508,7 +734,7 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it).\n\n"
+        "remove (delete -- old_text identifies it), read (list current entries, optionally filtered by type).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -516,7 +742,7 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
+                "enum": ["add", "replace", "remove", "read"],
                 "description": "The action to perform."
             },
             "target": {
@@ -531,6 +757,16 @@ MEMORY_SCHEMA = {
             "old_text": {
                 "type": "string",
                 "description": "Short unique substring identifying the entry to replace or remove."
+            },
+            "type": {
+                "type": "string",
+                "enum": list(ALL_MEMORY_TYPES),
+                "description": (
+                    "Optional memory category. Use user, feedback, project, or reference for explicit typing. "
+                    "If omitted on add, the entry is stored as uncategorized. "
+                    "If omitted on replace, the existing type is preserved. "
+                    "On read, this acts as an optional type filter."
+                ),
             },
         },
         "required": ["action", "target"],
@@ -550,11 +786,11 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        memory_type=args.get("type"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
 
 
 

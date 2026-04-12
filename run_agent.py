@@ -5992,6 +5992,7 @@ class AIAgent:
                             target=flush_target,
                             content=args.get("content"),
                             old_text=args.get("old_text"),
+                            memory_type=args.get("type"),
                             store=self._memory_store,
                         )
                         if not self.quiet_mode:
@@ -6232,6 +6233,7 @@ class AIAgent:
                 target=target,
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
+                memory_type=function_args.get("type"),
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
@@ -6645,6 +6647,7 @@ class AIAgent:
                     target=target,
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
+                    memory_type=function_args.get("type"),
                     store=self._memory_store,
                 )
                 tool_duration = time.time() - tool_start_time

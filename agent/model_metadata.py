@@ -177,6 +177,14 @@ _MAX_COMPLETION_KEYS = (
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
 
+# Well-known Docker / Podman / container DNS names that always resolve locally
+_CONTAINER_LOCAL_HOSTS = frozenset({
+    "host.docker.internal",
+    "gateway.docker.internal",
+    "host.containers.internal",
+    "kubernetes.docker.internal",
+})
+
 
 def _normalize_base_url(base_url: str) -> str:
     return (base_url or "").strip().rstrip("/")
@@ -237,7 +245,7 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def is_local_endpoint(base_url: str) -> bool:
-    """Return True if base_url points to a local machine (localhost / RFC-1918 / WSL)."""
+    """Return True if base_url points to a local machine (localhost / RFC-1918 / WSL / Docker)."""
     normalized = _normalize_base_url(base_url)
     if not normalized:
         return False
@@ -248,6 +256,9 @@ def is_local_endpoint(base_url: str) -> bool:
     except Exception:
         return False
     if host in _LOCAL_HOSTS:
+        return True
+    # Well-known Docker / Podman / container DNS names
+    if host in _CONTAINER_LOCAL_HOSTS:
         return True
     # RFC-1918 private ranges and link-local
     import ipaddress
@@ -269,6 +280,19 @@ def is_local_endpoint(base_url: str) -> bool:
                 return True
         except ValueError:
             pass
+    # Unqualified hostname (no dots) — e.g. "ollama", "litellm", "hermes-litellm".
+    # These are local network names (Docker Compose DNS, /etc/hosts, mDNS).
+    if "." not in host:
+        return True
+    # DNS resolution fallback — resolve the hostname and check if the IP is private.
+    # Catches qualified local hostnames like "ollama.local" or "litellm.internal".
+    import socket as _socket
+    try:
+        resolved_ip = _socket.gethostbyname(host)
+        addr = ipaddress.ip_address(resolved_ip)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except (_socket.gaierror, ValueError, OSError):
+        pass
     return False
 
 

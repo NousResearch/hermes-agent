@@ -825,6 +825,9 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     result_holder = {"plugins_changed": False, "providers_changed": False}
 
     def _draw(stdscr):
+        from hermes_cli.curses_ui import _enable_keypad, read_curses_key
+
+        _enable_keypad(stdscr)
         curses.curs_set(0)
         if curses.has_colors():
             curses.start_color()
@@ -939,7 +942,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                     y += 1
 
             stdscr.refresh()
-            key = stdscr.getch()
+            key = read_curses_key(stdscr, curses)
 
             if key in (curses.KEY_UP, ord("k")):
                 if total_items > 0:

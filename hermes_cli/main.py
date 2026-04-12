@@ -367,6 +367,9 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             )
 
         def _curses_browse(stdscr):
+            from hermes_cli.curses_ui import _enable_keypad, read_curses_key
+
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -486,7 +489,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
                     pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP,):
                     if filtered:
@@ -2663,24 +2666,15 @@ def _remove_custom_provider(config):
     choices.append("Cancel")
 
     try:
-        from simple_term_menu import TerminalMenu
-
-        menu = TerminalMenu(
-            [f"  {c}" for c in choices],
-            cursor_index=0,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_red", "bold"),
-            menu_highlight_style=("fg_red",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select provider to remove:",
+        from hermes_cli.curses_ui import curses_single_select
+        idx = curses_single_select(
+            "Select provider to remove:",
+            choices[:-1],
+            default_index=0,
+            cancel_label="Cancel",
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
         print()
-    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+    except Exception:
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -2737,31 +2731,23 @@ def _model_flow_named_custom(config, provider_info):
 
         print(f"Found {len(models)} model(s):\n")
         try:
-            from simple_term_menu import TerminalMenu
-
+            from hermes_cli.curses_ui import curses_single_select
             menu_items = [
-                f"  {m} (current)" if m == saved_model else f"  {m}" for m in models
-            ] + ["  Cancel"]
-            menu = TerminalMenu(
+                f"{m} (current)" if m == saved_model else m
+                for m in models
+            ]
+            idx = curses_single_select(
+                f"Select model from {name}:",
                 menu_items,
-                cursor_index=default_idx,
-                menu_cursor="-> ",
-                menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
-                cycle_cursor=True,
-                clear_screen=False,
-                title=f"Select model from {name}:",
+                default_index=default_idx,
+                cancel_label="Cancel",
             )
-            idx = menu.show()
-            from hermes_cli.curses_ui import flush_stdin
-
-            flush_stdin()
             print()
-            if idx is None or idx >= len(models):
+            if idx is None:
                 print("Cancelled.")
                 return
             model_name = models[idx]
-        except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+        except Exception:
             for i, m in enumerate(models, 1):
                 suffix = " (current)" if m == saved_model else ""
                 print(f"  {i}. {m}{suffix}")
@@ -2896,34 +2882,23 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         default_idx = 0
 
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_single_select
 
-        choices = [f"  {_label(effort)}" for effort in ordered]
-        choices.append(f"  {disable_label}")
-        choices.append(f"  {skip_label}")
-        menu = TerminalMenu(
+        choices = [_label(effort) for effort in ordered]
+        choices.append(disable_label)
+        idx = curses_single_select(
+            "Select reasoning effort:",
             choices,
-            cursor_index=default_idx,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title="Select reasoning effort:",
+            default_index=default_idx,
+            cancel_label=skip_label,
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-
-        flush_stdin()
         if idx is None:
             return None
         print()
         if idx < len(ordered):
             return ordered[idx]
-        if idx == len(ordered):
-            return "none"
-        return None
-    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+        return "none"
+    except Exception:
         pass
 
     print("Select reasoning effort:")

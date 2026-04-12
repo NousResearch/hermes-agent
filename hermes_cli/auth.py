@@ -2845,52 +2845,30 @@ def _prompt_model_selection(
 
     # Try arrow-key menu first, fall back to number input
     try:
-        from simple_term_menu import TerminalMenu
+        from hermes_cli.curses_ui import curses_single_select
 
-        choices = [f"  {_label(mid)}" for mid in ordered]
-        choices.append("  Enter custom model name")
-        choices.append("  Skip (keep current)")
+        choices = [_label(mid) for mid in ordered]
+        choices.append("Enter custom model name")
 
-        # Print the unavailable block BEFORE the menu via regular print().
-        # simple_term_menu pads title lines to terminal width (causes wrapping),
-        # so we keep the title minimal and use stdout for the static block.
-        # clear_screen=False means our printed output stays visible above.
-        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         if _unavailable:
-            print(menu_title)
-            print()
-            for mid in _unavailable:
-                print(f"{_DIM}     {_label(mid)}{_RESET}")
-            print()
-            print(f"{_DIM}  ── Upgrade at {_upgrade_url} for paid models ──{_RESET}")
-            print()
-            effective_title = "Available free models:"
+            effective_title = "Select default model (free models):"
         else:
             effective_title = menu_title
 
-        menu = TerminalMenu(
+        idx = curses_single_select(
+            effective_title,
             choices,
-            cursor_index=default_idx,
-            menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True,
-            clear_screen=False,
-            title=effective_title,
+            default_index=default_idx,
+            cancel_label="Skip (keep current)",
         )
-        idx = menu.show()
-        from hermes_cli.curses_ui import flush_stdin
-        flush_stdin()
         if idx is None:
             return None
         print()
         if idx < len(ordered):
             return ordered[idx]
-        elif idx == len(ordered):
-            custom = input("Enter model name: ").strip()
-            return custom if custom else None
-        return None
-    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
+        custom = input("Enter model name: ").strip()
+        return custom if custom else None
+    except Exception:
         pass
 
     # Fallback: numbered list

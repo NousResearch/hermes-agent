@@ -281,6 +281,12 @@ class TestCursesBrowse:
         result = self._run_with_keys(sessions, [curses.KEY_DOWN, 10])
         assert result == sessions[1]["id"]
 
+    def test_raw_escape_down_sequence_selects_second(self):
+        """ESC [ B should navigate down instead of being treated as cancel."""
+        sessions = _make_sessions(3)
+        result = self._run_with_keys(sessions, [27, 91, 66, 10])
+        assert result == sessions[1]["id"]
+
     def test_down_down_enter_selects_third(self):
         import curses
         sessions = _make_sessions(5)

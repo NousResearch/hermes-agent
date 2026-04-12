@@ -10,6 +10,9 @@ from typing import Callable, List, Optional, Set
 from hermes_cli.colors import Colors, color
 
 
+_PENDING_KEYS: dict[int, list[int]] = {}
+
+
 def flush_stdin() -> None:
     """Flush any stray bytes from the stdin input buffer.
 
@@ -30,6 +33,92 @@ def flush_stdin() -> None:
         termios.tcflush(sys.stdin, termios.TCIFLUSH)
     except Exception:
         pass
+
+
+def _enable_keypad(stdscr) -> None:
+    """Ask curses to translate escape sequences into KEY_* constants when possible."""
+    try:
+        stdscr.keypad(True)
+    except Exception:
+        pass
+
+
+def _queue_pending_keys(stdscr, *keys: int) -> None:
+    """Push keys back so the next ``read_curses_key`` call can consume them."""
+    values = [key for key in keys if key != -1]
+    if not values:
+        return
+
+    ident = id(stdscr)
+    existing = _PENDING_KEYS.get(ident, [])
+    _PENDING_KEYS[ident] = values + existing
+
+
+def read_curses_key(stdscr, curses_mod=None) -> int:
+    """Read one logical key from curses, decoding raw arrow escape sequences.
+
+    Some terminals still deliver arrows as ``ESC [ A/B`` or ``ESC O A/B`` when
+    ``keypad(True)`` does not take effect. Treat those sequences as arrow keys
+    instead of misreading the leading ``ESC`` as a cancel action.
+    """
+    ident = id(stdscr)
+    pending = _PENDING_KEYS.get(ident)
+    if pending:
+        key = pending.pop(0)
+        if not pending:
+            _PENDING_KEYS.pop(ident, None)
+        return key
+
+    if curses_mod is None:
+        import curses as curses_mod
+
+    key = stdscr.getch()
+    if key != 27:
+        return key
+
+    try:
+        stdscr.nodelay(True)
+    except Exception:
+        pass
+
+    try:
+        second = stdscr.getch()
+        if second == -1:
+            return key
+        if second not in (91, 79):  # CSI or SS3
+            _queue_pending_keys(stdscr, second)
+            return key
+
+        sequence: list[int] = []
+        while True:
+            part = stdscr.getch()
+            if part == -1:
+                _queue_pending_keys(stdscr, second, *sequence)
+                return key
+            sequence.append(part)
+            if 65 <= part <= 68:
+                break
+            if len(sequence) >= 8:
+                _queue_pending_keys(stdscr, second, *sequence)
+                return key
+
+        last = sequence[-1]
+        mapping = {
+            65: curses_mod.KEY_UP,
+            66: curses_mod.KEY_DOWN,
+            67: curses_mod.KEY_RIGHT,
+            68: curses_mod.KEY_LEFT,
+        }
+        mapped = mapping.get(last)
+        if mapped is None:
+            _queue_pending_keys(stdscr, second, *sequence)
+            return key
+        return mapped
+    finally:
+        try:
+            stdscr.nodelay(False)
+        except Exception:
+            pass
 
 
 def curses_checklist(
@@ -65,6 +154,7 @@ def curses_checklist(
         result_holder: list = [None]
 
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -137,7 +227,7 @@ def curses_checklist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(items)
@@ -194,6 +284,7 @@ def curses_radiolist(
         result_holder: list = [None]
 
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -261,7 +352,7 @@ def curses_radiolist(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(items)
@@ -331,6 +422,7 @@ def curses_single_select(
         cancel_idx = len(items)
 
         def _draw(stdscr):
+            _enable_keypad(stdscr)
             curses.curs_set(0)
             if curses.has_colors():
                 curses.start_color()
@@ -382,7 +474,7 @@ def curses_single_select(
                         pass
 
                 stdscr.refresh()
-                key = stdscr.getch()
+                key = read_curses_key(stdscr, curses)
 
                 if key in (curses.KEY_UP, ord("k")):
                     cursor = (cursor - 1) % len(all_items)

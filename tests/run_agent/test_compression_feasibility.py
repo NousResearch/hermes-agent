@@ -26,6 +26,7 @@ def _make_agent(
     agent.provider = "openrouter"
     agent.base_url = "https://openrouter.ai/api/v1"
     agent.api_key = "sk-test"
+    agent.api_mode = "chat_completions"
     agent.quiet_mode = True
     agent.log_prefix = ""
     agent.compression_enabled = compression_enabled
@@ -97,6 +98,36 @@ def test_no_warning_when_aux_context_sufficient(mock_get_client, mock_ctx_len):
 
     assert len(messages) == 0
     assert agent._compression_warning is None
+
+
+def test_feasibility_check_passes_live_main_runtime():
+    """Compression feasibility should probe using the live session runtime."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.model = "gpt-5.4"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "codex-token"
+    agent.api_mode = "codex_responses"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://chatgpt.com/backend-api/codex"
+    mock_client.api_key = "codex-token"
+
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.4")) as mock_get_client, \
+         patch("agent.model_metadata.get_model_context_length", return_value=200_000):
+        agent._emit_status = lambda msg: None
+        agent._check_compression_model_feasibility()
+
+    mock_get_client.assert_called_once_with(
+        "compression",
+        main_runtime={
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        },
+    )
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")

@@ -371,6 +371,23 @@ def _extract_context_length(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _CONTEXT_LENGTH_KEYS)
 
 
+def _extract_litellm_context_length(payload: Dict[str, Any]) -> Optional[int]:
+    """Extract context length from LiteLLM ``model_info`` metadata.
+
+    LiteLLM proxies often surface context under ``model_info.max_input_tokens``
+    or ``model_info.context_window``. Some deployments only populate
+    ``model_info.max_tokens`` to represent the total context window.
+    """
+    model_info = payload.get("model_info")
+    if not isinstance(model_info, dict):
+        return None
+    for key in ("max_input_tokens", "context_window", "max_tokens"):
+        coerced = _coerce_reasonable_int(model_info.get(key))
+        if coerced is not None:
+            return coerced
+    return None
+
+
 def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
     return _extract_first_int(payload, _MAX_COMPLETION_KEYS)
 
@@ -403,6 +420,40 @@ def _add_model_aliases(cache: Dict[str, Dict[str, Any]], model_id: str, entry: D
     if "/" in model_id:
         bare_model = model_id.split("/", 1)[1]
         cache.setdefault(bare_model, entry)
+
+
+def _merge_endpoint_model_entry(
+    cache: Dict[str, Dict[str, Any]],
+    payload: Dict[str, Any],
+    *model_ids: Optional[str],
+) -> None:
+    aliases = [model_id for model_id in model_ids if model_id]
+    if not aliases:
+        return
+
+    entry = None
+    for alias in aliases:
+        existing = cache.get(alias)
+        if existing is not None:
+            entry = existing
+            break
+    if entry is None:
+        entry = {"name": payload.get("name") or payload.get("model_name") or aliases[0]}
+
+    context_length = _extract_litellm_context_length(payload) or _extract_context_length(payload)
+    if context_length is not None:
+        entry["context_length"] = context_length
+
+    max_completion_tokens = _extract_max_completion_tokens(payload)
+    if max_completion_tokens is not None:
+        entry["max_completion_tokens"] = max_completion_tokens
+
+    pricing = _extract_pricing(payload)
+    if pricing:
+        entry["pricing"] = pricing
+
+    for alias in aliases:
+        _add_model_aliases(cache, alias, entry)
 
 
 def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
@@ -482,20 +533,35 @@ def fetch_endpoint_model_metadata(
             for model in payload.get("data", []):
                 if not isinstance(model, dict):
                     continue
-                model_id = model.get("id")
-                if not model_id:
-                    continue
-                entry: Dict[str, Any] = {"name": model.get("name", model_id)}
-                context_length = _extract_context_length(model)
-                if context_length is not None:
-                    entry["context_length"] = context_length
-                max_completion_tokens = _extract_max_completion_tokens(model)
-                if max_completion_tokens is not None:
-                    entry["max_completion_tokens"] = max_completion_tokens
-                pricing = _extract_pricing(model)
-                if pricing:
-                    entry["pricing"] = pricing
-                _add_model_aliases(cache, model_id, entry)
+                _merge_endpoint_model_entry(
+                    cache,
+                    model,
+                    model.get("id"),
+                    model.get("model_name"),
+                    model.get("model_info", {}).get("key") if isinstance(model.get("model_info"), dict) else None,
+                    model.get("litellm_params", {}).get("model") if isinstance(model.get("litellm_params"), dict) else None,
+                )
+
+            if not cache or any(not isinstance(entry.get("context_length"), int) for entry in cache.values()):
+                try:
+                    info_response = requests.get(candidate.rstrip("/") + "/model/info", headers=headers, timeout=10)
+                    if info_response.ok:
+                        info_payload = info_response.json()
+                        info_items = info_payload.get("data", [])
+                        if isinstance(info_items, dict):
+                            info_items = [info_items]
+                        for model in info_items:
+                            if not isinstance(model, dict):
+                                continue
+                            _merge_endpoint_model_entry(
+                                cache,
+                                model,
+                                model.get("model_name"),
+                                model.get("model_info", {}).get("key") if isinstance(model.get("model_info"), dict) else None,
+                                model.get("litellm_params", {}).get("model") if isinstance(model.get("litellm_params"), dict) else None,
+                            )
+                except Exception:
+                    pass
 
             # If this is a llama.cpp server, query /props for actual allocated context
             is_llamacpp = any(
@@ -907,7 +973,7 @@ def get_model_context_length(
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
     1. Persistent cache (previously discovered via probing)
-    2. Active endpoint metadata (/models for explicit custom endpoints)
+    2. Active endpoint metadata (/models and LiteLLM /model/info for explicit custom endpoints)
     3. Local server query (for local endpoints)
     4. Anthropic /v1/models API (API-key users only, not OAuth)
     5. OpenRouter live API metadata
@@ -953,20 +1019,17 @@ def get_model_context_length(
             context_length = matched.get("context_length")
             if isinstance(context_length, int):
                 return context_length
-        if not _is_known_provider_base_url(base_url):
-            # 3. Try querying local server directly
-            if is_local_endpoint(base_url):
-                local_ctx = _query_local_context_length(model, base_url)
-                if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
-                    return local_ctx
-            logger.info(
-                "Could not detect context length for model %r at %s — "
-                "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
-            )
-            return DEFAULT_FALLBACK_CONTEXT
+        # 3. Try querying local server directly
+        if is_local_endpoint(base_url):
+            local_ctx = _query_local_context_length(model, base_url)
+            if local_ctx and local_ctx > 0:
+                save_context_length(model, base_url, local_ctx)
+                return local_ctx
+        logger.info(
+            "Could not detect context length for model %r at %s from endpoint metadata; "
+            "continuing with provider/model-family fallback heuristics before probe-down.",
+            model, base_url,
+        )
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

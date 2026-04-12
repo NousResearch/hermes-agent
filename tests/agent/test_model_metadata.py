@@ -25,6 +25,7 @@ from agent.model_metadata import (
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
+    fetch_endpoint_model_metadata,
     get_model_context_length,
     get_next_probe_tier,
     get_cached_context_length,
@@ -285,12 +286,26 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
-    def test_custom_endpoint_without_metadata_skips_name_based_default(self, mock_endpoint_fetch, mock_fetch):
+    def test_custom_endpoint_without_metadata_uses_family_default(self, mock_endpoint_fetch, mock_fetch):
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
         result = get_model_context_length(
-            "zai-org/GLM-5-TEE",
+            "gemini/gemini-3-flash-preview",
+            base_url="https://llm.chutes.ai/v1",
+            api_key="test-key",
+        )
+
+        assert result == 1048576
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_without_metadata_unknown_model_uses_probe_default(self, mock_endpoint_fetch, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "totally-unknown-model-family",
             base_url="https://llm.chutes.ai/v1",
             api_key="test-key",
         )
@@ -534,6 +549,70 @@ class TestFetchModelMetadata:
 
         result = fetch_model_metadata(force_refresh=True)
         assert result == {}
+
+
+class TestFetchEndpointModelMetadata:
+    def _reset_cache(self):
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache = {}
+        mm._endpoint_model_metadata_cache_time = {}
+
+    @patch("agent.model_metadata.requests.get")
+    def test_litellm_model_info_fills_missing_context_length(self, mock_get):
+        self._reset_cache()
+
+        models_response = MagicMock()
+        models_response.raise_for_status = MagicMock()
+        models_response.ok = True
+        models_response.json.return_value = {
+            "data": [{"id": "gemini/gemini-3-flash-preview", "name": "Gemini Flash"}]
+        }
+
+        model_info_response = MagicMock()
+        model_info_response.ok = True
+        model_info_response.json.return_value = {
+            "data": [{
+                "model_name": "gemini/gemini-3-flash-preview",
+                "litellm_params": {"model": "gemini/gemini-3-flash-preview"},
+                "model_info": {"key": "gemini/gemini-3-flash-preview", "max_input_tokens": 1048576},
+            }]
+        }
+
+        mock_get.side_effect = [models_response, model_info_response]
+
+        result = fetch_endpoint_model_metadata("http://litellm:4000/v1", force_refresh=True)
+
+        assert result["gemini/gemini-3-flash-preview"]["context_length"] == 1048576
+
+    @patch("agent.model_metadata.requests.get")
+    def test_litellm_model_info_enriches_only_missing_models(self, mock_get):
+        self._reset_cache()
+
+        models_response = MagicMock()
+        models_response.raise_for_status = MagicMock()
+        models_response.ok = True
+        models_response.json.return_value = {
+            "data": [
+                {"id": "model-with-context", "context_length": 32768},
+                {"id": "gemini/gemini-3-flash-preview", "name": "Gemini Flash"},
+            ]
+        }
+
+        model_info_response = MagicMock()
+        model_info_response.ok = True
+        model_info_response.json.return_value = {
+            "data": [{
+                "model_name": "gemini/gemini-3-flash-preview",
+                "model_info": {"max_input_tokens": 1048576},
+            }]
+        }
+
+        mock_get.side_effect = [models_response, model_info_response]
+
+        result = fetch_endpoint_model_metadata("http://litellm:4000/v1", force_refresh=True)
+
+        assert result["model-with-context"]["context_length"] == 32768
+        assert result["gemini/gemini-3-flash-preview"]["context_length"] == 1048576
 
 
 # =========================================================================

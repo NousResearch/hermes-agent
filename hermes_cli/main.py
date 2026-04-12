@@ -3939,6 +3939,26 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         
+        # Write exit code *before* the gateway restart attempt.
+        # When running as ``hermes update --gateway`` (spawned by the gateway's
+        # /update command), this process lives inside the gateway's systemd
+        # cgroup.  ``systemctl restart hermes-gateway`` kills everything in the
+        # cgroup (KillMode=mixed → SIGKILL to remaining processes), including
+        # us and the wrapping bash shell.  The shell never reaches its
+        # ``printf $status > .update_exit_code`` epilogue, so the exit-code
+        # marker file is never created.  The new gateway's update watcher then
+        # polls for 30 minutes and sends a spurious timeout message.
+        #
+        # Writing the marker here — after git pull + pip install succeed but
+        # before we attempt the restart — ensures the new gateway sees it
+        # regardless of how we die.
+        if gateway_mode:
+            _exit_code_path = get_hermes_home() / ".update_exit_code"
+            try:
+                _exit_code_path.write_text("0")
+            except OSError:
+                pass
+        
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.

@@ -979,6 +979,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
+                # Treat empty final_response as a soft failure so last_status
+                # is not "ok" — the agent ran but produced nothing useful.
+                # (issue #8585)
+                if success and not final_response:
+                    success = False
+                    error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 executed += 1
 

@@ -3965,9 +3965,16 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Append a random tip to the reset message
+        try:
+            from hermes_cli.tips import get_random_tip
+            _tip_line = f"\n✦ Tip: {get_random_tip()}"
+        except Exception:
+            _tip_line = ""
+
         if session_info:
-            return f"{header}\n\n{session_info}"
-        return header
+            return f"{header}\n\n{session_info}{_tip_line}"
+        return f"{header}{_tip_line}"
     
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""

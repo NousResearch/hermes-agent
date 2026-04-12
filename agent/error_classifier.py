@@ -343,6 +343,11 @@ def classify_api_error(
     """
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
+    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429
+    # so downstream rate-limit handling (classifier reason, pool rotation,
+    # fallback gating) fires correctly instead of misclassifying as generic.
+    if status_code is None and error_type == "RateLimitError":
+        status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 

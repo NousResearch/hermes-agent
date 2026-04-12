@@ -734,6 +734,42 @@ def _split_delivery_units_for_weixin(content: str) -> List[str]:
     return [unit for unit in units if unit]
 
 
+def _pack_units_for_weixin(units: List[str], max_length: int) -> List[str]:
+    """Merge adjacent small units back together to reduce message count.
+    
+    Combines units with double-newline separators as long as the combined text
+    stays within max_length. This preserves logical splitting for readability
+    while drastically reducing the number of outbound messages.
+    """
+    if not units:
+        return []
+    
+    combined_messages: List[str] = []
+    current_batch = ""
+    
+    for unit in units:
+        # Calculate what the batch would be if we add this unit
+        if current_batch:
+            candidate = current_batch + "\n\n" + unit
+        else:
+            candidate = unit
+        
+        # If it fits, add to current batch
+        if len(candidate) <= max_length:
+            current_batch = candidate
+        else:
+            # Batch is full, save it and start a new one
+            if current_batch:
+                combined_messages.append(current_batch)
+            current_batch = unit
+    
+    # Don't forget the last batch
+    if current_batch:
+        combined_messages.append(current_batch)
+    
+    return combined_messages
+
+
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
@@ -769,23 +805,27 @@ def _split_text_for_weixin_delivery(
 
     *per_line* (``split_per_line=True``): Legacy behavior — top-level line
     breaks become separate chat messages; oversized units still use
-    block-aware packing.
+    block-aware packing. Adjacent small units are automatically combined
+    to respect platform rate limits and avoid flooding the chat.
 
     The active mode is controlled via ``config.yaml`` ->
     ``platforms.weixin.extra.split_multiline_messages`` (``true`` / ``false``)
     or the env var ``WEIXIN_SPLIT_MULTILINE_MESSAGES``.
     """
     if split_per_line:
-        # Legacy: one message per top-level delivery unit.
+        # Legacy: one message per top-level delivery unit, but combine small units
+        # to avoid flooding the chat with too many rapid messages.
         if len(content) <= max_length and "\n" not in content:
             return [content]
-        chunks: List[str] = []
+        units: List[str] = []
         for unit in _split_delivery_units_for_weixin(content):
             if len(unit) <= max_length:
-                chunks.append(unit)
-                continue
-            chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-        return chunks or [content]
+                units.append(unit)
+            else:
+                # Oversized unit: pack it into chunks before adding to units
+                units.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+        # Now combine small units to reduce message count
+        return _pack_units_for_weixin(units, max_length) or [content]
 
     # Compact (default): single message when under the limit.
     if len(content) <= max_length:

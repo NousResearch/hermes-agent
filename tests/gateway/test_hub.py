@@ -389,7 +389,7 @@ async def test_ws_auth_failure_sets_fatal_error():
     mock_ws.send = AsyncMock()
     mock_ws.recv = AsyncMock(return_value=json.dumps({"ok": False, "error": "bad secret"}))
 
-    with patch("websockets.client.connect", AsyncMock(return_value=mock_ws)):
+    with patch("websockets.connect", AsyncMock(return_value=mock_ws)):
         adapter._reader_task = asyncio.create_task(adapter._run_ws())
         await asyncio.sleep(0.5)
         adapter._should_reconnect = False

@@ -166,13 +166,17 @@ class HubAdapter(BasePlatformAdapter):
 
     async def _run_ws(self) -> None:
         """WebSocket runner with automatic reconnect."""
-        import websockets.client as wsc
+        import websockets
 
         while self._should_reconnect:
             try:
                 logger.info("[Hub] Connecting to %s", self._ws_url)
                 async with self._ws_lock:
-                    self._ws_conn = await wsc.connect(self._ws_url)
+                    self._ws_conn = await websockets.connect(
+                        self._ws_url,
+                        ping_interval=None,  # disable library pings — agent
+                        ping_timeout=None,   # processing blocks the event loop
+                    )
 
                 # Auth handshake — Hub expects secret as first message
                 await self._ws_conn.send(json.dumps({

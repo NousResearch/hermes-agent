@@ -305,12 +305,14 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             })
 
         # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files.
+        # Prevent prompt injection via catalog or hub metadata files,
+        # and block access to sensitive credential/token files.
         from hermes_constants import get_hermes_home as _get_hh
         _hermes_home = _get_hh().resolve()
         _blocked_dirs = [
             _hermes_home / "skills" / ".hub" / "index-cache",
             _hermes_home / "skills" / ".hub",
+            _hermes_home / "mcp-tokens",
         ]
         for _blocked in _blocked_dirs:
             try:
@@ -324,6 +326,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 })
             except ValueError:
                 pass
+
+        # Block sensitive credential files inside HERMES_HOME
+        _sensitive_files = [
+            _hermes_home / "auth.json",
+            _hermes_home / ".env",
+        ]
+        if _resolved in _sensitive_files:
+            return json.dumps({
+                "error": (
+                    f"Access denied: {path} contains sensitive credentials "
+                    "and cannot be read by tools. "
+                    "Use the auth or settings commands to manage credentials."
+                )
+            })
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the

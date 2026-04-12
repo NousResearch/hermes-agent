@@ -1586,12 +1586,12 @@ _KNOWN_ROOT_KEYS = {
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "model", "models",
+    "name", "base_url", "api_key", "api_key_env", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
 }
 
 # Fields that look like they should be inside custom_providers, not at root
-_CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+_CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "api_key_env", "rate_limit_delay", "api_mode"}
 
 
 @dataclass

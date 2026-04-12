@@ -599,6 +599,73 @@ def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     assert resolved["requested_provider"] == "custom:local-llm"
 
 
+def test_named_custom_provider_uses_api_key_env(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "env-ollama-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Ollama Cloud",
+                    "base_url": "https://ollama.com/v1",
+                    "api_key_env": "OLLAMA_API_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:ollama-cloud")
+
+    assert resolved["base_url"] == "https://ollama.com/v1"
+    assert resolved["api_key"] == "env-ollama-key"
+    assert resolved["requested_provider"] == "custom:ollama-cloud"
+
+
+def test_named_custom_provider_prefers_api_key_over_api_key_env(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_KEY", "env-ollama-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {
+                    "name": "Ollama Cloud",
+                    "base_url": "https://ollama.com/v1",
+                    "api_key": "explicit-custom-key",
+                    "api_key_env": "OLLAMA_API_KEY",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="custom:ollama-cloud")
+
+    assert resolved["api_key"] == "explicit-custom-key"
+
+
 def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
     monkeypatch.setattr(
         rp,
@@ -1236,6 +1303,21 @@ def test_get_named_custom_provider_includes_model(monkeypatch):
     result = rp._get_named_custom_provider("my-dashscope")
     assert result is not None
     assert result["model"] == "qwen3.6-plus"
+
+
+def test_get_named_custom_provider_includes_api_key_env(monkeypatch):
+    """_get_named_custom_provider should include api_key_env from config."""
+    monkeypatch.setattr(rp, "load_config", lambda: {
+        "custom_providers": [{
+            "name": "my-ollama",
+            "base_url": "https://ollama.com/v1",
+            "api_key_env": "OLLAMA_API_KEY",
+        }],
+    })
+
+    result = rp._get_named_custom_provider("my-ollama")
+    assert result is not None
+    assert result["api_key_env"] == "OLLAMA_API_KEY"
 
 
 def test_get_named_custom_provider_excludes_empty_model(monkeypatch):

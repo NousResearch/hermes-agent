@@ -301,6 +301,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
+        api_key_env = str(entry.get("api_key_env", "") or "").strip()
+        if api_key_env:
+            result["api_key_env"] = api_key_env
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -339,9 +342,15 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         return pool_result
 
+    api_key_env_var = str(custom_provider.get("api_key_env", "") or "").strip()
+    api_key_from_env = os.getenv(api_key_env_var, "").strip() if api_key_env_var else ""
+    is_ollama_url = "ollama.com" in base_url.lower()
+
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
+        api_key_from_env,
+        (os.getenv("OLLAMA_API_KEY", "").strip() if is_ollama_url else ""),
         os.getenv("OPENAI_API_KEY", "").strip(),
         os.getenv("OPENROUTER_API_KEY", "").strip(),
     ]

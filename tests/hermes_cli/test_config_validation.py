@@ -64,6 +64,20 @@ class TestCustomProvidersValidation:
         })
         assert len(issues) == 0
 
+    def test_valid_list_with_api_key_env_no_issues(self):
+        """custom_providers entries may specify api_key_env for env-based auth."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {
+                    "name": "ollama-cloud",
+                    "base_url": "https://ollama.com/v1",
+                    "api_key_env": "OLLAMA_API_KEY",
+                },
+            ],
+            "model": {"provider": "custom:ollama-cloud", "default": "minimax-m2.7"},
+        })
+        assert len(issues) == 0
+
     def test_list_entry_missing_name(self):
         """List entry without name should warn."""
         issues = validate_config_structure({

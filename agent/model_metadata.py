@@ -203,6 +203,7 @@ _CONTEXT_LENGTH_KEYS = (
     "max_seq_len",
     "n_ctx_train",
     "n_ctx",
+    "ctx_size",
 )
 
 _MAX_COMPLETION_KEYS = (

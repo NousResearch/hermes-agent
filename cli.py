@@ -7106,8 +7106,25 @@ class HermesCLI:
             try:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length
+                # Read config context_length override
+                _cli_config_length = None
+                try:
+                    from hermes_cli.config import load_config as _load_cfg
+                    _cfg = _load_cfg()
+                    _model_cfg = _cfg.get("model", {})
+                    if isinstance(_model_cfg, dict):
+                        _raw_ctx = _model_cfg.get("context_length")
+                        if _raw_ctx is not None:
+                            _cli_config_length = int(_raw_ctx)
+                except Exception:
+                    pass
                 _ctx_len = get_model_context_length(
-                    self.model, base_url=self.base_url or "", api_key=self.api_key or "")
+                    self.model,
+                    base_url=self.base_url or "",
+                    api_key=self.api_key or "",
+                    config_context_length=_cli_config_length,
+                    provider=getattr(self, "provider", "") or "",
+                )
                 _ctx_result = preprocess_context_references(
                     message, cwd=os.getcwd(), context_length=_ctx_len)
                 if _ctx_result.expanded or _ctx_result.blocked:

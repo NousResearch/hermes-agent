@@ -3348,8 +3348,30 @@ class GatewayRunner:
                     from agent.context_references import preprocess_context_references_async
                     from agent.model_metadata import get_model_context_length
                     _msg_cwd = os.environ.get("MESSAGING_CWD", os.path.expanduser("~"))
+                    # Resolve model/runtime from config (same pattern as session hygiene)
+                    _ctx_model, _ctx_runtime = self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=session_key,
+                    )
+                    # Read config context_length override
+                    _ctx_config_length = None
+                    try:
+                        from hermes_cli.config import load_config as _load_cfg
+                        _cfg = _load_cfg()
+                        _model_cfg = _cfg.get("model", {})
+                        if isinstance(_model_cfg, dict):
+                            _raw_ctx = _model_cfg.get("context_length")
+                            if _raw_ctx is not None:
+                                _ctx_config_length = int(_raw_ctx)
+                    except Exception:
+                        pass
                     _msg_ctx_len = get_model_context_length(
-                        self._model, base_url=self._base_url or "")
+                        _ctx_model,
+                        base_url=_ctx_runtime.get("base_url") or "",
+                        api_key=_ctx_runtime.get("api_key") or "",
+                        config_context_length=_ctx_config_length,
+                        provider=_ctx_runtime.get("provider") or "",
+                    )
                     _ctx_result = await preprocess_context_references_async(
                         message_text, cwd=_msg_cwd,
                         context_length=_msg_ctx_len, allowed_root=_msg_cwd)

@@ -136,6 +136,10 @@ class ProcessRegistry:
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
+        # Track sessions whose completion was already consumed by the agent
+        # via wait/poll/log.  Drain loops skip notifications for these.
+        self._completion_consumed: set = set()
+
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
         """Strip shell startup warnings from the beginning of output."""
@@ -613,6 +617,10 @@ class ProcessRegistry:
 
     # ----- Query Methods -----
 
+    def is_completion_consumed(self, session_id: str) -> bool:
+        """Check if a completion notification was already consumed via wait/poll/log."""
+        return session_id in self._completion_consumed
+
     def get(self, session_id: str) -> Optional[ProcessSession]:
         """Get a session by ID (running or finished)."""
         with self._lock:
@@ -640,6 +648,7 @@ class ProcessRegistry:
         }
         if session.exited:
             result["exit_code"] = session.exit_code
+            self._completion_consumed.add(session_id)
         if session.detached:
             result["detached"] = True
             result["note"] = "Process recovered after restart -- output history unavailable"
@@ -665,13 +674,16 @@ class ProcessRegistry:
         else:
             selected = lines[offset:offset + limit]
 
-        return {
+        result = {
             "session_id": session.id,
             "status": "exited" if session.exited else "running",
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
         }
+        if session.exited:
+            self._completion_consumed.add(session_id)
+        return result
 
     def wait(self, session_id: str, timeout: int = None) -> dict:
         """
@@ -714,6 +726,7 @@ class ProcessRegistry:
         while time.monotonic() < deadline:
             session = self._refresh_detached_session(session)
             if session.exited:
+                self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
                     "exit_code": session.exit_code,

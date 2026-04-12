@@ -370,9 +370,14 @@ class TestExpiredCodexFallback:
 
 
     def test_hermes_oauth_file_sets_oauth_flag(self, monkeypatch):
-        """OAuth-style tokens should get is_oauth=*** (token is not sk-ant-api-*)."""
-        # Mock resolve_anthropic_token to return an OAuth-style token
-        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="hermes-oauth-jwt-token"), \
+        """OAuth-style JWT tokens should get is_oauth=True (token starts with eyJ*)."""
+        # Mock resolve_anthropic_token to return an OAuth-style JWT token
+        # Use a real JWT format (eyJ...) so _is_oauth_token() returns True
+        import base64
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b'=').decode()
+        payload = base64.urlsafe_b64encode(b'{"sub":"user123","exp":9999999999}').rstrip(b'=').decode()
+        jwt_token = f"eyJ{header}.{payload}.fake_sig"
+        with patch("agent.anthropic_adapter.resolve_anthropic_token", return_value=jwt_token), \
              patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             mock_build.return_value = MagicMock()
@@ -426,8 +431,12 @@ class TestExpiredCodexFallback:
         assert result == bad_jwt, "JWT with invalid JSON payload should pass through"
 
     def test_claude_code_oauth_env_sets_flag(self, monkeypatch):
-        """CLAUDE_CODE_OAUTH_TOKEN env var should get is_oauth=True."""
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "cc-oauth-token-test")
+        """CLAUDE_CODE_OAUTH_TOKEN env var with JWT format should get is_oauth=True."""
+        import base64
+        header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b'=').decode()
+        payload = base64.urlsafe_b64encode(b'{"sub":"user123","exp":9999999999}').rstrip(b'=').decode()
+        jwt_token = f"eyJ{header}.{payload}.fake_sig"
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", jwt_token)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build:
             mock_build.return_value = MagicMock()

@@ -334,10 +334,14 @@ class TestChannelDirectory(unittest.TestCase):
     """Verify email in channel directory session-based discovery."""
 
     def test_email_in_session_discovery(self):
+        """Email uses _build_from_sessions fallback (iterates Platform enum, not hardcoded)."""
         import gateway.channel_directory
         import inspect
         source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        # Email falls through to _build_from_sessions() since it's not in _SKIP_SESSION_DISCOVERY
+        self.assertIn("_build_from_sessions", source)
+        # Verify "email" is NOT in the skip list (so it would be discovered via sessions)
+        self.assertNotIn('"email"', source)
 
 
 class TestGatewaySetup(unittest.TestCase):

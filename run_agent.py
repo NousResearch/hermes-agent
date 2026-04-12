@@ -2729,6 +2729,10 @@ class AIAgent:
         try:
             body = copy.deepcopy(api_kwargs)
             body.pop("timeout", None)
+            # Never persist raw secrets in debug dump files — the API key
+            # may be present in api_kwargs for some SDK/client combinations (#8518).
+            for _secret_key in ("api_key", "x_api_key", "api_token"):
+                body.pop(_secret_key, None)
             body = {k: v for k, v in body.items() if v is not None}
 
             api_key = None

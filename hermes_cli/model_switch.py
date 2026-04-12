@@ -991,6 +991,14 @@ def list_authenticated_providers(
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                if store and hermes_id in store.get("credential_pool", {}):
+                    has_creds = True
+            except Exception:
+                pass
+        if not has_creds:
             continue
 
         # Use curated list, falling back to models.dev if no curated list.

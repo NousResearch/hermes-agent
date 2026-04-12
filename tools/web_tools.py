@@ -87,6 +87,11 @@ def _get_backend() -> str:
     Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
+
+    Fallback priority (highest to lowest):
+    firecrawl > parallel > tavily > exa > brave
+
+    Note: Brave is search-only and falls back to Firecrawl for extraction.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured in ("parallel", "firecrawl", "tavily", "exa", "brave"):
@@ -95,12 +100,13 @@ def _get_backend() -> str:
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
+    # Brave is last because it's search-only (falls back to Firecrawl for extraction).
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
-        ("brave", _has_env("BRAVE_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("brave", _has_env("BRAVE_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -343,7 +349,7 @@ def _normalize_brave_search_results(response: dict) -> dict:
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
-_TAVILY_BASE_URL = os.getenv("TAVILY_API_URL") or "https://api.tavily.com"
+_TAVILY_BASE_URL = "https://api.tavily.com"
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:
@@ -1181,7 +1187,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         if backend == "brave":
             logger.info("Brave Search: '%s' (limit: %d)", query, limit)
-            raw = _brave_request("/web/search", {
+            raw = _brave_request("web/search", {
                 "q": query,
                 "count": min(limit, 20),
                 "search_lang": "en",
@@ -1334,11 +1340,10 @@ async def web_extract_tool(
                 # Set backend to firecrawl so the extraction code below runs
                 backend = "firecrawl"
 
-            # Initialize results list before processing
-            results: List[Dict[str, Any]] = []
-
             # Firecrawl extraction for brave (fallback), firecrawl, or unrecognized backends
             if backend not in ("parallel", "exa", "tavily"):
+                # Initialize results list before processing
+                results: List[Dict[str, Any]] = []
                 # Determine requested formats for Firecrawl v2
                 formats: List[str] = []
                 if format == "markdown":

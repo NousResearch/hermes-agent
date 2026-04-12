@@ -397,6 +397,27 @@ class TestBackendSelection:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
 
+    def test_fallback_brave_only_key(self):
+        """Only BRAVE_API_KEY set → 'brave'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test"}):
+            assert _get_backend() == "brave"
+
+    def test_fallback_exa_takes_priority_over_brave(self):
+        """Exa should win over Brave in the fallback path (Brave is last priority)."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": "brave-test", "EXA_API_KEY": "exa-test"}):
+            assert _get_backend() == "exa"
+
+    def test_fallback_tavily_takes_priority_over_brave(self):
+        """Tavily should win over Brave in the fallback path."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test", "BRAVE_API_KEY": "brave-test"}):
+            assert _get_backend() == "tavily"
+
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
         from tools.web_tools import _get_backend
@@ -429,7 +450,8 @@ class TestBackendSelection:
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
         from tools.web_tools import _get_backend
-        with patch("tools.web_tools._load_web_config", return_value={}):
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"BRAVE_API_KEY": ""}, clear=False):
             assert _get_backend() == "firecrawl"
 
     def test_invalid_config_falls_through_to_fallback(self):

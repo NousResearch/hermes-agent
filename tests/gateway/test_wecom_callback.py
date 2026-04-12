@@ -55,7 +55,8 @@ class TestWecomCrypto:
 
 
 class TestWecomCallbackEventConstruction:
-    def test_build_event_extracts_text_message(self):
+    @pytest.mark.asyncio
+    async def test_build_event_extracts_text_message(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
         <xml>
@@ -67,7 +68,7 @@ class TestWecomCallbackEventConstruction:
           <MsgId>123456789</MsgId>
         </xml>
         """
-        event = adapter._build_event(_app(), xml_text)
+        event = await adapter._build_event(_app(), xml_text)
         assert event is not None
         assert event.source is not None
         assert event.source.user_id == "zhangsan"
@@ -75,7 +76,8 @@ class TestWecomCallbackEventConstruction:
         assert event.message_id == "123456789"
         assert event.text == "\u4f60\u597d"
 
-    def test_build_event_returns_none_for_subscribe(self):
+    @pytest.mark.asyncio
+    async def test_build_event_returns_none_for_subscribe(self):
         adapter = WecomCallbackAdapter(_config())
         xml_text = """
         <xml>
@@ -86,7 +88,7 @@ class TestWecomCallbackEventConstruction:
           <Event>subscribe</Event>
         </xml>
         """
-        event = adapter._build_event(_app(), xml_text)
+        event = await adapter._build_event(_app(), xml_text)
         assert event is None
 
 
@@ -163,7 +165,7 @@ class TestWecomCallbackPollLoop:
             calls.append(event.text)
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
-        event = adapter._build_event(
+        event = await adapter._build_event(
             _app(),
             """
             <xml>

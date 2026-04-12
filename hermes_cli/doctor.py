@@ -51,6 +51,7 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "XIAOMI_API_KEY",
 )
 
 
@@ -335,8 +336,8 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    with open(config_path, "w") as f:
-                        yaml.dump(raw_config, f, default_flow_style=False)
+                    from utils import atomic_yaml_write
+                    atomic_yaml_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
                 else:
@@ -685,7 +686,8 @@ def run_doctor(args):
     else:
         check_warn("OpenRouter API", "(not configured)")
     
-    anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_key = get_anthropic_key()
     if anthropic_key:
         print("  Checking Anthropic API...", end="", flush=True)
         try:

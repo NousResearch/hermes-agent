@@ -145,7 +145,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
-        self._session_lock_identity: Optional[str] = None
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -290,23 +289,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         # Acquire scoped lock to prevent duplicate sessions
         try:
-            from gateway.status import acquire_scoped_lock
-
-            self._session_lock_identity = str(self._session_path)
-            acquired, existing = acquire_scoped_lock(
-                "whatsapp-session",
-                self._session_lock_identity,
-                metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this WhatsApp session"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second WhatsApp bridge."
-                )
-                logger.error("[%s] %s", self.name, message)
-                self._set_fatal_error("whatsapp_session_lock", message, retryable=False)
+            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
                 return False
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
@@ -468,12 +451,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
-            if self._session_lock_identity:
-                try:
-                    from gateway.status import release_scoped_lock
-                    release_scoped_lock("whatsapp-session", self._session_lock_identity)
-                except Exception:
-                    pass
+            self._release_platform_lock()
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             self._close_bridge_log()
             return False
@@ -546,17 +524,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
             await self._http_session.close()
         self._http_session = None
 
-        if self._session_lock_identity:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("whatsapp-session", self._session_lock_identity)
-            except Exception as e:
-                logger.warning("[%s] Error releasing WhatsApp session lock: %s", self.name, e, exc_info=True)
+        self._release_platform_lock()
 
         self._mark_disconnected()
         self._bridge_process = None
         self._close_bridge_log()
-        self._session_lock_identity = None
         print(f"[{self.name}] Disconnected")
     
     async def send(

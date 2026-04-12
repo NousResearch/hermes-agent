@@ -2087,8 +2087,9 @@ class TestRunConversation:
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
 
-    def test_length_empty_content_detected_as_thinking_exhausted(self, agent):
-        """When finish_reason='length' and content is None/empty, detect exhaustion."""
+    def test_length_empty_content_without_think_tags_retries_normally(self, agent):
+        """When finish_reason='length' and content is None but no think tags,
+        fall through to normal continuation retry (not thinking-exhaustion)."""
         self._setup_agent(agent)
         resp = _mock_response(content=None, finish_reason="length")
         agent.client.chat.completions.create.return_value = resp
@@ -2100,12 +2101,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
+        # Without think tags, the agent should attempt continuation retries
+        # (up to 3), not immediately fire thinking-exhaustion.
+        assert result["api_calls"] == 3
         assert result["completed"] is False
-        assert result["api_calls"] == 1
-        assert "reasoning" in result["error"].lower()
-        # User-friendly message is returned
-        assert result["final_response"] is not None
-        assert "Thinking Budget Exhausted" in result["final_response"]
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)
@@ -2168,6 +2167,35 @@ class TestRunConversation:
         # Tool was executed on the retry (good_resp)
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
+
+    def test_truncated_tool_args_detected_when_finish_reason_not_length(self, agent):
+        """When a router rewrites finish_reason from 'length' to 'tool_calls',
+        truncated JSON arguments should still be detected and refused rather
+        than wasting 3 retry attempts."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[bad_tc],
+        )
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "truncated due to output length limit" in result["error"]
+        mock_handle_function_call.assert_not_called()
 
 
 class TestRetryExhaustion:
@@ -2714,74 +2742,12 @@ class TestSystemPromptStability:
         assert "Hermes Agent" in agent._cached_system_prompt
 
 class TestBudgetPressure:
-    """Budget pressure warning system (issue #414)."""
+    """Budget exhaustion grace call system."""
 
-    def test_no_warning_below_caution(self, agent):
-        agent.max_iterations = 60
-        assert agent._get_budget_warning(30) is None
-
-    def test_caution_at_70_percent(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(42)
-        assert msg is not None
-        assert "[BUDGET:" in msg
-        assert "18 iterations left" in msg
-
-    def test_warning_at_90_percent(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(54)
-        assert "[BUDGET WARNING:" in msg
-        assert "Provide your final response NOW" in msg
-
-    def test_last_iteration(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(59)
-        assert "1 iteration(s) left" in msg
-
-    def test_disabled(self, agent):
-        agent.max_iterations = 60
-        agent._budget_pressure_enabled = False
-        assert agent._get_budget_warning(55) is None
-
-    def test_zero_max_iterations(self, agent):
-        agent.max_iterations = 0
-        assert agent._get_budget_warning(0) is None
-
-    def test_injects_into_json_tool_result(self, agent):
-        """Warning should be injected as _budget_warning field in JSON tool results."""
-        import json
-        agent.max_iterations = 10
-        messages = [
-            {"role": "tool", "content": json.dumps({"output": "done", "exit_code": 0}), "tool_call_id": "tc1"}
-        ]
-        warning = agent._get_budget_warning(9)
-        assert warning is not None
-        # Simulate the injection logic
-        last_content = messages[-1]["content"]
-        parsed = json.loads(last_content)
-        parsed["_budget_warning"] = warning
-        messages[-1]["content"] = json.dumps(parsed, ensure_ascii=False)
-        result = json.loads(messages[-1]["content"])
-        assert "_budget_warning" in result
-        assert "BUDGET WARNING" in result["_budget_warning"]
-        assert result["output"] == "done"  # original content preserved
-
-    def test_appends_to_non_json_tool_result(self, agent):
-        """Warning should be appended as text for non-JSON tool results."""
-        agent.max_iterations = 10
-        messages = [
-            {"role": "tool", "content": "plain text result", "tool_call_id": "tc1"}
-        ]
-        warning = agent._get_budget_warning(9)
-        # Simulate injection logic for non-JSON
-        last_content = messages[-1]["content"]
-        try:
-            import json
-            json.loads(last_content)
-        except (json.JSONDecodeError, TypeError):
-            messages[-1]["content"] = last_content + f"\n\n{warning}"
-        assert "plain text result" in messages[-1]["content"]
-        assert "BUDGET WARNING" in messages[-1]["content"]
+    def test_grace_call_flags_initialized(self, agent):
+        """Agent should have budget grace call flags."""
+        assert agent._budget_exhausted_injected is False
+        assert agent._budget_grace_call is False
 
 
 class TestSafeWriter:

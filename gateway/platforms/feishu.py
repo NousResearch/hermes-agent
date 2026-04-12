@@ -395,18 +395,55 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _parse_markdown_to_feishu_elements(content: str) -> List[List[Dict[str, Any]]]:
+    """Parse markdown content into Feishu post elements, handling code blocks specially.
+    
+    Feishu's 'md' tag doesn't properly render markdown code blocks (```).
+    This function extracts code blocks and converts them to native Feishu 'code_block' elements.
+    """
+    elements: List[List[Dict[str, Any]]] = []
+    
+    # Pattern to match code blocks: ```language\ncode\n```
+    code_block_pattern = re.compile(r'```(\w*)\n([\s\S]*?)\n```', re.MULTILINE)
+    
+    last_end = 0
+    for match in code_block_pattern.finditer(content):
+        # Add text before this code block (if any)
+        before_text = content[last_end:match.start()].strip()
+        if before_text:
+            elements.append([{"tag": "md", "text": before_text}])
+        
+        # Add the code block as native Feishu element
+        language = match.group(1) or ""
+        code_text = match.group(2)
+        elements.append([{
+            "tag": "code_block",
+            "language": language,
+            "text": code_text
+        }])
+        
+        last_end = match.end()
+    
+    # Add remaining text after last code block (if any)
+    remaining_text = content[last_end:].strip()
+    if remaining_text:
+        elements.append([{"tag": "md", "text": remaining_text}])
+    
+    # If no code blocks found, use simple md element
+    if not elements:
+        elements = [[{"tag": "md", "text": content}]]
+    
+    return elements
+
+
+
+
 def _build_markdown_post_payload(content: str) -> str:
+    elements = _parse_markdown_to_feishu_elements(content)
     return json.dumps(
         {
             "zh_cn": {
-                "content": [
-                    [
-                        {
-                            "tag": "md",
-                            "text": content,
-                        }
-                    ]
-                ],
+                "content": elements,
             }
         },
         ensure_ascii=False,

@@ -114,6 +114,9 @@ _CRYPTO_DB_PATH = _STORE_DIR / "crypto.db"
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
 
+_OUTBOUND_MENTION_RE = re.compile(
+    r"(?<![\w/])(@[0-9A-Za-z._=/-]+:[0-9A-Za-z.-]+(?::\d+)?)"
+)
 
 _E2EE_INSTALL_HINT = (
     "Install with: pip install 'mautrix[encryption]'  (requires libolm C library)"
@@ -728,16 +731,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         last_event_id = None
         for chunk in chunks:
-            msg_content: Dict[str, Any] = {
-                "msgtype": "m.text",
-                "body": chunk,
-            }
-
-            # Convert markdown to HTML for rich rendering.
-            html = self._markdown_to_html(chunk)
-            if html and html != chunk:
-                msg_content["format"] = "org.matrix.custom.html"
-                msg_content["formatted_body"] = html
+            msg_content = self._build_text_message_content(chunk)
 
             # Reply-to support.
             if reply_to:
@@ -844,25 +838,21 @@ class MatrixAdapter(BasePlatformAdapter):
         """Edit an existing message (via m.replace)."""
 
         formatted = self.format_message(content)
+        new_content = self._build_text_message_content(formatted)
         msg_content: Dict[str, Any] = {
             "msgtype": "m.text",
             "body": f"* {formatted}",
-            "m.new_content": {
-                "msgtype": "m.text",
-                "body": formatted,
-            },
-            "m.relates_to": {
-                "rel_type": "m.replace",
-                "event_id": message_id,
-            },
+            "m.new_content": new_content,
         }
-
-        html = self._markdown_to_html(formatted)
-        if html and html != formatted:
-            msg_content["m.new_content"]["format"] = "org.matrix.custom.html"
-            msg_content["m.new_content"]["formatted_body"] = html
+        if "m.mentions" in new_content:
+            msg_content["m.mentions"] = new_content["m.mentions"]
+        if "formatted_body" in new_content:
             msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = f"* {html}"
+            msg_content["formatted_body"] = f'* {new_content["formatted_body"]}'
+        msg_content["m.relates_to"] = {
+            "rel_type": "m.replace",
+            "event_id": message_id,
+        }
 
         try:
             event_id = await self._client.send_message_event(
@@ -1979,11 +1969,7 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client or not text:
             return SendResult(success=False, error="No client or empty text")
 
-        msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
-        html = self._markdown_to_html(text)
-        if html and html != text:
-            msg_content["format"] = "org.matrix.custom.html"
-            msg_content["formatted_body"] = html
+        msg_content = self._build_text_message_content(text, msgtype=msgtype)
 
         try:
             event_id = await self._client.send_message_event(
@@ -2045,6 +2031,77 @@ class MatrixAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Mention detection helpers
     # ------------------------------------------------------------------
+
+    def _build_text_message_content(self, text: str, msgtype: str = "m.text") -> Dict[str, Any]:
+        """Build Matrix text content with HTML and outbound mention metadata."""
+        msg_content: Dict[str, Any] = {"msgtype": msgtype, "body": text}
+        mention_user_ids = self._extract_outbound_mentions(text)
+        if mention_user_ids:
+            msg_content["m.mentions"] = {"user_ids": mention_user_ids}
+
+        html_source = self._inject_outbound_mention_links(text)
+        html = self._markdown_to_html(html_source)
+        if html and html != text:
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = html
+
+        return msg_content
+
+    def _extract_outbound_mentions(self, text: str) -> list[str]:
+        """Return unique Matrix user IDs mentioned in outbound text."""
+        protected, _ = self._protect_outbound_mention_regions(text)
+        seen: Set[str] = set()
+        mentions: list[str] = []
+        for match in _OUTBOUND_MENTION_RE.finditer(protected):
+            user_id = match.group(1)
+            if user_id not in seen:
+                seen.add(user_id)
+                mentions.append(user_id)
+        return mentions
+
+    def _inject_outbound_mention_links(self, text: str) -> str:
+        """Wrap outbound Matrix mentions in markdown links outside code spans."""
+        if not text:
+            return text
+
+        protected, placeholders = self._protect_outbound_mention_regions(text)
+
+        linked = _OUTBOUND_MENTION_RE.sub(
+            lambda match: f"[{match.group(1)}](https://matrix.to/#/{match.group(1)})",
+            protected,
+        )
+
+        for idx, original in enumerate(placeholders):
+            linked = linked.replace(f"\x00MENTION_PROTECTED{idx}\x00", original)
+
+        return linked
+
+    def _protect_outbound_mention_regions(self, text: str) -> tuple[str, list[str]]:
+        """Protect markdown regions where outbound mentions should stay literal."""
+        placeholders: list[str] = []
+
+        def _protect(fragment: str) -> str:
+            idx = len(placeholders)
+            placeholders.append(fragment)
+            return f"\x00MENTION_PROTECTED{idx}\x00"
+
+        protected = re.sub(
+            r"```[\s\S]*?```",
+            lambda match: _protect(match.group(0)),
+            text or "",
+        )
+        protected = re.sub(
+            r"`[^`\n]+`",
+            lambda match: _protect(match.group(0)),
+            protected,
+        )
+        protected = re.sub(
+            r"\[[^\]]+\]\([^)]+\)",
+            lambda match: _protect(match.group(0)),
+            protected,
+        )
+
+        return protected, placeholders
 
     def _is_bot_mentioned(
         self,

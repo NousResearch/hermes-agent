@@ -174,6 +174,83 @@ class TestStripMention:
 
 
 # ---------------------------------------------------------------------------
+# Outbound mention payloads
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundMentions:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.mock_client = MagicMock()
+        self.mock_client.send_message_event = AsyncMock(return_value="$evt1")
+        self.adapter._client = self.mock_client
+
+    @staticmethod
+    def _sent_content(mock_client):
+        call_args = mock_client.send_message_event.call_args
+        return call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_send_adds_matrix_mentions_and_formatted_body(self):
+        result = await self.adapter.send(
+            "!room1:example.org",
+            "Hello @alice:example.org, please check this.",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["formatted_body"] == (
+            'Hello <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>, please check this."
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_dedupes_mentions_and_ignores_code_spans(self):
+        await self.adapter.send(
+            "!room1:example.org",
+            "Ping @alice:example.org and @alice:example.org, not `@code:example.org`.",
+        )
+
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert "@code:example.org</a>" not in content["formatted_body"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_preserves_mentions(self):
+        result = await self.adapter.edit_message(
+            "!room1:example.org",
+            "$original",
+            "Updated for @alice:example.org",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["m.new_content"]["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["m.new_content"]["formatted_body"] == (
+            'Updated for <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>"
+        )
+        assert content["formatted_body"] == (
+            '* Updated for <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_notice_adds_mentions(self):
+        result = await self.adapter.send_notice(
+            "!room1:example.org",
+            "Heads up @alice:example.org",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["msgtype"] == "m.notice"
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+
+
+# ---------------------------------------------------------------------------
 # Require-mention gating in _on_room_message
 # ---------------------------------------------------------------------------
 

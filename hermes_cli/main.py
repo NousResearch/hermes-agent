@@ -786,10 +786,10 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
 
     # pre-built dist (nix / HERMES_TUI_DIR) needs no npm at all.
     if not tui_dev:
-        bundled = _find_bundled_tui(tui_dir)
-        if bundled:
+        ext_dir = os.environ.get("HERMES_TUI_DIR")
+        if ext_dir and (Path(ext_dir) / "dist" / "entry.js").exists():
             node = _node_bin("node")
-            return [node, str(bundled / "dist" / "entry.js")], bundled
+            return [node, str(Path(ext_dir) / "dist" / "entry.js")], Path(ext_dir)
 
     npm = _node_bin("npm")
     if not (tui_dir / "node_modules").exists():

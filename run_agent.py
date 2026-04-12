@@ -6465,14 +6465,14 @@ class AIAgent:
             if self._cached_system_prompt:
                 api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
 
-            # Make one API call with only the memory tool available
-            memory_tool_def = None
+            # Make one API call with memory-related tools available
+            memory_tool_defs = []
             for t in (self.tools or []):
-                if t.get("function", {}).get("name") == "memory":
-                    memory_tool_def = t
-                    break
+                name = t.get("function", {}).get("name")
+                if name in ("memory", "viking_remember"):
+                    memory_tool_defs.append(t)
 
-            if not memory_tool_def:
+            if not memory_tool_defs:
                 messages.pop()  # remove flush msg
                 return
 
@@ -6484,7 +6484,7 @@ class AIAgent:
                 response = _call_llm(
                     task="flush_memories",
                     messages=api_messages,
-                    tools=[memory_tool_def],
+                    tools=memory_tool_defs,
                     temperature=0.3,
                     max_tokens=5120,
                     # timeout resolved from auxiliary.flush_memories.timeout config
@@ -6496,7 +6496,7 @@ class AIAgent:
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
+                codex_kwargs["tools"] = self._responses_tools(memory_tool_defs)
                 codex_kwargs["temperature"] = 0.3
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
@@ -6506,7 +6506,7 @@ class AIAgent:
                 from agent.anthropic_adapter import build_anthropic_kwargs as _build_ant_kwargs
                 ant_kwargs = _build_ant_kwargs(
                     model=self.model, messages=api_messages,
-                    tools=[memory_tool_def], max_tokens=5120,
+                    tools=memory_tool_defs, max_tokens=5120,
                     reasoning_config=None,
                     preserve_dots=self._anthropic_preserve_dots(),
                 )
@@ -6515,7 +6515,7 @@ class AIAgent:
                 api_kwargs = {
                     "model": self.model,
                     "messages": api_messages,
-                    "tools": [memory_tool_def],
+                    "tools": memory_tool_defs,
                     "temperature": 0.3,
                     **self._max_tokens_param(5120),
                 }
@@ -6555,6 +6555,15 @@ class AIAgent:
                         )
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
+                    except Exception as e:
+                        logger.debug("Memory flush tool call failed: %s", e)
+                elif tc.function.name == "viking_remember":
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        if self._memory_manager:
+                            self._memory_manager.handle_tool_call("viking_remember", args=args)
+                        if not self.quiet_mode:
+                            print("  🧠 Memory flush: saved to OpenViking")
                     except Exception as e:
                         logger.debug("Memory flush tool call failed: %s", e)
         except Exception as e:
@@ -6609,6 +6618,14 @@ class AIAgent:
 
         if self._session_db:
             try:
+                # End-of-session extraction for external memory providers
+                # (e.g. OpenViking commit) before we rotate the session ID
+                if self._memory_manager:
+                    try:
+                        self._memory_manager.on_session_end(messages)
+                    except Exception:
+                        pass
+
                 # Propagate title to the new session with auto-numbering
                 old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")
@@ -6632,6 +6649,17 @@ class AIAgent:
                 self._session_db.update_system_prompt(self.session_id, new_system_prompt)
                 # Reset flush cursor — new session starts with no messages written
                 self._last_flushed_db_idx = 0
+
+                # Re-initialize memory providers with the new session_id so
+                # subsequent sync_turn calls target the new session
+                if self._memory_manager:
+                    try:
+                        self._memory_manager.initialize_all(
+                            session_id=self.session_id,
+                            platform=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 

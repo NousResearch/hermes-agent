@@ -275,3 +275,127 @@ class TestFlushMemoriesCodexFallback:
         mock_stream.assert_called_once()
         mock_memory.assert_called_once()
         assert mock_memory.call_args.kwargs["content"] == "Codex flush test"
+
+
+def _make_agent_with_tools(monkeypatch, tools, api_mode="chat_completions", provider="openrouter"):
+    """Build an AIAgent with a specific tool list for flush_memories testing."""
+    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kw: tools)
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+
+    agent = run_agent.AIAgent(
+        api_key="test-key",
+        base_url="https://test.example.com/v1",
+        provider=provider,
+        api_mode=api_mode,
+        max_iterations=4,
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._memory_store = MagicMock()
+    agent._memory_flush_min_turns = 1
+    agent._user_turn_count = 5
+    return agent
+
+
+def _chat_response_with_viking_remember_call():
+    """Simulated response calling viking_remember instead of memory."""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            message=SimpleNamespace(
+                content=None,
+                tool_calls=[SimpleNamespace(
+                    function=SimpleNamespace(
+                        name="viking_remember",
+                        arguments=json.dumps({
+                            "content": "User likes strawberry cake.",
+                            "category": "preference",
+                        }),
+                    ),
+                )],
+            ),
+        )],
+        usage=SimpleNamespace(prompt_tokens=100, completion_tokens=20, total_tokens=120),
+    )
+
+
+class TestFlushMemoriesExposesVikingRemember:
+    """flush_memories() must expose viking_remember when OpenViking tools are present."""
+
+    def test_flush_includes_viking_remember_tool(self, monkeypatch):
+        """The API call must include viking_remember in the tools list."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Manage memories.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "viking_remember",
+                    "description": "Store fact in OpenViking.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        agent = _make_agent_with_tools(monkeypatch, tools)
+        mock_response = _chat_response_with_viking_remember_call()
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Remember this"},
+            ]
+            agent._memory_manager = MagicMock()
+            agent.flush_memories(messages)
+
+        mock_call.assert_called_once()
+        call_kwargs = mock_call.call_args
+        tool_names = [t["function"]["name"] for t in call_kwargs.kwargs["tools"]]
+        assert "viking_remember" in tool_names, (
+            f"Expected viking_remember in flush tools, got {tool_names}"
+        )
+
+    def test_flush_executes_viking_remember_tool_call(self, monkeypatch):
+        """When the model returns a viking_remember tool call, flush must execute it."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "memory",
+                    "description": "Manage memories.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "viking_remember",
+                    "description": "Store fact in OpenViking.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ]
+        agent = _make_agent_with_tools(monkeypatch, tools)
+        mock_response = _chat_response_with_viking_remember_call()
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Remember this"},
+            ]
+            agent._memory_manager = MagicMock()
+            agent.flush_memories(messages)
+
+        agent._memory_manager.handle_tool_call.assert_called_once()
+        call_args = agent._memory_manager.handle_tool_call.call_args
+        assert call_args.args[0] == "viking_remember"
+        assert call_args.kwargs["args"]["content"] == "User likes strawberry cake."
+        assert call_args.kwargs["args"]["category"] == "preference"

@@ -24,6 +24,8 @@ def _mock_event_dispatcher_builder(mock_handler_class):
     mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
     mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
     mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+    mock_builder.register_p2_im_chat_member_bot_added_v1 = Mock(return_value=mock_builder)
+    mock_builder.register_p2_im_chat_member_bot_deleted_v1 = Mock(return_value=mock_builder)
     mock_builder.build = Mock(return_value=object())
     mock_handler_class.builder = Mock(return_value=mock_builder)
     return mock_builder
@@ -699,6 +701,14 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("card_action")
                 return self
 
+            def register_p2_im_chat_member_bot_added_v1(self, _handler):
+                calls.append("bot_added")
+                return self
+
+            def register_p2_im_chat_member_bot_deleted_v1(self, _handler):
+                calls.append("bot_deleted")
+                return self
+
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -722,6 +732,8 @@ class TestAdapterBehavior(unittest.TestCase):
                 "reaction_created",
                 "reaction_deleted",
                 "card_action",
+                "bot_added",
+                "bot_deleted",
                 "build",
             ],
         )
@@ -2467,6 +2479,59 @@ class TestAdapterBehavior(unittest.TestCase):
         payload = json.loads(captured["request"].request_body.content)
         elements = payload["zh_cn"]["content"][0]
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_text_for_fenced_code_block_markdown(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_codeblock"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "确认已入库 ✓\n"
+            "文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n"
+            "**解码后的内容：**\n"
+            "```json\n"
+            "{\"cron\": \"list\"}\n"
+            "```"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "text")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertIn("确认已入库 ✓", payload["text"])
+        self.assertIn("文件路径：/root/.hermes/profiles/agent_cto/cron/jobs.json", payload["text"])
+        self.assertIn("解码后的内容：", payload["text"])
+        self.assertIn('{"cron": "list"}', payload["text"])
+        self.assertNotIn("```", payload["text"])
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):

@@ -1,9 +1,30 @@
 # Adding a New Messaging Platform
 
-Checklist for integrating a new messaging platform into the Hermes gateway.
-Use this as a reference when building a new adapter — every item here is a
-real integration point that exists in the codebase. Missing any of them will
-cause broken functionality, missing features, or inconsistent behavior.
+There are two ways to add a platform to the Hermes gateway:
+
+## Plugin Path (Recommended for Community/Third-Party)
+
+Create a plugin directory in `~/.hermes/plugins/` with a `PLUGIN.yaml` and
+`adapter.py`.  The adapter inherits from `BasePlatformAdapter` and registers
+via `ctx.register_platform()` in the `register(ctx)` entry point.  This
+requires **zero changes to core Hermes code**.
+
+The plugin system automatically handles: adapter creation, config parsing,
+user authorization, cron delivery, send_message routing, system prompt hints,
+status display, gateway setup, and more.
+
+See `plugins/platforms/irc/` for a complete reference implementation, and
+`website/docs/developer-guide/adding-platform-adapters.md` for the full
+plugin guide with code examples.
+
+---
+
+## Built-in Path (Core Contributors Only)
+
+Checklist for integrating a platform directly into the Hermes core.
+Use this as a reference when building a built-in adapter — every item here
+is a real integration point. Missing any of them will cause broken
+functionality, missing features, or inconsistent behavior.
 
 ---
 

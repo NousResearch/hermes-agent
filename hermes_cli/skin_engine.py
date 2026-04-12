@@ -96,6 +96,7 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -105,22 +106,89 @@ from hermes_constants import get_hermes_home
 logger = logging.getLogger(__name__)
 
 
+_DEFAULT_LIGHT_TERMINAL_COLORS: Dict[str, str] = {
+    "banner_border": "#8C5A15",
+    "banner_title": "#8A5B00",
+    "banner_accent": "#9A6700",
+    "banner_dim": "#6B5B38",
+    "banner_text": "#2B2110",
+    "ui_accent": "#9A6700",
+    "ui_label": "#0F6D7A",
+    "ui_ok": "#2E7D32",
+    "ui_error": "#B42318",
+    "ui_warn": "#B45309",
+    "prompt": "#2B2110",
+    "input_rule": "#8C5A15",
+    "response_border": "#8A5B00",
+    "session_label": "#8A5B00",
+    "session_border": "#8C8173",
+}
+
+
+def _terminal_looks_light() -> bool:
+    """Best-effort detection for terminals with a light default background."""
+    raw = (os.environ.get("COLORFGBG") or "").strip()
+    if not raw:
+        return False
+
+    parts = raw.replace(",", ";").split(";")
+    try:
+        background = int(next(part for part in reversed(parts) if part.strip()))
+    except (StopIteration, ValueError):
+        return False
+
+    return background in {7, 15} or background >= 10
+
+
+def _default_light_banner_logo() -> str:
+    """Return contrast-safe default banner art for light terminals."""
+    return """[bold #8A5B00]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #8A5B00]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#9A6700]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#9A6700]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#8C5A15]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#8C5A15]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
+
+
+def _default_light_banner_hero() -> str:
+    """Return contrast-safe default caduceus art for light terminals."""
+    return """[#8C5A15]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8C5A15]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
+[#9A6700]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
+[#9A6700]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
+[#8A5B00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8A5B00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#9A6700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#9A6700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8C5A15]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#8C5A15]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#6B5B38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#6B5B38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#6B5B38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#6B5B38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#6B5B38]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
+
+
 # =============================================================================
 # Skin data structure
 # =============================================================================
 
+
 @dataclass
 class SkinConfig:
     """Complete skin configuration."""
+
     name: str
     description: str = ""
     colors: Dict[str, str] = field(default_factory=dict)
     spinner: Dict[str, Any] = field(default_factory=dict)
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
-    tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
-    banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
-    banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
+    tool_emojis: Dict[str, str] = field(
+        default_factory=dict
+    )  # per-tool emoji overrides
+    banner_logo: str = ""  # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
+    banner_hero: str = ""  # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -206,8 +274,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
             "thinking_faces": ["(⚔)", "(⛨)", "(▲)", "(⌁)", "(<>)"],
             "thinking_verbs": [
-                "forging", "marching", "sizing the field", "holding the line",
-                "hammering plans", "tempering steel", "plotting impact", "raising the shield",
+                "forging",
+                "marching",
+                "sizing the field",
+                "holding the line",
+                "hammering plans",
+                "tempering steel",
+                "plotting impact",
+                "raising the shield",
             ],
             "wings": [
                 ["⟪⚔", "⚔⟫"],
@@ -332,9 +406,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
             "thinking_faces": ["(Ψ)", "(∿)", "(≈)", "(⌁)", "(◌)"],
             "thinking_verbs": [
-                "charting currents", "sounding the depth", "reading foam lines",
-                "steering the trident", "tracking undertow", "plotting sea lanes",
-                "calling the swell", "measuring pressure",
+                "charting currents",
+                "sounding the depth",
+                "reading foam lines",
+                "steering the trident",
+                "tracking undertow",
+                "plotting sea lanes",
+                "calling the swell",
+                "measuring pressure",
             ],
             "wings": [
                 ["⟪≈", "≈⟫"],
@@ -396,9 +475,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
             "thinking_faces": ["(◉)", "(◬)", "(◌)", "(○)", "(●)"],
             "thinking_verbs": [
-                "finding traction", "measuring the grade", "resetting the boulder",
-                "counting the ascent", "testing leverage", "setting the shoulder",
-                "pushing uphill", "enduring the loop",
+                "finding traction",
+                "measuring the grade",
+                "resetting the boulder",
+                "counting the ascent",
+                "testing leverage",
+                "setting the shoulder",
+                "pushing uphill",
+                "enduring the loop",
             ],
             "wings": [
                 ["⟪◉", "◉⟫"],
@@ -461,9 +545,14 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "waiting_faces": ["(✦)", "(▲)", "(◇)", "(<>)", "(🔥)"],
             "thinking_faces": ["(✦)", "(▲)", "(◇)", "(⌁)", "(🔥)"],
             "thinking_verbs": [
-                "banking into the draft", "measuring burn", "reading the updraft",
-                "tracking ember fall", "setting wing angle", "holding the flame core",
-                "plotting a hot landing", "coiling for lift",
+                "banking into the draft",
+                "measuring burn",
+                "reading the updraft",
+                "tracking ember fall",
+                "setting wing angle",
+                "holding the flame core",
+                "plotting a hot landing",
+                "coiling for lift",
             ],
             "wings": [
                 ["⟪✦", "✦⟫"],
@@ -521,6 +610,7 @@ def _load_skin_from_yaml(path: Path) -> Optional[Dict[str, Any]]:
     """Load a skin definition from a YAML file."""
     try:
         import yaml
+
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
         if isinstance(data, dict) and "name" in data:
@@ -541,6 +631,14 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     branding = dict(default.get("branding", {}))
     branding.update(data.get("branding", {}))
 
+    banner_logo = data.get("banner_logo", "")
+    banner_hero = data.get("banner_hero", "")
+
+    if data is _BUILTIN_SKINS["default"] and _terminal_looks_light():
+        colors.update(_DEFAULT_LIGHT_TERMINAL_COLORS)
+        banner_logo = _default_light_banner_logo()
+        banner_hero = _default_light_banner_hero()
+
     return SkinConfig(
         name=data.get("name", "unknown"),
         description=data.get("description", ""),
@@ -549,8 +647,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=data.get("tool_emojis", {}),
-        banner_logo=data.get("banner_logo", ""),
-        banner_hero=data.get("banner_hero", ""),
+        banner_logo=banner_logo,
+        banner_hero=banner_hero,
     )
 
 
@@ -561,11 +659,13 @@ def list_skins() -> List[Dict[str, str]]:
     """
     result = []
     for name, data in _BUILTIN_SKINS.items():
-        result.append({
-            "name": name,
-            "description": data.get("description", ""),
-            "source": "builtin",
-        })
+        result.append(
+            {
+                "name": name,
+                "description": data.get("description", ""),
+                "source": "builtin",
+            }
+        )
 
     skins_path = _skins_dir()
     if skins_path.is_dir():
@@ -576,11 +676,13 @@ def list_skins() -> List[Dict[str, str]]:
                 # Skip if it shadows a built-in
                 if any(s["name"] == skin_name for s in result):
                     continue
-                result.append({
-                    "name": skin_name,
-                    "description": data.get("description", ""),
-                    "source": "user",
-                })
+                result.append(
+                    {
+                        "name": skin_name,
+                        "description": data.get("description", ""),
+                        "source": "user",
+                    }
+                )
 
     return result
 
@@ -651,7 +753,6 @@ def get_active_prompt_symbol(fallback: str = "❯ ") -> str:
         return fallback
 
 
-
 def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
     """Get the /help header from the active skin."""
     try:
@@ -660,14 +761,12 @@ def get_active_help_header(fallback: str = "(^_^)? Available Commands") -> str:
         return fallback
 
 
-
 def get_active_goodbye(fallback: str = "Goodbye! ⚕") -> str:
     """Get the goodbye line from the active skin."""
     try:
         return get_active_skin().get_branding("goodbye", fallback)
     except Exception:
         return fallback
-
 
 
 def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
@@ -690,6 +789,12 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
 
+    completion_bg = "#1a1a2e"
+    completion_current_bg = "#333355"
+    if skin.name == "default" and _terminal_looks_light():
+        completion_bg = "#f7f1e3"
+        completion_current_bg = "#eadfbe"
+
     return {
         "input-area": prompt,
         "placeholder": f"{dim} italic",
@@ -698,11 +803,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "hint": f"{dim} italic",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": f"bg:{completion_bg} {text}",
+        "completion-menu.completion": f"bg:{completion_bg} {text}",
+        "completion-menu.completion.current": f"bg:{completion_current_bg} {title}",
+        "completion-menu.meta.completion": f"bg:{completion_bg} {dim}",
+        "completion-menu.meta.completion.current": f"bg:{completion_current_bg} {label}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

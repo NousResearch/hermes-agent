@@ -2168,11 +2168,25 @@ class HermesCLI:
             filtered = list(sessions)
 
         if not filtered:
-            header = " No sessions match" if filter_text else " No sessions"
-            box_w = min(len(header) + 4, width)
+            box_w = width
+            header_text = f" Sessions ({len(sessions)})"
+            if filter_text:
+                header_text += f"  /{filter_text}"
+            header_text = header_text.ljust(box_w - 2)
+
+            esc_hint = "Esc cancel search" if filter_text else "Esc close"
+            footer_text = f" {esc_hint}"
+            if filter_text:
+                footer_text += f"  /{filter_text}  (no matches)"
+            footer_text = footer_text[:box_w - 2].ljust(box_w - 2)
+
             return [
                 ("class:resume-panel-border", "┌" + "─" * (box_w - 2) + "┐\n"),
-                ("class:resume-panel-text", f"│{header}{' ' * (box_w - len(header) - 2)}│\n"),
+                ("class:resume-panel-header", f"│{header_text}│\n"),
+                ("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"),
+                ("class:resume-panel-text", f"│{' No sessions match':<{box_w-2}}│\n"),
+                ("class:resume-panel-border", "├" + "─" * (box_w - 2) + "┤\n"),
+                ("class:resume-panel-header", f"│{footer_text}│\n"),
                 ("class:resume-panel-border", "└" + "─" * (box_w - 2) + "┘"),
             ]
 
@@ -9222,21 +9236,24 @@ class HermesCLI:
                 self._resume_searching = False
             event.app.invalidate()
 
-        # Block ALL remaining keys when resume panel is open — prevents
-        # typed characters from reaching the input buffer.
-        @kb.add('any', filter=Condition(lambda: self._resume_panel_open), eager=True)
-        def _resume_block_input(event):
-            if self._resume_searching and event.data and len(event.data) == 1 and event.data.isprintable():
-                self._resume_filter += event.data
-                self._resume_cursor = 0
-            event.app.invalidate()
+        # Search input for resume panel (when / is pressed to enter search mode)
+        def _make_resume_search_handler(ch):
+            def handler(event):
+                if self._resume_searching:
+                    self._resume_filter += ch
+                    self._resume_cursor = 0
+                    event.app.invalidate()
+            return handler
 
-        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open), eager=True)
+        for _ch in "abcdefghijklmnopqrstuvwxyz0123456789_-./ ":
+            kb.add(_ch, filter=Condition(lambda: self._resume_panel_open and self._resume_searching))(_make_resume_search_handler(_ch))
+
+        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open and self._resume_searching), eager=True)
         def _resume_backspace(event):
-            if self._resume_searching and self._resume_filter:
+            if self._resume_filter:
                 self._resume_filter = self._resume_filter[:-1]
                 self._resume_cursor = 0
-            event.app.invalidate()
+                event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -9290,7 +9307,7 @@ class HermesCLI:
             style='class:input-area',
             multiline=True,
             wrap_lines=True,
-            read_only=Condition(lambda: bool(cli_ref._command_running)),
+            read_only=Condition(lambda: bool(cli_ref._command_running) or cli_ref._resume_panel_open or cli_ref._stash_panel_open),
             history=FileHistory(str(self._history_file)),
             completer=_completer,
             complete_while_typing=True,

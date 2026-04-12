@@ -122,3 +122,60 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-X"
+
+
+    def test_named_custom_provider_applies_api_mode(self, config_home):
+        """Selecting a named custom provider should copy its api_mode into model config."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Anthropic-compatible Gateway",
+            "base_url": "https://claude.example.com/v1",
+            "api_key": "sk-test",
+            "api_mode": "anthropic_messages",
+            "model": "claude-sonnet",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-sonnet"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model["api_mode"] == "anthropic_messages"
+
+    def test_named_custom_provider_without_api_mode_clears_stale_value(self, config_home):
+        """Switching providers without api_mode should remove any stale model.api_mode."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        (config_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: custom\n"
+            "  base_url: https://old.example.com/v1\n"
+            "  api_mode: anthropic_messages\n"
+            "custom_providers: []\n"
+        )
+
+        provider_info = {
+            "name": "OpenAI-compatible Gateway",
+            "base_url": "https://openai.example.com/v1",
+            "api_key": "sk-test",
+            "model": "model-a",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["model-a"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert "api_mode" not in model

@@ -1696,6 +1696,74 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    @staticmethod
+    def _parse_positive_int(value: object) -> Optional[int]:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _resolve_auxiliary_context_override(
+        self,
+        *,
+        aux_model: str,
+        aux_base_url: str,
+    ) -> Optional[int]:
+        """Return a config-driven context override for an auxiliary model.
+
+        The main model's global ``model.context_length`` override should only be
+        reused when the auxiliary compression client resolves to the exact same
+        runtime model+endpoint. For different auxiliary models, only honor an
+        exact ``custom_providers[].models[model].context_length`` match.
+        """
+        aux_model_norm = str(aux_model or "").strip()
+        aux_base_url_norm = str(aux_base_url or "").strip().rstrip("/")
+        main_model_norm = str(getattr(self, "model", "") or "").strip()
+        main_base_url_norm = str(getattr(self, "base_url", "") or "").strip().rstrip("/")
+
+        main_override = self._parse_positive_int(
+            getattr(self, "_config_context_length", None)
+        )
+        if (
+            main_override is not None
+            and aux_model_norm
+            and aux_model_norm == main_model_norm
+            and aux_base_url_norm
+            and aux_base_url_norm == main_base_url_norm
+        ):
+            return main_override
+
+        try:
+            from hermes_cli.config import load_config as _load_agent_config
+
+            _cfg = _load_agent_config()
+        except Exception:
+            return None
+
+        if not isinstance(_cfg, dict) or not aux_model_norm or not aux_base_url_norm:
+            return None
+
+        custom_providers = _cfg.get("custom_providers")
+        if not isinstance(custom_providers, list):
+            return None
+
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_url = str(entry.get("base_url") or "").strip().rstrip("/")
+            if not entry_url or entry_url != aux_base_url_norm:
+                continue
+            models = entry.get("models")
+            if not isinstance(models, dict):
+                return None
+            model_cfg = models.get(aux_model_norm)
+            if not isinstance(model_cfg, dict):
+                return None
+            return self._parse_positive_int(model_cfg.get("context_length"))
+
+        return None
+
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -1733,10 +1801,15 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            aux_context_override = self._resolve_auxiliary_context_override(
+                aux_model=aux_model,
+                aux_base_url=aux_base_url,
+            )
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=aux_context_override,
             )
 
             threshold = self.context_compressor.threshold_tokens

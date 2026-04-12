@@ -19,6 +19,7 @@ def _make_agent(
     compression_enabled: bool = True,
     threshold_percent: float = 0.50,
     main_context: int = 200_000,
+    config_context_length: int | None = None,
 ) -> AIAgent:
     """Build a minimal AIAgent with a compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
@@ -29,6 +30,7 @@ def _make_agent(
     agent.quiet_mode = True
     agent.log_prefix = ""
     agent.compression_enabled = compression_enabled
+    agent._config_context_length = config_context_length
     agent._print_fn = None
     agent.suppress_status_output = False
     agent._stream_consumers = []
@@ -179,6 +181,33 @@ def test_just_below_threshold_warns(mock_get_client, mock_ctx_len):
 
     assert len(messages) == 1
     assert "small-model" in messages[0]
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=272_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_aux_uses_main_context_override_when_runtime_matches(mock_get_client, mock_ctx_len):
+    """Matching main-model auxiliary clients should reuse model.context_length."""
+    agent = _make_agent(
+        main_context=272_000,
+        threshold_percent=0.50,
+        config_context_length=272_000,
+    )
+    agent.provider = "custom"
+    agent.base_url = "https://right.codes/codex/v1"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://right.codes/codex/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "test-main-model")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once()
+    assert mock_ctx_len.call_args.kwargs.get("config_context_length") == 272_000
+    assert messages == []
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────

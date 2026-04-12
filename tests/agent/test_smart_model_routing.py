@@ -59,3 +59,50 @@ def test_resolve_turn_route_falls_back_to_primary_when_route_runtime_cannot_be_r
     assert result["model"] == "anthropic/claude-sonnet-4"
     assert result["runtime"]["provider"] == "openrouter"
     assert result["label"] is None
+
+
+# -- CJK keyword matching tests -----------------------------------------------
+
+
+def test_chinese_simple_greeting_routes_to_cheap():
+    """Simple Chinese greetings should route to the cheap model."""
+    assert choose_cheap_model_route("你好", _BASE_CONFIG) is not None
+    assert choose_cheap_model_route("晚安", _BASE_CONFIG) is not None
+    assert choose_cheap_model_route("谢谢", _BASE_CONFIG) is not None
+
+
+def test_chinese_task_keywords_route_to_strong():
+    """Chinese messages with task/action keywords should route to strong model."""
+    # 帮我 (help me) — task delegation
+    assert choose_cheap_model_route("帮我查一下附近的奶茶店", _BASE_CONFIG) is None
+    # 记住 (remember) — memory operation
+    assert choose_cheap_model_route("记住我喜欢喝红茶玛奇朵", _BASE_CONFIG) is None
+    # 设置 (configure) — tool invocation
+    assert choose_cheap_model_route("帮我设置一个提醒", _BASE_CONFIG) is None
+
+
+def test_chinese_search_keywords_route_to_strong():
+    """Chinese search/lookup keywords should route to strong model."""
+    assert choose_cheap_model_route("搜索最近的天气预报", _BASE_CONFIG) is None
+    assert choose_cheap_model_route("查一下明天的航班", _BASE_CONFIG) is None
+
+
+def test_chinese_technical_keywords_route_to_strong():
+    """Chinese technical keywords should route to strong model."""
+    assert choose_cheap_model_route("分析这个问题的原因", _BASE_CONFIG) is None
+    assert choose_cheap_model_route("研究下这个方案", _BASE_CONFIG) is None
+
+
+def test_english_behavior_unchanged():
+    """English routing should not be affected by CJK additions."""
+    # Simple English still routes cheap
+    assert choose_cheap_model_route("hello", _BASE_CONFIG) is not None
+    assert choose_cheap_model_route("good morning", _BASE_CONFIG) is not None
+    # Complex English still routes strong
+    assert choose_cheap_model_route("debug this error", _BASE_CONFIG) is None
+    assert choose_cheap_model_route("implement a feature", _BASE_CONFIG) is None
+
+
+def test_mixed_cjk_english_with_keyword():
+    """Mixed CJK+English with a complex keyword routes to strong."""
+    assert choose_cheap_model_route("帮我debug这个bug", _BASE_CONFIG) is None

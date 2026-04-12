@@ -793,12 +793,6 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    if use_tui:
-        _launch_tui(
-            getattr(args, "resume", None),
-            tui_dev=getattr(args, "tui_dev", False),
-        )
-
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -847,6 +841,13 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+
+    if use_tui:
+        _launch_tui(
+            getattr(args, "resume", None),
+            tui_dev=getattr(args, "tui_dev", False),
+        )
 
     # Import and run the CLI
     from cli import main as cli_main

@@ -430,21 +430,69 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 
 
 def _build_markdown_post_payload(content: str) -> str:
+    rows = _build_markdown_post_rows(content)
     return json.dumps(
         {
             "zh_cn": {
-                "content": [
-                    [
-                        {
-                            "tag": "md",
-                            "text": content,
-                        }
-                    ]
-                ],
+                "content": rows,
             }
         },
         ensure_ascii=False,
     )
+
+
+def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
+    """Build Feishu post rows while isolating fenced code blocks.
+
+    Feishu's `md` renderer can swallow trailing content when a fenced code block
+    appears inside one large markdown element. Splitting the reply at code
+    fences preserves the surrounding markdown while keeping the code block in a
+    dedicated row.
+    """
+    if not content:
+        return [[{"tag": "md", "text": ""}]]
+    if "```" not in content:
+        return [[{"tag": "md", "text": content}]]
+
+    rows: List[List[Dict[str, str]]] = []
+    current: List[str] = []
+    in_code_block = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        is_fence = line.strip().startswith("```")
+
+        if is_fence:
+            if not in_code_block and current:
+                segment = "\n".join(current).strip()
+                if segment:
+                    rows.append([{"tag": "md", "text": segment}])
+                current = []
+            current.append(line)
+            in_code_block = not in_code_block
+            if not in_code_block:
+                segment = "\n".join(current).strip()
+                if segment:
+                    rows.append([{"tag": "md", "text": segment}])
+                current = []
+            continue
+
+        current.append(line)
+
+    if current:
+        segment = "\n".join(current).strip()
+        if segment:
+            rows.append([{"tag": "md", "text": segment}])
+
+    return rows or [[{"tag": "md", "text": content}]]
+
+
+def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
+    try:
+        parsed = json.loads(raw_content) if raw_content else {}
+    except json.JSONDecodeError:
+        return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
+    return parse_feishu_post_payload(parsed)
 
 
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:

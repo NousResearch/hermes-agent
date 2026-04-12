@@ -79,12 +79,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "timeout",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None, timeout=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -95,6 +95,7 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.timeout = timeout
 
 
 class ToolRegistry:
@@ -185,6 +186,7 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        timeout: int | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         with self._lock:
@@ -222,6 +224,7 @@ class ToolRegistry:
                 description=description or schema.get("description", ""),
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                timeout=timeout,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -295,6 +298,8 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * When the tool has a ``timeout`` set (seconds), the handler is
+          executed in a thread and terminated if it exceeds the limit.
         """
         entry = self.get_entry(name)
         if not entry:
@@ -303,10 +308,31 @@ class ToolRegistry:
             if entry.is_async:
                 from model_tools import _run_async
                 return _run_async(entry.handler(args, **kwargs))
+            if entry.timeout is not None:
+                return self._dispatch_with_timeout(entry, args, **kwargs)
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
+
+    def _dispatch_with_timeout(self, entry: ToolEntry, args: dict, **kwargs) -> str:
+        """Run a sync handler with a wall-clock timeout using a thread."""
+        import concurrent.futures
+        result_holder: list = [None]
+
+        def _target():
+            result_holder[0] = entry.handler(args, **kwargs)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_target)
+            try:
+                future.result(timeout=entry.timeout)
+            except concurrent.futures.TimeoutError:
+                logger.warning("Tool %s timed out after %ss", entry.name, entry.timeout)
+                return json.dumps({
+                    "error": f"Tool {entry.name} timed out after {entry.timeout}s",
+                })
+            return result_holder[0]
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

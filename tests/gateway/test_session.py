@@ -552,6 +552,160 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
+class TestLoadTranscriptAfterSQLiteRewriteFailure:
+    """GH-8041: When rewrite_transcript fails on SQLite but succeeds on JSONL,
+    load_transcript must prefer JSONL to avoid returning stale/partial SQLite
+    data that can create conversation history holes."""
+
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        """SessionStore with a mocked SQLite DB and real JSONL storage."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = MagicMock()
+        s._loaded = True
+        return s
+
+    def test_prefers_jsonl_after_sqlite_rewrite_failure(self, store_with_db):
+        """After a failed SQLite rewrite, load_transcript must return JSONL
+        even when SQLite has more messages (stale pre-rewrite data)."""
+        sid = "diverged_session"
+
+        # SQLite returns 6 stale messages
+        stale_msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"stale-{i}"}
+            for i in range(6)
+        ]
+        store_with_db._db.get_messages_as_conversation.return_value = stale_msgs
+
+        # JSONL has the correct 4 messages (post-rewrite state)
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                sid, {"role": role, "content": f"correct-{i}"}, skip_db=True,
+            )
+
+        # Simulate the SQLite rewrite failure flag
+        store_with_db._sqlite_rewrite_failed.add(sid)
+
+        result = store_with_db.load_transcript(sid)
+        # Must return JSONL (4 messages) even though SQLite has 6
+        assert len(result) == 4
+        assert result[0]["content"] == "correct-0"
+        assert result[-1]["content"] == "correct-3"
+
+    def test_rewrite_transcript_sets_flag_on_sqlite_failure(self, store_with_db):
+        """rewrite_transcript must record the session ID in
+        _sqlite_rewrite_failed when the SQLite write raises."""
+        sid = "failing_session"
+
+        # Make the DB raise on clear_messages to simulate a SQLite failure
+        store_with_db._db.clear_messages.side_effect = RuntimeError("disk I/O error")
+
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        store_with_db.rewrite_transcript(sid, messages)
+
+        # Flag must be set
+        assert sid in store_with_db._sqlite_rewrite_failed
+
+        # JSONL must still have been written successfully
+        jsonl_result = []
+        transcript_path = store_with_db.get_transcript_path(sid)
+        with open(transcript_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    jsonl_result.append(json.loads(line))
+        assert len(jsonl_result) == 2
+        assert jsonl_result[0]["content"] == "hello"
+
+    def test_flag_causes_jsonl_preference_over_longer_sqlite(self, store_with_db):
+        """End-to-end: rewrite_transcript fails on SQLite, then load_transcript
+        correctly picks JSONL despite SQLite having more rows."""
+        sid = "e2e_diverge"
+
+        # SQLite returns 8 stale messages
+        stale_msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"old-{i}"}
+            for i in range(8)
+        ]
+        store_with_db._db.get_messages_as_conversation.return_value = stale_msgs
+
+        # Simulate a rewrite that fails on SQLite but succeeds on JSONL
+        store_with_db._db.clear_messages.side_effect = RuntimeError("locked")
+
+        new_messages = [
+            {"role": "user", "content": "compressed-q"},
+            {"role": "assistant", "content": "compressed-a"},
+        ]
+        store_with_db.rewrite_transcript(sid, new_messages)
+
+        # Now load — must get the 2-message JSONL, not the 8-message stale SQLite
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "compressed-q"
+        assert result[1]["content"] == "compressed-a"
+
+    def test_consistent_stores_still_prefer_sqlite(self, store_with_db):
+        """Normal case: no rewrite failure — SQLite is preferred when equal or
+        longer, ensuring the fix doesn't regress the default path."""
+        sid = "consistent_session"
+
+        # Both stores have 4 messages but with different content
+        db_msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"db-{i}"}
+            for i in range(4)
+        ]
+        store_with_db._db.get_messages_as_conversation.return_value = db_msgs
+
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                sid, {"role": role, "content": f"jsonl-{i}"}, skip_db=True,
+            )
+
+        # No flag set — should prefer SQLite (equal count)
+        assert sid not in store_with_db._sqlite_rewrite_failed
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 4
+        assert result[0]["content"] == "db-0"
+
+    def test_flag_does_not_affect_other_sessions(self, store_with_db):
+        """The rewrite-failure flag is per-session — other sessions must not
+        be affected."""
+        failed_sid = "failed_session"
+        healthy_sid = "healthy_session"
+
+        # Mark only the failed session
+        store_with_db._sqlite_rewrite_failed.add(failed_sid)
+
+        # Healthy session: SQLite has 4 messages, JSONL has 2
+        db_msgs = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"db-{i}"}
+            for i in range(4)
+        ]
+        store_with_db._db.get_messages_as_conversation.return_value = db_msgs
+
+        for i in range(2):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                healthy_sid, {"role": role, "content": f"jsonl-{i}"}, skip_db=True,
+            )
+
+        result = store_with_db.load_transcript(healthy_sid)
+        # Should still prefer SQLite (4 > 2, no flag for this session)
+        assert len(result) == 4
+        assert result[0]["content"] == "db-0"
+
+
+class TestWhatsAppDMSessionKeyConsistency:
+    """Regression: all session-key construction must go through build_session_key
+    so DMs are isolated by chat_id across platforms."""
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

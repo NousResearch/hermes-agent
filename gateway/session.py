@@ -508,7 +508,12 @@ class SessionStore:
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
-        
+
+        # Track sessions where rewrite_transcript failed on SQLite but
+        # succeeded on JSONL, so load_transcript can prefer the JSONL copy
+        # instead of trusting pure message-count comparison.
+        self._sqlite_rewrite_failed: set[str] = set()
+
         # Initialize SQLite session database
         self._db = None
         try:
@@ -991,6 +996,7 @@ class SessionStore:
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)
+                self._sqlite_rewrite_failed.add(session_id)
         
         # JSONL: overwrite the file
         transcript_path = self.get_transcript_path(session_id)
@@ -1024,6 +1030,18 @@ class SessionStore:
                                 "Skipping corrupt line in transcript %s: %s",
                                 session_id, line[:120],
                             )
+
+        # If a previous rewrite_transcript call failed on SQLite for this
+        # session, the SQLite store may have stale/partial data.  Always
+        # prefer the JSONL copy in that case regardless of message counts.
+        if session_id in self._sqlite_rewrite_failed and jsonl_messages:
+            logger.debug(
+                "Session %s: SQLite rewrite previously failed — "
+                "preferring JSONL (%d messages) over potentially stale "
+                "SQLite (%d messages)",
+                session_id, len(jsonl_messages), len(db_messages),
+            )
+            return jsonl_messages
 
         # Prefer whichever source has more messages.
         #

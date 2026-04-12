@@ -24,8 +24,13 @@ if _env_path.exists():
         load_dotenv(_env_path, encoding="utf-8")
     except UnicodeDecodeError:
         load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+# Also try project .env as dev fallback (Windows may save as cp1252)
+_proj_env = PROJECT_ROOT / ".env"
+if _proj_env.exists():
+    try:
+        load_dotenv(_proj_env, override=False, encoding="utf-8")
+    except UnicodeDecodeError:
+        load_dotenv(_proj_env, override=False, encoding="latin-1")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -321,7 +326,7 @@ def run_doctor(args):
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw_config = yaml.safe_load(f) or {}
             stale_root_keys = [k for k in ("provider", "base_url") if k in raw_config and isinstance(raw_config[k], str)]
             if stale_root_keys:
@@ -873,7 +878,7 @@ def run_doctor(args):
         import yaml as _yaml
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
-            with open(_mem_cfg_path) as _f:
+            with open(_mem_cfg_path, encoding="utf-8") as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
             _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
     except Exception:

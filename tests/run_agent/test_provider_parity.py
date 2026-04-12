@@ -321,6 +321,8 @@ class TestBuildApiKwargsCustomEndpoint:
             {
                 "role": "assistant",
                 "content": "Checking now.",
+                "reasoning": "internal chain of thought",
+                "reasoning_details": [{"type": "summary", "text": "step by step"}],
                 "codex_reasoning_items": [
                     {"type": "reasoning", "id": "rs_1", "encrypted_content": "blob"},
                 ],
@@ -334,6 +336,7 @@ class TestBuildApiKwargsCustomEndpoint:
                             "name": "terminal",
                             "arguments": "{\"command\":\"pwd\"}",
                         },
+                        "extra_content": {"thought_signature": "opaque"},
                     }
                 ],
             },
@@ -350,11 +353,15 @@ class TestBuildApiKwargsCustomEndpoint:
         tool_call = assistant_msg["tool_calls"][0]
 
         assert "codex_reasoning_items" not in assistant_msg
+        assert "reasoning" not in assistant_msg
+        assert "reasoning_details" not in assistant_msg
+        assert "reasoning_content" not in assistant_msg
         assert tool_call["id"] == "call_fw_123"
         assert tool_call["type"] == "function"
         assert tool_call["function"]["name"] == "terminal"
         assert "call_id" not in tool_call
         assert "response_item_id" not in tool_call
+        assert "extra_content" not in tool_call
 
 
 class TestBuildApiKwargsCodex:

@@ -6023,7 +6023,12 @@ class AIAgent:
                 if needs_sanitization:
                     break
 
-        if needs_sanitization:
+        fireworks_sanitization = (
+            (self.provider or "").lower() == "fireworks"
+            or "api.fireworks.ai" in self._base_url_lower
+        )
+
+        if needs_sanitization or fireworks_sanitization:
             sanitized_messages = copy.deepcopy(api_messages)
             for msg in sanitized_messages:
                 if not isinstance(msg, dict):
@@ -6038,6 +6043,9 @@ class AIAgent:
                         if isinstance(tool_call, dict):
                             tool_call.pop("call_id", None)
                             tool_call.pop("response_item_id", None)
+
+                if fireworks_sanitization:
+                    self._sanitize_fireworks_chat_message(msg)
 
         # Qwen portal: normalize content to list-of-dicts, inject cache_control.
         # Must run AFTER codex sanitization so we transform the final messages.
@@ -6396,6 +6404,34 @@ class AIAgent:
         ]
         return api_msg
 
+    def _sanitize_fireworks_chat_message(self, api_msg: dict) -> dict:
+        """Strip replay-only fields that Fireworks chat completions rejects.
+
+        Fireworks accepts standard OpenAI chat-completions payloads, but it
+        rejects multi-turn reasoning replay fields that Hermes preserves for
+        OpenRouter/OpenAI continuity. Those fields are useful in storage and
+        on providers that understand them, but they must not be forwarded to
+        Fireworks.
+        """
+        provider = (self.provider or "").lower()
+        base_url = (self.base_url or "").lower()
+        if provider != "fireworks" and "api.fireworks.ai" not in base_url:
+            return api_msg
+
+        api_msg.pop("reasoning", None)
+        api_msg.pop("finish_reason", None)
+        api_msg.pop("reasoning_details", None)
+        api_msg.pop("reasoning_content", None)
+
+        tool_calls = api_msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            api_msg["tool_calls"] = [
+                {k: v for k, v in tc.items() if k != "extra_content"}
+                if isinstance(tc, dict) else tc
+                for tc in tool_calls
+            ]
+        return api_msg
+
     def _should_sanitize_tool_calls(self) -> bool:
         """Determine if tool_calls need sanitization for strict APIs.
 
@@ -6461,6 +6497,7 @@ class AIAgent:
                 api_msg.pop("_thinking_prefill", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
+                self._sanitize_fireworks_chat_message(api_msg)
                 api_messages.append(api_msg)
 
             if self._cached_system_prompt:
@@ -7396,6 +7433,7 @@ class AIAgent:
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
+                self._sanitize_fireworks_chat_message(api_msg)
                 api_messages.append(api_msg)
 
             effective_system = self._cached_system_prompt or ""
@@ -7957,6 +7995,7 @@ class AIAgent:
                 # for Codex Responses compatibility.
                 if self._should_sanitize_tool_calls():
                     self._sanitize_tool_calls_for_strict_api(api_msg)
+                self._sanitize_fireworks_chat_message(api_msg)
                 # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)

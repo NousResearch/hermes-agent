@@ -161,6 +161,23 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
 
 def run_doctor(args):
     """Run diagnostic checks."""
+    global HERMES_HOME, _DHH
+
+    # Resolve profile/home at runtime, not import time.
+    # The entrypoint pre-processes -p/--profile before imports, but some
+    # launch paths and monkeypatched doctor wrappers can still leave these
+    # module globals stale. Rebinding here keeps doctor aligned with the
+    # active profile (`filex`, `codex`, etc.).
+    HERMES_HOME = get_hermes_home()
+    _DHH = display_hermes_home()
+
+    current_env_path = get_env_path()
+    if current_env_path.exists():
+        try:
+            load_dotenv(current_env_path, override=True, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(current_env_path, override=True, encoding="latin-1")
+
     should_fix = getattr(args, 'fix', False)
 
     # Doctor runs from the interactive CLI, so CLI-gated tool availability

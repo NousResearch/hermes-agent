@@ -2818,6 +2818,18 @@ def cmd_config(args):
     config_command(args)
 
 
+def cmd_backup(args):
+    """Back up Hermes home directory to a zip file."""
+    from hermes_cli.backup import run_backup
+    run_backup(args)
+
+
+def cmd_import(args):
+    """Restore a Hermes backup from a zip file."""
+    from hermes_cli.backup import run_import
+    run_import(args)
+
+
 def cmd_version(args):
     """Show version."""
     print(f"Hermes Agent v{__version__} ({__release_date__})")
@@ -4904,7 +4916,43 @@ For more help on a command:
         help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
     )
     dump_parser.set_defaults(func=cmd_dump)
-    
+
+    # =========================================================================
+    # backup command
+    # =========================================================================
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help="Back up Hermes home directory to a zip file",
+        description="Create a zip archive of your entire Hermes configuration, "
+                    "skills, sessions, and data (excludes the hermes-agent codebase)"
+    )
+    backup_parser.add_argument(
+        "-o", "--output",
+        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)"
+    )
+    backup_parser.set_defaults(func=cmd_backup)
+
+    # =========================================================================
+    # import command
+    # =========================================================================
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Restore a Hermes backup from a zip file",
+        description="Extract a previously created Hermes backup into your "
+                    "Hermes home directory, restoring configuration, skills, "
+                    "sessions, and data"
+    )
+    import_parser.add_argument(
+        "zipfile",
+        help="Path to the backup zip file"
+    )
+    import_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite existing files without confirmation"
+    )
+    import_parser.set_defaults(func=cmd_import)
+
     # =========================================================================
     # config command
     # =========================================================================

@@ -2596,7 +2596,8 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    from gateway.platforms.base import merge_pending_message_event as _merge_pend
+                    _merge_pend(adapter._pending_messages, _quick_key, queued_event)
                 return "Queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -2637,7 +2638,8 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    from gateway.platforms.base import merge_pending_message_event as _merge_pend
+                    _merge_pend(adapter._pending_messages, _quick_key, event)
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():

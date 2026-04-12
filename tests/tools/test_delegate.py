@@ -1007,15 +1007,17 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 class TestChildCredentialLeasing(unittest.TestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
-        from tools.delegate_tool import _run_single_child
+        from tools.delegate_tool import _run_single_child, ScopedCredentialView
 
         leased_entry = MagicMock()
         leased_entry.id = "cred-b"
 
+        original_pool = MagicMock()
+        original_pool.acquire_lease.return_value = "cred-b"
+        original_pool.current.return_value = leased_entry
+
         child = MagicMock()
-        child._credential_pool = MagicMock()
-        child._credential_pool.acquire_lease.return_value = "cred-b"
-        child._credential_pool.current.return_value = leased_entry
+        child._credential_pool = original_pool
         child.run_conversation.return_value = {
             "final_response": "done",
             "completed": True,
@@ -1032,17 +1034,22 @@ class TestChildCredentialLeasing(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "completed")
-        child._credential_pool.acquire_lease.assert_called_once_with()
+        original_pool.acquire_lease.assert_called_once_with()
         child._swap_credential.assert_called_once_with(leased_entry)
-        child._credential_pool.release_lease.assert_called_once_with("cred-b")
+        # After leasing, child._credential_pool is replaced with ScopedCredentialView
+        self.assertIsInstance(child._credential_pool, ScopedCredentialView)
+        # Release happens on the original pool (captured before replacement)
+        original_pool.release_lease.assert_called_once_with("cred-b")
 
     def test_run_single_child_releases_lease_after_failure(self):
         from tools.delegate_tool import _run_single_child
 
+        original_pool = MagicMock()
+        original_pool.acquire_lease.return_value = "cred-a"
+        original_pool.current.return_value = MagicMock(id="cred-a")
+
         child = MagicMock()
-        child._credential_pool = MagicMock()
-        child._credential_pool.acquire_lease.return_value = "cred-a"
-        child._credential_pool.current.return_value = MagicMock(id="cred-a")
+        child._credential_pool = original_pool
         child.run_conversation.side_effect = RuntimeError("boom")
 
         result = _run_single_child(
@@ -1053,7 +1060,8 @@ class TestChildCredentialLeasing(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "error")
-        child._credential_pool.release_lease.assert_called_once_with("cred-a")
+        # Release happens on the original pool even after failure
+        original_pool.release_lease.assert_called_once_with("cred-a")
 
 
 class TestDelegateHeartbeat(unittest.TestCase):

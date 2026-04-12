@@ -39,6 +39,79 @@ _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 
+class ScopedCredentialView:
+    """A restricted view over a single leased credential.
+
+    Subagents receive this instead of the full ``CredentialPool`` so they
+    can only see and use the one credential that was leased to them.
+    Pool-wide iteration, status inspection, and rotation are blocked.
+
+    ``select()`` always returns the leased entry.
+    ``rotate()`` is a no-op that returns the same entry (subagents should
+    not trigger cross-credential rotation).
+    ``acquire_lease`` / ``release_lease`` delegate to the underlying pool
+    so the parent's lease bookkeeping stays consistent.
+    """
+
+    def __init__(self, entry, pool):
+        self._entry = entry
+        self._pool = pool
+
+    # --- Allowed: credential access ---
+
+    def select(self):
+        """Return the single leased credential."""
+        return self._entry
+
+    def current(self):
+        """Return the single leased credential."""
+        return self._entry
+
+    def has_credentials(self) -> bool:
+        return self._entry is not None
+
+    def has_available(self) -> bool:
+        return self._entry is not None
+
+    def rotate(self, **_kwargs):
+        """No-op rotation -- subagents stay pinned to their lease."""
+        return self._entry
+
+    def mark_exhausted_and_rotate(self, **_kwargs):
+        """No-op -- subagents cannot mark credentials exhausted pool-wide."""
+        return self._entry
+
+    # --- Allowed: lease lifecycle (delegates to real pool) ---
+
+    def acquire_lease(self, credential_id=None):
+        return self._pool.acquire_lease(credential_id=credential_id or self._entry.id)
+
+    def release_lease(self, credential_id):
+        return self._pool.release_lease(credential_id)
+
+    # --- Blocked: pool-wide visibility ---
+
+    def entries(self):
+        """Return only the leased credential, not the full pool."""
+        return [self._entry] if self._entry is not None else []
+
+    def peek(self):
+        return self._entry
+
+    def reset_statuses(self):
+        raise PermissionError("Subagents cannot reset pool-wide credential statuses")
+
+    def remove_index(self, index):
+        raise PermissionError("Subagents cannot remove credentials from the pool")
+
+    def add_entry(self, entry):
+        raise PermissionError("Subagents cannot add credentials to the pool")
+
+    @property
+    def provider(self):
+        return self._pool.provider
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -411,8 +484,13 @@ def _run_single_child(
         if leased_cred_id is not None:
             try:
                 leased_entry = child_pool.current()
-                if leased_entry is not None and hasattr(child, '_swap_credential'):
-                    child._swap_credential(leased_entry)
+                if leased_entry is not None:
+                    # Replace the child's pool reference with a scoped view
+                    # so the subagent can only see its own leased credential,
+                    # not the parent's full credential pool.
+                    child._credential_pool = ScopedCredentialView(leased_entry, child_pool)
+                    if hasattr(child, '_swap_credential'):
+                        child._swap_credential(leased_entry)
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 

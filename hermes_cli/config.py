@@ -355,6 +355,10 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Periodic "still working" notification interval (seconds).
+        # Sends a status message every N seconds so the user knows the
+        # agent hasn't died during long tasks.  0 = disable notifications.
+        "gateway_notify_interval": 600,
     },
     
     "terminal": {

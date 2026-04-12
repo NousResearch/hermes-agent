@@ -714,9 +714,9 @@ class TestContextLengthCache:
 class TestCustomProvidersContextLength:
     """Tests for config-driven context_length overrides in custom_providers."""
 
-    @patch("hermes_cli.config.load_config")
-    def test_match_by_provider_name(self, mock_load_config):
-        mock_load_config.return_value = {
+    @patch("hermes_cli.config.read_raw_config")
+    def test_match_by_provider_name(self, mock_raw_config):
+        mock_raw_config.return_value = {
             "custom_providers": [
                 {
                     "name": "zai-customize",
@@ -730,9 +730,9 @@ class TestCustomProvidersContextLength:
         result = get_model_context_length("glm-5.1", provider="zai-customize")
         assert result == 200000
 
-    @patch("hermes_cli.config.load_config")
-    def test_match_by_base_url(self, mock_load_config):
-        mock_load_config.return_value = {
+    @patch("hermes_cli.config.read_raw_config")
+    def test_match_by_base_url(self, mock_raw_config):
+        mock_raw_config.return_value = {
             "custom_providers": [
                 {
                     "name": "zai-customize",
@@ -748,10 +748,10 @@ class TestCustomProvidersContextLength:
         )
         assert result == 200000
 
-    @patch("hermes_cli.config.load_config")
-    def test_unmatched_provider_is_ignored(self, mock_load_config):
+    @patch("hermes_cli.config.read_raw_config")
+    def test_unmatched_provider_is_ignored(self, mock_raw_config):
         """A model name in a different custom provider must not leak across."""
-        mock_load_config.return_value = {
+        mock_raw_config.return_value = {
             "custom_providers": [
                 {
                     "name": "zai-customize",
@@ -772,10 +772,10 @@ class TestCustomProvidersContextLength:
         result = get_model_context_length("glm-5.1", provider="zai-customize")
         assert result == 200000
 
-    @patch("hermes_cli.config.load_config")
-    def test_single_provider_fallback_when_no_scope(self, mock_load_config):
+    @patch("hermes_cli.config.read_raw_config")
+    def test_single_provider_fallback_when_no_scope(self, mock_raw_config):
         """With only one custom provider, allow matching even without provider/base_url."""
-        mock_load_config.return_value = {
+        mock_raw_config.return_value = {
             "custom_providers": [
                 {
                     "name": "zai-customize",
@@ -788,10 +788,11 @@ class TestCustomProvidersContextLength:
         result = get_model_context_length("glm-5.1")
         assert result == 200000
 
-    @patch("hermes_cli.config.load_config")
-    def test_ambiguous_multiple_providers_skipped_without_scope(self, mock_load_config):
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("hermes_cli.config.read_raw_config")
+    def test_ambiguous_multiple_providers_skipped_without_scope(self, mock_raw_config, mock_fetch_meta):
         """When multiple providers exist and no scope is given, skip to avoid collisions."""
-        mock_load_config.return_value = {
+        mock_raw_config.return_value = {
             "custom_providers": [
                 {
                     "name": "zai-customize",
@@ -803,6 +804,26 @@ class TestCustomProvidersContextLength:
                 },
             ]
         }
+        mock_fetch_meta.return_value = {}
         # Must NOT pick either custom provider value because scope is ambiguous
         result = get_model_context_length("glm-5.1")
         assert result not in (200000, 128000)
+
+    @patch("hermes_cli.config.read_raw_config")
+    def test_match_by_runtime_custom_provider_key(self, mock_raw_config):
+        """Provider keys like custom:<normalized-name> must resolve correctly."""
+        mock_raw_config.return_value = {
+            "custom_providers": [
+                {
+                    "name": "local-(127.0.0.1:4141)",
+                    "base_url": "http://127.0.0.1:4141/v1",
+                    "models": {
+                        "llama3.2": {"context_length": 8192},
+                    },
+                }
+            ]
+        }
+        result = get_model_context_length(
+            "llama3.2", provider="custom:local-(127.0.0.1:4141)"
+        )
+        assert result == 8192

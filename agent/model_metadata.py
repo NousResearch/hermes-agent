@@ -942,18 +942,30 @@ def get_model_context_length(
     # 0a. Config-driven overrides from custom_providers[].models[].context_length.
     # When provider/base_url is known, scope the lookup to the matching custom
     # provider entry to avoid collisions between identically-named models on
-    # different endpoints. When unknown, allow matching any custom provider.
+    # different endpoints. When neither provider nor base_url is known and there
+    # is only one custom provider defined, allow matching that single entry.
     try:
-        from hermes_cli.config import load_config
-        _cfg = load_config()
+        from hermes_cli.config import read_raw_config
+        from hermes_cli.runtime_provider import _normalize_custom_provider_name
+
+        _cfg = read_raw_config()
         _custom_providers = _cfg.get("custom_providers", []) if isinstance(_cfg, dict) else []
         if isinstance(_custom_providers, list):
-            _normalized_base_url = base_url.rstrip("/") if isinstance(base_url, str) and base_url else None
-            _active_provider = str(provider).strip().lower() if isinstance(provider, str) and provider.strip() else None
+            _normalized_base_url = (
+                base_url.strip().rstrip("/")
+                if isinstance(base_url, str) and base_url.strip()
+                else None
+            )
+            _active_provider = None
+            if isinstance(provider, str) and provider.strip():
+                _ap = provider.strip()
+                if _ap.lower().startswith("custom:"):
+                    _ap = _ap.split(":", 1)[1]
+                _active_provider = _normalize_custom_provider_name(_ap)
             _valid_entries = [cp for cp in _custom_providers if isinstance(cp, dict)]
             for cp in _valid_entries:
                 _cp_base = str(cp.get("base_url", "")).strip().rstrip("/")
-                _cp_name = str(cp.get("name", "")).strip().lower()
+                _cp_name = _normalize_custom_provider_name(str(cp.get("name", "")))
 
                 if _normalized_base_url is not None and _cp_base:
                     if _cp_base != _normalized_base_url:

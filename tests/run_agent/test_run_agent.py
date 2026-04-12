@@ -302,6 +302,17 @@ class TestStripThinkBlocks:
         assert "<think>" not in result
         assert "visible" in result
 
+    def test_thought_block_removed(self, agent):
+        """Gemma 4 uses <thought> tags for inline reasoning."""
+        result = agent._strip_think_blocks("<thought>internal reasoning</thought> answer")
+        assert "internal reasoning" not in result
+        assert "<thought>" not in result
+        assert "answer" in result
+
+    def test_orphaned_thought_tag(self, agent):
+        result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
+        assert "<thought>" not in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):

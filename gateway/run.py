@@ -695,6 +695,13 @@ class GatewayRunner:
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
 
+        # Crash-recovery checkpoint — records in-flight agent runs to disk
+        # so that a gateway restart can detect interrupted sessions.
+        from gateway.session import SessionCrashCheckpoint
+        from hermes_constants import HERMES_HOME
+        _checkpoint_path = os.path.join(HERMES_HOME, "agent_checkpoints.json")
+        self._crash_checkpoint = SessionCrashCheckpoint(path=_checkpoint_path)
+
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn — breaking prefix cache
@@ -2249,6 +2256,22 @@ class GatewayRunner:
             except Exception:
                 pass
         else:
+            # Primary: use the crash checkpoint for precise detection of sessions
+            # that were in-flight when the gateway crashed.
+            try:
+                interrupted = self._crash_checkpoint.get_active_sessions()
+                if interrupted:
+                    for session_key in interrupted:
+                        self.session_store.suspend_session(session_key)
+                    logger.info(
+                        "Suspended %d interrupted session(s) from crash checkpoint",
+                        len(interrupted),
+                    )
+                    self._crash_checkpoint.clear()
+            except Exception as e:
+                logger.warning("Crash checkpoint recovery failed: %s", e)
+
+            # Fallback: time-window heuristic for sessions not tracked by checkpoint.
             try:
                 suspended = self.session_store.suspend_recently_active()
                 if suspended:
@@ -10691,6 +10714,7 @@ class GatewayRunner:
                 )
                 return
             self._running_agents[session_key] = agent_holder[0]
+            self._crash_checkpoint.mark_running(session_key, session_id=session_id)
             if self._draining:
                 self._update_runtime_status("draining")
         
@@ -11213,6 +11237,7 @@ class GatewayRunner:
                 self._release_running_agent_state(
                     session_key, run_generation=run_generation
                 )
+                self._crash_checkpoint.mark_completed(session_key)
             if self._draining:
                 self._update_runtime_status("draining")
             

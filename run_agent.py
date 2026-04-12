@@ -7529,6 +7529,11 @@ class AIAgent:
         # Installed once, transparent when streams are healthy, prevents crash on write.
         _install_safe_stdio()
 
+        # Tag all log records on this thread with the session ID so
+        # ``hermes logs --session <id>`` can filter a single conversation.
+        from hermes_logging import set_session_context
+        set_session_context(self.session_id)
+
         # If the previous turn activated fallback, restore the primary
         # runtime so this turn gets a fresh attempt with the preferred model.
         # No-op when _fallback_activated is False (gateway, first turn, etc.).

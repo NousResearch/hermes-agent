@@ -1,16 +1,18 @@
 """``hermes logs`` — view and filter Hermes log files.
 
-Supports tailing, following, session filtering, level filtering, and
-relative time ranges.  All log files live under ``~/.hermes/logs/``.
+Supports tailing, following, session filtering, level filtering,
+component filtering, and relative time ranges.  All log files live
+under ``~/.hermes/logs/``.
 
 Usage examples::
 
     hermes logs                    # last 50 lines of agent.log
     hermes logs -f                 # follow agent.log in real time
     hermes logs errors             # last 50 lines of errors.log
-    hermes logs gateway -n 100     # last 100 lines of gateway.log
+    hermes logs gateway -n 100    # last 100 lines of gateway.log
     hermes logs --level WARNING    # only WARNING+ lines
     hermes logs --session abc123   # filter by session ID substring
+    hermes logs --component tools  # only tool-related lines
     hermes logs --since 1h         # lines from the last hour
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
@@ -20,7 +22,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -37,6 +39,15 @@ _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 
 # Level extraction — matches " INFO ", " WARNING ", " ERROR ", " DEBUG ", " CRITICAL "
 _LEVEL_RE = re.compile(r"\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s")
+
+# Logger name extraction — after level and optional session tag, the next
+# non-space token before ":" is the logger name.
+# Matches: "INFO gateway.run:" or "INFO [sess_abc] tools.terminal_tool:"
+_LOGGER_NAME_RE = re.compile(
+    r"\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)"  # level
+    r"(?:\s+\[.*?\])?"                           # optional session tag
+    r"\s+(\S+):"                                 # logger name
+)
 
 # Level ordering for >= filtering
 _LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
@@ -79,12 +90,27 @@ def _extract_level(line: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _extract_logger_name(line: str) -> Optional[str]:
+    """Extract the logger name from a log line."""
+    m = _LOGGER_NAME_RE.search(line)
+    return m.group(1) if m else None
+
+
+def _line_matches_component(line: str, prefixes: Sequence[str]) -> bool:
+    """Check if a log line's logger name starts with any of *prefixes*."""
+    name = _extract_logger_name(line)
+    if name is None:
+        return False
+    return name.startswith(tuple(prefixes))
+
+
 def _matches_filters(
     line: str,
     *,
     min_level: Optional[str] = None,
     session_filter: Optional[str] = None,
     since: Optional[datetime] = None,
+    component_prefixes: Optional[Sequence[str]] = None,
 ) -> bool:
     """Check if a log line passes all active filters."""
     if since is not None:
@@ -102,6 +128,10 @@ def _matches_filters(
         if session_filter not in line:
             return False
 
+    if component_prefixes is not None:
+        if not _line_matches_component(line, component_prefixes):
+            return False
+
     return True
 
 
@@ -113,6 +143,7 @@ def tail_log(
     level: Optional[str] = None,
     session: Optional[str] = None,
     since: Optional[str] = None,
+    component: Optional[str] = None,
 ) -> None:
     """Read and display log lines, optionally following in real time.
 
@@ -130,6 +161,8 @@ def tail_log(
         Session ID substring to filter on.
     since
         Relative time string (e.g. ``"1h"``, ``"30m"``).
+    component
+        Component name to filter by (e.g. ``"gateway"``, ``"tools"``).
     """
     filename = LOG_FILES.get(log_name)
     if filename is None:
@@ -155,13 +188,29 @@ def tail_log(
         print(f"Invalid --level: {level!r}. Use DEBUG, INFO, WARNING, ERROR, or CRITICAL.")
         sys.exit(1)
 
-    has_filters = min_level is not None or session is not None or since_dt is not None
+    # Resolve component to logger name prefixes
+    component_prefixes = None
+    if component:
+        from hermes_logging import COMPONENT_PREFIXES
+        component_lower = component.lower()
+        if component_lower not in COMPONENT_PREFIXES:
+            available = ", ".join(sorted(COMPONENT_PREFIXES))
+            print(f"Unknown component: {component!r}. Available: {available}")
+            sys.exit(1)
+        component_prefixes = COMPONENT_PREFIXES[component_lower]
+
+    has_filters = (
+        min_level is not None
+        or session is not None
+        or since_dt is not None
+        or component_prefixes is not None
+    )
 
     # Read and display the tail
     try:
         lines = _read_tail(log_path, num_lines, has_filters=has_filters,
                            min_level=min_level, session_filter=session,
-                           since=since_dt)
+                           since=since_dt, component_prefixes=component_prefixes)
     except PermissionError:
         print(f"Permission denied: {log_path}")
         sys.exit(1)
@@ -172,6 +221,8 @@ def tail_log(
         filter_parts.append(f"level>={min_level}")
     if session:
         filter_parts.append(f"session={session}")
+    if component:
+        filter_parts.append(f"component={component}")
     if since:
         filter_parts.append(f"since={since}")
     filter_desc = f" [{', '.join(filter_parts)}]" if filter_parts else ""
@@ -190,7 +241,7 @@ def tail_log(
     # Follow mode — poll for new content
     try:
         _follow_log(log_path, min_level=min_level, session_filter=session,
-                     since=since_dt)
+                     since=since_dt, component_prefixes=component_prefixes)
     except KeyboardInterrupt:
         print("\n--- stopped ---")
 
@@ -203,6 +254,7 @@ def _read_tail(
     min_level: Optional[str] = None,
     session_filter: Optional[str] = None,
     since: Optional[datetime] = None,
+    component_prefixes: Optional[Sequence[str]] = None,
 ) -> list:
     """Read the last *num_lines* matching lines from a log file.
 
@@ -215,7 +267,8 @@ def _read_tail(
         filtered = [
             l for l in raw_lines
             if _matches_filters(l, min_level=min_level,
-                                session_filter=session_filter, since=since)
+                                session_filter=session_filter, since=since,
+                                component_prefixes=component_prefixes)
         ]
         return filtered[-num_lines:]
     else:
@@ -284,6 +337,7 @@ def _follow_log(
     min_level: Optional[str] = None,
     session_filter: Optional[str] = None,
     since: Optional[datetime] = None,
+    component_prefixes: Optional[Sequence[str]] = None,
 ) -> None:
     """Poll a log file for new content and print matching lines."""
     with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -293,7 +347,8 @@ def _follow_log(
             line = f.readline()
             if line:
                 if _matches_filters(line, min_level=min_level,
-                                    session_filter=session_filter, since=since):
+                                    session_filter=session_filter, since=since,
+                                    component_prefixes=component_prefixes):
                     print(line, end="")
                     sys.stdout.flush()
             else:

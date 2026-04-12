@@ -8458,23 +8458,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     except Exception:
         pass
 
-    # Centralized logging — agent.log (INFO+) and errors.log (WARNING+).
+    # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
+    # and gateway.log (INFO+, gateway-component records only).
     # Idempotent, so repeated calls from AIAgent.__init__ won't duplicate.
     from hermes_logging import setup_logging
-    log_dir = setup_logging(hermes_home=_hermes_home, mode="gateway")
-
-    # Gateway-specific rotating log — captures all gateway-level messages
-    # (session management, platform adapters, slash commands, etc.).
-    from agent.redact import RedactingFormatter
-    from hermes_logging import _add_rotating_handler
-    _add_rotating_handler(
-        logging.getLogger(),
-        log_dir / 'gateway.log',
-        level=logging.INFO,
-        max_bytes=5 * 1024 * 1024,
-        backup_count=3,
-        formatter=RedactingFormatter('%(asctime)s %(levelname)s %(name)s: %(message)s'),
-    )
+    setup_logging(hermes_home=_hermes_home, mode="gateway")
 
     # Optional stderr handler — level driven by -v/-q flags on the CLI.
     # verbosity=None (-q/--quiet): no stderr output

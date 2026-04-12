@@ -8225,7 +8225,8 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
                         
-                        # This is often rate limiting or provider returning malformed response
+                        # Invalid response — could be rate limiting, provider timeout,
+                        # upstream server error, or malformed response.
                         retry_count += 1
                         
                         # Eager fallback: empty/malformed responses are a common
@@ -8261,11 +8262,44 @@ class AIAgent:
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
+                        # Extract error code from response for contextual diagnostics
+                        _resp_error_code = None
+                        if response and hasattr(response, 'error') and response.error:
+                            _code_raw = getattr(response.error, 'code', None)
+                            if _code_raw is None and isinstance(response.error, dict):
+                                _code_raw = response.error.get('code')
+                            if _code_raw is not None:
+                                try:
+                                    _resp_error_code = int(_code_raw)
+                                except (TypeError, ValueError):
+                                    pass
+
+                        # Build a human-readable failure hint from the error code
+                        # and response time, instead of always assuming rate limiting.
+                        if _resp_error_code == 524:
+                            _failure_hint = f"upstream provider timed out (Cloudflare 524, {api_duration:.0f}s)"
+                        elif _resp_error_code == 504:
+                            _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
+                        elif _resp_error_code == 429:
+                            _failure_hint = f"rate limited by upstream provider (429)"
+                        elif _resp_error_code in (500, 502):
+                            _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
+                        elif _resp_error_code in (503, 529):
+                            _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
+                        elif _resp_error_code is not None:
+                            _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
+                        elif api_duration < 10:
+                            _failure_hint = f"fast response ({api_duration:.1f}s) — likely rate limited"
+                        elif api_duration > 60:
+                            _failure_hint = f"slow response ({api_duration:.0f}s) — likely upstream timeout"
+                        else:
+                            _failure_hint = f"response time {api_duration:.1f}s"
+
                         self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
                         self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
                         cleaned_provider_error = self._clean_error_message(error_msg)
                         self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
-                        self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
+                        self._vprint(f"{self.log_prefix}   ⏱️  {_failure_hint}", force=True)
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
@@ -8282,14 +8316,13 @@ class AIAgent:
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
+                                "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        # Jittered exponential: 5s base, 120s cap + random jitter
+                        # Backoff before retry — jittered exponential: 5s base, 120s cap
                         wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
+                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
@@ -8300,7 +8333,7 @@ class AIAgent:
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
+                                    "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,

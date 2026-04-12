@@ -301,6 +301,20 @@ class SlackAdapter(BasePlatformAdapter):
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
 
+            # Explicitly clear assistant thread status after reply.
+            # Slack's assistant.threads.setStatus auto-clears on reply in
+            # simple cases, but when MCP tools execute post-response the
+            # status persists and blocks the compose box.  See #8387.
+            if thread_ts:
+                try:
+                    await self._get_client(chat_id).assistant_threads_setStatus(
+                        channel_id=chat_id,
+                        thread_ts=thread_ts,
+                        status="",
+                    )
+                except Exception:
+                    pass  # Not in assistant context or lacking scope
+
             return SendResult(
                 success=True,
                 message_id=sent_ts,

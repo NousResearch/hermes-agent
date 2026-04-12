@@ -517,8 +517,9 @@ DEFAULT_CONFIG = {
         "skin": "default",
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
+        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
     # Privacy settings
@@ -706,7 +707,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 15,
+    "_config_version": 16,
 }
 
 # =============================================================================
@@ -1946,6 +1947,30 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print("  ✓ Added display.interim_assistant_messages=true")
+
+    # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
+    if current_ver < 16:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        old_overrides = display.get("tool_progress_overrides")
+        if isinstance(old_overrides, dict) and old_overrides:
+            platforms = display.get("platforms", {})
+            if not isinstance(platforms, dict):
+                platforms = {}
+            for plat, mode in old_overrides.items():
+                if plat not in platforms:
+                    platforms[plat] = {}
+                if "tool_progress" not in platforms[plat]:
+                    platforms[plat]["tool_progress"] = mode
+            display["platforms"] = platforms
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
+                print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
+            results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

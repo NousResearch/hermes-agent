@@ -3461,8 +3461,18 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
-            # Prepend reasoning/thinking if display is enabled
-            if getattr(self, "_show_reasoning", False) and response:
+            # Prepend reasoning/thinking if display is enabled (per-platform)
+            try:
+                from gateway.display_config import resolve_display_setting as _rds
+                _show_reasoning_effective = _rds(
+                    _load_gateway_config(),
+                    _platform_config_key(source.platform),
+                    "show_reasoning",
+                    getattr(self, "_show_reasoning", False),
+                )
+            except Exception:
+                _show_reasoning_effective = getattr(self, "_show_reasoning", False)
+            if _show_reasoning_effective and response:
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     # Collapse long reasoning to keep messages readable
@@ -5448,16 +5458,20 @@ class GatewayRunner:
                 "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
             )
 
-        # Display toggle
+        # Display toggle (per-platform)
+        platform_key = _platform_config_key(event.source.platform)
         if args in ("show", "on"):
             self._show_reasoning = True
-            _save_config_key("display.show_reasoning", True)
-            return "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response."
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", True)
+            return (
+                "🧠 ✓ Reasoning display: **ON**\n"
+                f"Model thinking will be shown before each response on **{platform_key}**."
+            )
 
         if args in ("hide", "off"):
             self._show_reasoning = False
-            _save_config_key("display.show_reasoning", False)
-            return "🧠 ✓ Reasoning display: **OFF**"
+            _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
+            return f"🧠 ✓ Reasoning display: **OFF** for **{platform_key}**"
 
         # Effort level change
         effort = args.strip()
@@ -5560,11 +5574,14 @@ class GatewayRunner:
 
         Gated by ``display.tool_progress_command`` in config.yaml (default off).
         When enabled, cycles the tool progress mode through off → new → all →
-        verbose → off, same as the CLI.
+        verbose → off for the *current platform*.  The setting is saved to
+        ``display.platforms.<platform>.tool_progress`` so each channel can
+        have its own verbosity level independently.
         """
         import yaml
 
         config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
 
         # --- check config gate ------------------------------------------------
         try:
@@ -5583,7 +5600,7 @@ class GatewayRunner:
                 "display:\n  tool_progress_command: true\n```"
             )
 
-        # --- cycle mode -------------------------------------------------------
+        # --- cycle mode (per-platform) ----------------------------------------
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
@@ -5592,26 +5609,29 @@ class GatewayRunner:
             "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
-        raw_progress = user_config.get("display", {}).get("tool_progress", "all")
-        # YAML 1.1 parses bare "off" as boolean False — normalise back
-        if raw_progress is False:
-            current = "off"
-        elif raw_progress is True:
-            current = "all"
-        else:
-            current = str(raw_progress).lower()
+        # Read current effective mode for this platform via the resolver
+        from gateway.display_config import resolve_display_setting
+        current = resolve_display_setting(user_config, platform_key, "tool_progress", "all")
         if current not in cycle:
             current = "all"
         idx = (cycle.index(current) + 1) % len(cycle)
         new_mode = cycle[idx]
 
-        # Save to config.yaml
+        # Save to display.platforms.<platform>.tool_progress
         try:
             if "display" not in user_config or not isinstance(user_config.get("display"), dict):
                 user_config["display"] = {}
-            user_config["display"]["tool_progress"] = new_mode
+            display = user_config["display"]
+            if "platforms" not in display or not isinstance(display.get("platforms"), dict):
+                display["platforms"] = {}
+            if platform_key not in display["platforms"] or not isinstance(display["platforms"].get(platform_key), dict):
+                display["platforms"][platform_key] = {}
+            display["platforms"][platform_key]["tool_progress"] = new_mode
             atomic_yaml_write(config_path, user_config)
-            return f"{descriptions[new_mode]}\n_(saved to config — takes effect on next message)_"
+            return (
+                f"{descriptions[new_mode]}\n"
+                f"_(saved for **{platform_key}** — takes effect on next message)_"
+            )
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
@@ -7083,32 +7103,23 @@ class GatewayRunner:
         if not isinstance(display_config, dict):
             display_config = {}
 
+        # Per-platform display settings — resolve via display_config module
+        # which checks display.platforms.<platform>.<key> first, then
+        # display.<key> global, then built-in platform defaults.
+        from gateway.display_config import resolve_display_setting
+
         # Apply tool preview length config (0 = no limit)
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = display_config.get("tool_preview_length", 0)
+            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
 
-        # Tool progress mode from config.yaml: "all", "new", "verbose", "off"
-        # Falls back to env vars for backward compatibility.
-        # YAML 1.1 parses bare `off` as boolean False — normalise before
-        # the `or` chain so it doesn't silently fall through to "all".
-        #
-        # Per-platform overrides (display.tool_progress_overrides) take
-        # priority over the global setting — e.g. Signal users can set
-        # tool_progress to "off" while keeping Telegram on "all".
-        _overrides = display_config.get("tool_progress_overrides", {})
-        if not isinstance(_overrides, dict):
-            _overrides = {}
-        _raw_tp = _overrides.get(platform_key)
-        if _raw_tp is None:
-            _raw_tp = display_config.get("tool_progress")
-        if _raw_tp is False:
-            _raw_tp = "off"
+        # Tool progress mode — resolved per-platform with env var fallback
+        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
         progress_mode = (
-            _raw_tp
+            _resolved_tp
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
@@ -7446,7 +7457,19 @@ class GatewayRunner:
                 from gateway.config import StreamingConfig
                 _scfg = StreamingConfig()
 
-            _want_stream_deltas = _scfg.enabled and _scfg.transport != "off"
+            # Per-platform streaming gate: display.platforms.<plat>.streaming
+            # can disable streaming for specific platforms even when the global
+            # streaming config is enabled.
+            _plat_streaming = resolve_display_setting(
+                user_config, platform_key, "streaming"
+            )
+            # None = no per-platform override → follow global config
+            _streaming_enabled = (
+                _scfg.enabled and _scfg.transport != "off"
+                if _plat_streaming is None
+                else bool(_plat_streaming)
+            )
+            _want_stream_deltas = _streaming_enabled
             _want_interim_messages = interim_assistant_messages_enabled
             _want_interim_consumer = _want_interim_messages
             if _want_stream_deltas or _want_interim_consumer:

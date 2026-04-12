@@ -331,7 +331,7 @@ def is_linux() -> bool:
     return sys.platform.startswith('linux')
 
 
-from hermes_constants import is_termux, is_wsl
+from hermes_constants import is_container, is_termux, is_wsl
 
 
 def _wsl_systemd_operational() -> bool:
@@ -353,7 +353,9 @@ def _wsl_systemd_operational() -> bool:
 
 
 def supports_systemd_services() -> bool:
-    if not is_linux() or is_termux():
+    if not is_linux() or is_termux() or is_container():
+        return False
+    if shutil.which("systemctl") is None:
         return False
     if is_wsl():
         return _wsl_systemd_operational()
@@ -481,6 +483,21 @@ def _systemctl_cmd(system: bool = False) -> list[str]:
 
 def _journalctl_cmd(system: bool = False) -> list[str]:
     return ["journalctl"] if system else ["journalctl", "--user"]
+
+
+def _run_systemctl(args: list[str], *, system: bool = False, **kwargs) -> subprocess.CompletedProcess:
+    """Run a systemctl command, raising RuntimeError if systemctl is missing.
+
+    Defense-in-depth: callers are gated by ``supports_systemd_services()``,
+    but this ensures any future caller that bypasses the gate still gets a
+    clear error instead of a raw ``FileNotFoundError`` traceback.
+    """
+    try:
+        return subprocess.run(_systemctl_cmd(system) + args, **kwargs)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "systemctl is not available on this system"
+        ) from None
 
 
 def _service_scope_label(system: bool = False) -> str:
@@ -929,7 +946,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
+    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True
 
@@ -1025,7 +1042,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
-            subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True, timeout=30)
+            _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
             return
         print(f"Service already installed at: {unit_path}")
@@ -1036,8 +1053,8 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
 
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
-    subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True, timeout=30)
+    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+    _run_systemctl(["enable", get_service_name()], system=system, check=True, timeout=30)
 
     print()
     print(f"✓ {_service_scope_label(system).capitalize()} service installed and enabled!")
@@ -1063,15 +1080,15 @@ def systemd_uninstall(system: bool = False):
     if system:
         _require_root_for_system_service("uninstall")
 
-    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=False, timeout=90)
-    subprocess.run(_systemctl_cmd(system) + ["disable", get_service_name()], check=False, timeout=30)
+    _run_systemctl(["stop", get_service_name()], system=system, check=False, timeout=90)
+    _run_systemctl(["disable", get_service_name()], system=system, check=False, timeout=30)
 
     unit_path = get_systemd_unit_path(system=system)
     if unit_path.exists():
         unit_path.unlink()
         print(f"✓ Removed {unit_path}")
 
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
+    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
@@ -1080,7 +1097,7 @@ def systemd_start(system: bool = False):
     if system:
         _require_root_for_system_service("start")
     refresh_systemd_unit_if_needed(system=system)
-    subprocess.run(_systemctl_cmd(system) + ["start", get_service_name()], check=True, timeout=30)
+    _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
 
@@ -1089,7 +1106,7 @@ def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("stop")
-    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=True, timeout=90)
+    _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
@@ -1105,7 +1122,7 @@ def systemd_restart(system: bool = False):
     if pid is not None and _request_gateway_self_restart(pid):
         print(f"✓ {_service_scope_label(system).capitalize()} service restart requested")
         return
-    subprocess.run(_systemctl_cmd(system) + ["reload-or-restart", get_service_name()], check=True, timeout=90)
+    _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
@@ -1129,14 +1146,16 @@ def systemd_status(deep: bool = False, system: bool = False):
         print(f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit")
         print()
 
-    subprocess.run(
-        _systemctl_cmd(system) + ["status", get_service_name(), "--no-pager"],
+    _run_systemctl(
+        ["status", get_service_name(), "--no-pager"],
+        system=system,
         capture_output=False,
         timeout=10,
     )
 
-    result = subprocess.run(
-        _systemctl_cmd(system) + ["is-active", get_service_name()],
+    result = _run_systemctl(
+        ["is-active", get_service_name()],
+        system=system,
         capture_output=True,
         text=True,
         timeout=10,
@@ -2123,24 +2142,24 @@ def _is_service_running() -> bool:
 
         if user_unit_exists:
             try:
-                result = subprocess.run(
-                    _systemctl_cmd(False) + ["is-active", get_service_name()],
-                    capture_output=True, text=True, timeout=10,
+                result = _run_systemctl(
+                    ["is-active", get_service_name()],
+                    system=False, capture_output=True, text=True, timeout=10,
                 )
                 if result.stdout.strip() == "active":
                     return True
-            except subprocess.TimeoutExpired:
+            except (RuntimeError, subprocess.TimeoutExpired):
                 pass
 
         if system_unit_exists:
             try:
-                result = subprocess.run(
-                    _systemctl_cmd(True) + ["is-active", get_service_name()],
-                    capture_output=True, text=True, timeout=10,
+                result = _run_systemctl(
+                    ["is-active", get_service_name()],
+                    system=True, capture_output=True, text=True, timeout=10,
                 )
                 if result.stdout.strip() == "active":
                     return True
-            except subprocess.TimeoutExpired:
+            except (RuntimeError, subprocess.TimeoutExpired):
                 pass
 
         return False
@@ -2774,6 +2793,15 @@ def gateway_command(args):
             print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
             print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
             sys.exit(1)
+        elif is_container():
+            print("Service installation is not needed inside a Docker container.")
+            print("The container runtime is your service manager — use Docker restart policies instead:")
+            print()
+            print("  docker run --restart unless-stopped ...   # auto-restart on crash/reboot")
+            print("  docker restart <container>                # manual restart")
+            print()
+            print("To run the gateway: hermes gateway run")
+            sys.exit(0)
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
@@ -2792,10 +2820,17 @@ def gateway_command(args):
             systemd_uninstall(system=system)
         elif is_macos():
             launchd_uninstall()
+        elif is_container():
+            print("Service uninstall is not applicable inside a Docker container.")
+            print("To stop the gateway, stop or remove the container:")
+            print()
+            print("  docker stop <container>")
+            print("  docker rm <container>")
+            sys.exit(0)
         else:
             print("Not supported on this platform.")
             sys.exit(1)
-    
+
     elif subcmd == "start":
         system = getattr(args, 'system', False)
         if is_termux():
@@ -2816,10 +2851,19 @@ def gateway_command(args):
             print()
             print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
             sys.exit(1)
+        elif is_container():
+            print("Service start is not applicable inside a Docker container.")
+            print("The gateway runs as the container's main process.")
+            print()
+            print("  docker start <container>     # start a stopped container")
+            print("  docker restart <container>   # restart a running container")
+            print()
+            print("Or run the gateway directly: hermes gateway run")
+            sys.exit(0)
         else:
             print("Not supported on this platform.")
             sys.exit(1)
-    
+
     elif subcmd == "stop":
         stop_all = getattr(args, 'all', False)
         system = getattr(args, 'system', False)

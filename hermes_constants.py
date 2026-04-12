@@ -189,6 +189,37 @@ def is_wsl() -> bool:
     return _wsl_detected
 
 
+_container_detected: bool | None = None
+
+
+def is_container() -> bool:
+    """Return True when running inside a Docker/Podman container.
+
+    Checks ``/.dockerenv`` (Docker), ``/run/.containerenv`` (Podman),
+    and ``/proc/1/cgroup`` for container runtime markers.  Result is
+    cached for the process lifetime.  Import-safe — no heavy deps.
+    """
+    global _container_detected
+    if _container_detected is not None:
+        return _container_detected
+    if os.path.exists("/.dockerenv"):
+        _container_detected = True
+        return True
+    if os.path.exists("/run/.containerenv"):
+        _container_detected = True
+        return True
+    try:
+        with open("/proc/1/cgroup", "r") as f:
+            cgroup = f.read()
+            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
+                _container_detected = True
+                return True
+    except OSError:
+        pass
+    _container_detected = False
+    return False
+
+
 # ─── Well-Known Paths ─────────────────────────────────────────────────────────
 
 

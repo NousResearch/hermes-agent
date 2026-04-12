@@ -148,25 +148,6 @@ def managed_error(action: str = "modify configuration"):
 # Container-aware CLI (NixOS container mode)
 # =============================================================================
 
-def _is_inside_container() -> bool:
-    """Detect if we're already running inside a Docker/Podman container."""
-    # Standard Docker/Podman indicators
-    if os.path.exists("/.dockerenv"):
-        return True
-    # Podman uses /run/.containerenv
-    if os.path.exists("/run/.containerenv"):
-        return True
-    # Check cgroup for container runtime evidence (works for both Docker & Podman)
-    try:
-        with open("/proc/1/cgroup", "r") as f:
-            cgroup = f.read()
-            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
-                return True
-    except OSError:
-        pass
-    return False
-
-
 def get_container_exec_info() -> Optional[dict]:
     """Read container mode metadata from HERMES_HOME/.container-mode.
 
@@ -181,7 +162,8 @@ def get_container_exec_info() -> Optional[dict]:
     if os.environ.get("HERMES_DEV") == "1":
         return None
 
-    if _is_inside_container():
+    from hermes_constants import is_container
+    if is_container():
         return None
 
     container_mode_file = get_hermes_home() / ".container-mode"

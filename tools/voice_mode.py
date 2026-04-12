@@ -106,8 +106,9 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker detection
-    if os.path.exists('/.dockerenv'):
+    # Docker/Podman container detection
+    from hermes_constants import is_container
+    if is_container():
         warnings.append("Running inside Docker container -- no audio devices")
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.

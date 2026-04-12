@@ -269,6 +269,14 @@ class GatewayStreamConsumer:
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
                 if got_segment_break:
+                    # Flush any pending fallback text before resetting.
+                    # Without this, accumulated text from a failed edit is
+                    # silently dropped when a tool boundary arrives.  (#8124)
+                    # Skip for __no_edit__ platforms (Signal, webhook) where
+                    # all text intentionally accumulates until _DONE.
+                    if (self._fallback_final_send and self._accumulated
+                            and self._message_id != "__no_edit__"):
+                        await self._send_fallback_final(self._accumulated)
                     self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop

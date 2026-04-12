@@ -356,12 +356,14 @@ class TestSegmentBreakOnToolBoundary:
         assert consumer.already_sent
 
     @pytest.mark.asyncio
-    async def test_segment_break_clears_failed_edit_fallback_state(self):
-        """A tool boundary after edit failure must not duplicate the next segment."""
+    async def test_segment_break_flushes_fallback_before_reset(self):
+        """A tool boundary after edit failure must flush pending text, then
+        start a fresh segment without duplicating it.  Regression for #8124."""
         adapter = MagicMock()
         send_results = [
-            SimpleNamespace(success=True, message_id="msg_1"),
-            SimpleNamespace(success=True, message_id="msg_2"),
+            SimpleNamespace(success=True, message_id="msg_1"),   # initial "Hello ▉"
+            SimpleNamespace(success=True, message_id="msg_2"),   # fallback "world"
+            SimpleNamespace(success=True, message_id="msg_3"),   # "Next segment"
         ]
         adapter.send = AsyncMock(side_effect=send_results)
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
@@ -381,7 +383,7 @@ class TestSegmentBreakOnToolBoundary:
         await task
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
-        assert sent_texts == ["Hello ▉", "Next segment"]
+        assert sent_texts == ["Hello ▉", "world", "Next segment"]
 
     @pytest.mark.asyncio
     async def test_no_message_id_enters_fallback_mode(self):

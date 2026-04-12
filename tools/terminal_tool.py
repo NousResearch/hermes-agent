@@ -1774,7 +1774,7 @@ if __name__ == "__main__":
     default_img = "nikolaik/python-nodejs:python3.11-nodejs20"
     print(f"  TERMINAL_ENV: {os.getenv('TERMINAL_ENV', 'local')} (local/docker/podman/singularity/modal/daytona/ssh)")
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
-    print(f"  TERMINAL_PODMAN_IMAGE: {os.getenv('TERMINAL_PODMAN_IMAGE', f"docker.io/{default_img}")}")
+    print(f"  TERMINAL_PODMAN_IMAGE: {os.getenv('TERMINAL_PODMAN_IMAGE', f'docker.io/{default_img}')}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")

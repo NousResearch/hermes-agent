@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-from tools.environments import docker as docker_env
+from tools.environments import docker as docker_env, utils
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -263,7 +263,7 @@ def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(utils, "load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -276,7 +276,7 @@ def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     env = _make_execute_only_env(["DATABASE_URL"])
 
     monkeypatch.setenv("DATABASE_URL", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
+    monkeypatch.setattr(utils, "load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -320,7 +320,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(utils, "load_hermes_env_vars", lambda: {})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -335,7 +335,7 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
 
     monkeypatch.setenv("TOKEN", "secret123")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(utils, "load_hermes_env_vars", lambda: {})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -347,7 +347,7 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
 
 def test_normalize_env_dict_filters_invalid_keys():
     """_normalize_env_dict should reject invalid variable names."""
-    result = docker_env._normalize_env_dict({
+    result = utils.normalize_env_dict({
         "VALID_KEY": "ok",
         "123bad": "rejected",
         "": "rejected",
@@ -359,7 +359,7 @@ def test_normalize_env_dict_filters_invalid_keys():
 
 def test_normalize_env_dict_coerces_scalars():
     """_normalize_env_dict should coerce int/float/bool to str."""
-    result = docker_env._normalize_env_dict({
+    result = utils.normalize_env_dict({
         "PORT": 8080,
         "DEBUG": True,
         "RATIO": 0.5,
@@ -369,14 +369,14 @@ def test_normalize_env_dict_coerces_scalars():
 
 def test_normalize_env_dict_rejects_non_dict():
     """_normalize_env_dict should return empty dict for non-dict input."""
-    assert docker_env._normalize_env_dict("not a dict") == {}
-    assert docker_env._normalize_env_dict(None) == {}
-    assert docker_env._normalize_env_dict([]) == {}
+    assert utils.normalize_env_dict("not a dict") == {}
+    assert utils.normalize_env_dict(None) == {}
+    assert utils.normalize_env_dict([]) == {}
 
 
 def test_normalize_env_dict_rejects_complex_values():
     """_normalize_env_dict should reject list/dict values."""
-    result = docker_env._normalize_env_dict({
+    result = utils.normalize_env_dict({
         "GOOD": "string",
         "BAD_LIST": [1, 2, 3],
         "BAD_DICT": {"nested": True},

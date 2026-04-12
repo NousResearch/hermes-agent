@@ -1,7 +1,9 @@
 """Utility functions that are reusable among certain terminal backend implementations."""
 
 import logging
+import os
 import re
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +74,7 @@ def load_hermes_env_vars() -> dict[str, str]:
         return {}
 
 
-def find_container_cli_binary(exec_name: 'docker' | 'podman', search_paths: list[str]):
+def find_container_cli_binary(exec_name: str, search_paths: list[str]):
     """Locate the container CLI binary.
 
     Checks ``shutil.which`` first (respects PATH), then probes well-known

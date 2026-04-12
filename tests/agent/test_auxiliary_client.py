@@ -450,6 +450,121 @@ class TestExplicitProviderRouting:
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
+    def test_openrouter_takes_priority(self, monkeypatch, codex_auth_dir):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+        mock_openai.assert_called_once()
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["api_key"] == "or-key"
+
+    def test_openrouter_auto_uses_configured_main_model(self):
+        """Configured OpenRouter main models should not be replaced by the aux default."""
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model
+
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve),
+        ):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4.6",
+                }
+            )
+
+        assert client is not None
+        assert model == "anthropic/claude-sonnet-4.6"
+        assert calls == [("openrouter", "anthropic/claude-sonnet-4.6", {"api_mode": None})]
+
+    def test_nous_takes_priority_over_codex(self, monkeypatch, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = get_text_auxiliary_client()
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_custom_endpoint_over_codex(self, monkeypatch, codex_auth_dir):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        # Override the autouse monkeypatch for codex
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_codex_access_token",
+            lambda: "codex-test-token-abc123",
+        )
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
+    def test_task_direct_endpoint_override(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "task-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert model == "task-model"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "task-key"
+
+    def test_task_direct_endpoint_without_openai_key_uses_placeholder(self, monkeypatch):
+        """Local endpoints without an API key should use 'no-key-required' placeholder."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
+        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client("web_extract")
+        assert client is not None
+        assert model == "task-model"
+        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
+        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
+
+    def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://localhost:1234/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "lm-studio-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+
+        assert client is not None
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
+
+    def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+        assert model == "gpt-5.2-codex"
+        # Returns a CodexAuxiliaryClient wrapper, not a raw OpenAI client
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
     def test_codex_pool_entry_takes_priority_over_auth_store(self):
         class _Entry:
             access_token = "pooled-codex-token"

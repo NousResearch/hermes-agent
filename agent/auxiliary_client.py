@@ -1255,6 +1255,21 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
                         main_provider, resolved or main_model)
             return client, resolved or main_model
 
+    # OpenRouter is an aggregator, but when it is the configured primary
+    # provider we should still honor the saved model slug rather than
+    # swapping to the hardcoded auxiliary default.  That keeps side-task
+    # calls aligned with the user's selected OpenRouter model.
+    if main_provider == "openrouter" and main_model:
+        client, resolved = resolve_provider_client(
+            "openrouter",
+            main_model,
+            api_mode=runtime_api_mode or None,
+        )
+        if client is not None:
+            logger.info("Auxiliary auto-detect: using configured OpenRouter model %s",
+                        resolved or main_model)
+            return client, resolved or main_model
+
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for label, try_fn in _get_provider_chain():

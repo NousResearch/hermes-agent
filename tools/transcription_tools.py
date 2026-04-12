@@ -56,6 +56,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_ELEVENLABS = _safe_find_spec("elevenlabs")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,6 +68,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v1")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -220,6 +222,15 @@ def _get_provider(stt_config: dict) -> str:
             logger.warning(
                 "STT provider 'mistral' configured but mistralai package "
                 "not installed or MISTRAL_API_KEY not set"
+            )
+            return "none"
+
+        if provider == "elevenlabs":
+            if _HAS_ELEVENLABS and _resolve_elevenlabs_stt_api_key(stt_config):
+                return "elevenlabs"
+            logger.warning(
+                "STT provider 'elevenlabs' configured but elevenlabs package "
+                "not installed or no API key available"
             )
             return "none"
 
@@ -555,6 +566,62 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: elevenlabs (Speech-to-Text API)
+# ---------------------------------------------------------------------------
+
+
+def _resolve_elevenlabs_stt_api_key(stt_config: Optional[dict] = None) -> str:
+    """Resolve ElevenLabs API key from config first, then env."""
+    config = stt_config if stt_config is not None else _load_stt_config()
+    if isinstance(config, dict):
+        eleven_cfg = config.get("elevenlabs", {})
+        if isinstance(eleven_cfg, dict):
+            cfg_key = str(eleven_cfg.get("api_key", "")).strip()
+            if cfg_key:
+                return cfg_key
+    return os.getenv("ELEVENLABS_API_KEY", "").strip()
+
+
+def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using ElevenLabs Speech-to-Text API."""
+    if not _HAS_ELEVENLABS:
+        return {"success": False, "transcript": "", "error": "elevenlabs package not installed"}
+
+    stt_config = _load_stt_config()
+    api_key = _resolve_elevenlabs_stt_api_key(stt_config)
+    if not api_key:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Neither stt.elevenlabs.api_key in config nor ELEVENLABS_API_KEY is set",
+        }
+
+    try:
+        from elevenlabs.client import ElevenLabs
+        client = ElevenLabs(api_key=api_key)
+        with open(file_path, "rb") as audio_file:
+            transcription = client.speech_to_text.convert(
+                model_id=model_name,
+                file=audio_file,
+            )
+
+        transcript_text = _extract_transcript_text(transcription)
+        logger.info(
+            "Transcribed %s via ElevenLabs API (%s, %d chars)",
+            Path(file_path).name,
+            model_name,
+            len(transcript_text),
+        )
+        return {"success": True, "transcript": transcript_text, "provider": "elevenlabs"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("ElevenLabs transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"ElevenLabs transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -620,6 +687,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "elevenlabs":
+        eleven_cfg = stt_config.get("elevenlabs", {})
+        model_name = model or eleven_cfg.get("model", DEFAULT_ELEVENLABS_STT_MODEL)
+        return _transcribe_elevenlabs(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -628,7 +700,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, set ELEVENLABS_API_KEY for ElevenLabs STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

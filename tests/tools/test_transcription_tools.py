@@ -49,6 +49,7 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
     monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
 
@@ -995,3 +996,74 @@ class TestTranscribeAudioMistralDispatch:
             transcribe_audio(sample_ogg, model="voxtral-mini-2602")
 
         assert mock_mistral.call_args[0][1] == "voxtral-mini-2602"
+
+
+# ============================================================================
+# _get_provider — ElevenLabs
+# ============================================================================
+
+class TestGetProviderElevenLabs:
+    """ElevenLabs-specific provider selection tests."""
+
+    def test_elevenlabs_when_key_and_sdk_available(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        with patch("tools.transcription_tools._HAS_ELEVENLABS", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "elevenlabs"}) == "elevenlabs"
+
+    def test_elevenlabs_explicit_no_key_returns_none(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_ELEVENLABS", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "elevenlabs"}) == "none"
+
+    def test_elevenlabs_explicit_no_sdk_returns_none(self, monkeypatch):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "test-key")
+        with patch("tools.transcription_tools._HAS_ELEVENLABS", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({"provider": "elevenlabs"}) == "none"
+
+
+# ============================================================================
+# transcribe_audio — ElevenLabs dispatch
+# ============================================================================
+
+class TestTranscribeAudioElevenLabsDispatch:
+    def test_dispatches_to_elevenlabs(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "elevenlabs"}), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "hi", "provider": "elevenlabs"},
+             ) as mock_eleven:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "elevenlabs"
+        mock_eleven.assert_called_once()
+
+    def test_config_elevenlabs_model_used(self, sample_ogg):
+        config = {"provider": "elevenlabs", "elevenlabs": {"model": "scribe_v1_experimental"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "hi"},
+             ) as mock_eleven:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_eleven.call_args[0][1] == "scribe_v1_experimental"
+
+    def test_model_override_passed_to_elevenlabs(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
+             patch(
+                 "tools.transcription_tools._transcribe_elevenlabs",
+                 return_value={"success": True, "transcript": "hi"},
+             ) as mock_eleven:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="scribe_v1")
+
+        assert mock_eleven.call_args[0][1] == "scribe_v1"

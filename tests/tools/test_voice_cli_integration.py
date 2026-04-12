@@ -1232,3 +1232,46 @@ class TestRefreshLevelLock:
         t.join(timeout=1)
         assert not t.is_alive(), "Refresh thread did not stop"
         assert iterations > 0, "Refresh thread never ran"
+
+
+# ============================================================================
+# ElevenLabs API key resolution (config fallback)
+# ============================================================================
+
+class TestElevenLabsApiKeyResolution:
+    def test_generate_elevenlabs_uses_config_api_key_when_env_missing(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = [b"audio-bytes"]
+        mock_elevenlabs_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_elevenlabs", return_value=mock_elevenlabs_cls):
+            from tools.tts_tool import _generate_elevenlabs
+
+            output_path = tmp_path / "tts.mp3"
+            _generate_elevenlabs(
+                "hello",
+                str(output_path),
+                {
+                    "elevenlabs": {
+                        "api_key": "cfg-el-key",
+                        "voice_id": "voice-id",
+                        "model_id": "model-id",
+                    }
+                },
+            )
+
+        assert output_path.exists()
+        assert output_path.read_bytes() == b"audio-bytes"
+        assert mock_elevenlabs_cls.call_args.kwargs["api_key"] == "cfg-el-key"
+
+    def test_check_tts_requirements_accepts_config_api_key(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError("no edge")), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
+             patch("tools.tts_tool._load_tts_config", return_value={"elevenlabs": {"api_key": "cfg-el-key"}}), \
+             patch("tools.tts_tool._import_openai_client", side_effect=ImportError("no openai")), \
+             patch("tools.tts_tool._check_neutts_available", return_value=False):
+            from tools.tts_tool import check_tts_requirements
+            assert check_tts_requirements() is True

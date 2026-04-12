@@ -492,3 +492,33 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
 
     captured = capsys.readouterr()
     assert "Run 'hermes chat' manually" in captured.out
+
+
+def test_setup_sections_include_stt():
+    from hermes_cli.setup import SETUP_SECTIONS
+
+    section_keys = [key for key, _label, _func in SETUP_SECTIONS]
+    assert "stt" in section_keys
+
+
+def test_setup_stt_provider_elevenlabs_saves_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.setup import setup_stt
+
+    config = {"stt": {"provider": "local"}}
+    saved_env = {}
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select STT provider:"
+        return choices.index("ElevenLabs STT (needs API key)")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *_a, **_kw: "el-test-key")
+    monkeypatch.setattr("hermes_cli.setup.get_env_value", lambda _k: "")
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda k, v: saved_env.setdefault(k, v))
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda _cfg: None)
+
+    setup_stt(config)
+
+    assert config["stt"]["provider"] == "elevenlabs"
+    assert saved_env.get("ELEVENLABS_API_KEY") == "el-test-key"

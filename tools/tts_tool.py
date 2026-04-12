@@ -143,6 +143,17 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
+def _resolve_elevenlabs_api_key(tts_config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve ElevenLabs API key from config first, then environment."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    el_cfg = cfg.get("elevenlabs", {}) if isinstance(cfg, dict) else {}
+    if isinstance(el_cfg, dict):
+        cfg_key = str(el_cfg.get("api_key", "")).strip()
+        if cfg_key:
+            return cfg_key
+    return os.getenv("ELEVENLABS_API_KEY", "").strip()
+
+
 # ===========================================================================
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
@@ -231,7 +242,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    api_key = _resolve_elevenlabs_api_key(tts_config)
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
 
@@ -976,8 +987,9 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     try:
+        tts_config = _load_tts_config()
         _import_elevenlabs()
-        if os.getenv("ELEVENLABS_API_KEY"):
+        if _resolve_elevenlabs_api_key(tts_config):
             return True
     except ImportError:
         pass
@@ -1097,7 +1109,7 @@ def stream_tts_to_speaker(
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
 
-        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        api_key = _resolve_elevenlabs_api_key(tts_config)
         if not api_key:
             logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
         else:

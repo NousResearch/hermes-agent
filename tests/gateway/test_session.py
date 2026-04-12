@@ -1010,3 +1010,55 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning") == "I need to think step by step."
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestRewriteTranscriptAtomicity:
+    """rewrite_transcript must use atomic operations (#8029)."""
+
+    def test_sqlite_rewrite_is_atomic(self, tmp_path):
+        """DB rewrite should use rewrite_messages (single transaction)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "atomic-test"
+        db.create_session(session_id=session_id, source="cli")
+
+        # Insert original messages
+        db.append_message(session_id=session_id, role="user", content="original-1")
+        db.append_message(session_id=session_id, role="assistant", content="original-2")
+
+        # Rewrite atomically
+        new_messages = [
+            {"role": "user", "content": "compressed"},
+        ]
+        db.rewrite_messages(session_id, new_messages)
+
+        rows = db.get_messages_as_conversation(session_id)
+        assert len(rows) == 1
+        assert rows[0]["content"] == "compressed"
+
+    def test_jsonl_rewrite_preserves_original_on_error(self, tmp_path):
+        """If JSONL write fails, original file should remain intact."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        store._loaded = True
+
+        session_id = "atomic-jsonl"
+        store.append_to_transcript(session_id, {"role": "user", "content": "keep me"})
+
+        # Verify original exists
+        path = store.get_transcript_path(session_id)
+        assert path.exists()
+        original_content = path.read_text()
+        assert "keep me" in original_content
+
+        # Force os.replace to fail by making tempfile creation succeed
+        # but os.replace raise an error
+        with patch("gateway.session.os.replace", side_effect=OSError("disk full")):
+            with pytest.raises(OSError):
+                store.rewrite_transcript(session_id, [{"role": "user", "content": "new"}])
+
+        # Original file should be untouched
+        assert path.read_text() == original_content

@@ -249,9 +249,8 @@ Type these during an interactive chat session.
 /config              Show config (CLI)
 /model [name]        Show or change model
 /provider            Show provider info
-/prompt [text]       View/set system prompt (CLI)
 /personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|low|medium|high|xhigh|show|hide)
+/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass

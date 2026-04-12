@@ -20,6 +20,7 @@ Configuration in config.yaml:
 import asyncio
 import logging
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -51,9 +53,9 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
-DEDUP_WINDOW_SECONDS = 300
-DEDUP_MAX_SIZE = 1000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+_SESSION_WEBHOOKS_MAX = 500
+_DINGTALK_WEBHOOK_RE = re.compile(r'^https://api\.dingtalk\.com/')
 
 
 def check_dingtalk_requirements() -> bool:
@@ -86,8 +88,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._stream_task: Optional[asyncio.Task] = None
         self._http_client: Optional["httpx.AsyncClient"] = None
 
-        # Message deduplication: msg_id -> timestamp
-        self._seen_messages: Dict[str, float] = {}
+        # Message deduplication
+        self._dedup = MessageDeduplicator(max_size=1000)
         # Map chat_id -> session_webhook for reply routing
         self._session_webhooks: Dict[str, str] = {}
 
@@ -167,7 +169,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         self._stream_client = None
         self._session_webhooks.clear()
-        self._seen_messages.clear()
+        self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
     # -- Inbound message processing -----------------------------------------
@@ -175,7 +177,7 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def _on_message(self, message: "ChatbotMessage") -> None:
         """Process an incoming DingTalk chatbot message."""
         msg_id = getattr(message, "message_id", None) or uuid.uuid4().hex
-        if self._is_duplicate(msg_id):
+        if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s, skipping", self.name, msg_id)
             return
 
@@ -195,9 +197,15 @@ class DingTalkAdapter(BasePlatformAdapter):
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
 
-        # Store session webhook for reply routing
+        # Store session webhook for reply routing (validate origin to prevent SSRF)
         session_webhook = getattr(message, "session_webhook", None) or ""
-        if session_webhook and chat_id:
+        if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
+            if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
+                # Evict oldest entry to cap memory growth
+                try:
+                    self._session_webhooks.pop(next(iter(self._session_webhooks)))
+                except StopIteration:
+                    pass
             self._session_webhooks[chat_id] = session_webhook
 
         source = self.build_source(
@@ -246,20 +254,6 @@ class DingTalkAdapter(BasePlatformAdapter):
                          if isinstance(item, dict) and item.get("text")]
                 content = " ".join(parts).strip()
         return content
-
-    # -- Deduplication ------------------------------------------------------
-
-    def _is_duplicate(self, msg_id: str) -> bool:
-        """Check and record a message ID. Returns True if already seen."""
-        now = time.time()
-        if len(self._seen_messages) > DEDUP_MAX_SIZE:
-            cutoff = now - DEDUP_WINDOW_SECONDS
-            self._seen_messages = {k: v for k, v in self._seen_messages.items() if v > cutoff}
-
-        if msg_id in self._seen_messages:
-            return True
-        self._seen_messages[msg_id] = now
-        return False
 
     # -- Outbound messaging -------------------------------------------------
 

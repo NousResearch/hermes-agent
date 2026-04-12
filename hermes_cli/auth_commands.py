@@ -347,8 +347,11 @@ def auth_remove_command(args) -> None:
             print("Cleared Hermes Anthropic OAuth credentials")
 
     elif removed.source == "claude_code" and provider == "anthropic":
-        print("Note: Claude Code credentials live in ~/.claude/.credentials.json")
-        print("      Remove them manually if you want to deauthorize Claude Code.")
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source(provider, "claude_code")
+        print("Suppressed claude_code credential — it will not be re-seeded.")
+        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
+        print("Run `hermes auth add anthropic` to re-enable if needed.")
 
 
 def auth_reset_command(args) -> None:

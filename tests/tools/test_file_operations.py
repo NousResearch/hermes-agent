@@ -333,3 +333,25 @@ class TestShellFileOpsWriteDenied:
         result = file_ops.patch_replace("~/.ssh/authorized_keys", "old", "new")
         assert result.error is not None
         assert "denied" in result.error.lower()
+
+    def test_delete_file_denied_path(self, file_ops):
+        result = file_ops.delete_file("~/.ssh/authorized_keys")
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+
+    def test_move_file_src_denied(self, file_ops):
+        result = file_ops.move_file("~/.ssh/id_rsa", "/tmp/dest.txt")
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+
+    def test_move_file_dst_denied(self, file_ops):
+        result = file_ops.move_file("/tmp/src.txt", "~/.aws/credentials")
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+
+    def test_move_file_failure_path(self, mock_env):
+        mock_env.execute.return_value = {"output": "No such file or directory", "returncode": 1}
+        ops = ShellFileOperations(mock_env)
+        result = ops.move_file("/tmp/nonexistent.txt", "/tmp/dest.txt")
+        assert result.error is not None
+        assert "Failed to move" in result.error

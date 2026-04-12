@@ -79,6 +79,9 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+from hermes_constants import is_termux as _is_termux
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -138,11 +141,8 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
-    anthropic_value = (
-        get_env_value("ANTHROPIC_TOKEN")
-        or get_env_value("ANTHROPIC_API_KEY")
-        or ""
-    )
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_value = get_anthropic_key()
     anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
@@ -302,6 +302,8 @@ def show_status(args):
         "DingTalk": ("DINGTALK_CLIENT_ID", None),
         "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
         "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "WeCom Callback": ("WECOM_CALLBACK_CORP_ID", None),
+        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
         "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
     }
     
@@ -325,7 +327,25 @@ def show_status(args):
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
-    if sys.platform.startswith('linux'):
+    if _is_termux():
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+            gateway_pids = find_gateway_pids()
+        except Exception:
+            gateway_pids = []
+        is_running = bool(gateway_pids)
+        print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
+        print("  Manager:      Termux / manual process")
+        if gateway_pids:
+            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
+            if len(gateway_pids) > 3:
+                rendered += ", ..."
+            print(f"  PID(s):       {rendered}")
+        else:
+            print("  Start with:   hermes gateway")
+            print("  Note:         Android may stop background jobs when Termux is suspended")
+
+    elif sys.platform.startswith('linux'):
         try:
             from hermes_cli.gateway import get_service_name
             _gw_svc = get_service_name()
@@ -339,7 +359,7 @@ def show_status(args):
                 timeout=5
             )
             is_active = result.stdout.strip() == "active"
-        except subprocess.TimeoutExpired:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             is_active = False
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")

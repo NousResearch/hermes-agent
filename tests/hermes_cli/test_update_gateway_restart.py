@@ -191,6 +191,19 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
 
+class TestLaunchdPlistCurrentness:
+    def test_launchd_plist_is_current_ignores_path_drift(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
 # ---------------------------------------------------------------------------
@@ -429,6 +442,8 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(
             gateway_cli, "is_macos", lambda: False,
         )
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -487,7 +502,8 @@ class TestCmdUpdateSystemService:
     ):
         """When user systemd is inactive but a system service exists, restart via system scope."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -516,7 +532,8 @@ class TestCmdUpdateSystemService:
     ):
         """When system service restart fails, show the failure message."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -538,7 +555,8 @@ class TestCmdUpdateSystemService:
     ):
         """When both user and system services are active, both are restarted."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -592,7 +610,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -621,7 +639,8 @@ class TestServicePidExclusion:
     ):
         """After systemd restart, the sweep must exclude the service PID."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
 
         SERVICE_PID = 55000
 
@@ -634,7 +653,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -673,7 +692,7 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
-        def fake_find(exclude_pids=None):
+        def fake_find(exclude_pids=None, all_profiles=False):
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 
@@ -700,7 +719,8 @@ class TestGetServicePids:
     """Unit tests for _get_service_pids()."""
 
     def test_returns_systemd_main_pid(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -749,7 +769,8 @@ class TestGetServicePids:
 
     def test_excludes_zero_pid(self, monkeypatch):
         """systemd returns MainPID=0 for stopped services; skip those."""
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
 
         def fake_run(cmd, **kwargs):
@@ -813,3 +834,28 @@ class TestFindGatewayPidsExclude:
         pids = gateway_cli.find_gateway_pids()
         assert 100 in pids
         assert 200 in pids
+
+    def test_filters_to_current_profile(self, monkeypatch, tmp_path):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=(
+                    "100 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile orcha gateway run --replace\n"
+                    "200 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile other gateway run --replace\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile orcha")
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [100]

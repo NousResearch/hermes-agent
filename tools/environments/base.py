@@ -23,6 +23,19 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+# Thread-local activity callback.  The agent sets this before a tool call so
+# long-running _wait_for_process loops can report liveness to the gateway.
+_activity_callback_local = threading.local()
+
+
+def set_activity_callback(cb: Callable[[str], None] | None) -> None:
+    """Register a callback that _wait_for_process fires periodically."""
+    _activity_callback_local.callback = cb
+
+
+def _get_activity_callback() -> Callable[[str], None] | None:
+    return getattr(_activity_callback_local, "callback", None)
+
 
 def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
@@ -42,8 +55,6 @@ def get_sandbox_dir() -> Path:
 # ---------------------------------------------------------------------------
 # Shared constants and utilities
 # ---------------------------------------------------------------------------
-
-_SYNC_INTERVAL_SECONDS = 5.0
 
 
 def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
@@ -226,19 +237,26 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    def get_temp_dir(self) -> str:
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on platforms like Termux where ``/tmp``
+        may be missing and ``TMPDIR`` is the portable writable location.
+        """
+        return "/tmp"
+
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
 
         self._session_id = uuid.uuid4().hex[:12]
-        self._snapshot_path = f"/tmp/hermes-snap-{self._session_id}.sh"
-        self._cwd_file = f"/tmp/hermes-cwd-{self._session_id}.txt"
+        temp_dir = self.get_temp_dir().rstrip("/") or "/"
+        self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
+        self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
-        self._last_sync_time: float | None = (
-            None  # set to 0 by backends that need file sync
-        )
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -365,6 +383,10 @@ class BaseEnvironment(ABC):
         """Poll-based wait with interrupt checking and stdout draining.
 
         Shared across all backends — not overridden.
+
+        Fires the ``activity_callback`` (if set on this instance) every 10s
+        while the process is running so the gateway's inactivity timeout
+        doesn't kill long-running commands.
         """
         output_chunks: list[str] = []
 
@@ -383,6 +405,8 @@ class BaseEnvironment(ABC):
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
         deadline = time.monotonic() + timeout
+        _last_activity_touch = time.monotonic()
+        _ACTIVITY_INTERVAL = 10.0  # seconds between activity touches
 
         while proc.poll() is None:
             if is_interrupted():
@@ -403,6 +427,17 @@ class BaseEnvironment(ABC):
                     else timeout_msg.lstrip(),
                     "returncode": 124,
                 }
+            # Periodic activity touch so the gateway knows we're alive
+            _now = time.monotonic()
+            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
+                _last_activity_touch = _now
+                _cb = _get_activity_callback()
+                if _cb:
+                    try:
+                        _elapsed = int(_now - (deadline - timeout))
+                        _cb(f"terminal command running ({_elapsed}s elapsed)")
+                    except Exception:
+                        pass
             time.sleep(0.2)
 
         drain_thread.join(timeout=5)
@@ -467,22 +502,14 @@ class BaseEnvironment(ABC):
     # Hooks
     # ------------------------------------------------------------------
 
-    def _before_execute(self):
-        """Rate-limited file sync before each command.
+    def _before_execute(self) -> None:
+        """Hook called before each command execution.
 
-        Backends that need pre-command sync set ``self._last_sync_time = 0``
-        in ``__init__`` and override :meth:`_sync_files`.  Backends needing
-        extra pre-exec logic (e.g. Daytona sandbox restart check) override
-        this method and call ``super()._before_execute()``.
+        Remote backends (SSH, Modal, Daytona) override this to trigger
+        their FileSyncManager.  Bind-mount backends (Docker, Singularity)
+        and Local don't need file sync — the host filesystem is directly
+        visible inside the container/process.
         """
-        if self._last_sync_time is not None:
-            now = time.monotonic()
-            if now - self._last_sync_time >= _SYNC_INTERVAL_SECONDS:
-                self._sync_files()
-                self._last_sync_time = now
-
-    def _sync_files(self):
-        """Push files to remote environment. Called rate-limited by _before_execute."""
         pass
 
     # ------------------------------------------------------------------
@@ -550,9 +577,3 @@ class BaseEnvironment(ABC):
 
         return _transform_sudo_command(command)
 
-    def _timeout_result(self, timeout: int | None) -> dict:
-        """Standard return dict when a command times out."""
-        return {
-            "output": f"Command timed out after {timeout or self.timeout}s",
-            "returncode": 124,
-        }

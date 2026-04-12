@@ -11,7 +11,6 @@ from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
-    _read_skill_conditions,
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
@@ -775,61 +774,6 @@ class TestPromptBuilderConstants:
 # Conditional skill activation
 # =========================================================================
 
-class TestReadSkillConditions:
-    def test_no_conditions_returns_empty_lists(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == []
-        assert conditions["requires_toolsets"] == []
-        assert conditions["fallback_for_tools"] == []
-        assert conditions["requires_tools"] == []
-
-    def test_reads_fallback_for_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["web"]
-
-    def test_reads_requires_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["requires_toolsets"] == ["terminal"]
-
-    def test_reads_multiple_conditions(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["browser"]
-        assert conditions["requires_tools"] == ["terminal"]
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
-
-    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
-
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            conditions = _read_skill_conditions(skill_file)
-
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
-        assert str(skill_file) in caplog.text
-
-
 class TestSkillShouldShow:
     def test_no_filter_info_always_shows(self):
         assert _skill_should_show({}, None, None) is True
@@ -1065,65 +1009,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 
 
-class TestStripBudgetWarningsFromHistory:
-    def test_strips_json_budget_warning_key(self):
-        import json
-        from run_agent import _strip_budget_warnings_from_history
 
-        messages = [
-            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
-                "output": "hello",
-                "exit_code": 0,
-                "_budget_warning": "[BUDGET: Iteration 55/60. 5 iterations left. Start consolidating your work.]",
-            })},
-        ]
-        _strip_budget_warnings_from_history(messages)
-        parsed = json.loads(messages[0]["content"])
-        assert "_budget_warning" not in parsed
-        assert parsed["output"] == "hello"
-        assert parsed["exit_code"] == 0
-
-    def test_strips_text_budget_warning(self):
-        from run_agent import _strip_budget_warnings_from_history
-
-        messages = [
-            {"role": "tool", "tool_call_id": "c1",
-             "content": "some result\n\n[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
-        ]
-        _strip_budget_warnings_from_history(messages)
-        assert messages[0]["content"] == "some result"
-
-    def test_leaves_non_tool_messages_unchanged(self):
-        from run_agent import _strip_budget_warnings_from_history
-
-        messages = [
-            {"role": "assistant", "content": "[BUDGET WARNING: Iteration 58/60. Only 2 iteration(s) left. Provide your final response NOW. No more tool calls unless absolutely critical.]"},
-            {"role": "user", "content": "hello"},
-        ]
-        original_contents = [m["content"] for m in messages]
-        _strip_budget_warnings_from_history(messages)
-        assert [m["content"] for m in messages] == original_contents
-
-    def test_handles_empty_and_missing_content(self):
-        from run_agent import _strip_budget_warnings_from_history
-
-        messages = [
-            {"role": "tool", "tool_call_id": "c1", "content": ""},
-            {"role": "tool", "tool_call_id": "c2"},
-        ]
-        _strip_budget_warnings_from_history(messages)
-        assert messages[0]["content"] == ""
-
-    def test_strips_caution_variant(self):
-        import json
-        from run_agent import _strip_budget_warnings_from_history
-
-        messages = [
-            {"role": "tool", "tool_call_id": "c1", "content": json.dumps({
-                "output": "ok",
-                "_budget_warning": "[BUDGET: Iteration 42/60. 18 iterations left. Start consolidating your work.]",
-            })},
-        ]
-        _strip_budget_warnings_from_history(messages)
-        parsed = json.loads(messages[0]["content"])
-        assert "_budget_warning" not in parsed

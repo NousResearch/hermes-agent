@@ -172,6 +172,87 @@ class TestHTTP413Compression:
         mock_compress.assert_called_once()
         assert result["completed"] is True
 
+    def test_413_clears_conversation_history_on_persist(self, agent):
+        """After 413-triggered compression, _persist_session must receive None history.
+
+        Bug: _compress_context() creates a new session and resets _last_flushed_db_idx=0,
+        but if conversation_history still holds the original (pre-compression) list,
+        _flush_messages_to_session_db computes flush_from = max(len(history), 0) which
+        exceeds len(compressed_messages), so messages[flush_from:] is empty and nothing
+        is written to the new session → "Session found but has no messages" on resume.
+        """
+        err_413 = _make_413_error()
+        ok_resp = _mock_response(content="OK", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_413, ok_resp]
+
+        big_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(200)
+        ]
+
+        persist_calls = []
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda msgs, hist: persist_calls.append(hist),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "summary"}],
+                "compressed prompt",
+            )
+            agent.run_conversation("hello", conversation_history=big_history)
+
+        assert len(persist_calls) >= 1, "Expected at least one _persist_session call"
+        for hist in persist_calls:
+            assert hist is None, (
+                f"conversation_history should be None after mid-loop compression, "
+                f"got list with {len(hist)} items"
+            )
+
+    def test_context_overflow_clears_conversation_history_on_persist(self, agent):
+        """After context-overflow compression, _persist_session must receive None history."""
+        err_400 = Exception(
+            "Error code: 400 - This endpoint's maximum context length is 128000 tokens. "
+            "However, you requested about 270460 tokens."
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="OK", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+
+        big_history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(200)
+        ]
+
+        persist_calls = []
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(
+                agent, "_persist_session",
+                side_effect=lambda msgs, hist: persist_calls.append(hist),
+            ),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "summary"}],
+                "compressed prompt",
+            )
+            agent.run_conversation("hello", conversation_history=big_history)
+
+        assert len(persist_calls) >= 1
+        for hist in persist_calls:
+            assert hist is None, (
+                f"conversation_history should be None after context-overflow compression, "
+                f"got list with {len(hist)} items"
+            )
+
     def test_400_context_length_triggers_compression(self, agent):
         """A 400 with 'maximum context length' should trigger compression, not abort as generic 4xx.
 

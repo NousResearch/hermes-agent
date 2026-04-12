@@ -43,6 +43,8 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes dump` | Copy-pasteable setup summary for support/debugging. |
+| `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
@@ -74,7 +76,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -138,14 +140,18 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Run the gateway in the foreground. |
-| `start` | Start the installed gateway service. |
-| `stop` | Stop the service. |
+| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
+| `start` | Start the installed systemd/launchd background service. |
+| `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
-| `install` | Install as a user service (`systemd` on Linux, `launchd` on macOS). |
+| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+
+:::tip WSL users
+Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
+:::
 
 ## `hermes setup`
 
@@ -271,6 +277,149 @@ hermes doctor [--fix]
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+
+## `hermes dump`
+
+```bash
+hermes dump [--show-keys]
+```
+
+Outputs a compact, plain-text summary of your entire Hermes setup. Designed to be copy-pasted into Discord, GitHub issues, or Telegram when asking for support — no ANSI colors, no special formatting, just data.
+
+| Option | Description |
+|--------|-------------|
+| `--show-keys` | Show redacted API key prefixes (first and last 4 characters) instead of just `set`/`not set`. |
+
+### What it includes
+
+| Section | Details |
+|---------|---------|
+| **Header** | Hermes version, release date, git commit hash |
+| **Environment** | OS, Python version, OpenAI SDK version |
+| **Identity** | Active profile name, HERMES_HOME path |
+| **Model** | Configured default model and provider |
+| **Terminal** | Backend type (local, docker, ssh, etc.) |
+| **API keys** | Presence check for all 22 provider/tool API keys |
+| **Features** | Enabled toolsets, MCP server count, memory provider |
+| **Services** | Gateway status, configured messaging platforms |
+| **Workload** | Cron job counts, installed skill count |
+| **Config overrides** | Any config values that differ from defaults |
+
+### Example output
+
+```
+--- hermes dump ---
+version:          0.8.0 (2026.4.8) [af4abd2f]
+os:               Linux 6.14.0-37-generic x86_64
+python:           3.11.14
+openai_sdk:       2.24.0
+profile:          default
+hermes_home:      ~/.hermes
+model:            anthropic/claude-opus-4.6
+provider:         openrouter
+terminal:         local
+
+api_keys:
+  openrouter           set
+  openai               not set
+  anthropic            set
+  nous                 not set
+  firecrawl            set
+  ...
+
+features:
+  toolsets:           all
+  mcp_servers:        0
+  memory_provider:    built-in
+  gateway:            running (systemd)
+  platforms:          telegram, discord
+  cron_jobs:          3 active / 5 total
+  skills:             42
+
+config_overrides:
+  agent.max_turns: 250
+  compression.threshold: 0.85
+  display.streaming: True
+--- end dump ---
+```
+
+### When to use
+
+- Reporting a bug on GitHub — paste the dump into your issue
+- Asking for help in Discord — share it in a code block
+- Comparing your setup to someone else's
+- Quick sanity check when something isn't working
+
+:::tip
+`hermes dump` is specifically designed for sharing. For interactive diagnostics, use `hermes doctor`. For a visual overview, use `hermes status`.
+:::
+
+## `hermes logs`
+
+```bash
+hermes logs [log_name] [options]
+```
+
+View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/` (or `<profile>/logs/` for non-default profiles).
+
+### Log files
+
+| Name | File | What it captures |
+|------|------|-----------------|
+| `agent` (default) | `agent.log` | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above) |
+| `errors` | `errors.log` | Warnings and errors only — a filtered subset of agent.log |
+| `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes. |
+| `-n`, `--lines <N>` | Number of lines to show (default: 50). |
+| `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
+| `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `--session <ID>` | Filter lines containing a session ID substring. |
+| `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
+
+### Examples
+
+```bash
+# View the last 50 lines of agent.log (default)
+hermes logs
+
+# Follow agent.log in real time
+hermes logs -f
+
+# View the last 100 lines of gateway.log
+hermes logs gateway -n 100
+
+# Show only warnings and errors from the last hour
+hermes logs --level WARNING --since 1h
+
+# Filter by a specific session
+hermes logs --session abc123
+
+# Follow errors.log, starting from 30 minutes ago
+hermes logs errors --since 30m -f
+
+# List all log files with their sizes
+hermes logs list
+```
+
+### Filtering
+
+Filters can be combined. When multiple filters are active, a log line must pass **all** of them to be shown:
+
+```bash
+# WARNING+ lines from the last 2 hours containing session "tg-12345"
+hermes logs --level WARNING --since 2h --session tg-12345
+```
+
+Lines without a parseable timestamp are included when `--since` is active (they may be continuation lines from a multi-line log entry). Lines without a detectable level are included when `--level` is active.
+
+### Log rotation
+
+Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `hermes logs list` subcommand shows all log files including rotated ones.
 
 ## `hermes config`
 
@@ -441,11 +590,14 @@ See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../
 hermes plugins [subcommand]
 ```
 
-Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launches an interactive curses checklist to enable/disable installed plugins.
+Unified plugin management — general plugins, memory providers, and context engines in one place. Running `hermes plugins` with no subcommand opens a composite interactive screen with two sections:
+
+- **General Plugins** — multi-select checkboxes to enable/disable installed plugins
+- **Provider Plugins** — single-select configuration for Memory Provider and Context Engine. Press ENTER on a category to open a radio picker.
 
 | Subcommand | Description |
 |------------|-------------|
-| *(none)* | Interactive toggle UI — enable/disable plugins with arrow keys and space. |
+| *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
 | `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
 | `update <name>` | Pull latest changes for an installed plugin. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
@@ -453,7 +605,11 @@ Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launche
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
 
-Disabled plugins are stored in `config.yaml` under `plugins.disabled` and skipped during loading.
+Provider plugin selections are saved to `config.yaml`:
+- `memory.provider` — active memory provider (empty = built-in only)
+- `context.engine` — active context engine (`"compressor"` = built-in default)
+
+General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 
@@ -504,7 +660,7 @@ hermes insights [--days N] [--source platform]
 hermes claw migrate [options]
 ```
 
-Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moldbot`) and config filenames (`clawdbot.json`, `moldbot.json`).
+Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
 
 | Option | Description |
 |--------|-------------|

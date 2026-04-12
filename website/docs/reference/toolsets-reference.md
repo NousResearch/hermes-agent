@@ -103,6 +103,8 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-dingtalk` | Same as `hermes-cli`. |
 | `hermes-feishu` | Same as `hermes-cli`. |
 | `hermes-wecom` | Same as `hermes-cli`. |
+| `hermes-wecom-callback` | WeCom callback toolset — enterprise self-built app messaging (full access). |
+| `hermes-weixin` | Same as `hermes-cli`. |
 | `hermes-bluebubbles` | Same as `hermes-cli`. |
 | `hermes-homeassistant` | Same as `hermes-cli`. |
 | `hermes-webhook` | Same as `hermes-cli`. |

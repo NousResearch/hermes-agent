@@ -153,13 +153,14 @@ gateway/platforms/
 ├── slack.py             # Slack Socket Mode
 ├── whatsapp.py          # WhatsApp Business Cloud API
 ├── signal.py            # Signal via signal-cli REST API
-├── matrix.py            # Matrix via matrix-nio (optional E2EE)
+├── matrix.py            # Matrix via mautrix (optional E2EE)
 ├── mattermost.py        # Mattermost WebSocket API
 ├── email.py             # Email via IMAP/SMTP
 ├── sms.py               # SMS via Twilio
 ├── dingtalk.py          # DingTalk WebSocket
 ├── feishu.py            # Feishu/Lark WebSocket or webhook
 ├── wecom.py             # WeCom (WeChat Work) callback
+├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
 ├── webhook.py           # Inbound/outbound webhook adapter
 ├── api_server.py        # REST API server adapter

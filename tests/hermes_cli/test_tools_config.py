@@ -354,6 +354,14 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
+    # import) from adding extra platforms. The loop in tools_command runs
+    # apply_nous_managed_defaults per platform; a second iteration sees values
+    # set by the first as "explicit" and skips them.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_auth_status",
         lambda: {"logged_in": True},
@@ -420,3 +428,31 @@ class TestPlatformToolsetConsistency:
                 f"Platform {platform!r} in tools_config but missing from "
                 f"skills_config PLATFORMS"
             )
+
+
+def test_numeric_mcp_server_name_does_not_crash_sorted():
+    """YAML parses bare numeric keys (e.g. ``12306:``) as int.
+
+    _get_platform_tools must normalise them to str so that sorted()
+    on the returned set never raises TypeError on mixed int/str.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/6901
+    """
+    config = {
+        "platform_toolsets": {"cli": ["web", 12306]},
+        "mcp_servers": {
+            12306: {"url": "https://example.com/mcp"},
+            "normal-server": {"url": "https://example.com/mcp2"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # All names must be str — no int leaking through
+    assert all(isinstance(name, str) for name in enabled), (
+        f"Non-string toolset names found: {enabled}"
+    )
+    assert "12306" in enabled
+
+    # sorted() must not raise TypeError
+    sorted(enabled)

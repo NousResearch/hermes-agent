@@ -56,7 +56,7 @@ class FakeTree:
 
 
 class FakeBot:
-    def __init__(self, *, intents):
+    def __init__(self, *, intents, proxy=None):
         self.intents = intents
         self.user = SimpleNamespace(id=999, name="Hermes")
         self._events = {}
@@ -72,6 +72,26 @@ class FakeBot:
 
     async def close(self):
         return None
+
+
+class SlowSyncTree(FakeTree):
+    def __init__(self):
+        super().__init__()
+        self.started = asyncio.Event()
+        self.allow_finish = asyncio.Event()
+
+        async def _slow_sync():
+            self.started.set()
+            await self.allow_finish.wait()
+            return []
+
+        self.sync = AsyncMock(side_effect=_slow_sync)
+
+
+class SlowSyncBot(FakeBot):
+    def __init__(self, *, intents, proxy=None):
+        super().__init__(intents=intents, proxy=proxy)
+        self.tree = SlowSyncTree()
 
 
 @pytest.mark.asyncio
@@ -95,7 +115,7 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     created = {}
 
-    def fake_bot_factory(*, command_prefix, intents):
+    def fake_bot_factory(*, command_prefix, intents, proxy=None):
         created["bot"] = FakeBot(intents=intents)
         return created["bot"]
 
@@ -124,7 +144,7 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     monkeypatch.setattr(
         discord_platform.commands,
         "Bot",
-        lambda **kwargs: FakeBot(intents=kwargs["intents"]),
+        lambda **kwargs: FakeBot(intents=kwargs["intents"], proxy=kwargs.get("proxy")),
     )
 
     async def fake_wait_for(awaitable, timeout):
@@ -137,4 +157,37 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
 
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
-    assert adapter._token_lock_identity is None
+    assert adapter._platform_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None):
+        bot = SlowSyncBot(intents=intents, proxy=proxy)
+        created["bot"] = bot
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await asyncio.wait_for(adapter.connect(), timeout=1.0)
+
+    assert ok is True
+    assert adapter._ready_event.is_set()
+
+    await asyncio.wait_for(created["bot"].tree.started.wait(), timeout=1.0)
+    assert created["bot"].tree.sync.await_count == 1
+
+    created["bot"].tree.allow_finish.set()
+    await asyncio.sleep(0)
+    await adapter.disconnect()

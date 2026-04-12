@@ -150,6 +150,12 @@ class TestNormalizeModelForProvider:
         assert changed is False
         assert cli.model == "gpt-5.4"
 
+    def test_native_provider_prefix_is_stripped_before_agent_startup(self):
+        cli = _make_cli(model="zai/glm-5.1")
+        changed = cli._normalize_model_for_provider("zai")
+        assert changed is True
+        assert cli.model == "glm-5.1"
+
     def test_bare_codex_model_passes_through(self):
         cli = _make_cli(model="gpt-5.3-codex")
         changed = cli._normalize_model_for_provider("openai-codex")

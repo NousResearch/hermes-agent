@@ -102,6 +102,21 @@ class TestAggregatorProviders:
         assert result == "anthropic/claude-sonnet-4.6"
 
 
+class TestIssue6211NativeProviderPrefixNormalization:
+    @pytest.mark.parametrize("model,target_provider,expected", [
+        ("zai/glm-5.1", "zai", "glm-5.1"),
+        ("google/gemini-2.5-pro", "gemini", "google/gemini-2.5-pro"),
+        ("moonshot/kimi-k2.5", "kimi-coding", "kimi-k2.5"),
+        ("anthropic/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
+        ("Qwen/Qwen3.5-397B-A17B", "huggingface", "Qwen/Qwen3.5-397B-A17B"),
+        ("modal/zai-org/GLM-5-FP8", "custom", "modal/zai-org/GLM-5-FP8"),
+    ])
+    def test_native_provider_prefixes_are_only_stripped_on_matching_provider(
+        self, model, target_provider, expected
+    ):
+        assert normalize_model_for_provider(model, target_provider) == expected
+
+
 # ── detect_vendor ──────────────────────────────────────────────────────
 
 class TestDetectVendor:

@@ -40,11 +40,18 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
 
 
 def get_current_session_key(default: str = "default") -> str:
-    """Return the active session key, preferring context-local state."""
+    """Return the active session key, preferring context-local state.
+
+    Resolution order:
+    1. approval-specific contextvars (set by gateway before agent.run)
+    2. session_context contextvars (set by _set_session_env)
+    3. os.environ fallback (CLI, cron, tests)
+    """
     session_key = _approval_session_key.get()
     if session_key:
         return session_key
-    return os.getenv("HERMES_SESSION_KEY", default)
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_KEY", default)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -99,10 +106,30 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # Self-termination via kill + command substitution (pgrep/pidof).
+    # The name-based pattern above catches `pkill hermes` but not
+    # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
+    # to regex at detection time. Catch the structural pattern instead.
+    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
+    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
+    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
+    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Git destructive operations that can lose uncommitted work or rewrite
+    # shared history. Not captured by rm/chmod/etc patterns.
+    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Script execution after chmod +x — catches the two-step pattern where
+    # a script is first made executable then immediately run. The script
+    # content may contain dangerous commands that individual patterns miss.
+    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
 ]
 
 
@@ -172,6 +199,7 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+_session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -257,34 +285,45 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
-def pending_approval_count(session_key: str) -> int:
-    """Return the number of pending blocking approvals for a session."""
-    with _lock:
-        return len(_gateway_queues.get(session_key, []))
-
-
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
         _pending[session_key] = approval
 
 
-def pop_pending(session_key: str) -> Optional[dict]:
-    """Retrieve and remove a pending approval for a session."""
-    with _lock:
-        return _pending.pop(session_key, None)
-
-
-def has_pending(session_key: str) -> bool:
-    """Check if a session has a pending approval request."""
-    with _lock:
-        return session_key in _pending
-
-
 def approve_session(session_key: str, pattern_key: str):
     """Approve a pattern for this session only."""
     with _lock:
         _session_approved.setdefault(session_key, set()).add(pattern_key)
+
+
+def enable_session_yolo(session_key: str) -> None:
+    """Enable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.add(session_key)
+
+
+def disable_session_yolo(session_key: str) -> None:
+    """Disable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.discard(session_key)
+
+
+def is_session_yolo_enabled(session_key: str) -> bool:
+    """Return True when YOLO bypass is enabled for a specific session."""
+    if not session_key:
+        return False
+    with _lock:
+        return session_key in _session_yolo
+
+
+def is_current_session_yolo_enabled() -> bool:
+    """Return True when the active approval session has YOLO bypass enabled."""
+    return is_session_yolo_enabled(get_current_session_key(default=""))
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:
@@ -317,12 +356,14 @@ def clear_session(session_key: str):
     """Clear all approvals and pending requests for a session."""
     with _lock:
         _session_approved.pop(session_key, None)
+        _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         _gateway_notify_cbs.pop(session_key, None)
         # Signal ALL blocked threads so they don't hang forever
         entries = _gateway_queues.pop(session_key, [])
         for entry in entries:
             entry.event.set()
+
 
 
 # =========================================================================
@@ -342,7 +383,8 @@ def load_permanent_allowlist() -> set:
         if patterns:
             load_permanent(patterns)
         return patterns
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e)
         return set()
 
 
@@ -384,7 +426,8 @@ def prompt_dangerous_approval(command: str, description: str,
         try:
             return approval_callback(command, description,
                                      allow_permanent=allow_permanent)
-        except Exception:
+        except Exception as e:
+            logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
@@ -466,7 +509,8 @@ def _get_approval_config() -> dict:
         from hermes_cli.config import load_config
         config = load_config()
         return config.get("approvals", {}) or {}
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load approval config: %s", e)
         return {}
 
 
@@ -554,8 +598,9 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo: bypass all approval prompts
-    if os.getenv("HERMES_YOLO_MODE"):
+    # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
+    # CLI --yolo remains process-scoped via the env var for local use.
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -655,9 +700,10 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts
+    # --yolo or approvals.mode=off: bypass all approval prompts.
+    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")

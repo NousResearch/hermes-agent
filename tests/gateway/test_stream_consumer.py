@@ -438,6 +438,45 @@ class TestSegmentBreakOnToolBoundary:
         assert adapter.send.call_count == 1
 
     @pytest.mark.asyncio
+    async def test_no_message_id_segment_breaks_do_not_resend(self):
+        """On a platform that never returns a message_id (e.g. webhook with
+        github_comment delivery), tool-call segment breaks must NOT trigger
+        a new adapter.send() per boundary.  The fix: _message_id == '__no_edit__'
+        suppresses the reset so all text accumulates and is sent once."""
+        adapter = MagicMock()
+        # No message_id on first send, then one more for the fallback final
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id=None),
+            SimpleNamespace(success=True, message_id=None),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        # Simulate: text → tool boundary → text → tool boundary → text (3 segments)
+        consumer.on_delta("Phase 1 text")
+        consumer.on_delta(None)   # tool call boundary
+        consumer.on_delta("Phase 2 text")
+        consumer.on_delta(None)   # another tool call boundary
+        consumer.on_delta("Phase 3 text")
+        consumer.finish()
+
+        await consumer.run()
+
+        # Before the fix this would post 3 comments (one per segment).
+        # After the fix: only the initial partial + one fallback-final continuation.
+        assert adapter.send.call_count == 2, (
+            f"Expected 2 sends (initial + fallback), got {adapter.send.call_count}"
+        )
+        assert consumer.already_sent
+        # The continuation must contain the text from segments 2 and 3
+        final_text = adapter.send.call_args_list[1][1]["content"]
+        assert "Phase 2" in final_text
+        assert "Phase 3" in final_text
+
+    @pytest.mark.asyncio
     async def test_fallback_final_splits_long_continuation_without_dropping_text(self):
         """Long continuation tails should be chunked when fallback final-send runs."""
         adapter = MagicMock()
@@ -466,3 +505,81 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+
+
+class TestInterimCommentaryMessages:
+    @pytest.mark.asyncio
+    async def test_commentary_message_stays_separate_from_final_stream(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_commentary("I'll inspect the repository first.")
+        consumer.on_delta("Done.")
+        consumer.finish()
+
+        await consumer.run()
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["I'll inspect the repository first.", "Done."]
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_failed_final_send_does_not_mark_final_response_sent(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=False, message_id=None))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_delta("Done.")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert consumer.final_response_sent is False
+        assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_success_without_message_id_marks_visible_and_sends_only_tail(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id=None),
+            SimpleNamespace(success=True, message_id=None),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" world")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["Hello ▉", "world"]
+        assert consumer.already_sent is True
+        assert consumer.final_response_sent is True

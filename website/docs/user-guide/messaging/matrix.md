@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Matrix bot"
 
 # Matrix Setup
 
-Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `matrix-nio` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
+Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
 
 Hermes works with any Matrix homeserver — Synapse, Conduit, Dendrite, or matrix.org.
 
@@ -16,7 +16,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
@@ -62,6 +62,7 @@ matrix:
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
   auto_thread: true               # Auto-create threads for responses (default: true)
+  dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
 ```
 
 Or via environment variables:
@@ -70,6 +71,7 @@ Or via environment variables:
 MATRIX_REQUIRE_MENTION=true
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
 MATRIX_AUTO_THREAD=true
+MATRIX_DM_MENTION_THREADS=false
 ```
 
 :::note
@@ -232,11 +234,11 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `matrix-nio` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
 
 ```bash
-# Install matrix-nio with E2EE support
-pip install 'matrix-nio[e2e]'
+# Install mautrix with E2EE support
+pip install 'mautrix[encryption]'
 
 # Or install with hermes extras
 pip install 'hermes-agent[matrix]'
@@ -275,7 +277,7 @@ If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses i
 :::
 
 :::info
-If `matrix-nio[e2e]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
 ## Home Room
@@ -319,14 +321,14 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 If this returns your user info, the token is valid. If it returns an error, generate a new token.
 
-### "matrix-nio not installed" error
+### "mautrix not installed" error
 
-**Cause**: The `matrix-nio` Python package is not installed.
+**Cause**: The `mautrix` Python package is not installed.
 
 **Fix**: Install it:
 
 ```bash
-pip install 'matrix-nio[e2e]'
+pip install 'mautrix[encryption]'
 ```
 
 Or with Hermes extras:
@@ -342,8 +344,78 @@ pip install 'hermes-agent[matrix]'
 **Fix**:
 1. Verify `libolm` is installed on your system (see the E2EE section above).
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
-3. In your Matrix client (Element), go to the bot's profile → **Sessions** → verify/trust the bot's device.
+3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
+
+### Upgrading from a previous version with E2EE
+
+If you previously used Hermes with `MATRIX_ENCRYPTION=true` and are upgrading to
+a version that uses the new SQLite-based crypto store, the bot's encryption
+identity has changed. Your Matrix client (Element) may cache the old device keys
+and refuse to share encryption sessions with the bot.
+
+**Symptoms**: The bot connects and shows "E2EE enabled" in the logs, but all
+messages show "could not decrypt event" and the bot never responds.
+
+**What's happening**: The old encryption state (from the previous `matrix-nio` or
+serialization-based `mautrix` backend) is incompatible with the new SQLite crypto
+store. The bot creates a fresh encryption identity, but your Matrix client still
+has the old keys cached and won't share the room's encryption session with a
+device whose keys changed. This is a Matrix security feature -- clients treat
+changed identity keys for the same device as suspicious.
+
+**Fix** (one-time migration):
+
+1. **Generate a new access token** to get a fresh device ID. The simplest way:
+
+   ```bash
+   curl -X POST https://your-server/_matrix/client/v3/login \
+     -H "Content-Type: application/json" \
+     -d '{
+       "type": "m.login.password",
+       "identifier": {"type": "m.id.user", "user": "@hermes:your-server.org"},
+       "password": "your-password",
+       "initial_device_display_name": "Hermes Agent"
+     }'
+   ```
+
+   Copy the new `access_token` and update `MATRIX_ACCESS_TOKEN` in `~/.hermes/.env`.
+
+2. **Delete old encryption state**:
+
+   ```bash
+   rm -f ~/.hermes/platforms/matrix/store/crypto.db
+   rm -f ~/.hermes/platforms/matrix/store/crypto_store.*
+   ```
+
+3. **Force your Matrix client to rotate the encryption session**. In Element,
+   open the DM room with the bot and type `/discardsession`. This forces Element
+   to create a new encryption session and share it with the bot's new device.
+
+4. **Restart the gateway**:
+
+   ```bash
+   hermes gateway run
+   ```
+
+5. **Send a new message**. The bot should decrypt and respond normally.
+
+:::note
+After migration, messages sent *before* the upgrade cannot be decrypted -- the old
+encryption keys are gone. This only affects the transition; new messages work
+normally.
+:::
+
+:::tip
+**New installations are not affected.** This migration is only needed if you had
+a working E2EE setup with a previous version of Hermes and are upgrading.
+
+**Why a new access token?** Each Matrix access token is bound to a specific device
+ID. Reusing the same device ID with new encryption keys causes other Matrix
+clients to distrust the device (they see changed identity keys as a potential
+security breach). A new access token gets a new device ID with no stale key
+history, so other clients trust it immediately.
+:::
 
 ### Sync issues / bot falls behind
 

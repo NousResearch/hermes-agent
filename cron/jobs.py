@@ -672,26 +672,51 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
+            schedule = job.get("schedule", {})
             recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
+                schedule,
                 now,
                 last_run_at=job.get("last_run_at"),
             )
             if not recovered_next:
-                continue
-
-            job["next_run_at"] = recovered_next
-            next_run = recovered_next
-            logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
-                job.get("name", job["id"]),
-                recovered_next,
-            )
-            for rj in raw_jobs:
-                if rj["id"] == job["id"]:
-                    rj["next_run_at"] = recovered_next
-                    needs_save = True
-                    break
+                # Recurring jobs (cron/interval) with null next_run_at would
+                # otherwise be silently skipped forever. Compute from schedule.
+                kind = schedule.get("kind")
+                if kind in ("cron", "interval"):
+                    computed = compute_next_run(schedule, now.isoformat())
+                    if computed:
+                        logger.warning(
+                            "Job '%s' (%s) had null next_run_at; auto-computed %s",
+                            job.get("name", job["id"]), kind, computed,
+                        )
+                        job["next_run_at"] = computed
+                        next_run = computed
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = computed
+                                needs_save = True
+                                break
+                    else:
+                        logger.warning(
+                            "Job '%s' (%s) has null next_run_at and compute_next_run returned None; job will not fire",
+                            job.get("name", job["id"]), kind,
+                        )
+                        continue
+                else:
+                    continue
+            else:
+                job["next_run_at"] = recovered_next
+                next_run = recovered_next
+                logger.info(
+                    "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                    job.get("name", job["id"]),
+                    recovered_next,
+                )
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        rj["next_run_at"] = recovered_next
+                        needs_save = True
+                        break
 
         next_run_dt = _ensure_aware(datetime.fromisoformat(next_run))
         if next_run_dt <= now:

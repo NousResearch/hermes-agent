@@ -33,6 +33,27 @@ from typing import Dict, Optional, Any, List
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
 # ---------------------------------------------------------------------------
+def _launch_task(coro, *, name: str | None = None):
+    """Wrap asyncio.create_task with a done-callback that logs exceptions.
+
+    Bare `asyncio.create_task(coro)` swallows exceptions silently if the
+    returned Task is never awaited. This helper ensures any uncaught
+    exception is logged so operators see long-running background task
+    failures instead of learning about them indirectly.
+    """
+    task = asyncio.create_task(coro, name=name) if name else asyncio.create_task(coro)
+
+    def _log_exc(t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.error("Background task %s failed: %s", t.get_name(), exc, exc_info=exc)
+
+    task.add_done_callback(_log_exc)
+    return task
+
+
 def _ensure_ssl_certs() -> None:
     """Set SSL_CERT_FILE if the system doesn't expose CA certs to Python."""
     if "SSL_CERT_FILE" in os.environ:
@@ -232,47 +253,22 @@ from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
 
 
+# WhatsApp identifier helpers live in gateway.auth. Re-exported here as
+# backwards-compatibility shims for any caller that still imports them from
+# gateway.run; new code should import from gateway.auth directly.
+from gateway.auth import (
+    expand_whatsapp_auth_aliases as _gw_auth_expand_whatsapp_aliases,
+    is_user_authorized as _gw_auth_is_user_authorized,
+    normalize_whatsapp_identifier as _gw_auth_normalize_whatsapp_identifier,
+)
+
+
 def _normalize_whatsapp_identifier(value: str) -> str:
-    """Strip WhatsApp JID/LID syntax down to its stable numeric identifier."""
-    return (
-        str(value or "")
-        .strip()
-        .replace("+", "", 1)
-        .split(":", 1)[0]
-        .split("@", 1)[0]
-    )
+    return _gw_auth_normalize_whatsapp_identifier(value)
 
 
 def _expand_whatsapp_auth_aliases(identifier: str) -> set:
-    """Resolve WhatsApp phone/LID aliases using bridge session mapping files."""
-    normalized = _normalize_whatsapp_identifier(identifier)
-    if not normalized:
-        return set()
-
-    session_dir = _hermes_home / "whatsapp" / "session"
-    resolved = set()
-    queue = [normalized]
-
-    while queue:
-        current = queue.pop(0)
-        if not current or current in resolved:
-            continue
-
-        resolved.add(current)
-        for suffix in ("", "_reverse"):
-            mapping_path = session_dir / f"lid-mapping-{current}{suffix}.json"
-            if not mapping_path.exists():
-                continue
-            try:
-                mapped = _normalize_whatsapp_identifier(
-                    json.loads(mapping_path.read_text(encoding="utf-8"))
-                )
-            except Exception:
-                continue
-            if mapped and mapped not in resolved:
-                queue.append(mapped)
-
-    return resolved
+    return _gw_auth_expand_whatsapp_aliases(identifier, _hermes_home)
 
 logger = logging.getLogger(__name__)
 
@@ -1283,13 +1279,13 @@ class GatewayRunner:
             from tools.process_registry import process_registry
             while process_registry.pending_watchers:
                 watcher = process_registry.pending_watchers.pop(0)
-                asyncio.create_task(self._run_process_watcher(watcher))
+                _launch_task(self._run_process_watcher(watcher), name=f"process_watcher:{watcher.get('session_id')}")
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher for proactive memory flushing
-        asyncio.create_task(self._session_expiry_watcher())
+        _launch_task(self._session_expiry_watcher(), name="session_expiry_watcher")
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -1298,7 +1294,7 @@ class GatewayRunner:
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        _launch_task(self._platform_reconnect_watcher(), name="platform_reconnect_watcher")
 
         logger.info("Press Ctrl+C to stop")
         
@@ -1668,105 +1664,8 @@ class GatewayRunner:
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
-        """
-        Check if a user is authorized to use the bot.
-        
-        Checks in order:
-        1. Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        2. Environment variable allowlists (TELEGRAM_ALLOWED_USERS, etc.)
-        3. DM pairing approved list
-        4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
-        5. Default: deny
-        """
-        # Home Assistant events are system-generated (state changes), not
-        # user-initiated messages.  The HASS_TOKEN already authenticates the
-        # connection, so HA events are always authorized.
-        # Webhook events are authenticated via HMAC signature validation in
-        # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
-            return True
-
-        user_id = source.user_id
-        if not user_id:
-            return False
-
-        platform_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
-            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-            Platform.SLACK: "SLACK_ALLOWED_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
-            Platform.WECOM: "WECOM_ALLOWED_USERS",
-        }
-        platform_allow_all_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
-            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
-            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
-            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
-            Platform.SMS: "SMS_ALLOW_ALL_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
-            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
-            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
-            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
-        }
-
-        # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
-            return True
-
-        # Check pairing store (always checked, regardless of allowlists)
-        platform_name = source.platform.value if source.platform else ""
-        if self.pairing_store.is_approved(platform_name, user_id):
-            return True
-
-        # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
-
-        if not platform_allowlist and not global_allowlist:
-            # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
-
-        # Check if user is in any allowlist
-        allowed_ids = set()
-        if platform_allowlist:
-            allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
-        if global_allowlist:
-            allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
-
-        # "*" in any allowlist means allow everyone (consistent with
-        # SIGNAL_GROUP_ALLOWED_USERS precedent)
-        if "*" in allowed_ids:
-            return True
-
-        check_ids = {user_id}
-        if "@" in user_id:
-            check_ids.add(user_id.split("@")[0])
-
-        # WhatsApp: resolve phone↔LID aliases from bridge session mapping files
-        if source.platform == Platform.WHATSAPP:
-            normalized_allowed_ids = set()
-            for allowed_id in allowed_ids:
-                normalized_allowed_ids.update(_expand_whatsapp_auth_aliases(allowed_id))
-            if normalized_allowed_ids:
-                allowed_ids = normalized_allowed_ids
-
-            check_ids.update(_expand_whatsapp_auth_aliases(user_id))
-            normalized_user_id = _normalize_whatsapp_identifier(user_id)
-            if normalized_user_id:
-                check_ids.add(normalized_user_id)
-
-        return bool(check_ids & allowed_ids)
+        """Delegate to gateway.auth.is_user_authorized (see module docstring)."""
+        return _gw_auth_is_user_authorized(source, self.pairing_store, _hermes_home)
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
@@ -1847,7 +1746,17 @@ class GatewayRunner:
         # object has no activity tracker and wall-clock age is extreme).
         _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
         _stale_ts = getattr(self, "_running_agents_ts", {}).get(_quick_key, 0)
-        if _quick_key in self._running_agents and _stale_ts:
+        # Never run stale-eviction against the pending sentinel. The sentinel
+        # is a plain `object()` (no get_activity_summary), so _stale_idle
+        # stays at float('inf'), which satisfies `_stale_idle >= timeout`
+        # and evicts a 0-second-old sentinel on the first concurrent
+        # message. The sentinel owns its own lifecycle via try/finally in
+        # _handle_message_with_agent.
+        if (
+            _quick_key in self._running_agents
+            and _stale_ts
+            and self._running_agents.get(_quick_key) is not _AGENT_PENDING_SENTINEL
+        ):
             _stale_age = time.time() - _stale_ts
             _stale_agent = self._running_agents.get(_quick_key)
             _stale_idle = float("inf")  # assume idle if we can't check

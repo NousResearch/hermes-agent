@@ -117,7 +117,10 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             if resolved:
                 chat_id = resolved
         except Exception:
-            pass
+            logger.warning(
+                "cron channel name resolution failed for %s/%s",
+                platform_name, chat_id, exc_info=True,
+            )
 
         return {
             "platform": platform_name,

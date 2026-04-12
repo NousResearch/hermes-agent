@@ -111,3 +111,18 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
 ]
 addopts = "-m 'not integration' -n auto"
+
+[tool.mypy]
+# Opt-in type checking. Start with strict-optional on critical paths
+# (gateway/ and agent/). Expand coverage over time; the rest of the tree
+# is excluded until it's been audited.
+python_version = "3.11"
+strict_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+files = ["gateway", "agent"]
+
+[[tool.mypy.overrides]]
+module = ["gateway.*", "agent.*"]
+check_untyped_defs = true

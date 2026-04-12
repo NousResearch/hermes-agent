@@ -51,7 +51,7 @@ class _FakeAgent:
         self.session_cost_source = "openrouter"
         self.context_compressor = _FakeCompressor()
 
-    def reset_session_state(self):
+    def reset_session_state(self, previous_messages=None, old_session_id=None, carry_over_context=False):
         """Mirror the real AIAgent.reset_session_state()."""
         self.session_total_tokens = 0
         self.session_input_tokens = 0

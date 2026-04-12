@@ -4114,6 +4114,7 @@ class HermesCLI:
             except Exception:
                 pass
 
+        _old_history = list(self.conversation_history)
         self.session_start = datetime.now()
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
         short_uuid = uuid.uuid4().hex[:6]
@@ -4125,7 +4126,11 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=old_session_id,
+                carry_over_context=True,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
@@ -4193,6 +4198,8 @@ class HermesCLI:
             pass
 
         # Switch to the target session
+        _old_history = list(self.conversation_history)
+        _old_agent_session_id = getattr(self.agent, "session_id", None) if self.agent else None
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
@@ -4211,7 +4218,11 @@ class HermesCLI:
         # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=_old_agent_session_id,
+                carry_over_context=False,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
@@ -4316,6 +4327,8 @@ class HermesCLI:
             pass
 
         # Switch to the new session
+        _old_history = list(self.conversation_history)
+        _old_agent_session_id = getattr(self.agent, "session_id", None) if self.agent else None
         self.session_id = new_session_id
         self.session_start = now
         self._pending_title = None
@@ -4325,7 +4338,11 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
-            self.agent.reset_session_state()
+            self.agent.reset_session_state(
+                previous_messages=_old_history,
+                old_session_id=_old_agent_session_id,
+                carry_over_context=False,
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):

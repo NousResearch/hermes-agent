@@ -25,6 +25,7 @@ import base64
 import concurrent.futures
 import copy
 import hashlib
+import inspect
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -1349,7 +1350,8 @@ class AIAgent:
             # Try general plugin system as fallback
             if _selected_engine is None:
                 try:
-                    from hermes_cli.plugins import get_plugin_context_engine
+                    from hermes_cli.plugins import discover_plugins, get_plugin_context_engine
+                    discover_plugins()
                     _candidate = get_plugin_context_engine()
                     if _candidate and _candidate.name == _engine_name:
                         _selected_engine = _candidate
@@ -1398,6 +1400,28 @@ class AIAgent:
                 provider=self.provider,
                 api_mode=self.api_mode,
             )
+
+        # Ensure the active context engine knows the live model/runtime details.
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                _engine_context_length = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    provider=self.provider,
+                    config_context_length=_config_context_length,
+                )
+                self.context_compressor.update_model(
+                    model=self.model,
+                    context_length=_engine_context_length,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    provider=self.provider,
+                )
+            except Exception as _ce_model_err:
+                logger.debug("Context engine update_model during init: %s", _ce_model_err)
         self.compression_enabled = compression_enabled
 
         # Reject models whose context window is below the minimum required
@@ -1525,7 +1549,12 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
-    def reset_session_state(self):
+    def reset_session_state(
+        self,
+        previous_messages: list | None = None,
+        old_session_id: str | None = None,
+        carry_over_context: bool = False,
+    ):
         """Reset all session-scoped token counters to 0 for a fresh session.
         
         This method encapsulates the reset logic for all session-level metrics
@@ -1543,6 +1572,12 @@ class AIAgent:
         This keeps the counter reset logic DRY and maintainable in one place
         rather than scattering it across multiple methods.
         """
+        if hasattr(self, "context_compressor") and self.context_compressor and previous_messages is not None:
+            try:
+                self.context_compressor.on_session_end(old_session_id or self.session_id or "", previous_messages)
+            except Exception:
+                pass
+
         # Token usage counters
         self.session_total_tokens = 0
         self.session_input_tokens = 0
@@ -1563,6 +1598,21 @@ class AIAgent:
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
+            try:
+                self.context_compressor.on_session_start(
+                    self.session_id,
+                    hermes_home=str(get_hermes_home()),
+                    platform=self.platform or "cli",
+                    model=self.model,
+                    context_length=getattr(self.context_compressor, "context_length", 0),
+                )
+            except Exception:
+                pass
+            if carry_over_context and old_session_id and hasattr(self.context_compressor, "carry_over_new_session_context"):
+                try:
+                    self.context_compressor.carry_over_new_session_context(old_session_id, self.session_id)
+                except Exception:
+                    pass
     
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
@@ -6824,7 +6874,30 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        _compress_kwargs = {"current_tokens": approx_tokens}
+        if focus_topic is not None:
+            _supports_focus_topic = False
+            try:
+                _sig = inspect.signature(self.context_compressor.compress)
+                _supports_focus_topic = (
+                    "focus_topic" in _sig.parameters
+                    or any(
+                        param.kind == inspect.Parameter.VAR_KEYWORD
+                        for param in _sig.parameters.values()
+                    )
+                )
+            except (TypeError, ValueError):
+                _supports_focus_topic = False
+
+            if _supports_focus_topic:
+                _compress_kwargs["focus_topic"] = focus_topic
+            else:
+                logger.debug(
+                    "Context engine '%s' does not accept focus_topic; compressing without it",
+                    getattr(self.context_compressor, "name", type(self.context_compressor).__name__),
+                )
+
+        compressed = self.context_compressor.compress(messages, **_compress_kwargs)
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

@@ -119,3 +119,46 @@ class TestResetSessionState:
         agent.reset_session_state()
 
         assert agent._user_turn_count == 0
+
+    def test_plugin_context_engine_restarts_with_new_session_id(self):
+        """Plugin engines should be re-bound to the agent's current session after /new."""
+        agent = _make_minimal_agent()
+        agent.session_id = "new-session-id"
+        agent.platform = "cli"
+        agent.model = "test-model"
+
+        class FakePluginEngine:
+            def __init__(self):
+                self.context_length = 1234
+                self.reset_called = False
+                self.started_with = None
+                self.ended_with = None
+                self.carried_over = None
+
+            def on_session_end(self, session_id, messages):
+                self.ended_with = (session_id, list(messages))
+
+            def on_session_reset(self):
+                self.reset_called = True
+
+            def on_session_start(self, session_id, **kwargs):
+                self.started_with = (session_id, kwargs)
+
+            def carry_over_new_session_context(self, old_session_id, new_session_id):
+                self.carried_over = (old_session_id, new_session_id)
+
+        engine = FakePluginEngine()
+        agent.context_compressor = engine
+
+        agent.reset_session_state(
+            previous_messages=[{"role": "user", "content": "old stuff"}],
+            old_session_id="old-session-id",
+            carry_over_context=True,
+        )
+
+        assert engine.ended_with == ("old-session-id", [{"role": "user", "content": "old stuff"}])
+        assert engine.reset_called is True
+        assert engine.started_with is not None
+        assert engine.started_with[0] == "new-session-id"
+        assert engine.started_with[1]["context_length"] == 1234
+        assert engine.carried_over == ("old-session-id", "new-session-id")

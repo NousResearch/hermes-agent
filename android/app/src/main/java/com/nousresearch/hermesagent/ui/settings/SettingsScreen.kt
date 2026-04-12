@@ -94,7 +94,7 @@ fun SettingsScreen(
                             value = uiState.provider,
                             onValueChange = {},
                             readOnly = true,
-                            label = { Text("Provider") },
+                            label = { Text(strings.providerLabel()) },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                             modifier = Modifier
                                 .menuAnchor()
@@ -119,40 +119,45 @@ fun SettingsScreen(
                         }
                     }
                     Text(
-                        "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup.",
+                        strings.providerDirectCallHelp(),
                         style = MaterialTheme.typography.bodySmall,
                     )
 
                     OutlinedTextField(
                         value = uiState.baseUrl,
                         onValueChange = viewModel::updateBaseUrl,
-                        label = { Text("Base URL") },
+                        label = { Text(strings.baseUrlLabel()) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "Default for ${selectedPreset?.label ?: uiState.provider}: ${selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional"}",
+                        strings.defaultBaseUrlSummary(
+                            selectedPreset?.label ?: uiState.provider,
+                            selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional",
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                     )
 
                     OutlinedTextField(
                         value = uiState.model,
                         onValueChange = viewModel::updateModel,
-                        label = { Text("Model") },
+                        label = { Text(strings.modelLabel()) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "Suggested model: ${selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model"}",
+                        strings.suggestedModelSummary(
+                            selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model",
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                     )
 
                     OutlinedTextField(
                         value = uiState.apiKey,
                         onValueChange = viewModel::updateApiKey,
-                        label = { Text("API Key") },
+                        label = { Text(strings.apiKeyLabel()) },
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Text(
-                        "Paste the key for the selected provider, then tap Save to restart the local Hermes backend with the new config.",
+                        strings.apiKeyHelp(),
                         style = MaterialTheme.typography.bodySmall,
                     )
 
@@ -160,10 +165,12 @@ fun SettingsScreen(
                     LocalModelDownloadsSection(
                         dataSaverMode = uiState.dataSaverMode,
                         onDataSaverModeChange = viewModel::updateDataSaverMode,
+                        selectedBackend = uiState.onDeviceBackend,
+                        onRuntimeFlavorSelected = viewModel::syncOnDeviceBackendWithRuntimeFlavor,
                     )
 
                     Button(onClick = viewModel::save) {
-                        Text("Save")
+                        Text(strings.saveLabel())
                     }
 
                     if (uiState.status.isNotBlank()) {

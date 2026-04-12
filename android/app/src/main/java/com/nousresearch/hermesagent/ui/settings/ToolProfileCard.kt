@@ -9,6 +9,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 
 private val ENABLED_TOOLS = listOf(
     "terminal",
@@ -45,27 +46,28 @@ private val BLOCKED_TOOL_CLASSES = listOf(
 
 @Composable
 fun ToolProfileCard() {
+    val strings = LocalHermesStrings.current
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("Android alpha Tool Profile", style = MaterialTheme.typography.titleMedium)
+            Text(strings.toolProfileTitle(), style = MaterialTheme.typography.titleMedium)
             Text(
-                "Enabled: ${ENABLED_TOOLS.joinToString()}",
+                strings.toolProfileEnabledSummary(ENABLED_TOOLS.joinToString()),
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text(
-                "Hermes now has a local Linux command suite in the Android app, so terminal/process can execute real CLI commands while shared-folder tools handle direct document edits.",
+                strings.toolProfileLinuxSummary(),
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text(
-                "Accessibility targeting is available through android_ui_snapshot + android_ui_action after you enable the Hermes accessibility service.",
+                strings.toolProfileAccessibilitySummary(),
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text(
-                "The Android command suite is extracted into an app-private prefix and exposed through terminal/process for the same style of local CLI usage Hermes already supports in Termux.",
+                strings.toolProfileCommandSuiteSummary(),
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text(
-                "Still excluded from the mobile runtime: ${BLOCKED_TOOL_CLASSES.joinToString()}",
+                strings.toolProfileExcludedSummary(BLOCKED_TOOL_CLASSES.joinToString()),
                 modifier = Modifier.padding(top = 8.dp),
             )
         }

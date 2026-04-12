@@ -52,6 +52,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     auth_session_store = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthSessionStore.kt").read_text(encoding="utf-8")
     auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
     corr3xt_auth_client = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/auth/Corr3xtAuthClient.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert 'Auth callback rejected: no pending sign-in request' in auth_session_store
     assert 'Auth callback expired. Start sign-in again.' in auth_session_store
@@ -60,6 +61,7 @@ def test_auth_callback_hardening_strings_and_base_url_validation_exist():
     assert 'Auth callback rejected: no provider credentials were returned' in auth_session_store
     assert 'Auth callback rejected: no account identity returned' in auth_session_store
     assert 'Corr3xt base URL must be a valid http(s) URL' in auth_view_model
-    assert 'Unable to open Corr3xt: no browser is available' in auth_view_model
+    assert 'currentStrings().authNoBrowser()' in auth_view_model
+    assert 'Unable to open Corr3xt: no browser is available' in strings
     assert 'callback_contract' in corr3xt_auth_client
     assert 'normalizeConfiguredBaseUrl' in corr3xt_auth_client

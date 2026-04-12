@@ -48,7 +48,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.R
+import com.nousresearch.hermesagent.data.AppSettingsStore
+import com.nousresearch.hermesagent.ui.i18n.AppLanguage
 import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
+import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +70,8 @@ data class NousPortalUiState(
 )
 
 class NousPortalViewModel(application: Application) : AndroidViewModel(application) {
+    private fun currentStrings() = hermesStringsFor(AppLanguage.fromTag(AppSettingsStore(getApplication()).load().languageTag))
+
     private val _uiState = MutableStateFlow(NousPortalUiState())
     val uiState: StateFlow<NousPortalUiState> = _uiState.asStateFlow()
 
@@ -76,6 +81,7 @@ class NousPortalViewModel(application: Application) : AndroidViewModel(applicati
 
     fun refresh() {
         viewModelScope.launch {
+            val strings = currentStrings()
             _uiState.value = runCatching {
                 if (!Python.isStarted()) {
                     Python.start(AndroidPlatform(getApplication()))
@@ -85,20 +91,17 @@ class NousPortalViewModel(application: Application) : AndroidViewModel(applicati
                     .callAttr("read_nous_portal_state_json")
                     .toString()
                 val json = JSONObject(payload)
+                val loggedIn = json.optBoolean("logged_in", false)
                 NousPortalUiState(
                     portalUrl = json.optString("portal_url").ifBlank { DEFAULT_NOUS_PORTAL_URL },
-                    loggedIn = json.optBoolean("logged_in", false),
+                    loggedIn = loggedIn,
                     inferenceUrl = json.optString("inference_url").orEmpty(),
-                    status = if (json.optBoolean("logged_in", false)) {
-                        "Signed in to Nous Portal"
-                    } else {
-                        "Loading the embedded portal preview"
-                    },
+                    status = strings.portalLoadingStatus(loggedIn),
                 )
             }.getOrElse { error ->
                 NousPortalUiState(
                     portalUrl = DEFAULT_NOUS_PORTAL_URL,
-                    status = "Using default Nous Portal URL (${error.message ?: error.javaClass.simpleName})",
+                    status = strings.portalFallbackStatus(error.message ?: error.javaClass.simpleName),
                 )
             }
         }

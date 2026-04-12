@@ -17,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -29,10 +30,19 @@ import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 fun LocalModelDownloadsSection(
     dataSaverMode: Boolean,
     onDataSaverModeChange: (Boolean) -> Unit,
+    selectedBackend: String,
+    onRuntimeFlavorSelected: (String) -> Unit,
     viewModel: LocalModelDownloadsViewModel = viewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val strings = LocalHermesStrings.current
+
+    LaunchedEffect(selectedBackend) {
+        when (selectedBackend) {
+            "llama.cpp" -> if (uiState.runtimeFlavor != "GGUF") viewModel.updateRuntimeFlavor("GGUF")
+            "litert-lm" -> if (uiState.runtimeFlavor != "LiteRT-LM") viewModel.updateRuntimeFlavor("LiteRT-LM")
+        }
+    }
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -113,10 +123,16 @@ fun LocalModelDownloadsSection(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(onClick = { viewModel.updateRuntimeFlavor("GGUF") }, enabled = uiState.runtimeFlavor != "GGUF") {
+                Button(onClick = {
+                    viewModel.updateRuntimeFlavor("GGUF")
+                    onRuntimeFlavorSelected("GGUF")
+                }, enabled = uiState.runtimeFlavor != "GGUF") {
                     Text("GGUF")
                 }
-                Button(onClick = { viewModel.updateRuntimeFlavor("LiteRT-LM") }, enabled = uiState.runtimeFlavor != "LiteRT-LM") {
+                Button(onClick = {
+                    viewModel.updateRuntimeFlavor("LiteRT-LM")
+                    onRuntimeFlavorSelected("LiteRT-LM")
+                }, enabled = uiState.runtimeFlavor != "LiteRT-LM") {
                     Text("LiteRT-LM")
                 }
             }

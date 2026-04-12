@@ -78,6 +78,15 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
+    fun syncOnDeviceBackendWithRuntimeFlavor(runtimeFlavor: String) {
+        val backendValue = when (runtimeFlavor) {
+            "GGUF" -> BackendKind.LLAMA_CPP.persistedValue
+            "LiteRT-LM" -> BackendKind.LITERT_LM.persistedValue
+            else -> BackendKind.NONE.persistedValue
+        }
+        updateOnDeviceBackend(backendValue)
+    }
+
     fun selectLanguage(language: AppLanguage) {
         val normalized = language.tag
         settingsStore.save(settingsStore.load().copy(languageTag = normalized))

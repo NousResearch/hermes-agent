@@ -256,10 +256,10 @@ private fun HermesBottomNavigation(
                 icon = {
                     Icon(
                         painter = painterResource(id = section.iconRes),
-                        contentDescription = section.label(strings),
+                        contentDescription = section.navigationLabel(strings),
                     )
                 },
-                label = { Text(section.label(strings)) },
+                label = { Text(section.navigationLabel(strings)) },
             )
         }
     }

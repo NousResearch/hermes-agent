@@ -78,6 +78,7 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset(
     {
         "copilot",
         "copilot-acp",
+        "openai-codex",
     }
 )
 
@@ -86,7 +87,6 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset(
     {
         "gemini",
         "huggingface",
-        "openai-codex",
     }
 )
 
@@ -100,6 +100,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset(
         "minimax-cn",
         "alibaba",
         "qwen-oauth",
+        "xiaomi",
         "custom",
     }
 )
@@ -374,7 +375,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Copilot: strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
-        return _strip_matching_provider_prefix(name, provider)
+        stripped = _strip_matching_provider_prefix(name, provider)
+        if stripped == name and name.startswith("openai/"):
+            # openai-codex maps openai/gpt-5.4 -> gpt-5.4
+            return name.split("/", 1)[1]
+        return stripped
 
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":

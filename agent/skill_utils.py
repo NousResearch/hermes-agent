@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     Reads the config file directly (no CLI config imports) to stay
     lightweight.
     """
-    config_path = get_hermes_home() / "config.yaml"
+    config_path = get_config_path()
     if not config_path.exists():
         return set()
     try:
@@ -145,10 +145,11 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
+    from gateway.session_context import get_session_env
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
-        or os.getenv("HERMES_SESSION_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
     )
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
@@ -177,7 +178,7 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
     """
-    config_path = get_hermes_home() / "config.yaml"
+    config_path = get_config_path()
     if not config_path.exists():
         return []
     try:
@@ -199,7 +200,7 @@ def get_external_skills_dirs() -> List[Path]:
     if not isinstance(raw_dirs, list):
         return []
 
-    local_skills = (get_hermes_home() / "skills").resolve()
+    local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
     result: List[Path] = []
 
@@ -229,7 +230,7 @@ def get_all_skills_dirs() -> List[Path]:
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
     """
-    dirs = [get_hermes_home() / "skills"]
+    dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
     return dirs
 
@@ -383,7 +384,7 @@ def resolve_skill_config_values(
     current values (or the declared default if the key isn't set).
     Path values are expanded via ``os.path.expanduser``.
     """
-    config_path = get_hermes_home() / "config.yaml"
+    config_path = get_config_path()
     config: Dict[str, Any] = {}
     if config_path.exists():
         try:

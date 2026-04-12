@@ -643,25 +643,44 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
-        adapter = self.gateway_runner.adapters.get(target_platform)
-        if not adapter:
-            return SendResult(
-                success=False,
-                error=f"Platform {platform_name} not connected",
-            )
-
-        # Use home channel if no specific chat_id in deliver_extra
         extra = delivery.get("deliver_extra", {})
         chat_id = extra.get("chat_id", "")
+        account_id = str(extra.get("account_id", "") or "").strip() or None
         if not chat_id:
-            home = self.gateway_runner.config.get_home_channel(target_platform)
+            home = self.gateway_runner.config.get_home_channel(target_platform, account_id=account_id)
             if home:
                 chat_id = home.chat_id
+                account_id = getattr(home, "account_id", None) or account_id
             else:
                 return SendResult(
                     success=False,
                     error=f"No chat_id or home channel for {platform_name}",
                 )
+
+        adapter = None
+        get_adapter = None
+        try:
+            instance_attr = vars(self.gateway_runner).get("_get_adapter")
+        except Exception:
+            instance_attr = None
+        if callable(instance_attr):
+            get_adapter = instance_attr
+        else:
+            class_attr = getattr(type(self.gateway_runner), "_get_adapter", None)
+            if callable(class_attr):
+                get_adapter = getattr(self.gateway_runner, "_get_adapter")
+
+        if callable(get_adapter):
+            adapter = get_adapter(target_platform, account_id=account_id)
+        elif account_id:
+            adapter = getattr(self.gateway_runner, "_adapters_by_binding", {}).get((target_platform, account_id))
+        if not adapter:
+            adapter = self.gateway_runner.adapters.get(target_platform)
+        if not adapter:
+            return SendResult(
+                success=False,
+                error=f"Platform {platform_name} not connected",
+            )
 
         # Pass thread_id from deliver_extra so Telegram forum topics work
         metadata = None

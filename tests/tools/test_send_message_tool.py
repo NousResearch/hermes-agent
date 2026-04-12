@@ -594,6 +594,119 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
+    def test_feishu_send_uses_session_account_home_channel(self):
+        feishu_personal_cfg = SimpleNamespace(enabled=True, extra={"account_id": "laok-personal"})
+        feishu_gradients_cfg = SimpleNamespace(enabled=True, extra={"account_id": "laok-gradients"})
+        gradients_home = SimpleNamespace(
+            chat_id="oc_team_claire",
+            name="Team CLAIRE",
+            account_id="laok-gradients",
+        )
+
+        config = SimpleNamespace(
+            platforms={Platform.FEISHU: feishu_personal_cfg},
+            get_platform_config=lambda platform, account_id=None: (
+                feishu_gradients_cfg
+                if platform == Platform.FEISHU and account_id == "laok-gradients"
+                else feishu_personal_cfg
+            ),
+            get_home_channel=lambda platform, account_id=None: (
+                gradients_home if platform == Platform.FEISHU else None
+            ),
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "feishu",
+                "HERMES_SESSION_ACCOUNT_ID": "laok-gradients",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "feishu",
+                        "message": "hello from gradients",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["note"] == "Sent to feishu home channel (chat_id: oc_team_claire)"
+        send_mock.assert_awaited_once_with(
+            Platform.FEISHU,
+            feishu_gradients_cfg,
+            "oc_team_claire",
+            "hello from gradients",
+            thread_id=None,
+            media_files=[],
+        )
+
+    def test_feishu_cron_duplicate_check_is_account_aware(self):
+        feishu_personal_cfg = SimpleNamespace(enabled=True, extra={"account_id": "laok-personal"})
+        feishu_gradients_cfg = SimpleNamespace(enabled=True, extra={"account_id": "laok-gradients"})
+        gradients_home = SimpleNamespace(
+            chat_id="oc_team_claire",
+            name="Team CLAIRE",
+            account_id="laok-gradients",
+        )
+
+        config = SimpleNamespace(
+            platforms={Platform.FEISHU: feishu_personal_cfg},
+            get_platform_config=lambda platform, account_id=None: (
+                feishu_gradients_cfg
+                if platform == Platform.FEISHU and account_id == "laok-gradients"
+                else feishu_personal_cfg
+            ),
+            get_home_channel=lambda platform, account_id=None: (
+                gradients_home if platform == Platform.FEISHU else None
+            ),
+        )
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "feishu",
+                "HERMES_SESSION_ACCOUNT_ID": "laok-gradients",
+                "HERMES_CRON_AUTO_DELIVER_PLATFORM": "feishu",
+                "HERMES_CRON_AUTO_DELIVER_CHAT_ID": "oc_team_claire",
+                "HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID": "laok-personal",
+            },
+            clear=False,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "feishu",
+                        "message": "extra notice",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result.get("skipped") is not True
+        send_mock.assert_awaited_once_with(
+            Platform.FEISHU,
+            feishu_gradients_cfg,
+            "oc_team_claire",
+            "extra notice",
+            thread_id=None,
+            media_files=[],
+        )
+
 
 # ---------------------------------------------------------------------------
 # HTML auto-detection in Telegram send

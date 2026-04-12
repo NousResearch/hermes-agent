@@ -19,6 +19,7 @@ class TestSessionSourceRoundtrip:
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="12345",
+            account_id="main",
             chat_name="My Group",
             chat_type="group",
             user_id="99",
@@ -30,6 +31,7 @@ class TestSessionSourceRoundtrip:
 
         assert restored.platform == Platform.TELEGRAM
         assert restored.chat_id == "12345"
+        assert restored.account_id == "main"
         assert restored.chat_name == "My Group"
         assert restored.chat_type == "group"
         assert restored.user_id == "99"
@@ -86,6 +88,16 @@ class TestSessionSourceRoundtrip:
     def test_invalid_platform_raises(self):
         with pytest.raises((ValueError, KeyError)):
             SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+
+    def test_build_session_key_includes_account_scope(self):
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            account_id="corp_a",
+            chat_id="oc_123",
+            chat_type="dm",
+        )
+
+        assert build_session_key(source) == "agent:main:feishu[corp_a]:dm:oc_123"
 
 
 class TestSessionSourceDescription:

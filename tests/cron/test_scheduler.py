@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -60,6 +61,40 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1001",
             "thread_id": "17585",
+        }
+
+    def test_origin_delivery_preserves_account_id(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "feishu",
+                "chat_id": "oc_123",
+                "account_id": "corp_a",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "feishu",
+            "chat_id": "oc_123",
+            "thread_id": None,
+            "account_id": "corp_a",
+        }
+
+    def test_explicit_same_platform_target_inherits_origin_account_id(self):
+        job = {
+            "deliver": "feishu:oc_456",
+            "origin": {
+                "platform": "feishu",
+                "chat_id": "oc_123",
+                "account_id": "corp_a",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "feishu",
+            "chat_id": "oc_456",
+            "thread_id": None,
+            "account_id": "corp_a",
         }
 
     def test_explicit_telegram_topic_target_with_thread_id(self):
@@ -172,6 +207,76 @@ class TestResolveDeliveryTarget:
             "chat_id": "-2002",
             "thread_id": None,
         }
+
+    def test_bare_feishu_platform_falls_back_to_config_home_channel(self, monkeypatch):
+        from gateway.config import Platform
+
+        config = MagicMock()
+        config.get_home_channel = lambda platform, account_id=None: (
+            SimpleNamespace(chat_id="oc_team_claire", name="Team CLAIRE", account_id="corp_a")
+            if platform == Platform.FEISHU
+            else None
+        )
+        monkeypatch.delenv("FEISHU_HOME_CHANNEL", raising=False)
+
+        job = {
+            "deliver": "feishu",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "abc",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=config):
+            assert _resolve_delivery_target(job) == {
+                "platform": "feishu",
+                "account_id": "corp_a",
+                "chat_id": "oc_team_claire",
+                "thread_id": None,
+            }
+
+    def test_origin_delivery_without_origin_can_fall_back_to_feishu_home_channel(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("BLUEBUBBLES_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("FEISHU_HOME_CHANNEL", "oc_fallback_home")
+
+        job = {
+            "deliver": "origin",
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "feishu",
+            "chat_id": "oc_fallback_home",
+            "thread_id": None,
+        }
+
+    def test_origin_delivery_without_origin_can_fall_back_to_config_backed_feishu_home_channel(self, monkeypatch):
+        from gateway.config import Platform
+
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("SLACK_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("BLUEBUBBLES_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("FEISHU_HOME_CHANNEL", raising=False)
+
+        config = MagicMock()
+        config.get_home_channel = lambda platform, account_id=None: (
+            SimpleNamespace(chat_id="oc_config_home", name="Config Home", account_id="corp_a")
+            if platform == Platform.FEISHU
+            else None
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config):
+            assert _resolve_delivery_target({"deliver": "origin"}) == {
+                "platform": "feishu",
+                "account_id": "corp_a",
+                "chat_id": "oc_config_home",
+                "thread_id": None,
+            }
 
     def test_explicit_discord_topic_target_with_thread_id(self):
         """deliver: 'discord:chat_id:thread_id' parses correctly."""
@@ -763,6 +868,59 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_PLATFORM") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID") is None
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
+        fake_db.close.assert_called_once()
+
+    def test_run_job_sets_and_clears_account_scoped_env(self, tmp_path, monkeypatch):
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "deliver": "origin",
+            "origin": {
+                "platform": "feishu",
+                "chat_id": "oc_123",
+                "account_id": "corp_a",
+            },
+        }
+        fake_db = MagicMock()
+        seen = {}
+
+        monkeypatch.delenv("HERMES_SESSION_ACCOUNT_ID", raising=False)
+        monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID", raising=False)
+
+        class FakeAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_conversation(self, *args, **kwargs):
+                seen["session_account_id"] = os.getenv("HERMES_SESSION_ACCOUNT_ID")
+                seen["deliver_account_id"] = os.getenv("HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID")
+                return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent", FakeAgent):
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert seen == {
+            "session_account_id": "corp_a",
+            "deliver_account_id": "corp_a",
+        }
+        assert os.getenv("HERMES_SESSION_ACCOUNT_ID") is None
+        assert os.getenv("HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID") is None
         fake_db.close.assert_called_once()
 
 

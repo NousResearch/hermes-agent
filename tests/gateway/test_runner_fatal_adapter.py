@@ -83,8 +83,7 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
         retryable=True,
     )
 
-    runner.adapters = {Platform.WHATSAPP: adapter}
-    runner.delivery_router.adapters = runner.adapters
+    runner._register_adapter(Platform.WHATSAPP, adapter)
     runner.stop = AsyncMock()
 
     await runner._handle_adapter_fatal_error(adapter)
@@ -94,3 +93,32 @@ async def test_runner_queues_retryable_runtime_fatal_for_reconnection(monkeypatc
     assert runner._exit_with_failure is True
     assert Platform.WHATSAPP in runner._failed_platforms
     assert runner._failed_platforms[Platform.WHATSAPP]["attempts"] == 0
+
+
+def test_runner_prefers_account_specific_adapter_for_source(tmp_path):
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"default_account": "a1"},
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    default_adapter = _RuntimeRetryableAdapter()
+    default_adapter.platform = Platform.FEISHU
+    default_adapter.account_id = "a1"
+    second_adapter = _RuntimeRetryableAdapter()
+    second_adapter.platform = Platform.FEISHU
+    second_adapter.account_id = "a2"
+
+    runner._register_adapter(Platform.FEISHU, default_adapter)
+    runner._register_adapter(Platform.FEISHU, second_adapter)
+
+    from gateway.session import SessionSource
+
+    assert runner._get_adapter_for_source(
+        SessionSource(platform=Platform.FEISHU, chat_id="oc_1", account_id="a2")
+    ) is second_adapter

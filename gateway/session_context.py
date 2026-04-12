@@ -43,19 +43,23 @@ from contextvars import ContextVar
 # ---------------------------------------------------------------------------
 
 _SESSION_PLATFORM: ContextVar[str] = ContextVar("HERMES_SESSION_PLATFORM", default="")
+_SESSION_ACCOUNT_ID: ContextVar[str] = ContextVar("HERMES_SESSION_ACCOUNT_ID", default="")
 _SESSION_CHAT_ID: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_ID", default="")
 _SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", default="")
 _SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default="")
 _SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default="")
+_SESSION_USER_ID_ALT: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID_ALT", default="")
 _SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
 _SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
+    "HERMES_SESSION_ACCOUNT_ID": _SESSION_ACCOUNT_ID,
     "HERMES_SESSION_CHAT_ID": _SESSION_CHAT_ID,
     "HERMES_SESSION_CHAT_NAME": _SESSION_CHAT_NAME,
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
+    "HERMES_SESSION_USER_ID_ALT": _SESSION_USER_ID_ALT,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
     "HERMES_SESSION_KEY": _SESSION_KEY,
 }
@@ -63,10 +67,12 @@ _VAR_MAP = {
 
 def set_session_vars(
     platform: str = "",
+    account_id: str = "",
     chat_id: str = "",
     chat_name: str = "",
     thread_id: str = "",
     user_id: str = "",
+    user_id_alt: str = "",
     user_name: str = "",
     session_key: str = "",
 ) -> list:
@@ -80,10 +86,12 @@ def set_session_vars(
     """
     tokens = [
         _SESSION_PLATFORM.set(platform),
+        _SESSION_ACCOUNT_ID.set(account_id),
         _SESSION_CHAT_ID.set(chat_id),
         _SESSION_CHAT_NAME.set(chat_name),
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
+        _SESSION_USER_ID_ALT.set(user_id_alt),
         _SESSION_USER_NAME.set(user_name),
         _SESSION_KEY.set(session_key),
     ]
@@ -96,10 +104,12 @@ def clear_session_vars(tokens: list) -> None:
         return
     vars_in_order = [
         _SESSION_PLATFORM,
+        _SESSION_ACCOUNT_ID,
         _SESSION_CHAT_ID,
         _SESSION_CHAT_NAME,
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
+        _SESSION_USER_ID_ALT,
         _SESSION_USER_NAME,
         _SESSION_KEY,
     ]

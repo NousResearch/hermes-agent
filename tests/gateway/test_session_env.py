@@ -31,6 +31,9 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID_ALT", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
 
     tokens = runner._set_session_env(context)
 
@@ -41,6 +44,9 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert get_session_env("HERMES_SESSION_USER_ID") == ""
+    assert get_session_env("HERMES_SESSION_USER_ID_ALT") == ""
+    assert get_session_env("HERMES_SESSION_USER_NAME") == ""
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -60,6 +66,9 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID_ALT", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
 
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -85,6 +94,9 @@ def test_clear_session_env_restores_previous_state(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == ""
     assert get_session_env("HERMES_SESSION_USER_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_SESSION_USER_ID") == ""
+    assert get_session_env("HERMES_SESSION_USER_ID_ALT") == ""
+    assert get_session_env("HERMES_SESSION_USER_NAME") == ""
 
 
 def test_get_session_env_falls_back_to_os_environ(monkeypatch):
@@ -95,8 +107,10 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == "discord"
 
     # Now set a contextvar — should prefer it
-    tokens = set_session_vars(platform="telegram")
+    tokens = set_session_vars(platform="telegram", user_id="u_1", user_name="Alice")
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
+    assert get_session_env("HERMES_SESSION_USER_ID") == "u_1"
+    assert get_session_env("HERMES_SESSION_USER_NAME") == "Alice"
 
     # Restore — should fall back to os.environ again
     clear_session_vars(tokens)
@@ -129,6 +143,33 @@ def test_set_session_env_handles_missing_optional_fields():
     assert get_session_env("HERMES_SESSION_CHAT_ID") == "-1001"
     assert get_session_env("HERMES_SESSION_CHAT_NAME") == ""
     assert get_session_env("HERMES_SESSION_THREAD_ID") == ""
+    assert get_session_env("HERMES_SESSION_USER_ID") == ""
+    assert get_session_env("HERMES_SESSION_USER_ID_ALT") == ""
+    assert get_session_env("HERMES_SESSION_USER_NAME") == ""
+
+    runner._clear_session_env(tokens)
+
+
+def test_set_session_env_includes_sender_identity():
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.FEISHU,
+        chat_id="oc_123",
+        account_id="laok-personal",
+        chat_name="Team CLAIRE",
+        chat_type="group",
+        user_id="ou_abc",
+        user_id_alt="on_union",
+        user_name="Ethan",
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+
+    assert get_session_env("HERMES_SESSION_ACCOUNT_ID") == "laok-personal"
+    assert get_session_env("HERMES_SESSION_USER_ID") == "ou_abc"
+    assert get_session_env("HERMES_SESSION_USER_ID_ALT") == "on_union"
+    assert get_session_env("HERMES_SESSION_USER_NAME") == "Ethan"
 
     runner._clear_session_env(tokens)
 

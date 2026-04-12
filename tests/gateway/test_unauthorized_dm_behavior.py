@@ -37,16 +37,26 @@ def _clear_auth_env(monkeypatch) -> None:
         monkeypatch.delenv(key, raising=False)
 
 
-def _make_event(platform: Platform, user_id: str, chat_id: str) -> MessageEvent:
+def _make_event(
+    platform: Platform,
+    user_id: str,
+    chat_id: str,
+    *,
+    account_id: str | None = None,
+    chat_type: str = "dm",
+    user_id_alt: str | None = None,
+) -> MessageEvent:
     return MessageEvent(
         text="hello",
         message_id="m1",
         source=SessionSource(
             platform=platform,
+            account_id=account_id,
             user_id=user_id,
+            user_id_alt=user_id_alt,
             chat_id=chat_id,
             user_name="tester",
-            chat_type="dm",
+            chat_type=chat_type,
         ),
     )
 
@@ -253,3 +263,126 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+def test_feishu_account_allowlist_authorizes_listed_dm_user(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": {
+                        "corp": {
+                            "app_id": "cli_corp",
+                            "app_secret": "sec_corp",
+                            "dm_policy": "allowlist",
+                            "allowed_users": ["ou_allowed"],
+                        },
+                    },
+                },
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config)
+
+    assert runner._is_user_authorized(
+        _make_event(Platform.FEISHU, "ou_allowed", "oc_dm", account_id="corp").source
+    ) is True
+
+
+def test_feishu_account_allowlist_checks_alternate_ids(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": {
+                        "corp": {
+                            "app_id": "cli_corp",
+                            "app_secret": "sec_corp",
+                            "dm_policy": "allowlist",
+                            "allowed_users": ["on_union_user"],
+                        },
+                    },
+                },
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config)
+
+    assert runner._is_user_authorized(
+        _make_event(
+            Platform.FEISHU,
+            "ou_sender",
+            "oc_dm",
+            account_id="corp",
+            user_id_alt="on_union_user",
+        ).source
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_feishu_account_allowlist_ignores_unauthorized_dm(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": {
+                        "corp": {
+                            "app_id": "cli_corp",
+                            "app_secret": "sec_corp",
+                            "dm_policy": "allowlist",
+                            "allowed_users": ["ou_allowed"],
+                        },
+                    },
+                },
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.FEISHU, config)
+
+    result = await runner._handle_message(
+        _make_event(Platform.FEISHU, "ou_stranger", "oc_dm", account_id="corp")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+def test_feishu_account_group_messages_bypass_dm_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={
+                    "accounts": {
+                        "corp": {
+                            "app_id": "cli_corp",
+                            "app_secret": "sec_corp",
+                            "dm_policy": "allowlist",
+                            "allowed_users": ["ou_allowed"],
+                            "group_policy": "open",
+                            "require_mention": True,
+                        },
+                    },
+                },
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.FEISHU, config)
+
+    assert runner._is_user_authorized(
+        _make_event(
+            Platform.FEISHU,
+            "ou_group_user",
+            "oc_group",
+            account_id="corp",
+            chat_type="group",
+        ).source
+    ) is True

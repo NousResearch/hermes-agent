@@ -37,6 +37,7 @@ class DeliveryTarget:
     - "telegram:123456" → specific Telegram chat
     """
     platform: Platform
+    account_id: Optional[str] = None
     chat_id: Optional[str] = None  # None means use home channel
     thread_id: Optional[str] = None
     is_origin: bool = False
@@ -59,6 +60,7 @@ class DeliveryTarget:
             if origin:
                 return cls(
                     platform=origin.platform,
+                    account_id=origin.account_id,
                     chat_id=origin.chat_id,
                     thread_id=origin.thread_id,
                     is_origin=True,
@@ -122,6 +124,7 @@ class DeliveryRouter:
         """
         self.config = config
         self.adapters = adapters or {}
+        self.account_adapters: Dict[tuple[Platform, Optional[str]], Any] = {}
         self.output_dir = get_hermes_home() / "cron" / "output"
     
     async def deliver(
@@ -228,13 +231,28 @@ class DeliveryRouter:
         metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
         """Deliver content to a messaging platform."""
-        adapter = self.adapters.get(target.platform)
-        
+        if not target.chat_id:
+            home = self.config.get_home_channel(target.platform, account_id=target.account_id)
+            if home:
+                target = DeliveryTarget(
+                    platform=target.platform,
+                    account_id=getattr(home, "account_id", None) or target.account_id,
+                    chat_id=home.chat_id,
+                    thread_id=target.thread_id,
+                    is_origin=target.is_origin,
+                    is_explicit=target.is_explicit,
+                )
+            else:
+                raise ValueError(f"No chat ID for {target.platform.value} delivery")
+
+        adapter = None
+        if target.account_id:
+            adapter = self.account_adapters.get((target.platform, target.account_id))
+        if adapter is None:
+            adapter = self.adapters.get(target.platform)
+
         if not adapter:
             raise ValueError(f"No adapter configured for {target.platform.value}")
-        
-        if not target.chat_id:
-            raise ValueError(f"No chat ID for {target.platform.value} delivery")
         
         # Guard: truncate oversized cron output to stay within platform limits
         if len(content) > MAX_PLATFORM_OUTPUT:
@@ -250,7 +268,4 @@ class DeliveryRouter:
         if target.thread_id and "thread_id" not in send_metadata:
             send_metadata["thread_id"] = target.thread_id
         return await adapter.send(target.chat_id, content, metadata=send_metadata or None)
-
-
-
 

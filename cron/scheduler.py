@@ -84,26 +84,25 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     if deliver == "origin":
         if origin:
-            return {
+            target = {
                 "platform": origin["platform"],
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
+            if origin.get("account_id"):
+                target["account_id"] = origin.get("account_id")
+            return target
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
-            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
-            if chat_id:
+        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles", "feishu"):
+            target = _resolve_home_delivery_target(platform_name, origin=None)
+            if target:
                 logger.info(
                     "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
                     job.get("name", job.get("id", "?")),
                     platform_name,
                 )
-                return {
-                    "platform": platform_name,
-                    "chat_id": chat_id,
-                    "thread_id": None,
-                }
+                return target
         return None
 
     if ":" in deliver:
@@ -131,31 +130,113 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         except Exception:
             pass
 
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": chat_id,
             "thread_id": thread_id,
         }
+        if origin and origin.get("platform") == platform_name and origin.get("account_id"):
+            target["account_id"] = origin.get("account_id")
+        return target
 
     platform_name = deliver
     if origin and origin.get("platform") == platform_name:
-        return {
+        target = {
             "platform": platform_name,
             "chat_id": str(origin["chat_id"]),
             "thread_id": origin.get("thread_id"),
         }
+        if origin.get("account_id"):
+            target["account_id"] = origin.get("account_id")
+        return target
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
-    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
-    if not chat_id:
-        return None
+    return _resolve_home_delivery_target(platform_name, origin=origin)
 
-    return {
-        "platform": platform_name,
-        "chat_id": chat_id,
-        "thread_id": None,
-    }
+
+def _resolve_home_delivery_target(platform_name: str, origin: dict | None) -> Optional[dict]:
+    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    if chat_id:
+        return {
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": None,
+        }
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        platform_enum = Platform(platform_name.lower())
+        account_id = None
+        if origin and origin.get("platform") == platform_name and origin.get("account_id"):
+            account_id = origin.get("account_id")
+        home = _resolve_home_channel(config, platform_enum, account_id=account_id)
+        if home and getattr(home, "chat_id", None):
+            target = {
+                "platform": platform_name,
+                "chat_id": str(home.chat_id),
+                "thread_id": None,
+            }
+            resolved_account_id = getattr(home, "account_id", None) or account_id
+            if resolved_account_id:
+                target["account_id"] = resolved_account_id
+            return target
+    except Exception:
+        logger.debug("Failed to resolve config-backed home channel for deliver=%s", platform_name, exc_info=True)
+
+    return None
+
+
+def _get_config_callable(config, name):
+    """Return a real config helper method, ignoring MagicMock auto-attributes."""
+    try:
+        instance_attr = vars(config).get(name)
+    except Exception:
+        instance_attr = None
+    if callable(instance_attr):
+        return instance_attr
+
+    class_attr = getattr(type(config), name, None)
+    if callable(class_attr):
+        return getattr(config, name)
+    return None
+
+
+def _resolve_platform_config(config, platform, account_id=None):
+    """Support both GatewayConfig and lightweight test doubles."""
+    getter = _get_config_callable(config, "get_platform_config")
+    if getter:
+        try:
+            return getter(platform, account_id=account_id)
+        except TypeError:
+            return getter(platform)
+
+    platforms = getattr(config, "platforms", {}) or {}
+    return platforms.get(platform)
+
+
+def _resolve_home_channel(config, platform, account_id=None):
+    """Support both GatewayConfig and lightweight test doubles."""
+    getter = _get_config_callable(config, "get_home_channel")
+    if getter:
+        try:
+            return getter(platform, account_id=account_id)
+        except TypeError:
+            return getter(platform)
+    return None
+
+
+def _lookup_runtime_adapter(adapters, account_adapters, platform, account_id=None):
+    """Resolve the best live adapter for a delivery target."""
+    if account_id and account_adapters:
+        adapter = account_adapters.get((platform, account_id))
+        if adapter is not None:
+            return adapter
+    if adapters:
+        return adapters.get(platform)
+    return None
 
 
 # Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background
@@ -196,7 +277,7 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(job: dict, content: str, adapters=None, account_adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
@@ -218,6 +299,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     platform_name = target["platform"]
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
+    account_id = target.get("account_id")
 
     # Diagnostic: log thread_id for topic-aware delivery debugging
     origin = job.get("origin") or {}
@@ -268,7 +350,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
-    pconfig = config.platforms.get(platform)
+    pconfig = _resolve_platform_config(config, platform, account_id=account_id)
     if not pconfig or not pconfig.enabled:
         msg = f"platform '{platform_name}' not configured/enabled"
         logger.warning("Job '%s': %s", job["id"], msg)
@@ -301,7 +383,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
-    runtime_adapter = (adapters or {}).get(platform)
+    runtime_adapter = _lookup_runtime_adapter(adapters, account_adapters, platform, account_id=account_id)
     if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
         send_metadata = {"thread_id": thread_id} if thread_id else None
         try:
@@ -607,6 +689,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
             if origin.get("chat_name"):
                 os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+            if origin.get("account_id"):
+                os.environ["HERMES_SESSION_ACCOUNT_ID"] = str(origin["account_id"])
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -621,6 +705,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_CRON_AUTO_DELIVER_CHAT_ID"] = str(delivery_target["chat_id"])
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
+            if delivery_target.get("account_id"):
+                os.environ["HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID"] = str(delivery_target["account_id"])
 
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
@@ -878,9 +964,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_ACCOUNT_ID",
             "HERMES_CRON_AUTO_DELIVER_PLATFORM",
             "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+            "HERMES_CRON_AUTO_DELIVER_ACCOUNT_ID",
         ):
             os.environ.pop(key, None)
         if _session_db:
@@ -894,7 +982,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None) -> int:
+def tick(verbose: bool = True, adapters=None, account_adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
     
@@ -962,7 +1050,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            account_adapters=account_adapters,
+                            loop=loop,
+                        )
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

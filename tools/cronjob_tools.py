@@ -79,9 +79,13 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             )
         return {
             "platform": origin_platform,
+            "account_id": get_session_env("HERMES_SESSION_ACCOUNT_ID") or None,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
             "thread_id": thread_id,
+            "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
+            "user_id_alt": get_session_env("HERMES_SESSION_USER_ID_ALT") or None,
+            "user_name": get_session_env("HERMES_SESSION_USER_NAME") or None,
         }
     return None
 

@@ -241,6 +241,7 @@ if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
 from gateway.config import (
     Platform,
     GatewayConfig,
+    HomeChannel,
     load_gateway_config,
 )
 from gateway.session import (
@@ -534,6 +535,7 @@ class GatewayRunner:
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
+        self._adapters_by_binding: Dict[Any, BasePlatformAdapter] = {}
 
         # Load ephemeral config from config.yaml / env vars.
         # Both are injected at API-call time only and never persisted.
@@ -591,8 +593,8 @@ class GatewayRunner:
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
         # Track platforms that failed to connect for background reconnection.
-        # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
-        self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
+        # Key: (platform, account_id), Value: {"config": platform_config, "attempts": int, "next_retry": float}
+        self._failed_platforms: Dict[Any, Dict[str, Any]] = {}
 
         # Track pending /update prompt responses per session.
         # Key: session_key, Value: True when a prompt is waiting for user input.
@@ -632,6 +634,142 @@ class GatewayRunner:
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
+
+    def _adapter_binding_key(
+        self,
+        platform: Platform,
+        account_id: Optional[str] = None,
+    ) -> Any:
+        normalized_account = str(account_id or "").strip() or None
+        if normalized_account is None:
+            return platform
+        return (platform, normalized_account)
+
+    def _binding_label(self, platform: Platform, account_id: Optional[str] = None) -> str:
+        if account_id:
+            return f"{platform.value}[{account_id}]"
+        return platform.value
+
+    def _normalize_binding_key(
+        self,
+        binding_key: Any,
+    ) -> tuple[Platform, Optional[str]]:
+        if isinstance(binding_key, tuple):
+            platform = binding_key[0]
+            account_id = binding_key[1] if len(binding_key) > 1 else None
+            return (platform, str(account_id or "").strip() or None)
+        return (binding_key, None)
+
+    def _account_id_for_adapter(self, adapter: BasePlatformAdapter) -> Optional[str]:
+        return str(getattr(adapter, "account_id", "") or "").strip() or None
+
+    def _ensure_adapter_registry(self) -> None:
+        if not hasattr(self, "_adapters_by_binding") or self._adapters_by_binding is None:
+            self._adapters_by_binding = {}
+        if not hasattr(self, "adapters") or self.adapters is None:
+            self.adapters = {}
+        for platform, adapter in list(self.adapters.items()):
+            binding_key = self._adapter_binding_key(
+                platform,
+                str(getattr(adapter, "account_id", "") or "").strip() or None,
+            )
+            self._adapters_by_binding.setdefault(binding_key, adapter)
+        if not hasattr(self, "delivery_router") or self.delivery_router is None:
+            return
+        if not hasattr(self.delivery_router, "account_adapters") or self.delivery_router.account_adapters is None:
+            self.delivery_router.account_adapters = {}
+        self.delivery_router.account_adapters = self._adapters_by_binding
+
+    def _register_adapter(self, platform: Platform, adapter: BasePlatformAdapter) -> None:
+        self._ensure_adapter_registry()
+        account_id = self._account_id_for_adapter(adapter)
+        binding_key = self._adapter_binding_key(platform, account_id)
+        self._adapters_by_binding[binding_key] = adapter
+        default_account_id = self.config.get_default_account_id(platform)
+        if (
+            platform not in self.adapters
+            or account_id is None
+            or (default_account_id and account_id == default_account_id)
+        ):
+            self.adapters[platform] = adapter
+
+        self.delivery_router.adapters = self.adapters
+        self.delivery_router.account_adapters = self._adapters_by_binding
+
+    def _unregister_adapter(self, adapter: BasePlatformAdapter) -> None:
+        self._ensure_adapter_registry()
+        platform = adapter.platform
+        account_id = self._account_id_for_adapter(adapter)
+        binding_key = self._adapter_binding_key(platform, account_id)
+        self._adapters_by_binding.pop(binding_key, None)
+
+        if self.adapters.get(platform) is adapter:
+            replacement = None
+            default_account_id = self.config.get_default_account_id(platform)
+            if default_account_id:
+                replacement = self._adapters_by_binding.get(
+                    self._adapter_binding_key(platform, default_account_id)
+                )
+            if replacement is None:
+                for raw_candidate_key, candidate in self._adapters_by_binding.items():
+                    candidate_platform, _candidate_account_id = self._normalize_binding_key(raw_candidate_key)
+                    if candidate_platform == platform:
+                        replacement = candidate
+                        break
+            if replacement is None:
+                self.adapters.pop(platform, None)
+            else:
+                self.adapters[platform] = replacement
+
+        self.delivery_router.adapters = self.adapters
+        self.delivery_router.account_adapters = self._adapters_by_binding
+
+    def _get_adapter(
+        self,
+        platform: Platform,
+        account_id: Optional[str] = None,
+    ) -> Optional[BasePlatformAdapter]:
+        self._ensure_adapter_registry()
+        if account_id:
+            adapter = self._adapters_by_binding.get(
+                self._adapter_binding_key(platform, account_id)
+            )
+            if adapter is not None:
+                return adapter
+            logger.warning(
+                "No adapter binding found for %s[%s]",
+                platform.value,
+                account_id,
+            )
+            return None
+        return self.adapters.get(platform)
+
+    def _get_adapter_for_source(self, source: Optional[SessionSource]) -> Optional[BasePlatformAdapter]:
+        if source is None:
+            return None
+        return self._get_adapter(source.platform, getattr(source, "account_id", None))
+
+    def _has_home_channel_for_source(self, source: Optional[SessionSource]) -> bool:
+        if source is None or source.platform is None:
+            return False
+        if getattr(self, "config", None):
+            home_channel = self.config.get_home_channel(
+                source.platform,
+                account_id=getattr(source, "account_id", None),
+            )
+            if home_channel and getattr(home_channel, "chat_id", None):
+                return True
+        if source.platform == Platform.FEISHU and getattr(source, "account_id", None):
+            return False
+        env_key = f"{source.platform.value.upper()}_HOME_CHANNEL"
+        return bool(os.getenv(env_key))
+
+    def _all_adapter_instances(self) -> List[tuple[Any, BasePlatformAdapter]]:
+        self._ensure_adapter_registry()
+        return list(self._adapters_by_binding.items())
+
+    def _iter_enabled_bindings(self) -> List[tuple[Platform, Optional[str], Any]]:
+        return self.config.iter_enabled_platform_bindings()
 
 
 
@@ -955,9 +1093,10 @@ class GatewayRunner:
         If the error is retryable (e.g. network blip, DNS failure), queue the
         platform for background reconnection instead of giving up permanently.
         """
+        self._ensure_adapter_registry()
         logger.error(
             "Fatal %s adapter error (%s): %s",
-            adapter.platform.value,
+            self._binding_label(adapter.platform, self._account_id_for_adapter(adapter)),
             adapter.fatal_error_code or "unknown",
             adapter.fatal_error_message or "unknown error",
         )
@@ -968,29 +1107,31 @@ class GatewayRunner:
             error_message=adapter.fatal_error_message,
         )
 
-        existing = self.adapters.get(adapter.platform)
+        binding_key = self._adapter_binding_key(
+            adapter.platform,
+            self._account_id_for_adapter(adapter),
+        )
+        existing = self._adapters_by_binding.get(binding_key)
         if existing is adapter:
             try:
                 await adapter.disconnect()
             finally:
-                self.adapters.pop(adapter.platform, None)
-                self.delivery_router.adapters = self.adapters
+                self._unregister_adapter(adapter)
 
         # Queue retryable failures for background reconnection
         if adapter.fatal_error_retryable:
-            platform_config = self.config.platforms.get(adapter.platform)
-            if platform_config and adapter.platform not in self._failed_platforms:
-                self._failed_platforms[adapter.platform] = {
-                    "config": platform_config,
+            if binding_key not in self._failed_platforms:
+                self._failed_platforms[binding_key] = {
+                    "config": adapter.config,
                     "attempts": 0,
                     "next_retry": time.monotonic() + 30,
                 }
                 logger.info(
                     "%s queued for background reconnection",
-                    adapter.platform.value,
+                    self._binding_label(*self._normalize_binding_key(binding_key)),
                 )
 
-        if not self.adapters and not self._failed_platforms:
+        if not self._adapters_by_binding and not self._failed_platforms:
             self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
             if adapter.fatal_error_retryable:
                 self._exit_with_failure = True
@@ -998,7 +1139,7 @@ class GatewayRunner:
             else:
                 logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
             await self.stop()
-        elif not self.adapters and self._failed_platforms:
+        elif not self._adapters_by_binding and self._failed_platforms:
             # All platforms are down and queued for background reconnection.
             # If the error is retryable, exit with failure so systemd Restart=on-failure
             # can restart the process. Otherwise stay alive and keep retrying in background.
@@ -1323,7 +1464,7 @@ class GatewayRunner:
         }
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._get_adapter_for_source(event.source)
         if not adapter:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
@@ -1332,7 +1473,7 @@ class GatewayRunner:
         if not self._draining:
             return False
 
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._get_adapter_for_source(event.source)
         if not adapter:
             return True
 
@@ -1563,14 +1704,15 @@ class GatewayRunner:
         startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
-        for platform, platform_config in self.config.platforms.items():
+        for platform, account_id, platform_config in self._iter_enabled_bindings():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
+            binding_label = self._binding_label(platform, account_id)
             
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
-                logger.warning("No adapter available for %s", platform.value)
+                logger.warning("No adapter available for %s", binding_label)
                 continue
             
             # Set up message + fatal error handlers
@@ -1580,7 +1722,7 @@ class GatewayRunner:
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             
             # Try to connect
-            logger.info("Connecting to %s...", platform.value)
+            logger.info("Connecting to %s...", binding_label)
             self._update_platform_runtime_status(
                 platform.value,
                 platform_state="connecting",
@@ -1590,18 +1732,18 @@ class GatewayRunner:
             try:
                 success = await adapter.connect()
                 if success:
-                    self.adapters[platform] = adapter
+                    self._register_adapter(platform, adapter)
                     self._sync_voice_mode_state_to_adapter(adapter)
                     connected_count += 1
+                    logger.info("✓ %s connected", binding_label)
                     self._update_platform_runtime_status(
                         platform.value,
                         platform_state="connected",
                         error_code=None,
                         error_message=None,
                     )
-                    logger.info("✓ %s connected", platform.value)
                 else:
-                    logger.warning("✗ %s failed to connect", platform.value)
+                    logger.warning("✗ %s failed to connect", binding_label)
                     if adapter.has_fatal_error:
                         self._update_platform_runtime_status(
                             platform.value,
@@ -1615,11 +1757,11 @@ class GatewayRunner:
                             else startup_nonretryable_errors
                         )
                         target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
+                            f"{binding_label}: {adapter.fatal_error_message}"
                         )
                         # Queue for reconnection if the error is retryable
                         if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
+                            self._failed_platforms[self._adapter_binding_key(platform, account_id)] = {
                                 "config": platform_config,
                                 "attempts": 1,
                                 "next_retry": time.monotonic() + 30,
@@ -1632,25 +1774,25 @@ class GatewayRunner:
                             error_message="failed to connect",
                         )
                         startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
+                            f"{binding_label}: failed to connect"
                         )
                         # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
+                        self._failed_platforms[self._adapter_binding_key(platform, account_id)] = {
                             "config": platform_config,
                             "attempts": 1,
                             "next_retry": time.monotonic() + 30,
                         }
             except Exception as e:
-                logger.error("✗ %s error: %s", platform.value, e)
+                logger.error("✗ %s error: %s", binding_label, e)
                 self._update_platform_runtime_status(
                     platform.value,
                     platform_state="retrying",
                     error_code=None,
                     error_message=str(e),
                 )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
+                startup_retryable_errors.append(f"{binding_label}: {e}")
                 # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
+                self._failed_platforms[self._adapter_binding_key(platform, account_id)] = {
                     "config": platform_config,
                     "attempts": 1,
                     "next_retry": time.monotonic() + 30,
@@ -1733,9 +1875,12 @@ class GatewayRunner:
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
             logger.info(
-                "Starting reconnection watcher for %d failed platform(s): %s",
+                "Starting reconnection watcher for %d failed adapter binding(s): %s",
                 len(self._failed_platforms),
-                ", ".join(p.value for p in self._failed_platforms),
+                ", ".join(
+                    self._binding_label(*self._normalize_binding_key(binding_key))
+                    for binding_key in self._failed_platforms
+                ),
             )
         asyncio.create_task(self._platform_reconnect_watcher())
 
@@ -1883,26 +2028,27 @@ class GatewayRunner:
                 continue
 
             now = time.monotonic()
-            for platform in list(self._failed_platforms.keys()):
+            for raw_binding_key in list(self._failed_platforms.keys()):
                 if not self._running:
                     return
-                info = self._failed_platforms[platform]
+                platform, account_id = self._normalize_binding_key(raw_binding_key)
+                info = self._failed_platforms[raw_binding_key]
                 if now < info["next_retry"]:
                     continue  # not time yet
 
                 if info["attempts"] >= _MAX_ATTEMPTS:
                     logger.warning(
                         "Giving up reconnecting %s after %d attempts",
-                        platform.value, info["attempts"],
+                        self._binding_label(platform, account_id), info["attempts"],
                     )
-                    del self._failed_platforms[platform]
+                    del self._failed_platforms[raw_binding_key]
                     continue
 
                 platform_config = info["config"]
                 attempt = info["attempts"] + 1
                 logger.info(
                     "Reconnecting %s (attempt %d/%d)...",
-                    platform.value, attempt, _MAX_ATTEMPTS,
+                    self._binding_label(platform, account_id), attempt, _MAX_ATTEMPTS,
                 )
 
                 try:
@@ -1910,9 +2056,9 @@ class GatewayRunner:
                     if not adapter:
                         logger.warning(
                             "Reconnect %s: adapter creation returned None, removing from retry queue",
-                            platform.value,
+                            self._binding_label(platform, account_id),
                         )
-                        del self._failed_platforms[platform]
+                        del self._failed_platforms[raw_binding_key]
                         continue
 
                     adapter.set_message_handler(self._handle_message)
@@ -1922,17 +2068,16 @@ class GatewayRunner:
 
                     success = await adapter.connect()
                     if success:
-                        self.adapters[platform] = adapter
+                        self._register_adapter(platform, adapter)
                         self._sync_voice_mode_state_to_adapter(adapter)
-                        self.delivery_router.adapters = self.adapters
-                        del self._failed_platforms[platform]
+                        del self._failed_platforms[raw_binding_key]
+                        logger.info("✓ %s reconnected successfully", self._binding_label(platform, account_id))
                         self._update_platform_runtime_status(
                             platform.value,
                             platform_state="connected",
                             error_code=None,
                             error_message=None,
                         )
-                        logger.info("✓ %s reconnected successfully", platform.value)
 
                         # Rebuild channel directory with the new adapter
                         try:
@@ -1951,9 +2096,9 @@ class GatewayRunner:
                             )
                             logger.warning(
                                 "Reconnect %s: non-retryable error (%s), removing from retry queue",
-                                platform.value, adapter.fatal_error_message,
+                                self._binding_label(platform, account_id), adapter.fatal_error_message,
                             )
-                            del self._failed_platforms[platform]
+                            del self._failed_platforms[raw_binding_key]
                         else:
                             self._update_platform_runtime_status(
                                 platform.value,
@@ -1966,7 +2111,7 @@ class GatewayRunner:
                             info["next_retry"] = time.monotonic() + backoff
                             logger.info(
                                 "Reconnect %s failed, next retry in %ds",
-                                platform.value, backoff,
+                                self._binding_label(platform, account_id), backoff,
                             )
                 except Exception as e:
                     self._update_platform_runtime_status(
@@ -1980,7 +2125,7 @@ class GatewayRunner:
                     info["next_retry"] = time.monotonic() + backoff
                     logger.warning(
                         "Reconnect %s error: %s, next retry in %ds",
-                        platform.value, e, backoff,
+                        self._binding_label(platform, account_id), e, backoff,
                     )
 
             # Check every 10 seconds for platforms that need reconnection
@@ -2037,16 +2182,21 @@ class GatewayRunner:
 
             self._finalize_shutdown_agents(active_agents)
 
-            for platform, adapter in list(self.adapters.items()):
+            for raw_binding_key, adapter in self._all_adapter_instances():
+                platform, account_id = self._normalize_binding_key(raw_binding_key)
                 try:
                     await adapter.cancel_background_tasks()
                 except Exception as e:
-                    logger.debug("✗ %s background-task cancel error: %s", platform.value, e)
+                    logger.debug(
+                        "✗ %s background-task cancel error: %s",
+                        self._binding_label(platform, account_id),
+                        e,
+                    )
                 try:
                     await adapter.disconnect()
-                    logger.info("✓ %s disconnected", platform.value)
+                    logger.info("✓ %s disconnected", self._binding_label(platform, account_id))
                 except Exception as e:
-                    logger.error("✗ %s disconnect error: %s", platform.value, e)
+                    logger.error("✗ %s disconnect error: %s", self._binding_label(platform, account_id), e)
 
             for _task in list(self._background_tasks):
                 if _task is self._stop_task:
@@ -2055,6 +2205,7 @@ class GatewayRunner:
             self._background_tasks.clear()
 
             self.adapters.clear()
+            self._adapters_by_binding.clear()
             self._running_agents.clear()
             self._pending_messages.clear()
             self._pending_approvals.clear()
@@ -2277,6 +2428,10 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        account_auth = self._get_account_scoped_authorization(source)
+        if account_auth is not None:
+            return account_auth
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
@@ -2361,11 +2516,78 @@ class GatewayRunner:
 
         return bool(check_ids & allowed_ids)
 
-    def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
+    @staticmethod
+    def _parse_authorized_id_list(raw_value: Any) -> set[str]:
+        """Normalize a config allowlist value into a set of IDs."""
+        if isinstance(raw_value, (list, tuple, set, frozenset)):
+            values = raw_value
+        else:
+            values = str(raw_value or "").split(",")
+        return {str(item).strip() for item in values if str(item).strip()}
+
+    def _get_account_scoped_authorization(self, source: SessionSource) -> Optional[bool]:
+        """Return account-scoped authorization for multi-account platforms, if configured."""
+        config = getattr(self, "config", None)
+        if not config or not source.platform or not source.account_id:
+            return None
+        getter = getattr(config, "get_platform_config", None)
+        if not callable(getter):
+            return None
+        platform_cfg = getter(source.platform, account_id=source.account_id)
+        if platform_cfg is None:
+            return None
+        extra = platform_cfg.extra if isinstance(platform_cfg.extra, dict) else {}
+
+        if source.platform == Platform.FEISHU:
+            if source.chat_type != "dm":
+                if any(
+                    key in extra
+                    for key in (
+                        "app_id",
+                        "group_policy",
+                        "default_group_policy",
+                        "group_rules",
+                        "require_mention",
+                        "allowed_group_users",
+                        "admins",
+                    )
+                ):
+                    return True
+                return None
+
+            dm_policy = str(extra.get("dm_policy", "") or "").strip().lower()
+            if str(extra.get("allow_all_users", "")).strip().lower() in {"true", "1", "yes"}:
+                return True
+            if dm_policy == "open":
+                return True
+            if dm_policy == "disabled":
+                return False
+
+            check_ids = {str(value).strip() for value in (source.user_id, source.user_id_alt) if str(value or "").strip()}
+            allowed_ids = self._parse_authorized_id_list(extra.get("allowed_users"))
+
+            if dm_policy == "allowlist":
+                if "*" in allowed_ids:
+                    return True
+                return bool(check_ids & allowed_ids)
+            if dm_policy == "pairing":
+                return None
+            if allowed_ids:
+                if "*" in allowed_ids:
+                    return True
+                return bool(check_ids & allowed_ids)
+
+        return None
+
+    def _get_unauthorized_dm_behavior(
+        self,
+        platform: Optional[Platform],
+        account_id: Optional[str] = None,
+    ) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
         config = getattr(self, "config", None)
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
-            return config.get_unauthorized_dm_behavior(platform)
+            return config.get_unauthorized_dm_behavior(platform, account_id=account_id)
         return "pair"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
@@ -2397,7 +2619,10 @@ class GatewayRunner:
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
-            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
+            if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(
+                source.platform,
+                account_id=source.account_id,
+            ) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
@@ -2408,7 +2633,7 @@ class GatewayRunner:
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._get_adapter_for_source(source)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -2418,7 +2643,7 @@ class GatewayRunner:
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._get_adapter_for_source(source)
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -2537,7 +2762,7 @@ class GatewayRunner:
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Stop requested")
                 # Force-clean: remove the session lock regardless of agent state
-                adapter = self.adapters.get(source.platform)
+                adapter = self._get_adapter_for_source(source)
                 if adapter and hasattr(adapter, 'get_pending_message'):
                     adapter.get_pending_message(_quick_key)  # consume and discard
                 self._pending_messages.pop(_quick_key, None)
@@ -2561,7 +2786,7 @@ class GatewayRunner:
                 if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
                     running_agent.interrupt("Session reset requested")
                 # Clear any pending messages so the old text doesn't replay
-                adapter = self.adapters.get(source.platform)
+                adapter = self._get_adapter_for_source(source)
                 if adapter and hasattr(adapter, 'get_pending_message'):
                     adapter.get_pending_message(_quick_key)  # consume and discard
                 self._pending_messages.pop(_quick_key, None)
@@ -2576,7 +2801,7 @@ class GatewayRunner:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
                     return "Usage: /queue <prompt>"
-                adapter = self.adapters.get(source.platform)
+                adapter = self._get_adapter_for_source(source)
                 if adapter:
                     from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
                     queued_event = _ME(
@@ -2606,9 +2831,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /sethome updates routing state immediately and must not be
+            # queued as plain text behind an active session.
+            if _cmd_def_inner and _cmd_def_inner.name == "sethome":
+                return await self._handle_set_home_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
-                adapter = self.adapters.get(source.platform)
+                adapter = self._get_adapter_for_source(source)
                 if adapter:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
@@ -2624,7 +2854,7 @@ class GatewayRunner:
                     return "⚡ Force-stopped. The agent was still starting — session unlocked."
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self.adapters.get(source.platform)
+                adapter = self._get_adapter_for_source(source)
                 if adapter:
                     adapter._pending_messages[_quick_key] = event
                 return None
@@ -3167,7 +3397,7 @@ class GatewayRunner:
                     and platform_name not in policy.notify_exclude_platforms
                 )
                 if should_notify:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = self._get_adapter_for_source(source)
                     if adapter:
                         if reset_reason == "suspended":
                             reason_text = "previous session was stopped or interrupted"
@@ -3491,9 +3721,8 @@ class GatewayRunner:
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
-            env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
-                adapter = self.adapters.get(source.platform)
+            if not self._has_home_channel_for_source(source):
+                adapter = self._get_adapter_for_source(source)
                 if adapter:
                     await adapter.send(
                         source.chat_id,
@@ -3536,6 +3765,134 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+        if _is_shared_thread and source.user_name:
+            message_text = f"[{source.user_name}] {message_text}"
+
+        if event.media_urls:
+            image_paths = []
+            for i, path in enumerate(event.media_urls):
+                # Check media_types if available; otherwise infer from message type
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_image = (
+                    mtype.startswith("image/")
+                    or event.message_type == MessageType.PHOTO
+                )
+                if is_image:
+                    image_paths.append(path)
+            if image_paths:
+                message_text = await self._enrich_message_with_vision(
+                    message_text, image_paths
+                )
+        
+        # -----------------------------------------------------------------
+        # Auto-transcribe voice/audio messages sent by the user
+        # -----------------------------------------------------------------
+        if event.media_urls:
+            audio_paths = []
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_audio = (
+                    mtype.startswith("audio/")
+                    or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
+                )
+                if is_audio:
+                    audio_paths.append(path)
+            if audio_paths:
+                message_text = await self._enrich_message_with_transcription(
+                    message_text, audio_paths
+                )
+                # If STT failed, send a direct message to the user so they
+                # know voice isn't configured — don't rely on the agent to
+                # relay the error clearly.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(m in message_text for m in _stt_fail_markers):
+                    _stt_adapter = self._get_adapter_for_source(source)
+                    _stt_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            # Point to setup skill if it's installed
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id, _stt_msg,
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
+
+        # -----------------------------------------------------------------
+        # Enrich document messages with context notes for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            import mimetypes as _mimetypes
+            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                # Fall back to extension-based detection when MIME type is unreliable.
+                if mtype in ("", "application/octet-stream"):
+                    import os as _os2
+                    _ext = _os2.path.splitext(path)[1].lower()
+                    if _ext in _TEXT_EXTENSIONS:
+                        mtype = "text/plain"
+                    else:
+                        guessed, _ = _mimetypes.guess_type(path)
+                        if guessed:
+                            mtype = guessed
+                if not mtype.startswith(("application/", "text/")):
+                    continue
+                # Extract display filename by stripping the doc_{uuid12}_ prefix
+                import os as _os
+                basename = _os.path.basename(path)
+                # Format: doc_<12hex>_<original_filename>
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
+                message_text = f"{context_note}\n\n{message_text}"
+
+        # -----------------------------------------------------------------
+        # Inject reply context when user replies to a message not in history.
+        # Telegram (and other platforms) let users reply to specific messages,
+        # but if the quoted message is from a previous session, cron delivery,
+        # or background task, the agent has no context about what's being
+        # referenced. Prepend the quoted text so the agent understands. (#1594)
+        # -----------------------------------------------------------------
+        if getattr(event, 'reply_to_text', None) and event.reply_to_message_id:
+            reply_snippet = event.reply_to_text[:500]
+            found_in_history = any(
+                reply_snippet[:200] in (msg.get("content") or "")
+                for msg in history
+                if msg.get("role") in ("assistant", "user", "tool")
+            )
+            if not found_in_history:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         try:
             # Emit agent:start hook
@@ -3547,6 +3904,29 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Expand @ context references (@file:, @folder:, @diff, etc.)
+            if "@" in message_text:
+                try:
+                    from agent.context_references import preprocess_context_references_async
+                    from agent.model_metadata import get_model_context_length
+                    _msg_cwd = os.environ.get("MESSAGING_CWD", os.path.expanduser("~"))
+                    _msg_ctx_len = get_model_context_length(
+                        self._model, base_url=self._base_url or "")
+                    _ctx_result = await preprocess_context_references_async(
+                        message_text, cwd=_msg_cwd,
+                        context_length=_msg_ctx_len, allowed_root=_msg_cwd)
+                    if _ctx_result.blocked:
+                        _adapter = self._get_adapter_for_source(source)
+                        if _adapter:
+                            await _adapter.send(
+                                source.chat_id,
+                                "\n".join(_ctx_result.warnings) or "Context injection refused.",
+                            )
+                        return
+                    if _ctx_result.expanded:
+                        message_text = _ctx_result.message
+                except Exception as exc:
+                    logger.debug("@ context reference expansion failed: %s", exc)
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -3560,7 +3940,7 @@ class GatewayRunner:
 
             # Stop persistent typing indicator now that the agent is done
             try:
-                _typing_adapter = self.adapters.get(source.platform)
+                _typing_adapter = self._get_adapter_for_source(source)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -3780,7 +4160,7 @@ class GatewayRunner:
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
-                    _media_adapter = self.adapters.get(source.platform)
+                    _media_adapter = self._get_adapter_for_source(source)
                     if _media_adapter:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
@@ -3792,7 +4172,7 @@ class GatewayRunner:
         except Exception as e:
             # Stop typing indicator on error too
             try:
-                _err_adapter = self.adapters.get(source.platform)
+                _err_adapter = self._get_adapter_for_source(source)
                 if _err_adapter and hasattr(_err_adapter, "stop_typing"):
                     await _err_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -4285,7 +4665,7 @@ class GatewayRunner:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self.adapters.get(source.platform)
+            adapter = self._get_adapter_for_source(source)
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -4748,9 +5128,7 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
-        
-        env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-        
+
         # Save to config.yaml
         try:
             import yaml
@@ -4759,13 +5137,48 @@ class GatewayRunner:
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
-            user_config[env_key] = chat_id
+            if source.platform == Platform.FEISHU:
+                platforms_cfg = user_config.setdefault("platforms", {})
+                if not isinstance(platforms_cfg, dict):
+                    platforms_cfg = {}
+                    user_config["platforms"] = platforms_cfg
+                feishu_cfg = platforms_cfg.setdefault("feishu", {})
+                if not isinstance(feishu_cfg, dict):
+                    feishu_cfg = {}
+                    platforms_cfg["feishu"] = feishu_cfg
+                feishu_cfg["home_channel"] = {
+                    "account_id": source.account_id,
+                    "chat_id": chat_id,
+                    "name": chat_name,
+                }
+                accounts_cfg = feishu_cfg.get("accounts", {})
+                if isinstance(accounts_cfg, dict):
+                    for account_cfg in accounts_cfg.values():
+                        if isinstance(account_cfg, dict):
+                            account_cfg.pop("home_channel", None)
+                if getattr(self, "config", None):
+                    base_platform_cfg = self.config.platforms.get(source.platform)
+                    if base_platform_cfg is not None:
+                        base_platform_cfg.home_channel = HomeChannel(
+                            platform=source.platform,
+                            chat_id=chat_id,
+                            name=chat_name,
+                            account_id=source.account_id,
+                        )
+                        raw_accounts = base_platform_cfg.extra.get("accounts", {})
+                        if isinstance(raw_accounts, dict):
+                            for raw_account_cfg in raw_accounts.values():
+                                if isinstance(raw_account_cfg, dict):
+                                    raw_account_cfg.pop("home_channel", None)
+            else:
+                env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+                user_config[env_key] = chat_id
+                # Also set in the current environment so it takes effect immediately
+                os.environ[env_key] = str(chat_id)
             atomic_yaml_write(config_path, user_config)
-            # Also set in the current environment so it takes effect immediately
-            os.environ[env_key] = str(chat_id)
         except Exception as e:
             return f"Failed to save home channel: {e}"
-        
+
         return (
             f"✅ Home channel set to **{chat_name}** (ID: {chat_id}).\n"
             f"Cron jobs and cross-platform messages will be delivered here."
@@ -4790,7 +5203,7 @@ class GatewayRunner:
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
 
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._get_adapter_for_source(event.source)
 
         if args in ("on", "enable"):
             self._voice_mode[chat_id] = "voice_only"
@@ -4829,7 +5242,7 @@ class GatewayRunner:
                 "all": "TTS (voice reply to all messages)",
             }
             # Append voice channel info if connected
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._get_adapter_for_source(event.source)
             guild_id = self._get_guild_id(event)
             if guild_id and hasattr(adapter, "get_voice_channel_info"):
                 info = adapter.get_voice_channel_info(guild_id)
@@ -4862,7 +5275,7 @@ class GatewayRunner:
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._get_adapter_for_source(event.source)
         if not hasattr(adapter, "join_voice_channel"):
             return "Voice channels are not supported on this platform."
 
@@ -4912,7 +5325,7 @@ class GatewayRunner:
 
     async def _handle_voice_channel_leave(self, event: MessageEvent) -> str:
         """Leave the Discord voice channel."""
-        adapter = self.adapters.get(event.source.platform)
+        adapter = self._get_adapter_for_source(event.source)
         guild_id = self._get_guild_id(event)
 
         if not guild_id or not hasattr(adapter, "leave_voice_channel"):
@@ -5078,7 +5491,7 @@ class GatewayRunner:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
                 return
 
-            adapter = self.adapters.get(event.source.platform)
+            adapter = self._get_adapter_for_source(event.source)
 
             # If connected to a voice channel, play there instead of sending a file
             guild_id = self._get_guild_id(event)
@@ -5275,7 +5688,7 @@ class GatewayRunner:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
 
-        adapter = self.adapters.get(source.platform)
+        adapter = self._get_adapter_for_source(source)
         if not adapter:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
@@ -5447,7 +5860,7 @@ class GatewayRunner:
         """Execute an ephemeral /btw side question and deliver the answer."""
         from run_agent import AIAgent
 
-        adapter = self.adapters.get(source.platform)
+        adapter = self._get_adapter_for_source(source)
         if not adapter:
             logger.warning("No adapter for platform %s in /btw task %s", source.platform, task_id)
             return
@@ -6377,7 +6790,7 @@ class GatewayRunner:
             return "No pending command to approve."
 
         # Resume typing indicator — agent is about to continue processing.
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._get_adapter_for_source(source)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -6414,7 +6827,7 @@ class GatewayRunner:
             return "No pending command to deny."
 
         # Resume typing indicator — agent continues (with BLOCKED result).
-        _adapter = self.adapters.get(source.platform)
+        _adapter = self._get_adapter_for_source(source)
         if _adapter:
             _adapter.resume_typing_for_chat(source.chat_id)
 
@@ -6892,10 +7305,12 @@ class GatewayRunner:
         from gateway.session_context import set_session_vars
         return set_session_vars(
             platform=context.source.platform.value,
+            account_id=context.source.account_id or "",
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
+            user_id_alt=context.source.user_id_alt or "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
         )
@@ -7469,7 +7884,7 @@ class GatewayRunner:
             if not progress_queue:
                 return
 
-            adapter = self.adapters.get(source.platform)
+            adapter = self._get_adapter_for_source(source)
             if not adapter:
                 return
 
@@ -7622,7 +8037,7 @@ class GatewayRunner:
                 logger.debug("agent:step hook error: %s", _e)
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self.adapters.get(source.platform)
+        _status_adapter = self._get_adapter_for_source(source)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
@@ -7723,7 +8138,7 @@ class GatewayRunner:
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self.adapters.get(source.platform)
+                    _adapter = self._get_adapter_for_source(source)
                     if _adapter:
                         # Platforms that don't support editing sent messages
                         # (e.g. WeChat) must not show a cursor in intermediate
@@ -8176,7 +8591,8 @@ class GatewayRunner:
         _interrupt_detected = asyncio.Event()  # shared with backup check
 
         async def monitor_for_interrupt():
-            if not session_key:
+            adapter = self._get_adapter_for_source(source)
+            if not adapter or not session_key:
                 return
 
             while True:
@@ -8227,7 +8643,7 @@ class GatewayRunner:
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
                 return  # Notifications disabled (gateway_notify_interval: 0)
-            _notify_adapter = self.adapters.get(source.platform)
+            _notify_adapter = self._get_adapter_for_source(source)
             if not _notify_adapter:
                 return
             while True:
@@ -8335,7 +8751,7 @@ class GatewayRunner:
                     if (not _warning_fired and _agent_warning is not None
                             and _idle_secs >= _agent_warning):
                         _warning_fired = True
-                        _warn_adapter = self.adapters.get(source.platform)
+                        _warn_adapter = self._get_adapter_for_source(source)
                         if _warn_adapter:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
@@ -8454,7 +8870,7 @@ class GatewayRunner:
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]
-            adapter = self.adapters.get(source.platform)
+            adapter = self._get_adapter_for_source(source)
             
             # Get pending message from adapter.
             # Use session_key (not source.chat_id) to match adapter's storage keys.
@@ -8516,8 +8932,8 @@ class GatewayRunner:
                         "queueing message instead of recursing.",
                         _interrupt_depth, session_key,
                     )
-                    adapter = self.adapters.get(source.platform)
-                    if adapter and pending_event:
+                    adapter = self._get_adapter_for_source(source)
+                    if adapter and pending_event and hasattr(adapter, "_pending_messages"):
                         merge_pending_message_event(adapter._pending_messages, session_key, pending_event)
                     elif adapter and hasattr(adapter, 'queue_message'):
                         adapter.queue_message(session_key, pending)
@@ -8645,7 +9061,13 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_cron_ticker(
+    stop_event: threading.Event,
+    adapters=None,
+    account_adapters=None,
+    loop=None,
+    interval: int = 60,
+):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
@@ -8668,7 +9090,12 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop)
+            cron_tick(
+                verbose=False,
+                adapters=adapters,
+                account_adapters=account_adapters,
+                loop=loop,
+            )
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 
@@ -8853,7 +9280,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={
+            "adapters": runner.adapters,
+            "account_adapters": runner._adapters_by_binding,
+            "loop": asyncio.get_running_loop(),
+        },
         daemon=True,
         name="cron-ticker",
     )

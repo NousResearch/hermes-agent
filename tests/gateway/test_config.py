@@ -16,13 +16,19 @@ from gateway.config import (
 
 class TestHomeChannelRoundtrip:
     def test_to_dict_from_dict(self):
-        hc = HomeChannel(platform=Platform.DISCORD, chat_id="999", name="general")
+        hc = HomeChannel(
+            platform=Platform.DISCORD,
+            chat_id="999",
+            name="general",
+            account_id="bot-1",
+        )
         d = hc.to_dict()
         restored = HomeChannel.from_dict(d)
 
         assert restored.platform == Platform.DISCORD
         assert restored.chat_id == "999"
         assert restored.name == "general"
+        assert restored.account_id == "bot-1"
 
 
 class TestPlatformConfigRoundtrip:
@@ -222,6 +228,123 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+    def test_loads_feishu_multi_account_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  feishu:\n"
+            "    default_account: corp_a\n"
+            "    home_channel:\n"
+            "      account_id: corp_a\n"
+            "      chat_id: oc_alpha\n"
+            "      name: Alpha\n"
+            "    accounts:\n"
+            "      corp_a:\n"
+            "        app_id: cli_a\n"
+            "        app_secret: sec_a\n"
+            "      corp_b:\n"
+            "        app_id: cli_b\n"
+            "        app_secret: sec_b\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert Platform.FEISHU in config.get_connected_platforms()
+        assert config.get_default_account_id(Platform.FEISHU) == "corp_a"
+        assert config.get_home_channel(Platform.FEISHU).chat_id == "oc_alpha"
+        assert config.get_home_channel(Platform.FEISHU).account_id == "corp_a"
+        corp_b = config.get_platform_config(Platform.FEISHU, account_id="corp_b")
+        assert corp_b is not None
+        assert corp_b.extra["app_id"] == "cli_b"
+        assert corp_b.extra["account_id"] == "corp_b"
+        bindings = config.iter_enabled_platform_bindings()
+        feishu_bindings = [
+            (platform, account_id)
+            for platform, account_id, _ in bindings
+            if platform == Platform.FEISHU
+        ]
+        assert feishu_bindings == [
+            (Platform.FEISHU, "corp_a"),
+            (Platform.FEISHU, "corp_b"),
+        ]
+
+    def test_feishu_legacy_account_home_channel_falls_back_when_platform_home_missing(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  feishu:\n"
+            "    accounts:\n"
+            "      corp_a:\n"
+            "        app_id: cli_a\n"
+            "        app_secret: sec_a\n"
+            "        home_channel:\n"
+            "          chat_id: oc_alpha\n"
+            "          name: Alpha\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        home = config.get_home_channel(Platform.FEISHU)
+        assert home is not None
+        assert home.chat_id == "oc_alpha"
+        assert home.account_id == "corp_a"
+
+    def test_feishu_legacy_env_is_ignored_when_multi_account_yaml_present(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  feishu:\n"
+            "    default_account: corp_a\n"
+            "    accounts:\n"
+            "      corp_a:\n"
+            "        app_id: cli_yaml\n"
+            "        app_secret: sec_yaml\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("FEISHU_APP_ID", "cli_env")
+        monkeypatch.setenv("FEISHU_APP_SECRET", "sec_env")
+
+        config = load_gateway_config()
+
+        feishu = config.platforms[Platform.FEISHU]
+        assert "app_id" not in feishu.extra
+        assert config.get_platform_config(Platform.FEISHU, "corp_a").extra["app_id"] == "cli_yaml"
+
+    def test_feishu_account_dm_policy_controls_unauthorized_dm_behavior(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.FEISHU: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "accounts": {
+                            "corp_a": {
+                                "app_id": "cli_a",
+                                "app_secret": "sec_a",
+                                "dm_policy": "allowlist",
+                            },
+                            "corp_b": {
+                                "app_id": "cli_b",
+                                "app_secret": "sec_b",
+                                "dm_policy": "pairing",
+                            },
+                        },
+                    },
+                ),
+            },
+            unauthorized_dm_behavior="ignore",
+        )
+
+        assert config.get_unauthorized_dm_behavior(Platform.FEISHU, account_id="corp_a") == "ignore"
+        assert config.get_unauthorized_dm_behavior(Platform.FEISHU, account_id="corp_b") == "pair"
 
 
 class TestHomeChannelEnvOverrides:

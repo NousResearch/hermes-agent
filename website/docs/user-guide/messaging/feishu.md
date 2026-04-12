@@ -107,7 +107,39 @@ Select **Feishu / Lark** and fill in the prompts.
 
 ### Option B: Manual Configuration
 
-Add the following to `~/.hermes/.env`:
+Recommended: configure Feishu in `~/.hermes/config.yaml` with one or more account blocks under the same Hermes agent:
+
+```yaml
+platforms:
+  feishu:
+    home_channel:
+      account_id: laok-gradients
+      chat_id: oc_team_claire
+      name: Team CLAIRE
+    accounts:
+      laok-personal:
+        app_id: cli_personal_xxx
+        app_secret: env:FEISHU_PERSONAL_APP_SECRET
+        domain: feishu
+        connection_mode: websocket
+        require_mention: true
+        default_group_policy: open
+      laok-gradients:
+        app_id: cli_gradients_xxx
+        app_secret: env:FEISHU_GRADIENTS_APP_SECRET
+        domain: feishu
+        connection_mode: websocket
+        require_mention: true
+        default_group_policy: allowlist
+        admins:
+          - u_owner_in_gradients_tenant
+```
+
+`account_id` is Hermes' local key for one Feishu bot account binding. Use names that identify the bot deployment instance, such as `laok-personal` or `laok-gradients`.
+
+`platforms.feishu.home_channel` is the platform's single default outbound target. It stores both the target chat and the bot account Hermes should send through when a job or tool only specifies `feishu` and not an explicit chat ID.
+
+Legacy single-account deployments can still use `~/.hermes/.env`:
 
 ```bash
 FEISHU_APP_ID=cli_xxx
@@ -120,7 +152,9 @@ FEISHU_ALLOWED_USERS=ou_xxx,ou_yyy
 FEISHU_HOME_CHANNEL=oc_xxx
 ```
 
-`FEISHU_DOMAIN` accepts:
+For `config.yaml`, `app_secret`, `encrypt_key`, and similar sensitive values may be written as `env:VAR_NAME` references.
+
+`FEISHU_DOMAIN` / `domain` accepts:
 
 - `feishu` for Feishu China
 - `lark` for Lark international
@@ -137,7 +171,20 @@ Then message the bot from Feishu/Lark to confirm that the connection is live.
 
 Use `/set-home` in a Feishu/Lark chat to mark it as the home channel for cron job results and cross-platform notifications.
 
-You can also preconfigure it:
+You can also preconfigure it in `config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    home_channel:
+      account_id: laok-gradients
+      chat_id: oc_team_claire
+      name: Team CLAIRE
+```
+
+`home_channel.name` is optional display metadata. Routing is keyed by `chat_id`, and `account_id` selects which configured Feishu bot should send the message.
+
+Legacy single-account mode can still use:
 
 ```bash
 FEISHU_HOME_CHANNEL=oc_xxx
@@ -201,19 +248,21 @@ FEISHU_GROUP_POLICY=allowlist   # default
 | `allowlist` | Hermes only responds to @mentions from users listed in `FEISHU_ALLOWED_USERS`. |
 | `disabled` | Hermes ignores all group messages entirely. |
 
-In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages bypass this gate.
+In all modes, the bot must be explicitly @mentioned (or `@all`) in the group before the message is processed. Direct messages bypass this gate.
 
 ### Bot Identity for @Mention Gating
 
-For precise @mention detection in groups, the adapter needs to know the bot's identity. It can be provided explicitly:
+Hermes accepts group messages only when the Feishu message actually mentions the bot, unless a chat-specific rule disables mention gating.
 
-```bash
-FEISHU_BOT_OPEN_ID=ou_xxx
-FEISHU_BOT_USER_ID=xxx
-FEISHU_BOT_NAME=MyBot
-```
+Mention matching works in this order:
 
-If none of these are set, the adapter will attempt to auto-discover the bot name via the Application Info API on startup. For this to work, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
+1. Mention payload ID match against the bot's runtime identity, when the event carries bot IDs.
+2. Parsed rich-text mention targets in `post` messages.
+3. Best-effort display-name fallback when Hermes can auto-discover the app name from the Application Info API.
+
+`FEISHU_BOT_OPEN_ID`, `FEISHU_BOT_USER_ID`, and `FEISHU_BOT_NAME` remain legacy environment-variable compatibility fallbacks for older single-account deployments. They are not canonical multi-account config fields and should not be added under `platforms.feishu.accounts.*`.
+
+If Hermes cannot auto-discover the app name, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
 
 ## Interactive Card Actions
 
@@ -347,9 +396,10 @@ When using `websocket` mode, you can customize reconnect and ping behavior:
 ```yaml
 platforms:
   feishu:
-    extra:
-      ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
-      ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
+    accounts:
+      laok-gradients:
+        ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
+        ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
 ```
 
 | Setting | Config key | Default | Description |
@@ -364,22 +414,25 @@ Beyond the global `FEISHU_GROUP_POLICY`, you can set fine-grained rules per grou
 ```yaml
 platforms:
   feishu:
-    extra:
-      default_group_policy: "open"     # Default for groups not in group_rules
-      admins:                          # Users who can manage bot settings
-        - "ou_admin_open_id"
-      group_rules:
-        "oc_group_chat_id_1":
-          policy: "allowlist"          # open | allowlist | blacklist | admin_only | disabled
-          allowlist:
-            - "ou_user_open_id_1"
-            - "ou_user_open_id_2"
-        "oc_group_chat_id_2":
-          policy: "admin_only"
-        "oc_group_chat_id_3":
-          policy: "blacklist"
-          blacklist:
-            - "ou_blocked_user"
+    accounts:
+      laok-gradients:
+        require_mention: true          # account-level default
+        default_group_policy: open     # Default for groups not in group_rules
+        admins:
+          - "u_admin_in_this_tenant"
+        group_rules:
+          "oc_group_chat_id_1":
+            policy: allowlist          # open | allowlist | blacklist | admin_only | disabled
+            require_mention: false     # optional per-chat override
+            allowlist:
+              - "u_user_id_1"
+              - "u_user_id_2"
+          "oc_group_chat_id_2":
+            policy: admin_only
+          "oc_group_chat_id_3":
+            policy: blacklist
+            blacklist:
+              - "u_blocked_user"
 ```
 
 | Policy | Description |
@@ -390,7 +443,7 @@ platforms:
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
 
-Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
+Groups not listed in `group_rules` fall back to `default_group_policy`. `require_mention` is resolved at two levels: account default first, then per-chat override when present.
 
 ## Deduplication
 
@@ -400,7 +453,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 |---------|---------|---------|
 | Cache size | `HERMES_FEISHU_DEDUP_CACHE_SIZE` | 2048 entries |
 
-## All Environment Variables
+## Legacy Environment Variables
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -413,9 +466,9 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | Group message policy: `open`, `allowlist`, `disabled` |
-| `FEISHU_BOT_OPEN_ID` | — | _(empty)_ | Bot's open_id (for @mention detection) |
-| `FEISHU_BOT_USER_ID` | — | _(empty)_ | Bot's user_id (for @mention detection) |
-| `FEISHU_BOT_NAME` | — | _(empty)_ | Bot's display name (for @mention detection) |
+| `FEISHU_BOT_OPEN_ID` | — | _(empty)_ | Legacy mention-payload open_id fallback for single-account compatibility |
+| `FEISHU_BOT_USER_ID` | — | _(empty)_ | Legacy mention-payload user_id fallback for single-account compatibility |
+| `FEISHU_BOT_NAME` | — | _(empty)_ | Legacy display-name fallback for single-account compatibility |
 | `FEISHU_WEBHOOK_HOST` | — | `127.0.0.1` | Webhook server bind address |
 | `FEISHU_WEBHOOK_PORT` | — | `8765` | Webhook server port |
 | `FEISHU_WEBHOOK_PATH` | — | `/feishu/webhook` | Webhook endpoint path |
@@ -425,7 +478,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
 
-WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
+These environment variables are for legacy single-account compatibility. New multi-account deployments should use `config.yaml` under `platforms.feishu.accounts.<account_id>`.
 
 ## Troubleshooting
 
@@ -434,17 +487,19 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `lark-oapi not installed` | Install the SDK: `pip install lark-oapi` |
 | `websockets not installed; websocket mode unavailable` | Install websockets: `pip install websockets` |
 | `aiohttp not installed; webhook mode unavailable` | Install aiohttp: `pip install aiohttp` |
-| `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars or configure via `hermes gateway setup` |
+| `FEISHU_APP_ID or FEISHU_APP_SECRET not set` | Set both env vars for legacy single-account mode, or configure `platforms.feishu.accounts.<account_id>` in `config.yaml` |
 | `Another local Hermes gateway is already using this Feishu app_id` | Only one Hermes instance can use the same app_id at a time. Stop the other gateway first. |
-| Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
+| Bot doesn't respond in groups | Ensure the bot is actually @mentioned, check `require_mention`, and verify the sender passes the account or per-group policy |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
-| Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
+| Bot identity not auto-detected | Grant `admin:app.info:readonly` or `application:application:self_manage`; `FEISHU_BOT_NAME` is legacy compatibility only |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
 ## Toolset
 
 Feishu / Lark uses the `hermes-feishu` platform preset, which includes the same core tools as Telegram and other gateway-based messaging platforms.
+
+It also exposes `feishu_id`, which lets an agent inspect Feishu users, chats, members, and session routes. The tool uses official Feishu APIs when credentials are available and falls back to Hermes' observed local session metadata when they are not.

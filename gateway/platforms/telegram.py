@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -159,6 +160,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Loop-prevention state for Telegram bot-to-bot communication.
+        # Keys are scope-based (chat/thread) and sender-based (scope + sender).
+        self._bot_loop_states: Dict[str, dict] = {}
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -2108,6 +2112,180 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return self._message_matches_mention_patterns(message)
 
+    @staticmethod
+    def _telegram_positive_int(value: Any, default: int) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            return default
+        return parsed if parsed > 0 else default
+
+    @staticmethod
+    def _telegram_positive_float(value: Any, default: float) -> float:
+        try:
+            parsed = float(value)
+        except Exception:
+            return default
+        return parsed if parsed > 0 else default
+
+    def _telegram_loop_settings(self) -> dict:
+        """Return loop-prevention thresholds for Telegram bot-to-bot chats."""
+        extra = getattr(self.config, "extra", None) or {}
+        return {
+            "dedup_seconds": self._telegram_positive_float(
+                extra.get("loop_dedup_seconds", os.getenv("TELEGRAM_LOOP_DEDUP_SECONDS", "15")),
+                15.0,
+            ),
+            "rate_limit_seconds": self._telegram_positive_float(
+                extra.get("loop_rate_limit_seconds", os.getenv("TELEGRAM_LOOP_RATE_LIMIT_SECONDS", "5")),
+                5.0,
+            ),
+            "max_depth": self._telegram_positive_int(
+                extra.get("loop_max_depth", os.getenv("TELEGRAM_LOOP_MAX_DEPTH", "6")),
+                6,
+            ),
+            "max_duration_seconds": self._telegram_positive_float(
+                extra.get("loop_max_duration_seconds", os.getenv("TELEGRAM_LOOP_MAX_DURATION_SECONDS", "90")),
+                90.0,
+            ),
+            "max_recent_signatures": self._telegram_positive_int(
+                extra.get("loop_max_recent_signatures", os.getenv("TELEGRAM_LOOP_MAX_RECENT_SIGNATURES", "32")),
+                32,
+            ),
+        }
+
+    @staticmethod
+    def _telegram_message_sender_id(message: Message) -> Optional[str]:
+        user = getattr(message, "from_user", None)
+        if user and getattr(user, "id", None) is not None:
+            return str(getattr(user, "id"))
+        sender_chat = getattr(message, "sender_chat", None)
+        if sender_chat and getattr(sender_chat, "id", None) is not None:
+            return f"chat:{getattr(sender_chat, 'id')}"
+        return None
+
+    def _telegram_loop_scope_key(self, message: Message) -> str:
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        thread_id = getattr(message, "message_thread_id", None)
+        return f"telegram:{chat_id}:{thread_id if thread_id is not None else 'root'}"
+
+    def _telegram_loop_message_signature(self, message: Message) -> str:
+        text = (getattr(message, "text", None) or getattr(message, "caption", None) or "")
+        text = re.sub(r"\s+", " ", text).strip().lower()
+        parts = [text or "<empty>"]
+        media_group_id = getattr(message, "media_group_id", None)
+        if media_group_id:
+            parts.append(f"media_group={media_group_id}")
+        for attr in ("photo", "video", "audio", "voice", "document", "sticker"):
+            media = getattr(message, attr, None)
+            if not media:
+                continue
+            if isinstance(media, list):
+                media_items = media
+            else:
+                media_items = [media]
+            media_ids = []
+            for item in media_items:
+                file_id = getattr(item, "file_unique_id", None) or getattr(item, "file_id", None)
+                if file_id is not None:
+                    media_ids.append(str(file_id))
+            if media_ids:
+                parts.append(f"{attr}={'|'.join(media_ids)}")
+        return "::".join(parts)
+
+    def _telegram_bot_loop_key(self, scope_key: str, sender_id: str, *, global_key: bool = False) -> str:
+        return scope_key if global_key else f"{scope_key}:sender:{sender_id}"
+
+    def _telegram_reset_bot_loop_scope(self, scope_key: str) -> None:
+        if not hasattr(self, "_bot_loop_states"):
+            self._bot_loop_states = {}
+        prefix = f"{scope_key}"
+        for key in list(self._bot_loop_states.keys()):
+            if key == prefix or key.startswith(prefix + ":"):
+                self._bot_loop_states.pop(key, None)
+
+    def _telegram_loop_state_allows(self, key: str, signature: str, now: float, settings: dict) -> tuple[bool, Optional[dict], str]:
+        if not hasattr(self, "_bot_loop_states"):
+            self._bot_loop_states = {}
+        existing_state = dict(self._bot_loop_states.get(key) or {})
+        is_fresh = not existing_state
+        expired = bool(existing_state) and (now - float(existing_state.get("last_seen", now)) > settings["max_duration_seconds"])
+        if is_fresh or expired:
+            state = {"first_seen": now, "last_seen": now, "depth": 0, "recent": {}}
+        else:
+            state = existing_state
+        recent = dict(state.get("recent") or {})
+        recent = {
+            sig: ts for sig, ts in recent.items()
+            if (now - float(ts)) <= settings["dedup_seconds"]
+        }
+        if signature in recent:
+            return False, None, "duplicate message"
+        if int(state.get("depth", 0)) >= settings["max_depth"]:
+            return False, None, "max depth reached"
+        if not is_fresh and not expired and (now - float(state.get("last_seen", now)) < settings["rate_limit_seconds"]):
+            return False, None, "rate limited"
+        recent[signature] = now
+        if len(recent) > settings["max_recent_signatures"]:
+            ordered = sorted(recent.items(), key=lambda item: item[1])
+            recent = dict(ordered[-settings["max_recent_signatures"]:])
+        state["first_seen"] = float(state.get("first_seen", now)) if not is_fresh and not expired else now
+        state["last_seen"] = now
+        state["depth"] = int(state.get("depth", 0)) + 1
+        state["recent"] = recent
+        return True, state, ""
+
+    def _should_accept_bot_loop_message(self, message: Message) -> bool:
+        """Protect bot-to-bot flows from echo loops, spam, and runaway depth."""
+        sender = getattr(message, "from_user", None)
+        sender_id = self._telegram_message_sender_id(message)
+        if not sender_id:
+            return True
+
+        bot_id = getattr(getattr(self, "_bot", None), "id", None)
+        if bot_id is not None and getattr(sender, "id", None) == bot_id:
+            logger.debug("[%s] Dropping self-authored Telegram message to prevent loops", self.name)
+            return False
+
+        scope_key = self._telegram_loop_scope_key(message)
+        is_bot = bool(sender and getattr(sender, "is_bot", False))
+        if not is_bot:
+            self._telegram_reset_bot_loop_scope(scope_key)
+            return True
+
+        settings = self._telegram_loop_settings()
+        signature = self._telegram_loop_message_signature(message)
+        now = time.monotonic()
+        global_key = self._telegram_bot_loop_key(scope_key, sender_id, global_key=True)
+        sender_key = self._telegram_bot_loop_key(scope_key, sender_id)
+
+        ok_global, state_global, reason_global = self._telegram_loop_state_allows(global_key, signature, now, settings)
+        if not ok_global:
+            logger.warning(
+                "[%s] Telegram loop prevention dropped bot message in %s: %s",
+                self.name, scope_key, reason_global,
+            )
+            return False
+
+        ok_sender, state_sender, reason_sender = self._telegram_loop_state_allows(sender_key, signature, now, settings)
+        if not ok_sender:
+            logger.warning(
+                "[%s] Telegram loop prevention dropped bot message for sender %s in %s: %s",
+                self.name, sender_id, scope_key, reason_sender,
+            )
+            return False
+
+        self._bot_loop_states[global_key] = state_global
+        self._bot_loop_states[sender_key] = state_sender
+        return True
+
+    async def _dispatch_message_event(self, event: MessageEvent) -> None:
+        raw_message = getattr(event, "raw_message", None)
+        if raw_message is not None and not self._should_accept_bot_loop_message(raw_message):
+            return
+        await self.handle_message(event)
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -2130,9 +2308,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(update.message, is_command=True):
             return
-        
+
         event = self._build_message_event(update.message, MessageType.COMMAND)
-        await self.handle_message(event)
+        await self._dispatch_message_event(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming location/venue pin messages."""
@@ -2169,7 +2347,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.LOCATION)
         event.text = "\n".join(parts)
-        await self.handle_message(event)
+        await self._dispatch_message_event(event)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Telegram client-side splits)
@@ -2240,7 +2418,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
-            await self.handle_message(event)
+            await self._dispatch_message_event(event)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -2271,7 +2449,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if not event:
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
-            await self.handle_message(event)
+            await self._dispatch_message_event(event)
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
@@ -2299,7 +2477,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(update.message):
             return
-        
+
         msg = update.message
         
         # Determine media type
@@ -2327,7 +2505,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)
-            await self.handle_message(event)
+            await self._dispatch_message_event(event)
             return
         
         # Download photo to local image cache so the vision tool can access it
@@ -2408,7 +2586,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         f"Supported types: {supported_list}"
                     )
                     logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
-                    await self.handle_message(event)
+                    await self._dispatch_message_event(event)
                     return
 
                 # Check file size (Telegram Bot API limit: 20 MB)
@@ -2419,7 +2597,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Maximum: 20 MB."
                     )
                     logger.info("[Telegram] Document too large: %s bytes", doc.file_size)
-                    await self.handle_message(event)
+                    await self._dispatch_message_event(event)
                     return
 
                 # Download and cache
@@ -2458,7 +2636,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._queue_media_group_event(str(media_group_id), event)
             return
 
-        await self.handle_message(event)
+        await self._dispatch_message_event(event)
     
     async def _queue_media_group_event(self, media_group_id: str, event: MessageEvent) -> None:
         """Buffer Telegram media-group items so albums arrive as one logical event.
@@ -2490,7 +2668,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
             if event is not None:
-                await self.handle_message(event)
+                await self._dispatch_message_event(event)
         except asyncio.CancelledError:
             return
         finally:

@@ -9450,7 +9450,12 @@ class AIAgent:
                             clean = self._strip_think_blocks(turn_content).strip()
                             if clean:
                                 self._vprint(f"  ┊ 💬 {clean}")
-                    
+                    else:
+                        # Tool-call turn with no real content — clear stale
+                        # fallback capture so it doesn't persist across many
+                        # turns and surface as a misleading final response.
+                        self._last_content_with_tools = None
+
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).
                     while (
@@ -9576,30 +9581,6 @@ class AIAgent:
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
-                        # If the previous turn already delivered real content alongside
-                        # tool calls (e.g. "You're welcome!" + memory save), the model
-                        # has nothing more to say. Use the earlier content immediately
-                        # instead of wasting API calls on retries that won't help.
-                        fallback = getattr(self, '_last_content_with_tools', None)
-                        if fallback:
-                            _turn_exit_reason = "fallback_prior_turn_content"
-                            logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                            self._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
-                            self._last_content_with_tools = None
-                            self._empty_content_retries = 0
-                            for i in range(len(messages) - 1, -1, -1):
-                                msg = messages[i]
-                                if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                                    tool_names = []
-                                    for tc in msg["tool_calls"]:
-                                        if not tc or not isinstance(tc, dict): continue
-                                        fn = tc.get("function", {})
-                                        tool_names.append(fn.get("name", "unknown"))
-                                    msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
-                                    break
-                            final_response = self._strip_think_blocks(fallback).strip()
-                            self._response_was_previewed = True
-                            break
 
                         # ── Thinking-only prefill continuation ──────────
                         # The model produced structured reasoning (via API
@@ -9684,6 +9665,31 @@ class AIAgent:
                                     self.model, self.provider,
                                 )
                                 continue
+
+                        # ── Last resort: use prior turn content ──────
+                        # If the previous turn already delivered real content alongside
+                        # tool calls (e.g. "You're welcome!" + memory save), the model
+                        # has nothing more to say. Use the earlier content as a last
+                        # resort after all retry mechanisms are exhausted.
+                        fallback = getattr(self, '_last_content_with_tools', None)
+                        if fallback:
+                            _turn_exit_reason = "fallback_prior_turn_content"
+                            logger.info("Empty follow-up after tool calls — using prior turn content as final response (retries exhausted)")
+                            self._emit_status("↻ Retries exhausted — using earlier content as final answer")
+                            self._last_content_with_tools = None
+                            for i in range(len(messages) - 1, -1, -1):
+                                msg = messages[i]
+                                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                                    tool_names = []
+                                    for tc in msg["tool_calls"]:
+                                        if not tc or not isinstance(tc, dict): continue
+                                        fn = tc.get("function", {})
+                                        tool_names.append(fn.get("name", "unknown"))
+                                    msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
+                                    break
+                            final_response = self._strip_think_blocks(fallback).strip()
+                            self._response_was_previewed = True
+                            break
 
                         # Exhausted retries and fallback chain (or no
                         # fallback configured).  Fall through to the

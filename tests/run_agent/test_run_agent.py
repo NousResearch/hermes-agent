@@ -2170,6 +2170,117 @@ class TestRunConversation:
         assert result["final_response"] == "Done!"
 
 
+class TestLastContentWithToolsFallback:
+    """Verify _last_content_with_tools fallback only fires after retries are exhausted.
+
+    Regression for #7968: the fallback used to bypass empty-response retries,
+    causing silent agent loop termination when the model returned empty content
+    after a tool-call turn that included text.
+    """
+
+    def _setup_agent(self, agent):
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+    def test_retries_before_fallback_on_empty_followup(self, agent):
+        """Empty follow-up after content+tools retries before using prior content."""
+        self._setup_agent(agent)
+        # Turn 1: model produces content + tool call
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        content_with_tools_resp = _mock_response(
+            content="Task 4 done! Now starting task 5:",
+            finish_reason="stop",
+            tool_calls=[tc],
+        )
+        # Turn 2-4: model returns empty (should retry 3 times)
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        # Turn 5: model produces real content on 3rd retry
+        real_resp = _mock_response(content="Here is task 5 result.", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = [
+            content_with_tools_resp,  # content + tools
+            empty_resp,               # 1st empty (retry 1)
+            empty_resp,               # 2nd empty (retry 2)
+            real_resp,                # 3rd attempt: real content
+        ]
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do tasks 4 and 5")
+        # Must get the real follow-up, NOT the stale "Task 4 done!" fallback
+        assert result["final_response"] == "Here is task 5 result."
+        assert result["api_calls"] == 4
+
+    def test_fallback_used_after_all_retries_exhausted(self, agent):
+        """When all retries fail, _last_content_with_tools is used as last resort."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        content_with_tools_resp = _mock_response(
+            content="Here is your answer!",
+            finish_reason="stop",
+            tool_calls=[tc],
+        )
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = [
+            content_with_tools_resp,  # content + tools
+            empty_resp,               # retry 1
+            empty_resp,               # retry 2
+            empty_resp,               # retry 3
+            empty_resp,               # all exhausted
+        ]
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        # After exhausting retries, fallback to prior content
+        assert result["final_response"] == "Here is your answer!"
+
+    def test_stale_fallback_cleared_on_tool_only_turn(self, agent):
+        """_last_content_with_tools is cleared when a tool-only turn follows."""
+        self._setup_agent(agent)
+        # Turn 1: content + tools
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"setup"}')
+        content_tools_resp = _mock_response(
+            content="Stale content from turn 1",
+            finish_reason="stop",
+            tool_calls=[tc1],
+        )
+        # Turn 2: tool-only turn (no content) — should clear the fallback
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"test"}')
+        tools_only_resp = _mock_response(
+            content=None,
+            finish_reason="stop",
+            tool_calls=[tc2],
+        )
+        # Turn 3: final response
+        final_resp = _mock_response(content="Fresh result.", finish_reason="stop")
+
+        agent.client.chat.completions.create.side_effect = [
+            content_tools_resp,  # content + tools (captures fallback)
+            tools_only_resp,     # tools only (clears fallback)
+            final_resp,          # final response
+        ]
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}'),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do research")
+        assert result["final_response"] == "Fresh result."
+
+
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
 

@@ -2499,8 +2499,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print()
         override = ""
     if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+        else:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)

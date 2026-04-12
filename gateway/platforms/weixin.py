@@ -1560,7 +1560,7 @@ class WeixinAdapter(BasePlatformAdapter):
             )
         elif upload_full_url:
             timeout = aiohttp.ClientTimeout(total=120)
-            async with self._session.put(
+            async with self._session.post(
                 upload_full_url,
                 data=ciphertext,
                 headers={"Content-Type": "application/octet-stream"},

@@ -268,7 +268,7 @@ DEFAULT_CONFIG = {
             "warning_threshold": 3,
             "critical_threshold": 5,
             "window_size": 30,
-            "prune_context": True,  # Set False to disable pruning but keep warnings
+            "prune_context": False,  # True = prune context on loop; False = warn + retry hint + stop
         },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling

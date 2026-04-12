@@ -1474,9 +1474,10 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
 
-        # Reset tool-loop detector
+        # Reset tool-loop detector and intervention counter
         if hasattr(self, '_tool_loop_detector'):
             self._tool_loop_detector.reset()
+        self._loop_intervention_count = 0
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
@@ -6366,13 +6367,19 @@ class AIAgent:
         )
         return compressed, new_system_prompt
 
-    def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> None:
-        """Check for tool call loops after tool execution. Prune context on critical."""
+    def _check_tool_loop(self, messages: list, assistant_message, finish_reason: str) -> bool:
+        """Check for tool-call loops after tool execution.
+
+        Returns True if execution should stop (intervention exhausted).
+        """
         if not getattr(self, '_tool_loop_detector', None):
-            return
+            return False
         if not assistant_message.tool_calls:
-            return
+            return False
+
+        prune = getattr(self, '_tool_loop_prune_context', True)
         reasoning = self._extract_reasoning(assistant_message)
+
         for tc in assistant_message.tool_calls:
             try:
                 args = json.loads(tc.function.arguments) if isinstance(tc.function.arguments, str) else tc.function.arguments
@@ -6384,24 +6391,81 @@ class AIAgent:
                 if msg.get("role") == "tool" and msg.get("tool_call_id") == tc_id:
                     last_tool_result = msg.get("content", "")
                     break
+
             verdict = self._tool_loop_detector.record(
                 tool_name=tc.function.name, args=args, result=last_tool_result, reasoning=reasoning,
             )
+
+            if verdict.severity == "warning" and not self.quiet_mode:
+                self._vprint(
+                    f"\n{self.log_prefix}⚠️  Possible loop: `{tc.function.name}` called "
+                    f"{verdict.streak} consecutive times ({verdict.detector})",
+                    force=True,
+                )
+
             if verdict.severity == "critical":
-                if getattr(self, '_tool_loop_prune_context', True):
+                if prune:
+                    # Mode: prune context
                     from agent.tool_loop_pruner import prune_tool_loop
-                    pruned = prune_tool_loop(messages, tool_name=tc.function.name, streak=verdict.streak,
-                        intended_tool=verdict.intended_tool, detector=verdict.detector)
+                    pruned = prune_tool_loop(
+                        messages, tool_name=tc.function.name, streak=verdict.streak,
+                        intended_tool=verdict.intended_tool, detector=verdict.detector,
+                    )
                     messages.clear()
                     messages.extend(pruned)
                     if not self.quiet_mode:
-                        self._vprint(f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times. Pruned {verdict.streak - 1} repeated attempts from context.", force=True)
-                elif not self.quiet_mode:
-                    self._vprint(f"\n{self.log_prefix}⚠️  Loop detected ({verdict.detector}): `{tc.function.name}` called {verdict.streak} times — pruning disabled by config.", force=True)
-                if verdict.intended_tool and not self.quiet_mode:
-                    self._vprint(f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — guidance injected.", force=True)
-            elif verdict.severity == "warning" and not self.quiet_mode:
-                self._vprint(f"\n{self.log_prefix}⚠️  Possible loop: `{tc.function.name}` called {verdict.streak} consecutive times ({verdict.detector})", force=True)
+                        self._vprint(
+                            f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): "
+                            f"`{tc.function.name}` called {verdict.streak} times. "
+                            f"Pruned {verdict.streak - 1} repeated attempts from context.",
+                            force=True,
+                        )
+                        if verdict.intended_tool:
+                            self._vprint(
+                                f"{self.log_prefix}   💡 Reasoning mentioned `{verdict.intended_tool}` — guidance injected.",
+                                force=True,
+                            )
+                else:
+                    # Mode: intervention + stop
+                    intervention_count = getattr(self, '_loop_intervention_count', 0)
+                    if intervention_count == 0:
+                        # First critical: inject retry hint, let model try again
+                        self._loop_intervention_count = 1
+                        hint = (
+                            f"[System: You are stuck in a tool loop — `{tc.function.name}` has been called "
+                            f"{verdict.streak} times in a row with identical arguments. "
+                            f"STOP calling this tool with the same arguments. "
+                            f"Try a different approach or tool to make progress.]"
+                        )
+                        messages.append({"role": "user", "content": hint})
+                        if not self.quiet_mode:
+                            self._vprint(
+                                f"\n{self.log_prefix}🔄 Loop detected ({verdict.detector}): "
+                                f"`{tc.function.name}` called {verdict.streak} times. "
+                                f"Injected retry hint — giving model one more turn.",
+                                force=True,
+                            )
+                    else:
+                        # Already tried once — stop execution
+                        if not self.quiet_mode:
+                            self._vprint(
+                                f"\n{self.log_prefix}🛑 Loop not resolved — stopping execution after "
+                                f"retry hint. `{tc.function.name}` called {verdict.streak}+ times.",
+                                force=True,
+                            )
+                        messages.append({
+                            "role": "tool",
+                            "content": (
+                                f"EXECUTION STOPPED: You are in a tool loop. "
+                                f"`{tc.function.name}` has been called {verdict.streak}+ times with identical arguments. "
+                                f"A retry hint was injected but you continued the same pattern. "
+                                f"STOP and produce a text response explaining the issue."
+                            ),
+                            "tool_call_id": tc_id,
+                        })
+                        return True  # signal caller to break the tool loop
+
+        return False
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
@@ -9264,6 +9328,11 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    # Tool-loop detection — returns True if intervention exhausted and we should stop
+                    if self._check_tool_loop(messages, assistant_message, finish_reason):
+                        api_call_count += 1  # count this turn
+                        continue  # next turn will get the STOP message, model should produce text
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because

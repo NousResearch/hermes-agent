@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
 
@@ -291,8 +292,13 @@ class GatewayConfig:
             # Feishu uses extra dict for app credentials
             elif platform == Platform.FEISHU and config.extra.get("app_id"):
                 connected.append(platform)
-            # WeCom uses extra dict for bot credentials
+            # WeCom bot mode uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # WeCom callback mode uses corp_id or apps list
+            elif platform == Platform.WECOM_CALLBACK and (
+                config.extra.get("corp_id") or config.extra.get("apps")
+            ):
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
@@ -986,6 +992,23 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # WeCom callback mode (self-built apps)
+    wecom_callback_corp_id = os.getenv("WECOM_CALLBACK_CORP_ID")
+    wecom_callback_corp_secret = os.getenv("WECOM_CALLBACK_CORP_SECRET")
+    if wecom_callback_corp_id and wecom_callback_corp_secret:
+        if Platform.WECOM_CALLBACK not in config.platforms:
+            config.platforms[Platform.WECOM_CALLBACK] = PlatformConfig()
+        config.platforms[Platform.WECOM_CALLBACK].enabled = True
+        config.platforms[Platform.WECOM_CALLBACK].extra.update({
+            "corp_id": wecom_callback_corp_id,
+            "corp_secret": wecom_callback_corp_secret,
+            "agent_id": os.getenv("WECOM_CALLBACK_AGENT_ID", ""),
+            "token": os.getenv("WECOM_CALLBACK_TOKEN", ""),
+            "encoding_aes_key": os.getenv("WECOM_CALLBACK_ENCODING_AES_KEY", ""),
+            "host": os.getenv("WECOM_CALLBACK_HOST", "0.0.0.0"),
+            "port": int(os.getenv("WECOM_CALLBACK_PORT", "8645")),
+        })
 
     # Weixin (personal WeChat via iLink Bot API)
     weixin_token = os.getenv("WEIXIN_TOKEN")

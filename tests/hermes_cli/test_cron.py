@@ -56,6 +56,7 @@ class TestCronCommandLifecycle:
                 skill=None,
                 skills=["find-nearby", "blogwatcher"],
                 clear_skills=False,
+                model="anthropic/claude-sonnet-4.6",
             )
         )
         updated = get_job(job["id"])
@@ -63,6 +64,7 @@ class TestCronCommandLifecycle:
         assert updated["name"] == "Edited Job"
         assert updated["prompt"] == "Revised prompt"
         assert updated["schedule_display"] == "every 120m"
+        assert updated["model"] == "anthropic/claude-sonnet-4.6"
 
         cron_command(
             Namespace(
@@ -76,11 +78,13 @@ class TestCronCommandLifecycle:
                 skill=None,
                 skills=None,
                 clear_skills=True,
+                model="",
             )
         )
         cleared = get_job(job["id"])
         assert cleared["skills"] == []
         assert cleared["skill"] is None
+        assert cleared["model"] is None
 
         out = capsys.readouterr().out
         assert "Updated job" in out
@@ -96,12 +100,24 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["blogwatcher", "find-nearby"],
+                model="openai/gpt-5.4-mini",
             )
         )
         out = capsys.readouterr().out
         assert "Created job" in out
+        assert "Model: openai/gpt-5.4-mini" in out
 
         jobs = list_jobs()
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
         assert jobs[0]["name"] == "Skill combo"
+        assert jobs[0]["model"] == "openai/gpt-5.4-mini"
+
+    def test_list_shows_job_model(self, tmp_cron_dir, capsys):
+        create_job(prompt="Check status", schedule="every 1h", model="openai/gpt-5.4-mini")
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert "Model:" in out
+        assert "openai/gpt-5.4-mini" in out

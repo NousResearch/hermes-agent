@@ -90,6 +90,9 @@ def cron_list(show_all: bool = False):
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
+        model = job.get("model")
+        if model:
+            print(f"    Model:     {model}")
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
@@ -168,6 +171,7 @@ def cron_create(args):
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
+        model=getattr(args, "model", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -178,6 +182,8 @@ def cron_create(args):
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
     job_data = result.get("job", {})
+    if job_data.get("model"):
+        print(f"  Model: {job_data['model']}")
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
     print(f"  Next run: {result['next_run_at']}")
@@ -218,6 +224,7 @@ def cron_edit(args):
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
         script=getattr(args, "script", None),
+        model=getattr(args, "model", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -231,6 +238,8 @@ def cron_edit(args):
         print(f"  Skills: {', '.join(updated['skills'])}")
     else:
         print("  Skills: none")
+    if updated.get("model"):
+        print(f"  Model: {updated['model']}")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
     return 0

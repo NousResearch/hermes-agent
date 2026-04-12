@@ -603,20 +603,22 @@ def test_cmd_update_prod_channel_creates_local_prod_tracking_branch_when_missing
 
 
 def test_attempt_prod_prefetch_sync_pushes_clean_merge(monkeypatch, tmp_path):
-    """Prod pre-sync should push a clean upstream merge before local update."""
+    """Prod pre-sync should push a clean merge of the latest upstream tag before local update."""
     recorded = []
 
     def fake_run(cmd, **kwargs):
         recorded.append((cmd, kwargs.get("cwd")))
-        if cmd == ["git", "fetch", "origin", "main"]:
+        if cmd == ["git", "fetch", "origin", "--tags", "--force"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "tag", "--list", "v*", "--sort=-version:refname"]:
+            return SimpleNamespace(stdout="v2026.4.8\nv2026.4.3\n", stderr="", returncode=0)
         if cmd == ["git", "fetch", "fork", "prod"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "merge-base", "--is-ancestor", "origin/main", "fork/prod"]:
+        if cmd == ["git", "merge-base", "--is-ancestor", "v2026.4.8", "fork/prod"]:
             return SimpleNamespace(stdout="", stderr="", returncode=1)
         if cmd[:4] == ["git", "worktree", "add", "--detach"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "merge", "--no-edit", "--no-ff", "origin/main"]:
+        if cmd == ["git", "merge", "--no-edit", "--no-ff", "v2026.4.8"]:
             return SimpleNamespace(stdout="Merged\n", stderr="", returncode=0)
         if cmd == ["git", "push", "fork", "HEAD:prod"]:
             return SimpleNamespace(stdout="pushed\n", stderr="", returncode=0)
@@ -629,6 +631,7 @@ def test_attempt_prod_prefetch_sync_pushes_clean_merge(monkeypatch, tmp_path):
     result = hermes_main._attempt_prod_prefetch_sync(["git"], tmp_path)
 
     assert result["updated_remote"] is True
+    assert result["tag"] == "v2026.4.8"
     assert result["warning"] is None
     assert [cmd for cmd, _ in recorded if cmd == ["git", "push", "fork", "HEAD:prod"]]
 
@@ -639,15 +642,17 @@ def test_attempt_prod_prefetch_sync_warns_on_merge_conflict(monkeypatch, tmp_pat
 
     def fake_run(cmd, **kwargs):
         recorded.append((cmd, kwargs.get("cwd")))
-        if cmd == ["git", "fetch", "origin", "main"]:
+        if cmd == ["git", "fetch", "origin", "--tags", "--force"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
+        if cmd == ["git", "tag", "--list", "v*", "--sort=-version:refname"]:
+            return SimpleNamespace(stdout="v2026.4.8\n", stderr="", returncode=0)
         if cmd == ["git", "fetch", "fork", "prod"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "merge-base", "--is-ancestor", "origin/main", "fork/prod"]:
+        if cmd == ["git", "merge-base", "--is-ancestor", "v2026.4.8", "fork/prod"]:
             return SimpleNamespace(stdout="", stderr="", returncode=1)
         if cmd[:4] == ["git", "worktree", "add", "--detach"]:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
-        if cmd == ["git", "merge", "--no-edit", "--no-ff", "origin/main"]:
+        if cmd == ["git", "merge", "--no-edit", "--no-ff", "v2026.4.8"]:
             return SimpleNamespace(stdout="", stderr="conflict\n", returncode=1)
         if cmd == ["git", "diff", "--name-only", "--diff-filter=U"]:
             return SimpleNamespace(stdout="gateway/run.py\nhermes_cli/main.py\n", stderr="", returncode=0)
@@ -662,6 +667,7 @@ def test_attempt_prod_prefetch_sync_warns_on_merge_conflict(monkeypatch, tmp_pat
     result = hermes_main._attempt_prod_prefetch_sync(["git"], tmp_path)
 
     assert result["updated_remote"] is False
+    assert result["tag"] == "v2026.4.8"
     assert "could not be auto-synced" in result["warning"]
     assert "gateway/run.py" in result["warning"]
     assert [cmd for cmd, _ in recorded if cmd == ["git", "merge", "--abort"]]

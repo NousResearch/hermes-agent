@@ -3509,23 +3509,45 @@ def _invalidate_update_cache():
             pass
 
 
-def _attempt_prod_prefetch_sync(git_cmd: list[str], cwd: Path) -> dict:
-    """Try to merge upstream main into fork/prod before a local prod update."""
-    result = {"updated_remote": False, "warning": None}
-
-    fetch_origin = subprocess.run(
-        git_cmd + ["fetch", "origin", "main"],
+def _latest_upstream_tag(git_cmd: list[str], cwd: Path) -> str | None:
+    """Return the highest-versioned v* tag from origin, or None."""
+    fetch_tags = subprocess.run(
+        git_cmd + ["fetch", "origin", "--tags", "--force"],
         cwd=cwd,
         capture_output=True,
         text=True,
     )
-    if fetch_origin.returncode != 0:
-        stderr = (fetch_origin.stderr or "").strip()
+    if fetch_tags.returncode != 0:
+        return None
+    tag_result = subprocess.run(
+        git_cmd + ["tag", "--list", "v*", "--sort=-version:refname"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if tag_result.returncode != 0:
+        return None
+    first_line = (tag_result.stdout or "").strip().splitlines()[0] if tag_result.stdout.strip() else ""
+    return first_line or None
+
+
+def _attempt_prod_prefetch_sync(git_cmd: list[str], cwd: Path) -> dict:
+    """Try to merge the latest upstream release tag into fork/prod before a local prod update.
+
+    Only tagged releases are merged — post-tag commits on origin/main are ignored
+    so prod tracks stable upstream releases rather than bleeding-edge main.
+    """
+    result = {"updated_remote": False, "warning": None, "tag": None}
+
+    latest_tag = _latest_upstream_tag(git_cmd, cwd)
+    if not latest_tag:
         result["warning"] = (
-            "⚠ Could not check whether prod can sync with upstream before updating. "
-            f"Continuing with existing fork/prod. {stderr.splitlines()[0] if stderr else ''}"
+            "⚠ Could not determine the latest upstream release tag. "
+            "Continuing with existing fork/prod."
         ).strip()
         return result
+
+    result["tag"] = latest_tag
 
     fetch_prod = subprocess.run(
         git_cmd + ["fetch", "fork", "prod"],
@@ -3542,7 +3564,7 @@ def _attempt_prod_prefetch_sync(git_cmd: list[str], cwd: Path) -> dict:
         return result
 
     already_synced = subprocess.run(
-        git_cmd + ["merge-base", "--is-ancestor", "origin/main", "fork/prod"],
+        git_cmd + ["merge-base", "--is-ancestor", latest_tag, "fork/prod"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -3568,7 +3590,7 @@ def _attempt_prod_prefetch_sync(git_cmd: list[str], cwd: Path) -> dict:
             return result
 
         merge_result = subprocess.run(
-            git_cmd + ["merge", "--no-edit", "--no-ff", "origin/main"],
+            git_cmd + ["merge", "--no-edit", "--no-ff", latest_tag],
             cwd=worktree_path,
             capture_output=True,
             text=True,
@@ -3769,7 +3791,8 @@ def cmd_update(args):
             print(f"→ Updating our prod fork ({remote}/{branch})")
             sync_result = _attempt_prod_prefetch_sync(git_cmd, PROJECT_ROOT)
             if sync_result.get("updated_remote"):
-                print("  ✓ Synced fork/prod with upstream before updating local checkout")
+                tag = sync_result.get("tag", "latest")
+                print(f"  ✓ Synced fork/prod to upstream release {tag} before updating local checkout")
             if sync_result.get("warning"):
                 print(sync_result["warning"])
         else:

@@ -502,10 +502,35 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
 
 
+def _resolve_personality_prompt(cfg: dict) -> str:
+    """Resolve the active personality into a system prompt string."""
+    name = (cfg.get("display", {}).get("personality", "") or "").strip().lower()
+    if not name or name in ("default", "none", "neutral"):
+        return ""
+    try:
+        from hermes_cli.config import load_config as _load_full_cfg
+        personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
+    except Exception:
+        personalities = cfg.get("agent", {}).get("personalities", {})
+    pval = personalities.get(name)
+    if pval is None:
+        return ""
+    if isinstance(pval, dict):
+        parts = [pval.get("system_prompt", "")]
+        if pval.get("tone"):
+            parts.append(f'Tone: {pval["tone"]}')
+        if pval.get("style"):
+            parts.append(f'Style: {pval["style"]}')
+        return "\n".join(p for p in parts if p)
+    return str(pval)
+
+
 def _make_agent(sid: str, key: str, session_id: str | None = None):
     from run_agent import AIAgent
     cfg = _load_cfg()
     system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+    if not system_prompt:
+        system_prompt = _resolve_personality_prompt(cfg)
     return AIAgent(
         model=_resolve_model(),
         quiet_mode=True,
@@ -1218,16 +1243,36 @@ def _(rid, params: dict) -> dict:
                 else:
                     cfg["custom_prompt"] = value
                     nv = value
+                _save_cfg(cfg)
             elif key == "personality":
-                cfg.setdefault("display", {})["personality"] = value if value not in ("none", "default", "neutral") else ""
+                pname = value if value not in ("none", "default", "neutral") else ""
+                _write_config_key("display.personality", pname)
+                cfg = _load_cfg()
+                new_prompt = _resolve_personality_prompt(cfg)
+                _write_config_key("agent.system_prompt", new_prompt)
                 nv = value
+                sid_key = params.get("session_id", "")
+                if session:
+                    try:
+                        new_agent = _make_agent(sid_key, session["session_key"], session_id=session["session_key"])
+                        session["agent"] = new_agent
+                        with session["history_lock"]:
+                            session["history"] = []
+                            session["history_version"] = int(session.get("history_version", 0)) + 1
+                    except Exception:
+                        if session.get("agent"):
+                            agent = session["agent"]
+                            agent.ephemeral_system_prompt = new_prompt or None
+                            agent._cached_system_prompt = None
             else:
-                cfg.setdefault("display", {})[key] = value
+                _write_config_key(f"display.{key}", value)
                 nv = value
-            _save_cfg(cfg)
-            if key == "skin":
-                _emit("skin.changed", "", resolve_skin())
-            return _ok(rid, {"key": key, "value": nv})
+                if key == "skin":
+                    _emit("skin.changed", "", resolve_skin())
+            resp = {"key": key, "value": nv}
+            if key == "personality":
+                resp["cleared"] = True
+            return _ok(rid, resp)
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -1255,6 +1300,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":
         return _ok(rid, {"value": _load_cfg().get("display", {}).get("skin", "default")})
+    if key == "personality":
+        return _ok(rid, {"value": _load_cfg().get("display", {}).get("personality", "default")})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:

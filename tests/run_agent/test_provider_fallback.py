@@ -197,3 +197,61 @@ class TestSwitchModelFallbackRefresh:
 
         assert agent._fallback_chain == []
         assert agent._fallback_model is None
+
+    def test_switch_model_uses_replaced_chain_when_fallback_activates(self):
+        agent = _make_agent(fallback_model=[{"provider": "zai", "model": "glm-5"}])
+        agent.context_compressor = None
+        agent._create_openai_client = MagicMock(return_value=_mock_client(
+            base_url="https://api.openai.com/v1",
+            api_key="new-key",
+        ))
+
+        new_chain = [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+        agent.switch_model(
+            new_model="gpt-5.4",
+            new_provider="openai",
+            api_key="new-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="chat_completions",
+            fallback_model=new_chain,
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(base_url="https://api.anthropic.com", api_key="fb-key"), "claude-sonnet-4-6"),
+        ) as mock_rpc:
+            assert agent._try_activate_fallback() is True
+
+        mock_rpc.assert_called_once()
+        args, kwargs = mock_rpc.call_args
+        assert args == ("anthropic",)
+        assert kwargs["model"] == "claude-sonnet-4-6"
+        assert agent.model == "claude-sonnet-4-6"
+        assert agent.provider == "anthropic"
+        assert agent._fallback_index == 1
+        assert agent._fallback_activated is True
+
+    def test_switch_model_preserves_existing_chain_when_fallback_model_is_none(self):
+        original_chain = [{"provider": "zai", "model": "glm-5"}]
+        agent = _make_agent(fallback_model=original_chain)
+        agent.context_compressor = None
+        agent._create_openai_client = MagicMock(return_value=_mock_client(
+            base_url="https://api.openai.com/v1",
+            api_key="new-key",
+        ))
+
+        agent._fallback_index = 1
+        agent._fallback_activated = True
+        agent.switch_model(
+            new_model="gpt-5.4",
+            new_provider="openai",
+            api_key="new-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="chat_completions",
+            fallback_model=None,
+        )
+
+        assert agent._fallback_chain == original_chain
+        assert agent._fallback_model == original_chain[0]
+        assert agent._fallback_index == 0
+        assert agent._fallback_activated is False

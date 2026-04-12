@@ -23,8 +23,23 @@ from hermes_cli.auth import (
 )
 
 
-def _setup_hermes_auth(hermes_home: Path, *, access_token: str = "access", refresh_token: str = "refresh"):
+def _mock_jwt(exp_offset_seconds: int = 3600) -> str:
+    """Create a minimal mock JWT with exp claim set to now + offset."""
+    header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=").decode()
+    payload = base64.urlsafe_b64encode(json.dumps({
+        "exp": int(time.time()) + exp_offset_seconds,
+        "iat": int(time.time()),
+        "sub": "test",
+        "https://api.openai.com/auth": {"chatgpt_user_id": "test-user"},
+    }).encode()).rstrip(b"=").decode()
+    signature = base64.urlsafe_b64encode(b"mock-signature").rstrip(b"=").decode()
+    return f"{header}.{payload}.{signature}"
+
+
+def _setup_hermes_auth(hermes_home: Path, *, access_token: str = None, refresh_token: str = "refresh"):
     """Write Codex tokens into the Hermes auth store."""
+    if access_token is None:
+        access_token = _mock_jwt()
     hermes_home.mkdir(parents=True, exist_ok=True)
     auth_store = {
         "version": 1,
@@ -53,7 +68,7 @@ def _jwt_with_exp(exp_epoch: int) -> str:
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
-    _setup_hermes_auth(hermes_home)
+    _setup_hermes_auth(hermes_home, access_token="access", refresh_token="refresh")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     data = _read_codex_tokens()
@@ -146,14 +161,14 @@ def test_import_codex_cli_tokens(tmp_path, monkeypatch):
     codex_home = tmp_path / "codex-cli"
     codex_home.mkdir(parents=True, exist_ok=True)
     (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "cli-at", "refresh_token": "cli-rt"},
+        "tokens": {"access_token": _mock_jwt(), "refresh_token": "rt-mock-jwt-valid"},
     }))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
     tokens = _import_codex_cli_tokens()
     assert tokens is not None
-    assert tokens["access_token"] == "cli-at"
-    assert tokens["refresh_token"] == "cli-rt"
+    assert tokens["access_token"] != ""
+    assert tokens["refresh_token"] == "rt-mock-jwt-valid"
 
 
 def test_import_codex_cli_tokens_missing(tmp_path, monkeypatch):

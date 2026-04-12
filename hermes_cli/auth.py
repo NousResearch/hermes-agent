@@ -1043,7 +1043,10 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
     claims = _decode_jwt_claims(access_token)
     exp = claims.get("exp")
     if not isinstance(exp, (int, float)):
-        return False
+        # Token is not a valid JWT (e.g. placeholder like "access-new").
+        # Treat as expiring so the refresh path is triggered — sending
+        # a non-JWT token as Bearer to ChatGPT API always returns 401.
+        return True
     return float(exp) <= (time.time() + max(0, int(skew_seconds)))
 
 

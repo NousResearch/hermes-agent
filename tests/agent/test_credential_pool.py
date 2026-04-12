@@ -330,6 +330,14 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
 
 def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    import base64, time as _time
+    def _jwt(exp_off=3600):
+        h = base64.urlsafe_b64encode(json.dumps({"alg":"RS256","typ":"JWT"}).encode()).rstrip(b"=").decode()
+        p = base64.urlsafe_b64encode(json.dumps({"exp":int(_time.time())+exp_off,"https://api.openai.com/auth":{"chatgpt_user_id":"t"}}).encode()).rstrip(b"=").decode()
+        s = base64.urlsafe_b64encode(b"sig").rstrip(b"=").decode()
+        return f"{h}.{p}.{s}"
+
     _write_auth_store(
         tmp_path,
         {
@@ -342,8 +350,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
                         "auth_type": "oauth",
                         "priority": 0,
                         "source": "device_code",
-                        "access_token": "access-old",
-                        "refresh_token": "refresh-old",
+                        "access_token": _jwt(),
+                        "refresh_token": "rt-original-1",
                         "base_url": "https://chatgpt.com/backend-api/codex",
                     },
                     {
@@ -352,8 +360,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
                         "auth_type": "oauth",
                         "priority": 1,
                         "source": "device_code",
-                        "access_token": "access-other",
-                        "refresh_token": "refresh-other",
+                        "access_token": _jwt(),
+                        "refresh_token": "rt-original-2",
                         "base_url": "https://chatgpt.com/backend-api/codex",
                     },
                 ]
@@ -366,8 +374,8 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.auth.refresh_codex_oauth_pure",
         lambda access_token, refresh_token, timeout_seconds=20.0: {
-            "access_token": "access-new",
-            "refresh_token": "refresh-new",
+            "access_token": _jwt(7200),
+            "refresh_token": "rt-refreshed-new",
         },
     )
 
@@ -378,14 +386,15 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     refreshed = pool.try_refresh_current()
 
     assert refreshed is not None
-    assert refreshed.access_token == "access-new"
+    assert len(refreshed.access_token) > 100  # it's a JWT
+    assert refreshed.refresh_token == "rt-refreshed-new"
 
     auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     primary, secondary = auth_payload["credential_pool"]["openai-codex"]
-    assert primary["access_token"] == "access-new"
-    assert primary["refresh_token"] == "refresh-new"
-    assert secondary["access_token"] == "access-other"
-    assert secondary["refresh_token"] == "refresh-other"
+    assert len(primary["access_token"]) > 100  # JWT
+    assert primary["refresh_token"] == "rt-refreshed-new"
+    assert len(secondary["access_token"]) > 100  # unchanged JWT
+    assert secondary["refresh_token"] == "rt-original-2"
 
 
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):

@@ -11,6 +11,7 @@ Usage:
 
 import importlib.util
 import logging
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +52,53 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
+
+def _is_openclaw_running() -> bool:
+    """Check whether an OpenClaw process appears to be running."""
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq node.exe"],
+                capture_output=True, text=True, timeout=5
+            )
+            output = result.stdout.lower()
+            return "openclaw" in output or "clawd" in output
+        except Exception:
+            return False
+
+    for cmd in (["pgrep", "-f", "openclaw"], ["pgrep", "-f", "clawd"]):
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=3)
+            if result.returncode == 0:
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
+def _warn_if_openclaw_running(auto_yes: bool) -> None:
+    """Warn if OpenClaw is still running before migration.
+
+    Telegram, Discord, and Slack only allow one active connection per bot
+    token. Migrating while OpenClaw is running causes both to fight for the
+    same token.
+    """
+    if not _is_openclaw_running():
+        return
+
+    print()
+    print_error("OpenClaw appears to be running.")
+    print_info(
+        "Messaging platforms (Telegram, Discord, Slack) only allow one "
+        "active session per bot token. If you continue, both OpenClaw and "
+        "Hermes may try to use the same token, causing disconnects."
+    )
+    print_info("Recommendation: stop OpenClaw before migrating.")
+    print()
+    if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
+        print_info("Migration cancelled. Stop OpenClaw and try again.")
+        sys.exit(0)
+
 
 def _warn_if_gateway_running(auto_yes: bool) -> None:
     """Check if a Hermes gateway is running with connected platforms.
@@ -287,8 +335,11 @@ def _cmd_migrate(args):
         print_info(f"Workspace:   {workspace_target}")
     print()
 
-    # Check if a gateway is running with connected platforms — migrating tokens
-    # while the gateway is active will cause conflicts (e.g. Telegram 409).
+    # Check if OpenClaw is still running — migrating tokens while both are
+    # active will cause conflicts (e.g. Telegram 409).
+    _warn_if_openclaw_running(auto_yes)
+
+    # Check if a Hermes gateway is running with connected platforms.
     _warn_if_gateway_running(auto_yes)
 
     # Ensure config.yaml exists before migration tries to read it

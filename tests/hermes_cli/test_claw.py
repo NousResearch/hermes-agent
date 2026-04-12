@@ -197,6 +197,11 @@ class TestClawCommand:
 class TestCmdMigrate:
     """Test the migrate command handler."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=False):
+            yield
+
     def test_error_when_source_missing(self, tmp_path, capsys):
         args = Namespace(
             source=str(tmp_path / "nonexistent"),
@@ -626,3 +631,84 @@ class TestPrintMigrationReport:
         claw_mod._print_migration_report(report, dry_run=False)
         captured = capsys.readouterr()
         assert "Nothing to migrate" in captured.out
+
+
+class TestIsOpenclawRunning:
+    def test_returns_true_when_pgrep_finds_openclaw(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0),
+                ]
+                assert claw_mod._is_openclaw_running() is True
+
+    def test_returns_true_when_pgrep_finds_clawd(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1),
+                    MagicMock(returncode=0),
+                ]
+                assert claw_mod._is_openclaw_running() is True
+
+    def test_returns_false_when_pgrep_finds_nothing(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1),
+                    MagicMock(returncode=1),
+                ]
+                assert claw_mod._is_openclaw_running() is False
+
+    def test_returns_true_on_windows_tasklist(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="node.exe openclaw-gateway",
+                )
+                assert claw_mod._is_openclaw_running() is True
+
+    def test_returns_false_on_windows_when_not_found(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.return_value = MagicMock(
+                    returncode=0,
+                    stdout="node.exe some-other-app",
+                )
+                assert claw_mod._is_openclaw_running() is False
+
+
+class TestWarnIfOpenclawRunning:
+    def test_noop_when_not_running(self, capsys):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=False):
+            claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_warns_and_exits_when_running_and_user_declines(self, capsys):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=False):
+                with pytest.raises(SystemExit) as exc_info:
+                    claw_mod._warn_if_openclaw_running(auto_yes=False)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_when_running_and_user_accepts(self, capsys):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=True):
+                claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_auto_yes_mode(self, capsys):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
+            claw_mod._warn_if_openclaw_running(auto_yes=True)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out

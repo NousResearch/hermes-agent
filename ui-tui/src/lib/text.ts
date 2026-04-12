@@ -1,4 +1,4 @@
-import { INTERPOLATION_RE, LONG_MSG, TOOL_VERBS } from '../constants.js'
+import { INTERPOLATION_RE, LONG_MSG } from '../constants.js'
 
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g
@@ -42,23 +42,60 @@ export const compactPreview = (s: string, max: number) => {
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
 }
 
-/** Build a single tool trail line — used by both live tool.complete and resume replay. */
-export const buildToolTrailLine = (name: string, context: string, error?: boolean): string => {
-  const label = TOOL_VERBS[name] ?? name
-  const mark = error ? '✗' : '✓'
+export const toolTrailLabel = (name: string) =>
+  name
+    .split('_')
+    .filter(Boolean)
+    .map(p => p[0]!.toUpperCase() + p.slice(1))
+    .join(' ') || name
 
-  return `${label}${context ? ': ' + compactPreview(context, 72) : ''} ${mark}`
+export const formatToolCall = (name: string, context = '') => {
+  const preview = compactPreview(context, 64)
+
+  return preview ? `${toolTrailLabel(name)}("${preview}")` : toolTrailLabel(name)
+}
+
+export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string): string => {
+  const detail = compactPreview(note ?? '', 72)
+
+  return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? ' ✗' : ' ✓'}`
 }
 
 /** Tool completed / failed row in the inline trail (not CoT prose). */
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
+
+export const parseToolTrailResultLine = (line: string) => {
+  if (!isToolTrailResultLine(line)) {
+    return null
+  }
+
+  const mark = line.endsWith(' ✗') ? '✗' : '✓'
+  const body = line.slice(0, -2)
+  const [call, detail] = body.split(' :: ', 2)
+
+  if (detail != null) {
+    return { call, detail, mark }
+  }
+
+  const legacy = body.indexOf(': ')
+
+  if (legacy > 0) {
+    return { call: body.slice(0, legacy), detail: body.slice(legacy + 2), mark }
+  }
+
+  return { call: body, detail: '', mark }
+}
 
 /** Ephemeral status lines that should vanish once the next phase starts. */
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
 
 /** Whether a persisted/activity tool line belongs to the same tool label as a newer line. */
 export const sameToolTrailGroup = (label: string, entry: string) =>
-  entry === `${label} ✓` || entry === `${label} ✗` || entry.startsWith(`${label}:`)
+  entry === `${label} ✓` ||
+  entry === `${label} ✗` ||
+  entry.startsWith(`${label}(`) ||
+  entry.startsWith(`${label} ::`) ||
+  entry.startsWith(`${label}:`)
 
 /** Index of the last non-result trail line, or -1. */
 export const lastCotTrailIndex = (trail: readonly string[]) => {

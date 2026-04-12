@@ -222,6 +222,9 @@ def _has_any_provider_configured() -> bool:
     for pconfig in PROVIDER_REGISTRY.values():
         if pconfig.auth_type == "api_key":
             provider_env_vars.update(pconfig.api_key_env_vars)
+        # external_process providers (e.g. copilot-acp) are configured via base URL
+        if pconfig.auth_type == "external_process" and pconfig.base_url_env_var:
+            provider_env_vars.add(pconfig.base_url_env_var)
     if any(os.getenv(v) for v in provider_env_vars):
         return True
 

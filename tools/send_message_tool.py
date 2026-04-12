@@ -685,6 +685,7 @@ async def _send_signal(extra, chat_id, message):
 
 async def _send_email(extra, chat_id, message):
     """Send via SMTP (one-shot, no persistent connection needed)."""
+    import asyncio
     import smtplib
     from email.mime.text import MIMEText
 
@@ -699,7 +700,7 @@ async def _send_email(extra, chat_id, message):
     if not all([address, password, smtp_host]):
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
-    try:
+    def _send_sync():
         msg = MIMEText(message, "plain", "utf-8")
         msg["From"] = address
         msg["To"] = chat_id
@@ -710,6 +711,9 @@ async def _send_email(extra, chat_id, message):
         server.login(address, password)
         server.send_message(msg)
         server.quit()
+
+    try:
+        await asyncio.to_thread(_send_sync)
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Email send failed: {e}")

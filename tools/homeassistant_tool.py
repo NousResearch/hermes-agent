@@ -241,16 +241,23 @@ def _handle_get_state(args: dict, **kw) -> str:
 
 def _handle_call_service(args: dict, **kw) -> str:
     """Handler for ha_call_service tool."""
-    domain = args.get("domain", "")
-    service = args.get("service", "")
+    domain = args.get("domain", "").strip().lower()
+    service = args.get("service", "").strip().lower()
     if not domain or not service:
         return tool_error("Missing required parameters: domain and service")
 
+    # Validate domain/service format to prevent URL path injection
+    _SERVICE_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+    if not _SERVICE_NAME_RE.match(domain):
+        return tool_error(f"Invalid domain format: {domain}")
+    if not _SERVICE_NAME_RE.match(service):
+        return tool_error(f"Invalid service format: {service}")
+
     if domain in _BLOCKED_DOMAINS:
-        return json.dumps({
-            "error": f"Service domain '{domain}' is blocked for security. "
+        return tool_error(
+            f"Service domain '{domain}' is blocked for security. "
             f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}"
-        })
+        )
 
     entity_id = args.get("entity_id")
     if entity_id and not _ENTITY_ID_RE.match(entity_id):

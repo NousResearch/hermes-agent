@@ -207,8 +207,11 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                     visited.add(sid)
                     s = db.get_session(sid)
                     parent = s.get("parent_session_id") if s else None
+                    prev_sid = sid
                     sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
+                # The root is the last valid session ID in the chain,
+                # not the longest string (max by len was incorrect).
+                current_root = prev_sid if visited else current_session_id
             except Exception:
                 current_root = current_session_id
 

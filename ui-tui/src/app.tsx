@@ -26,6 +26,7 @@ import {
   fmtK,
   hasInterpolation,
   isToolTrailResultLine,
+  isTransientTrailLine,
   pick,
   sameToolTrailGroup
 } from './lib/text.js'
@@ -453,13 +454,27 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
   }, [])
 
+  const pruneTransient = useCallback(() => {
+    setTurnTrail(prev => {
+      const next = prev.filter(l => !isTransientTrailLine(l))
+
+      if (next.length === prev.length) {
+        return prev
+      }
+
+      turnToolsRef.current = next
+
+      return next
+    })
+  }, [])
+
   const pushTrail = useCallback((line: string) => {
     setTurnTrail(prev => {
       if (prev.at(-1) === line) {
         return prev
       }
 
-      const next = [...prev, line].slice(-8)
+      const next = [...prev.filter(l => !isTransientTrailLine(l)), line].slice(-8)
       turnToolsRef.current = next
 
       return next
@@ -1037,12 +1052,8 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (completions.length && input && (key.upArrow || key.downArrow)) {
+    if (completions.length && input && historyIdx === null && (key.upArrow || key.downArrow)) {
       setCompIdx(i => (key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length))
-
-      if (historyIdx !== null) {
-        setHistoryIdx(null)
-      }
 
       return
     }
@@ -1332,6 +1343,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'tool.start':
+          pruneTransient()
           setTools(prev => [
             ...prev,
             { id: p.tool_id, name: p.name, context: (p.context as string) || '', startedAt: Date.now() }
@@ -1416,6 +1428,8 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'message.delta':
+          pruneTransient()
+
           if (p?.text && !interruptedRef.current) {
             buf.current = p.rendered ?? buf.current + p.text
             setStreaming(buf.current.trimStart())
@@ -1843,16 +1857,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'personality':
           if (arg) {
-            rpc('config.set', { session_id: sid, key: 'personality', value: arg }).then((r: any) => {
-              if (r?.cleared) {
-                setMessages([])
-                setHistoryItems([])
-              }
-
-              sys(`personality → ${r?.value}`)
-            })
+            rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
+              sys(`personality: ${r.value || 'default'}`)
+            )
           } else {
-            rpc('config.get', { key: 'personality' }).then((r: any) => sys(`personality: ${r?.value || 'default'}`))
+            gw.request('slash.exec', { command: 'personality', session_id: sid })
+              .then((r: any) => panel('Personality', [{ text: r?.output || '(no output)' }]))
+              .catch(() => sys('personality command failed'))
           }
 
           return true
@@ -2280,11 +2291,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const submit = useCallback(
     (value: string) => {
-      if (completions.length && completions[compIdx]) {
-        value = value.slice(0, compReplace) + completions[compIdx].text
-        setInput(value)
-      }
-
       if (!value.trim() && !inputBuf.length) {
         const now = Date.now()
         const dbl = now - lastEmptyAt.current < 450
@@ -2342,7 +2348,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       dispatchSubmission([...inputBuf, value].join('\n'))
     },
-    [compIdx, compReplace, completions, dequeue, dispatchSubmission, inputBuf, sid]
+    [dequeue, dispatchSubmission, inputBuf, sid]
   )
 
   // ── Derived ──────────────────────────────────────────────────────

@@ -368,6 +368,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const pasteCounterRef = useRef(0)
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
+  const persistedToolLabelsRef = useRef<Set<string>>(new Set())
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
@@ -454,31 +455,19 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
   }, [])
 
+  const setTrail = (next: string[]) => { turnToolsRef.current = next; return next }
+
   const pruneTransient = useCallback(() => {
     setTurnTrail(prev => {
       const next = prev.filter(l => !isTransientTrailLine(l))
-
-      if (next.length === prev.length) {
-        return prev
-      }
-
-      turnToolsRef.current = next
-
-      return next
+      return next.length === prev.length ? prev : setTrail(next)
     })
   }, [])
 
   const pushTrail = useCallback((line: string) => {
-    setTurnTrail(prev => {
-      if (prev.at(-1) === line) {
-        return prev
-      }
-
-      const next = [...prev.filter(l => !isTransientTrailLine(l)), line].slice(-8)
-      turnToolsRef.current = next
-
-      return next
-    })
+    setTurnTrail(prev =>
+      prev.at(-1) === line ? prev : setTrail([...prev.filter(l => !isTransientTrailLine(l)), line].slice(-8))
+    )
   }, [])
 
   const rpc = useCallback(
@@ -487,6 +476,31 @@ export function App({ gw }: { gw: GatewayClient }) {
         sys(`error: ${e.message}`)
       }),
     [gw, sys]
+  )
+
+  const answerClarify = useCallback(
+    (answer: string) => {
+      if (!clarify) return
+
+      const label = TOOL_VERBS.clarify ?? 'clarify'
+
+      setTrail(turnToolsRef.current.filter(l => !sameToolTrailGroup(label, l)))
+      setTurnTrail(turnToolsRef.current)
+
+      gw.request('clarify.respond', { answer, request_id: clarify.requestId }).catch(() => {})
+
+      if (answer) {
+        persistedToolLabelsRef.current.add(label)
+        appendMessage({ role: 'system', text: '', kind: 'trail', tools: [buildToolTrailLine('clarify', clarify.question)] })
+        appendMessage({ role: 'user', text: answer })
+      } else {
+        sys('prompt cancelled')
+      }
+
+      setClarify(null)
+      setStatus('running…')
+    },
+    [appendMessage, clarify, gw, sys]
   )
 
   useEffect(() => {
@@ -1030,7 +1044,9 @@ export function App({ gw }: { gw: GatewayClient }) {
       }
 
       if (ctrl(key, ch, 'c')) {
-        if (approval) {
+        if (clarify) {
+          answerClarify('')
+        } else if (approval) {
           gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {})
           setApproval(null)
           sys('denied')
@@ -1276,6 +1292,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           setActivity([])
           setTurnTrail([])
           turnToolsRef.current = []
+          persistedToolLabelsRef.current.clear()
 
           break
 
@@ -1439,7 +1456,9 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'message.complete': {
           const wasInterrupted = interruptedRef.current
           const savedReasoning = reasoningRef.current.trim()
-          const savedTools = turnToolsRef.current.filter(isToolTrailResultLine)
+          const persisted = persistedToolLabelsRef.current
+          const savedTools = turnToolsRef.current
+            .filter(l => isToolTrailResultLine(l) && ![...persisted].some(p => sameToolTrailGroup(p, l)))
           const finalText = (p?.rendered ?? p?.text ?? buf.current).trimStart()
 
           idle()
@@ -1465,6 +1484,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           turnToolsRef.current = []
+          persistedToolLabelsRef.current.clear()
           setActivity([])
 
           buf.current = ''
@@ -1494,6 +1514,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           setReasoning('')
           setActivity([])
           turnToolsRef.current = []
+          persistedToolLabelsRef.current.clear()
           setStatus('ready')
 
           break
@@ -2412,11 +2433,9 @@ export function App({ gw }: { gw: GatewayClient }) {
         {clarify && (
           <PromptBox color={theme.color.bronze}>
             <ClarifyPrompt
-              onAnswer={answer => {
-                gw.request('clarify.respond', { answer, request_id: clarify.requestId }).catch(() => {})
-                appendMessage({ role: 'user', text: answer })
-                setClarify(null)
-              }}
+              cols={cols}
+              onAnswer={answerClarify}
+              onCancel={() => answerClarify('')}
               req={clarify}
               t={theme}
             />
@@ -2441,6 +2460,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         {sudo && (
           <PromptBox color={theme.color.bronze}>
             <MaskedPrompt
+              cols={cols}
               icon="🔐"
               label="sudo password required"
               onSubmit={pw => {
@@ -2456,6 +2476,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         {secret && (
           <PromptBox color={theme.color.bronze}>
             <MaskedPrompt
+              cols={cols}
               icon="🔑"
               label={secret.prompt}
               onSubmit={val => {

@@ -951,6 +951,7 @@ def execute_code(
     tool_call_counter = [0]  # mutable so the RPC thread can increment
     exec_start = time.monotonic()
     server_sock = None
+    _reg_session_id: Optional[str] = None  # process_registry handle for this subprocess
 
     try:
         # Write the auto-generated hermes_tools module
@@ -1036,6 +1037,20 @@ def execute_code(
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
         )
+
+        # Register with process_registry so that agent.close() / kill_all() can
+        # terminate this subprocess immediately when /reset is issued mid-execution
+        # instead of waiting up to 0.2 s for the poll loop to notice the interrupt.
+        try:
+            from tools.process_registry import process_registry as _proc_reg
+            _reg_session = _proc_reg.register_proc(
+                proc,
+                task_id=task_id or "",
+                command="execute_code",
+            )
+            _reg_session_id = _reg_session.id
+        except Exception:
+            pass
 
         # --- Poll loop: watch for exit, timeout, and interrupt ---
         deadline = time.monotonic() + timeout
@@ -1205,6 +1220,15 @@ def execute_code(
         }, ensure_ascii=False)
 
     finally:
+        # Remove from process_registry now that the subprocess has exited (or was
+        # killed).  Safe to call even if kill_all() already removed it.
+        if _reg_session_id is not None:
+            try:
+                from tools.process_registry import process_registry as _proc_reg
+                _proc_reg.deregister_proc(_reg_session_id)
+            except Exception:
+                pass
+
         # Cleanup temp dir and socket
         if server_sock is not None:
             try:

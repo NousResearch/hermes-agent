@@ -475,6 +475,49 @@ class ProcessRegistry:
         self._write_checkpoint()
         return session
 
+    def register_proc(
+        self,
+        proc: subprocess.Popen,
+        task_id: str = "",
+        command: str = "execute_code",
+        session_key: str = "",
+    ) -> "ProcessSession":
+        """Register an externally-spawned Popen so kill_all() can terminate it.
+
+        Unlike spawn_local(), this does not start reader threads or write a
+        checkpoint — it only tracks the Popen handle so that agent.close() /
+        kill_all(task_id=...) can reach the subprocess immediately on /reset.
+        Call deregister_proc() once the process has exited naturally.
+        """
+        session = ProcessSession(
+            id=f"proc_{uuid.uuid4().hex[:12]}",
+            command=command,
+            task_id=task_id,
+            session_key=session_key,
+            pid=proc.pid,
+            process=proc,
+            started_at=time.time(),
+        )
+        with self._lock:
+            self._prune_if_needed()
+            self._running[session.id] = session
+        return session
+
+    def deregister_proc(self, session_id: str) -> None:
+        """Remove a process registered via register_proc() after it has exited.
+
+        Safe to call even if the process was already removed by kill_all() or
+        kill_process() — the call is a no-op in that case.
+        """
+        with self._lock:
+            session = self._running.get(session_id)
+            if session is None:
+                return  # already removed by kill_all / kill_process
+            session.exited = True
+            if session.process is not None:
+                session.exit_code = session.process.returncode
+        self._move_to_finished(session)
+
     # ----- Reader / Poller Threads -----
 
     def _reader_loop(self, session: ProcessSession):

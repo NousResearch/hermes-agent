@@ -591,26 +591,12 @@ class TestSendTyping:
         )
 
     @pytest.mark.asyncio
-    async def test_uses_reaction_when_reply_in_thread_false(self, adapter):
-        """When reply_in_thread=false, send_typing adds a reaction instead of setStatus."""
-        adapter.config.extra["reply_in_thread"] = False
+    async def test_skips_status_when_force_channel_reply(self, adapter):
+        """When _force_channel_reply is set, send_typing skips setStatus."""
+        adapter._force_channel_reply = True
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._app.client.reactions_add = AsyncMock()
-        await adapter.send_typing("C123", metadata={"thread_id": "ts1", "message_id": "ts1"})
+        await adapter.send_typing("C123", metadata={"thread_id": "ts1"})
         adapter._app.client.assistant_threads_setStatus.assert_not_called()
-        adapter._app.client.reactions_add.assert_called_once_with(
-            channel="C123", timestamp="ts1", name="hourglass_flowing_sand",
-        )
-
-    @pytest.mark.asyncio
-    async def test_uses_reaction_when_reply_to_mode_off(self, adapter):
-        """When reply_to_mode=off, send_typing adds a reaction instead of setStatus."""
-        adapter.config.reply_to_mode = "off"
-        adapter._app.client.assistant_threads_setStatus = AsyncMock()
-        adapter._app.client.reactions_add = AsyncMock()
-        await adapter.send_typing("C123", metadata={"thread_id": "ts1", "message_id": "ts1"})
-        adapter._app.client.assistant_threads_setStatus.assert_not_called()
-        adapter._app.client.reactions_add.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -619,59 +605,39 @@ class TestSendTyping:
 
 
 class TestResolveThreadTs:
-    """Test _resolve_thread_ts correctly distinguishes top-level and in-thread."""
+    """Test _resolve_thread_ts with _force_channel_reply flag."""
 
     def test_default_returns_thread_id(self, adapter):
         """Default config: returns thread_id from metadata."""
         result = adapter._resolve_thread_ts("reply_ts", {"thread_id": "parent_ts"})
         assert result == "parent_ts"
 
-    def test_default_returns_reply_to_as_fallback(self, adapter):
-        """Default config: falls back to reply_to when no metadata."""
-        result = adapter._resolve_thread_ts("reply_ts")
-        assert result == "reply_ts"
-
-    def test_no_thread_for_top_level_when_disabled(self, adapter):
-        """reply_in_thread=false: top-level messages get None (channel reply)."""
+    def test_force_channel_reply_returns_none(self, adapter):
+        """Top-level with reply_in_thread=false: returns None via flag."""
         adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts("ts123", {"thread_id": "ts123"})
+        adapter._force_channel_reply = True
+        result = adapter._resolve_thread_ts(None, {"thread_id": "ts123"})
         assert result is None
 
-    def test_thread_for_genuine_reply_when_disabled(self, adapter):
-        """reply_in_thread=false: genuine thread replies still get thread_ts."""
+    def test_thread_reply_stays_in_thread_when_disabled(self, adapter):
+        """Genuine thread reply with reply_in_thread=false: stays in thread."""
         adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts("child_ts", {"thread_id": "parent_ts"})
-        assert result == "parent_ts"
-
-    def test_no_thread_for_top_level_when_reply_to_mode_off(self, adapter):
-        """reply_to_mode=off: top-level messages get None."""
-        adapter.config.reply_to_mode = "off"
-        result = adapter._resolve_thread_ts("ts123", {"thread_id": "ts123"})
-        assert result is None
-
-    def test_internal_send_stays_in_thread_when_disabled(self, adapter):
-        """reply_in_thread=false: internal sends (reply_to=None, real thread) stay in-thread."""
-        adapter.config.extra["reply_in_thread"] = False
+        adapter._force_channel_reply = False
         result = adapter._resolve_thread_ts(None, {"thread_id": "parent_ts"})
         assert result == "parent_ts"
 
-    def test_proactive_message_returns_none_when_disabled(self, adapter):
-        """reply_in_thread=false: proactive messages (both None) get None."""
-        adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts(None, {})
+    def test_reply_to_mode_off_with_flag(self, adapter):
+        """reply_to_mode=off + _force_channel_reply: returns None."""
+        adapter.config.reply_to_mode = "off"
+        adapter._force_channel_reply = True
+        result = adapter._resolve_thread_ts(None, {"thread_id": "ts123"})
         assert result is None
 
-    def test_proactive_no_metadata_returns_none_when_disabled(self, adapter):
-        """reply_in_thread=false: no metadata at all returns None."""
+    def test_no_flag_preserves_thread(self, adapter):
+        """Without _force_channel_reply: thread_id preserved (backward compat)."""
         adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts(None)
-        assert result is None
-
-    def test_no_metadata_returns_none_when_disabled(self, adapter):
-        """reply_in_thread=false: reply_to only, no metadata returns None."""
-        adapter.config.extra["reply_in_thread"] = False
-        result = adapter._resolve_thread_ts("ts123")
-        assert result is None
+        result = adapter._resolve_thread_ts(None, {"thread_id": "parent_ts"})
+        assert result == "parent_ts"
 
 
 # ---------------------------------------------------------------------------

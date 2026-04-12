@@ -355,16 +355,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
-        # When reply_in_thread is disabled or reply_to_mode is off,
-        # skip assistant thread status for top-level messages.  The
-        # setStatus API activates an assistant thread on the target
-        # message, which would force subsequent replies into a thread
-        # even when _resolve_thread_ts correctly returns None.  Use an
-        # emoji reaction as a lightweight processing indicator instead.
-        if not self.config.extra.get("reply_in_thread", True) or self.config.reply_to_mode == "off":
-            msg_ts = (metadata or {}).get("message_id") or thread_ts
-            if msg_ts:
-                await self._add_reaction(chat_id, msg_ts, "hourglass_flowing_sand")
+        # Skip assistant thread status for top-level channel messages when
+        # reply_in_thread is disabled.  The setStatus API activates an
+        # assistant thread, which would force replies into a thread even
+        # when _resolve_thread_ts returns None.
+        if getattr(self, "_force_channel_reply", False):
             return
 
         try:
@@ -394,19 +389,13 @@ class SlackAdapter(BasePlatformAdapter):
         always replied to in-thread to preserve conversation context.
         """
         # When reply_in_thread is disabled (default: True for backward compat)
-        # or reply_to_mode is "off", only reply in-thread for messages that
-        # are genuinely inside an existing thread.  Top-level channel messages
-        # have thread_id == reply_to (both equal the message's own ts, set for
-        # session keying) — return None so the reply goes to the channel.
+        # or reply_to_mode is "off", suppress threading for top-level messages.
+        # _force_channel_reply is set per-message by _handle_slack_message
+        # (True for top-level, False for genuine thread replies).
         if not self.config.extra.get("reply_in_thread", True) or self.config.reply_to_mode == "off":
-            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
-            # Top-level channel messages have reply_to == existing_thread
-            # (both equal the message's own ts, set for session keying).
-            # Proactive messages have reply_to == existing_thread == None.
-            # Internal sends (typing, TTS, media) have reply_to=None but
-            # existing_thread set to a real parent — those must stay in-thread.
-            if reply_to == existing_thread:
+            if getattr(self, "_force_channel_reply", False):
                 return None
+            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
             return existing_thread or None
 
         if metadata:
@@ -1179,6 +1168,18 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
+        # When reply_in_thread is disabled or reply_to_mode is off, mark
+        # top-level messages so _resolve_thread_ts and send_typing suppress
+        # threading.  The flag is per-message, reset on each inbound event.
+        # Safe in single-threaded asyncio.
+        self._force_channel_reply = (
+            not is_thread_reply
+            and (
+                not self.config.extra.get("reply_in_thread", True)
+                or self.config.reply_to_mode == "off"
+            )
+        )
+
         # Build source
         source = self.build_source(
             chat_id=channel_id,
@@ -1213,11 +1214,6 @@ class SlackAdapter(BasePlatformAdapter):
         if _should_react:
             await self._remove_reaction(channel_id, ts, "eyes")
             await self._add_reaction(channel_id, ts, "white_check_mark")
-
-        # Clean up hourglass reaction added by send_typing() for
-        # non-thread replies (only when the reaction path was active).
-        if not self.config.extra.get("reply_in_thread", True) or self.config.reply_to_mode == "off":
-            await self._remove_reaction(channel_id, ts, "hourglass_flowing_sand")
 
     # ----- Approval button support (Block Kit) -----
 

@@ -190,6 +190,8 @@ def _detect_target() -> str | None:
         plat = "apple-darwin"
     elif system == "Linux":
         plat = "unknown-linux-gnu"
+    elif system == "Windows":
+        plat = "pc-windows-msvc"
     else:
         return None
 
@@ -295,6 +297,9 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         return None, "unsupported_platform"
 
     archive_name = f"tirith-{target}.tar.gz"
+    is_windows = target.endswith("-pc-windows-msvc")
+    if is_windows:
+        archive_name = f"tirith-{target}.zip"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
     tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
@@ -345,23 +350,38 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         if not _verify_checksum(archive_path, checksums_path, archive_name):
             return None, "checksum_failed"
 
-        with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
-                log("tirith binary not found in archive")
-                return None, "binary_not_in_archive"
+        if is_windows:
+            import zipfile
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                for member in zf.namelist():
+                    if member == "tirith.exe" or member.endswith("/tirith.exe"):
+                        if ".." in member:
+                            continue
+                        zf.extract(member, tmpdir)
+                        src = os.path.join(tmpdir, member)
+                        break
+                else:
+                    log("tirith binary not found in archive")
+                    return None, "binary_not_in_archive"
+            src_base = src  # reuse the path computed at extraction time
+        else:
+            with tarfile.open(archive_path, "r:gz") as tar:
+                for member in tar.getmembers():
+                    if member.name == "tirith" or member.name.endswith("/tirith"):
+                        if ".." in member.name:
+                            continue
+                        member.name = "tirith"
+                        tar.extract(member, tmpdir)
+                        break
+                else:
+                    log("tirith binary not found in archive")
+                    return None, "binary_not_in_archive"
+            src_base = os.path.join(tmpdir, "tirith")
 
-        src = os.path.join(tmpdir, "tirith")
-        dest = os.path.join(_hermes_bin_dir(), "tirith")
-        shutil.move(src, dest)
-        os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        dest = os.path.join(_hermes_bin_dir(), "tirith.exe" if is_windows else "tirith")
+        shutil.move(src_base, dest)
+        if not is_windows:
+            os.chmod(dest, os.stat(dest).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
         verification = "cosign + SHA-256" if cosign_verified else "SHA-256 only"
         logger.info("tirith installed to %s (%s)", dest, verification)

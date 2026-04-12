@@ -89,6 +89,11 @@ class PlatformEntry:
     # (allows /update command from this platform).
     allow_update_command: bool = True
 
+    # ── LLM guidance ──
+    # Platform hint injected into the system prompt (e.g. "You are on IRC.
+    # Do not use markdown.").  Empty string = no hint.
+    platform_hint: str = ""
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

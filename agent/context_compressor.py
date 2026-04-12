@@ -78,6 +78,7 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._summary_failure_cooldown_until = 0.0
 
     def update_model(
         self,

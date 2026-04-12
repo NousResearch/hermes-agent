@@ -663,24 +663,39 @@ class TestIsOpenclawRunning:
                 ]
                 assert claw_mod._is_openclaw_running() is False
 
-    def test_returns_true_on_windows_tasklist(self):
+    def test_returns_true_on_windows_when_openclaw_exe_running(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "win32"
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                mock_subprocess.run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="node.exe openclaw-gateway",
-                )
+                # First tasklist (openclaw.exe) matches
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout="openclaw.exe                 1234 Console    1     45,056 K\n"),
+                ]
                 assert claw_mod._is_openclaw_running() is True
 
-    def test_returns_false_on_windows_when_not_found(self):
+    def test_returns_true_on_windows_when_node_exe_has_openclaw_in_cmdline(self):
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "win32"
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                mock_subprocess.run.return_value = MagicMock(
-                    returncode=0,
-                    stdout="node.exe some-other-app",
-                )
+                # tasklist for openclaw.exe and clawd.exe both miss,
+                # PowerShell finds a matching node.exe process.
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout="1234\n"),
+                ]
+                assert claw_mod._is_openclaw_running() is True
+
+    def test_returns_false_on_windows_when_node_exe_has_no_openclaw_in_cmdline(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                # Neither dedicated exe nor PowerShell find anything.
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                ]
                 assert claw_mod._is_openclaw_running() is False
 
 
@@ -694,8 +709,9 @@ class TestWarnIfOpenclawRunning:
     def test_warns_and_exits_when_running_and_user_declines(self, capsys):
         with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
             with patch.object(claw_mod, "prompt_yes_no", return_value=False):
-                with pytest.raises(SystemExit) as exc_info:
-                    claw_mod._warn_if_openclaw_running(auto_yes=False)
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    with pytest.raises(SystemExit) as exc_info:
+                        claw_mod._warn_if_openclaw_running(auto_yes=False)
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert "OpenClaw appears to be running" in captured.out
@@ -703,7 +719,8 @@ class TestWarnIfOpenclawRunning:
     def test_warns_and_continues_when_running_and_user_accepts(self, capsys):
         with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
             with patch.object(claw_mod, "prompt_yes_no", return_value=True):
-                claw_mod._warn_if_openclaw_running(auto_yes=False)
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    claw_mod._warn_if_openclaw_running(auto_yes=False)
         captured = capsys.readouterr()
         assert "OpenClaw appears to be running" in captured.out
 
@@ -712,3 +729,11 @@ class TestWarnIfOpenclawRunning:
             claw_mod._warn_if_openclaw_running(auto_yes=True)
         captured = capsys.readouterr()
         assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_non_interactive_session(self, capsys):
+        with patch.object(claw_mod, "_is_openclaw_running", return_value=True):
+            with patch.object(claw_mod.sys.stdin, "isatty", return_value=False):
+                claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+        assert "Non-interactive session" in captured.out

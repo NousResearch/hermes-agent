@@ -248,6 +248,7 @@ class TestRenderQr:
 class TestProbeBot:
     """Tests for bot connectivity verification."""
 
+    @patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True)
     def test_probe_returns_bot_info_on_success(self):
         from gateway.platforms.feishu import probe_bot
 
@@ -259,6 +260,7 @@ class TestProbeBot:
         assert result["bot_name"] == "TestBot"
         assert result["bot_open_id"] == "ou_bot123"
 
+    @patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True)
     def test_probe_returns_none_on_failure(self):
         from gateway.platforms.feishu import probe_bot
 

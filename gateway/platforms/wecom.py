@@ -487,6 +487,7 @@ class WeComAdapter(BasePlatformAdapter):
             logger.debug("[%s] DM sender %s blocked by policy", self.name, sender_id)
             return
 
+        msgtype = str(body.get("msgtype") or "").lower()
         text, reply_text = self._extract_text(body)
         media_urls, media_types = await self._extract_media(body)
         message_type = self._derive_message_type(body, text, media_types)
@@ -496,7 +497,11 @@ class WeComAdapter(BasePlatformAdapter):
             text = reply_text
 
         if not text and not media_urls:
-            logger.debug("[%s] Empty WeCom message skipped", self.name)
+            image_info = ""
+            if msgtype in ("image", "mixed", "video", "file"):
+                img_body = body.get("image") or body.get("file") or body.get("video") or {}
+                image_info = f" image_body_keys={list(img_body.keys()) if isinstance(img_body, dict) else type(img_body).__name__}"
+            logger.warning("[%s] Empty WeCom message skipped: msgtype=%s%s", self.name, msgtype, image_info)
             return
 
         source = self.build_source(
@@ -602,11 +607,18 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _cache_media(self, kind: str, media: Dict[str, Any]) -> Optional[Tuple[str, str]]:
         """Cache an inbound image/file/media reference to local storage."""
+        media_keys = list(media.keys()) if isinstance(media, dict) else []
+        logger.info("[%s] _cache_media: kind=%s keys=%s has_base64=%s has_url=%s has_aeskey=%s",
+                    self.name, kind, media_keys,
+                    bool(media.get("base64")),
+                    bool(media.get("url")),
+                    bool(media.get("aeskey")))
+
         if "base64" in media and media.get("base64"):
             try:
                 raw = self._decode_base64(media["base64"])
             except Exception as exc:
-                logger.debug("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
+                logger.warning("[%s] Failed to decode %s base64 media: %s", self.name, kind, exc)
                 return None
 
             if kind == "image":
@@ -618,12 +630,13 @@ class WeComAdapter(BasePlatformAdapter):
 
         url = str(media.get("url") or "").strip()
         if not url:
+            logger.warning("[%s] _cache_media: no url and no base64 for %s, keys=%s", self.name, kind, media_keys)
             return None
 
         try:
             raw, headers = await self._download_remote_bytes(url, max_bytes=ABSOLUTE_MAX_BYTES)
         except Exception as exc:
-            logger.debug("[%s] Failed to download %s from %s: %s", self.name, kind, url, exc)
+            logger.warning("[%s] Failed to download %s from %s: %s", self.name, kind, url[:100], exc)
             return None
 
         aes_key = str(media.get("aeskey") or "").strip()
@@ -631,7 +644,7 @@ class WeComAdapter(BasePlatformAdapter):
             try:
                 raw = self._decrypt_file_bytes(raw, aes_key)
             except Exception as exc:
-                logger.debug("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url, exc)
+                logger.warning("[%s] Failed to decrypt %s from %s: %s", self.name, kind, url[:100], exc)
                 return None
 
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
@@ -884,7 +897,9 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        # WeCom aeskey may lack base64 padding chars — fix before decoding
+        padded_key = aes_key + "=" * (-len(aes_key) % 4)
+        key = base64.b64decode(padded_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

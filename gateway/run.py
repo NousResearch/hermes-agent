@@ -876,7 +876,24 @@ class GatewayRunner:
                 "api_mode": override.get("api_mode"),
             }
             if override_runtime.get("api_key"):
+                logger.debug(
+                    "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
+                    (resolved_session_key or "")[:30], model, override_model,
+                    override_runtime.get("provider"),
+                )
                 return override_model, override_runtime
+            # Override exists but has no api_key — fall through to env-based
+            # resolution and apply model/provider from the override on top.
+            logger.debug(
+                "Session model override (no api_key, fallback): session=%s config_model=%s override_model=%s",
+                (resolved_session_key or "")[:30], model, override_model,
+            )
+        else:
+            logger.debug(
+                "No session model override: session=%s config_model=%s override_keys=%s",
+                (resolved_session_key or "")[:30], model,
+                list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
+            )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         if override and resolved_session_key:
@@ -4304,6 +4321,11 @@ class GatewayRunner:
                             "api_mode": result.api_mode,
                         }
 
+                        # Evict cached agent so the next turn creates a fresh
+                        # agent from the override rather than relying on the
+                        # stale cache signature to trigger a rebuild.
+                        _self._evict_cached_agent(_session_key)
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [f"Model switched to `{result.new_model}`"]
@@ -4416,6 +4438,10 @@ class GatewayRunner:
             "base_url": result.base_url,
             "api_mode": result.api_mode,
         }
+
+        # Evict cached agent so the next turn creates a fresh agent from the
+        # override rather than relying on cache signature mismatch detection.
+        self._evict_cached_agent(session_key)
 
         # Persist to config if --global
         if persist_global:
@@ -7544,6 +7570,10 @@ class GatewayRunner:
                     source=source,
                     session_key=session_key,
                     user_config=user_config,
+                )
+                logger.debug(
+                    "run_agent resolved: model=%s provider=%s session=%s",
+                    model, runtime_kwargs.get("provider"), (session_key or "")[:30],
                 )
             except Exception as exc:
                 return {

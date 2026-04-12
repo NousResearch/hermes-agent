@@ -411,15 +411,15 @@ def curses_single_select(
     Works inside prompt_toolkit because curses.wrapper() restores the terminal
     safely, unlike simple_term_menu which conflicts with /dev/tty.
     """
+    all_items = list(items) + [cancel_label]
+    cancel_idx = len(items)
+
     if not sys.stdin.isatty():
-        return None
+        return _numbered_single_fallback(title, all_items, cancel_idx)
 
     try:
         import curses
         result_holder: list = [None]
-
-        all_items = list(items) + [cancel_label]
-        cancel_idx = len(items)
 
         def _draw(stdscr):
             _enable_keypad(stdscr)

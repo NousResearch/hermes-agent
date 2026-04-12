@@ -1,24 +1,17 @@
-import sys
-import types
-
-
 from hermes_cli.main import _prompt_reasoning_effort_selection
 
 
-class _FakeTerminalMenu:
-    last_choices = None
-
-    def __init__(self, choices, **kwargs):
-        _FakeTerminalMenu.last_choices = choices
-        self._cursor_index = kwargs.get("cursor_index")
-
-    def show(self):
-        return self._cursor_index
-
-
 def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
-    fake_module = types.SimpleNamespace(TerminalMenu=_FakeTerminalMenu)
-    monkeypatch.setitem(sys.modules, "simple_term_menu", fake_module)
+    captured = {}
+
+    def _fake_single_select(title, items, default_index=0, *, cancel_label="Cancel"):
+        captured["title"] = title
+        captured["items"] = items
+        captured["default_index"] = default_index
+        captured["cancel_label"] = cancel_label
+        return default_index
+
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_single_select", _fake_single_select)
 
     selected = _prompt_reasoning_effort_selection(
         ["low", "minimal", "medium", "high"],
@@ -26,9 +19,13 @@ def test_reasoning_menu_orders_minimal_before_low(monkeypatch):
     )
 
     assert selected == "medium"
-    assert _FakeTerminalMenu.last_choices[:4] == [
-        "  minimal",
-        "  low",
-        "  medium  ← currently in use",
-        "  high",
+    assert captured["title"] == "Select reasoning effort:"
+    assert captured["items"] == [
+        "minimal",
+        "low",
+        "medium  ← currently in use",
+        "high",
+        "Disable reasoning",
     ]
+    assert captured["default_index"] == 2
+    assert captured["cancel_label"] == "Skip (keep current)"

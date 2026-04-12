@@ -1809,6 +1809,15 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
 
+    def _supports_previous_response_id(self, base_url: str = None) -> bool:
+        """Return True when the active Responses backend supports previous_response_id threading."""
+        url = (base_url or self.base_url or "").lower()
+        if "models.github.ai" in url or "api.githubcopilot.com" in url:
+            return False
+        if "chatgpt.com/backend-api/codex" in url:
+            return False
+        return self._is_direct_openai_url(url) or is_local_endpoint(url)
+
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
         """Return True for models that require the Responses API path.
@@ -6063,7 +6072,7 @@ class AIAgent:
 
             previous_response_id = None
             input_items = self._chat_messages_to_responses_input(payload_messages)
-            if not is_github_responses:
+            if self._supports_previous_response_id():
                 previous_response_id, input_items = self._build_codex_responses_turn_input(payload_messages)
 
             kwargs = {

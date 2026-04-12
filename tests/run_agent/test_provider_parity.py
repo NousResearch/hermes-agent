@@ -467,7 +467,7 @@ class TestCodexPreviousResponseIdThreading:
         assert "previous_response_id" not in kwargs_seen[0]
         assert kwargs_seen[0]["input"] == [{"role": "user", "content": "hello"}]
 
-    def test_follow_up_turn_threads_previous_response_id_with_only_new_input(self, monkeypatch):
+    def test_follow_up_turn_omits_previous_response_id_for_chatgpt_codex_backend(self, monkeypatch):
         agent = self._make_codex_agent(monkeypatch)
         kwargs_seen = []
         responses = iter(
@@ -490,8 +490,8 @@ class TestCodexPreviousResponseIdThreading:
         assert second["final_response"] == "Second reply"
         assert len(kwargs_seen) == 2
         assert "previous_response_id" not in kwargs_seen[0]
-        assert kwargs_seen[1]["previous_response_id"] == "resp_1"
-        assert kwargs_seen[1]["input"] == [{"role": "user", "content": "follow up"}]
+        assert "previous_response_id" not in kwargs_seen[1]
+        assert kwargs_seen[1]["input"] == agent._chat_messages_to_responses_input(first["messages"] + [{"role": "user", "content": "follow up"}])
 
     def test_falls_back_to_full_replay_when_no_previous_response_id_is_stored(self, monkeypatch):
         agent = self._make_codex_agent(monkeypatch)
@@ -571,9 +571,69 @@ class TestCodexPreviousResponseIdThreading:
         second = resumed_agent.run_conversation("follow up", conversation_history=first["messages"])
 
         assert second["final_response"] == "Second reply"
-        assert resumed_seen[0]["previous_response_id"] == "resp_1"
-        assert resumed_seen[0]["input"] == [{"role": "user", "content": "follow up"}]
+        assert "previous_response_id" not in resumed_seen[0]
+        assert resumed_seen[0]["input"] == resumed_agent._chat_messages_to_responses_input(first["messages"] + [{"role": "user", "content": "follow up"}])
         db.close()
+
+
+class TestLocalResponsesPreviousResponseIdThreading:
+    def _make_local_responses_agent(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "custom",
+            api_mode="codex_responses",
+            base_url="http://localhost:1234/v1",
+        )
+        monkeypatch.setattr(agent, "_build_system_prompt", lambda *a, **k: "system prompt")
+        monkeypatch.setattr(agent, "_save_session_log", lambda *a, **k: None)
+        monkeypatch.setattr(agent, "_persist_session", lambda *a, **k: None)
+        agent.model = "gpt-5"
+        agent.client = MagicMock()
+        return agent
+
+    @staticmethod
+    def _responses_response(response_id, text):
+        return SimpleNamespace(
+            id=response_id,
+            model="gpt-5",
+            status="completed",
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    status="completed",
+                    phase="final_answer",
+                    content=[SimpleNamespace(type="output_text", text=text)],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5, total_tokens=15),
+        )
+
+    def test_follow_up_turn_threads_previous_response_id_for_local_responses_backend(self, monkeypatch):
+        agent = self._make_local_responses_agent(monkeypatch)
+        kwargs_seen = []
+        responses = iter(
+            [
+                self._responses_response("resp_local_1", "First reply"),
+                self._responses_response("resp_local_2", "Second reply"),
+            ]
+        )
+
+        def fake_api(kwargs):
+            kwargs_seen.append(kwargs)
+            return next(responses)
+
+        monkeypatch.setattr(agent, "_interruptible_api_call", fake_api)
+
+        first = agent.run_conversation("hello", conversation_history=[])
+        second = agent.run_conversation("follow up", conversation_history=first["messages"])
+
+        assert first["final_response"] == "First reply"
+        assert second["final_response"] == "Second reply"
+        assert len(kwargs_seen) == 2
+        assert "previous_response_id" not in kwargs_seen[0]
+        assert kwargs_seen[1]["previous_response_id"] == "resp_local_1"
+        assert kwargs_seen[1]["input"] == [{"role": "user", "content": "follow up"}]
 
 
 class TestChatMessagesToResponsesInput:

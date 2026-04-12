@@ -2611,6 +2611,18 @@ class GatewayRunner:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
+            # Voice/audio messages need STT transcription before the agent
+            # can act on them.  Transcription only runs inside
+            # _handle_message_with_agent, so interrupting the running agent
+            # with event.text (which is empty pre-transcription) causes a
+            # hang.  Queue them like photos instead.
+            if event.message_type in (MessageType.VOICE, MessageType.AUDIO):
+                logger.debug("PRIORITY voice follow-up for session %s — queueing without interrupt", _quick_key[:20])
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                return None
+
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.

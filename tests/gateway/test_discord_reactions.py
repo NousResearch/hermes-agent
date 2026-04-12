@@ -246,3 +246,227 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
     raw_message.add_reaction.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Inbound reaction event tests
+# ---------------------------------------------------------------------------
+
+
+class _MockEmoji:
+    """Mock emoji that stringifies to the given value."""
+    def __init__(self, value: str):
+        self._value = value
+    def __str__(self):
+        return self._value
+
+
+def _make_reaction_payload(
+    user_id: int = 42,
+    channel_id: int = 123,
+    message_id: int = 1,
+    emoji: str = "👍",
+    member=None,
+    guild_id: int | None = None,
+) -> SimpleNamespace:
+    """Create a mock RawReactionActionEvent payload."""
+    return SimpleNamespace(
+        user_id=user_id,
+        channel_id=channel_id,
+        message_id=message_id,
+        emoji=_MockEmoji(emoji),
+        member=member,
+        guild_id=guild_id,
+    )
+
+
+def _make_mock_channel(
+    bot_user,
+    channel_id: int = 123,
+    guild=None,
+    channel_name: str = "test-channel",
+) -> SimpleNamespace:
+    """Create a mock Discord channel whose fetch_message returns a bot-authored message."""
+    bot_message = SimpleNamespace(
+        author=bot_user,
+        id=1,
+    )
+    channel = SimpleNamespace(
+        id=channel_id,
+        name=channel_name,
+        guild=guild,
+        fetch_message=AsyncMock(return_value=bot_message),
+    )
+    return channel
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_routes_as_synthetic_text_event(adapter):
+    """A reaction on a bot message should be routed as a synthetic text event."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload(user_id=42, emoji="👍")
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert isinstance(event, MessageEvent)
+    assert event.text == "reaction:added:👍"
+    assert event.message_type == MessageType.TEXT
+    assert event.source.user_id == "42"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_on_non_bot_message_ignored(adapter):
+    """Reactions on messages NOT authored by the bot should be ignored."""
+    adapter.handle_message = AsyncMock()
+
+    non_bot_message = SimpleNamespace(
+        author=SimpleNamespace(id=12345, name="SomeOtherUser"),
+        id=1,
+    )
+    channel = SimpleNamespace(
+        id=123,
+        guild=None,
+        fetch_message=AsyncMock(return_value=non_bot_message),
+    )
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload()
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_from_bot_ignored(adapter):
+    """The bot's own reactions should be ignored to prevent feedback loops."""
+    adapter.handle_message = AsyncMock()
+
+    # Bot reacting on its own message — user_id matches client.user.id
+    payload = _make_reaction_payload(user_id=99999)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_disallowed_user_ignored(adapter):
+    """Reactions from users not in the allowlist should be ignored."""
+    adapter.handle_message = AsyncMock()
+    adapter._allowed_user_ids = {"100", "200"}
+
+    payload = _make_reaction_payload(user_id=42)  # 42 not in allowlist
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_disabled_via_env(adapter, monkeypatch):
+    """DISCORD_REACTIONS=false should block inbound reaction routing."""
+    monkeypatch.setenv("DISCORD_REACTIONS", "false")
+    adapter.handle_message = AsyncMock()
+
+    payload = _make_reaction_payload()
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_remove_routes_correctly(adapter):
+    """Reaction removal events should use 'removed' in the synthetic text."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload(emoji="👍")
+
+    await adapter._handle_inbound_reaction(payload, "removed")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "reaction:removed:👍"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_fetches_uncached_channel(adapter):
+    """When get_channel returns None, fetch_channel should be called."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(return_value=channel)
+
+    payload = _make_reaction_payload()
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter._client.fetch_channel.assert_awaited_once_with(123)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_with_guild_resolves_chat_name(adapter):
+    """Guild reactions should include server name in the source chat_name."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    guild = SimpleNamespace(id=999, name="Test Server")
+    channel = _make_mock_channel(bot_user, guild=guild, channel_name="general")
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload(guild_id=999)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+    assert "Test Server" in event.source.chat_name
+    assert "#general" in event.source.chat_name
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_member_display_name_used(adapter):
+    """When payload.member has display_name, it should be used as user_name."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    member = SimpleNamespace(display_name="CoolUser")
+    payload = _make_reaction_payload(member=member)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_name == "CoolUser"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_channel_fetch_failure_handled(adapter):
+    """If fetch_channel raises, the handler should not crash."""
+    adapter.handle_message = AsyncMock()
+    adapter._client.get_channel = MagicMock(return_value=None)
+    adapter._client.fetch_channel = AsyncMock(side_effect=Exception("channel not found"))
+
+    payload = _make_reaction_payload()
+
+    # Should not raise
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()

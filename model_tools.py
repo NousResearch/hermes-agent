@@ -22,6 +22,7 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
+import hashlib
 import logging
 import threading
 import time
@@ -491,6 +492,28 @@ def _coerce_boolean(value: str):
     return value
 
 
+# ---------------------------------------------------------------------------
+# Tool result memoization cache
+# ---------------------------------------------------------------------------
+
+_memo_cache: Dict[str, str] = {}
+_memo_lock = threading.Lock()
+
+
+def _memo_key(tool_name: str, args: Dict[str, Any]) -> str:
+    """Build a deterministic cache key from tool name and arguments."""
+    args_hash = hashlib.sha256(
+        json.dumps(args, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    return f"{tool_name}:{args_hash}"
+
+
+def clear_memo_cache() -> None:
+    """Invalidate all cached tool results."""
+    with _memo_lock:
+        _memo_cache.clear()
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -519,6 +542,16 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # Check memoization cache for idempotent tools
+    entry = registry.get_entry(function_name)
+    if entry and entry.can_memoize:
+        cache_key = _memo_key(function_name, function_args)
+        with _memo_lock:
+            cached = _memo_cache.get(cache_key)
+            if cached is not None:
+                return cached
+
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -632,6 +665,18 @@ def handle_function_call(
                     break
         except Exception:
             pass
+
+        # Cache result for memoizable tools (skip error results).
+        # Runs after transform_tool_result so we cache the final value.
+        if entry and entry.can_memoize:
+            try:
+                parsed = json.loads(result)
+                if "error" not in parsed:
+                    cache_key = _memo_key(function_name, function_args)
+                    with _memo_lock:
+                        _memo_cache[cache_key] = result
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         return result
 

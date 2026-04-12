@@ -525,3 +525,20 @@ async def test_inbound_reaction_client_none_handled(adapter):
     await adapter._handle_inbound_reaction(payload, "added")
 
     adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_duplicate_suppressed(adapter):
+    """Identical reaction events (same message_id, action, user_id, emoji) should be deduped."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload(user_id=42, emoji="👍")
+
+    await adapter._handle_inbound_reaction(payload, "added")
+    await adapter._handle_inbound_reaction(payload, "added")  # duplicate
+
+    assert adapter.handle_message.await_count == 1

@@ -1740,7 +1740,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 message_type=MessageType.TEXT,
                 source=source,
                 raw_message=payload,
-                message_id=dedup_key,
+                message_id=str(payload.message_id),
             )
             logger.info(
                 "[%s] Routing reaction %s:%s on bot message %s",

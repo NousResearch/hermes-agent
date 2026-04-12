@@ -443,11 +443,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
-                    "model": self.model,
-                    "provider": self.provider,
-                    "base_url": self.base_url,
-                    "api_key": self.api_key,
-                    "api_mode": self.api_mode,
+                    "model": getattr(self, "model", ""),
+                    "provider": getattr(self, "provider", ""),
+                    "base_url": getattr(self, "base_url", ""),
+                    "api_key": getattr(self, "api_key", ""),
+                    "api_mode": getattr(self, "api_mode", ""),
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": summary_budget * 2,

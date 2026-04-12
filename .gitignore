@@ -84,6 +84,7 @@ mini-swe-agent/
 .direnv/
 .nix-stamps/
 result
+.gstack/
 website/static/api/skills-index.json
 # skills.json + skills-meta.json are build artifacts emitted by
 # website/scripts/extract-skills.py during prebuild — keep them out of

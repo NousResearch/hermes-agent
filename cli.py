@@ -9569,16 +9569,36 @@ class HermesCLI:
             pass  # Signal handlers may fail in restricted environments
         
         # Install a custom asyncio exception handler that suppresses the
-        # "Event loop is closed" RuntimeError from httpx transport cleanup.
-        # This is defense-in-depth — the primary fix is neuter_async_httpx_del
-        # which disables __del__ entirely, but older clients or SDK upgrades
-        # could bypass it.
+        # "Event loop is closed" RuntimeError from httpx transport cleanup
+        # and the "0 is not registered" KeyError from broken stdin (#6393).
+        # The RuntimeError fix is defense-in-depth — the primary fix is
+        # neuter_async_httpx_del which disables __del__ entirely.  The
+        # KeyError fix handles macOS + uv-managed Python environments where
+        # fd 0 is not reliably available to the asyncio selector.
         def _suppress_closed_loop_errors(loop, context):
             exc = context.get("exception")
             if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
                 return  # silently suppress
+            if isinstance(exc, KeyError) and "is not registered" in str(exc):
+                return  # suppress selector registration failures (#6393)
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
+
+        # Validate stdin before launching prompt_toolkit — on macOS with
+        # uv-managed Python, fd 0 can be invalid or unregisterable with the
+        # asyncio selector, causing "KeyError: '0 is not registered'" (#6393).
+        try:
+            import os as _os
+            _os.fstat(0)
+        except OSError:
+            print(
+                "Error: stdin (fd 0) is not available.\n"
+                "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+            )
+            _run_cleanup()
+            self._print_exit_summary()
+            return
 
         # Run the application with patch_stdout for proper output handling
         try:
@@ -9593,6 +9613,17 @@ class HermesCLI:
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
+        except (KeyError, OSError) as _stdin_err:
+            # Catch selector registration failures from broken stdin (#6393).
+            # This is the fallback for cases that slip past the fstat() guard.
+            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+                print(
+                    f"\nError: stdin is not usable ({_stdin_err}).\n"
+                    "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
+                    "Try reinstalling Python via pyenv or Homebrew, then re-run: hermes setup"
+                )
+            else:
+                raise
         finally:
             self._should_exit = True
             # Flush memories before exit (only for substantial conversations)

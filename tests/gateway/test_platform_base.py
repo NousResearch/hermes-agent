@@ -1,15 +1,21 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import json
 import os
 from unittest.mock import patch
 
+import pytest
+
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SendResult,
     _safe_url_for_log,
 )
+from gateway.session import SessionSource
 
 
 class TestSecretCaptureGuidance:
@@ -448,3 +454,106 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+# ---------------------------------------------------------------------------
+# Voice-reply delivery
+# ---------------------------------------------------------------------------
+
+
+class _VoiceReplyTestAdapter(BasePlatformAdapter):
+    def __init__(self, platform: Platform):
+        super().__init__(PlatformConfig(enabled=True, extra={}), platform)
+        self.sent_messages = []
+        self.played_tts = []
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
+        self.sent_messages.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True)
+
+    async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
+        self.played_tts.append({
+            "chat_id": chat_id,
+            "audio_path": audio_path,
+            **kwargs,
+        })
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id: str):
+        return {"name": "Test Chat", "type": "dm"}
+
+
+class TestVoiceReplyDelivery:
+    @staticmethod
+    def _event(platform: Platform) -> MessageEvent:
+        return MessageEvent(
+            text="voice message",
+            message_type=MessageType.VOICE,
+            source=SessionSource(
+                platform=platform,
+                chat_id="chat-123",
+                user_id="user-1",
+                user_name="Cam",
+            ),
+            message_id="msg-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_signal_voice_reply_sends_caption_with_audio_and_skips_separate_text(self, monkeypatch, tmp_path):
+        adapter = _VoiceReplyTestAdapter(Platform.SIGNAL)
+        adapter.set_message_handler(lambda event: __import__('asyncio').sleep(0, result="Hello from Hermes"))
+        adapter._keep_typing = lambda *args, **kwargs: __import__('asyncio').sleep(0)
+
+        audio_path = tmp_path / "reply.mp3"
+        audio_path.write_bytes(b"ID3fake-mp3")
+
+        from tools import tts_tool
+        monkeypatch.setattr(tts_tool, "check_tts_requirements", lambda: True)
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda text: json.dumps({"success": True, "file_path": str(audio_path)}),
+        )
+
+        await adapter._process_message_background(self._event(Platform.SIGNAL), "session-signal")
+
+        assert len(adapter.played_tts) == 1
+        assert adapter.played_tts[0]["caption"] == "Hello from Hermes"
+        assert adapter.sent_messages == []
+        assert not audio_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_non_signal_voice_reply_keeps_text_message_separate(self, monkeypatch, tmp_path):
+        adapter = _VoiceReplyTestAdapter(Platform.TELEGRAM)
+        adapter.set_message_handler(lambda event: __import__('asyncio').sleep(0, result="Hello from Hermes"))
+        adapter._keep_typing = lambda *args, **kwargs: __import__('asyncio').sleep(0)
+
+        audio_path = tmp_path / "reply.ogg"
+        audio_path.write_bytes(b"OggSfake-opus")
+
+        from tools import tts_tool
+        monkeypatch.setattr(tts_tool, "check_tts_requirements", lambda: True)
+        monkeypatch.setattr(
+            tts_tool,
+            "text_to_speech_tool",
+            lambda text: json.dumps({"success": True, "file_path": str(audio_path)}),
+        )
+
+        await adapter._process_message_background(self._event(Platform.TELEGRAM), "session-telegram")
+
+        assert len(adapter.played_tts) == 1
+        assert adapter.played_tts[0].get("caption") is None
+        assert len(adapter.sent_messages) == 1
+        assert adapter.sent_messages[0]["content"] == "Hello from Hermes"
+        assert not audio_path.exists()

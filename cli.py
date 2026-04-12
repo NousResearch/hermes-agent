@@ -5244,9 +5244,33 @@ class HermesCLI:
                         context_length=ctx_len,
                     )
                 _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                # Show a random tip on new session
+                try:
+                    from hermes_cli.tips import get_random_tip
+                    _tip = get_random_tip()
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                    except Exception:
+                        _tip_color = "#B8860B"
+                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                except Exception:
+                    pass
             else:
                 self.show_banner()
                 print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                # Show a random tip on new session
+                try:
+                    from hermes_cli.tips import get_random_tip
+                    _tip = get_random_tip()
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                    except Exception:
+                        _tip_color = "#B8860B"
+                    self.console.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                except Exception:
+                    pass
         elif canonical == "history":
             self.show_history()
         elif canonical == "title":
@@ -8075,6 +8099,17 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
+        # Show a random tip to help users discover features
+        try:
+            from hermes_cli.tips import get_random_tip
+            _tip = get_random_tip()
+            try:
+                _tip_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+            except Exception:
+                _tip_color = "#B8860B"
+            self.console.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+        except Exception:
+            pass  # Tips are non-critical — never break startup
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self.console.print(

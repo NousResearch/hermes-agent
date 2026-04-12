@@ -597,6 +597,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
         "hermes_cli.config.get_env_value",
         lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
     )
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: True)
     saved_env = {}
     monkeypatch.setattr("hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value))
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: saved_env.__setitem__("MODEL", model))
@@ -632,6 +633,29 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
+
+
+def test_model_flow_custom_requires_tty_for_api_key_entry(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr(hermes_main.sys.stdin, "isatty", lambda: False)
+
+    prompts = []
+
+    def _fake_input(prompt=""):
+        prompts.append(prompt)
+        return "http://localhost:8000"
+
+    monkeypatch.setattr("builtins.input", _fake_input)
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": (_ for _ in ()).throw(AssertionError("getpass should not be called")))
+
+    hermes_main._model_flow_custom({})
+    output = capsys.readouterr().out
+
+    assert len(prompts) == 1
+    assert "interactive terminal required for API key entry" in output
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
     monkeypatch.setattr(hermes_main, "_require_tty", lambda *a: None)
     monkeypatch.setattr(

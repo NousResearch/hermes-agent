@@ -559,3 +559,65 @@ class TestFetchFireworksModels:
         ids = _fetch_fireworks_models(api_key="fw-key")
 
         assert ids == ["accounts/fireworks/models/deepseek-v3p1"]
+
+    def test_skips_model_ids_with_terminal_control_sequences(self, monkeypatch):
+        import io
+        import json
+        from hermes_cli.models import _fetch_fireworks_models
+
+        class _Resp(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.close()
+
+        def _fake_urlopen(req, timeout=5.0):
+            url = req.full_url
+            if url == "https://api.fireworks.ai/v1/accounts?pageSize=200":
+                return _Resp(json.dumps({"accounts": [{"name": "accounts/fireworks"}]}).encode())
+            if url == (
+                "https://api.fireworks.ai/v1/accounts/fireworks/models"
+                "?filter=supports_serverless%3Dtrue&pageSize=200"
+            ):
+                payload = {
+                    "models": [
+                        {
+                            "name": "accounts/fireworks/models/good-model",
+                            "kind": "HF_BASE_MODEL",
+                            "status": {"code": "OK"},
+                        },
+                        {
+                            "name": "accounts/fireworks/models/bad\u001b[31m",
+                            "kind": "HF_BASE_MODEL",
+                            "status": {"code": "OK"},
+                        },
+                    ]
+                }
+                return _Resp(json.dumps(payload).encode())
+            raise AssertionError(f"Unexpected Fireworks API URL: {url}")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        ids = _fetch_fireworks_models(api_key="fw-key")
+
+        assert ids == ["accounts/fireworks/models/good-model"]
+
+    def test_collection_logs_and_returns_none_on_http_error(self, monkeypatch, caplog):
+        import urllib.error
+        from hermes_cli.models import _fetch_fireworks_collection
+
+        def _fake_urlopen(req, timeout=5.0):
+            raise urllib.error.HTTPError(req.full_url, 403, "forbidden", hdrs=None, fp=None)
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+        with caplog.at_level("DEBUG"):
+            result = _fetch_fireworks_collection(
+                api_key="fw-key",
+                path="/v1/accounts",
+                items_key="accounts",
+            )
+
+        assert result is None
+        assert any("HTTP 403" in message for message in caplog.messages)

@@ -8,11 +8,14 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
 from typing import Any, Optional
+
+from tools.ansi_strip import strip_ansi
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -55,6 +58,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+logger = logging.getLogger(__name__)
 
 
 def _codex_curated_models() -> list[str]:
@@ -1200,6 +1204,15 @@ def _merge_unique_model_ids(*groups: list[str]) -> list[str]:
     return merged
 
 
+def _sanitize_remote_model_id(raw_model_id: Any) -> str:
+    """Normalize remote model ids for safe terminal display and selection."""
+    if not isinstance(raw_model_id, str):
+        return ""
+    cleaned = strip_ansi(raw_model_id)
+    cleaned = "".join(ch for ch in cleaned if ch == "\t" or ch >= " ")
+    return cleaned.strip()
+
+
 def _fetch_fireworks_collection(
     *,
     api_key: str,
@@ -1214,7 +1227,8 @@ def _fetch_fireworks_collection(
 
     items: list[dict[str, Any]] = []
     page_token: Optional[str] = None
-    while True:
+    max_pages = 20
+    for _page in range(max_pages):
         params: list[tuple[str, str]] = []
         if filter_expr:
             params.append(("filter", filter_expr))
@@ -1232,11 +1246,22 @@ def _fetch_fireworks_collection(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
-        except Exception:
+        except urllib.error.HTTPError as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: HTTP %s", path, exc.code)
+            return None
+        except urllib.error.URLError as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: %s", path, exc)
+            return None
+        except json.JSONDecodeError as exc:
+            logger.debug("Fireworks catalog fetch returned invalid JSON for %s: %s", path, exc)
+            return None
+        except Exception as exc:
+            logger.debug("Fireworks catalog fetch failed for %s: %s", path, exc)
             return None
 
         page_items = data.get(items_key, []) if isinstance(data, dict) else []
         if not isinstance(page_items, list):
+            logger.debug("Fireworks catalog fetch returned invalid %s payload for %s", items_key, path)
             return None
         items.extend(item for item in page_items if isinstance(item, dict))
 
@@ -1244,6 +1269,8 @@ def _fetch_fireworks_collection(
         if not next_page_token:
             break
         page_token = next_page_token
+    else:
+        logger.debug("Fireworks catalog fetch exceeded max pages for %s", path)
 
     return items
 
@@ -1288,9 +1315,13 @@ def _fetch_fireworks_models(
                 status_code = str(status.get("code") or "").strip().upper()
                 if status_code and status_code != "OK":
                     continue
-            model_id = item.get("name")
-            if isinstance(model_id, str) and model_id.strip():
-                model_ids.append(model_id.strip())
+            model_id = _sanitize_remote_model_id(item.get("name"))
+            if not model_id:
+                continue
+            if model_id != str(item.get("name") or "").strip():
+                logger.debug("Skipping Fireworks model with sanitized identifier for account %s", account_id)
+                continue
+            model_ids.append(model_id)
 
     return _merge_unique_model_ids(model_ids) or None
 

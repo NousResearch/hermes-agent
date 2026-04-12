@@ -6,6 +6,7 @@ on:
 
 permissions:
   pull-requests: write
+  issues: write
   contents: read
 
 jobs:
@@ -164,8 +165,28 @@ jobs:
             echo "critical=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Post warning comment
+      - name: Write findings to job summary
         if: steps.scan.outputs.found == 'true'
+        run: |
+          SEVERITY="⚠️ Supply Chain Risk Detected"
+          if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
+            SEVERITY="🚨 CRITICAL Supply Chain Risk Detected"
+          fi
+
+          {
+            echo "## ${SEVERITY}"
+            echo
+            echo "This PR contains patterns commonly associated with supply chain attacks. This does **not** mean the PR is malicious — but these patterns require careful human review before merging."
+            echo
+            cat /tmp/findings.md
+            echo
+            echo "---"
+            echo "*Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post warning comment
+        if: steps.scan.outputs.found == 'true' && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -188,5 +209,5 @@ jobs:
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'
         run: |
-          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
+          echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the job summary for details."
           exit 1

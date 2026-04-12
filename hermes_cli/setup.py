@@ -117,18 +117,71 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
-    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "minimax": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
+    "minimax-cn": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
-    "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
-    "opencode-go": ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.5", "minimax-m2.7"],
+    "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash"],
+    "opencode-go": ["glm-5", "kimi-k2.5", "minimax-m2.5", "minimax-m2.7"],
     "huggingface": [
         "Qwen/Qwen3.5-397B-A17B", "Qwen/Qwen3-235B-A22B-Thinking-2507",
         "Qwen/Qwen3-Coder-480B-A35B-Instruct", "deepseek-ai/DeepSeek-R1-0528",
         "deepseek-ai/DeepSeek-V3.2", "moonshotai/Kimi-K2.5",
     ],
 }
+
+
+def _setup_provider_model_selection(
+    config: Dict[str, Any],
+    *,
+    provider_id: str,
+    current_model: str,
+    prompt_choice,
+    prompt_fn,
+) -> None:
+    """Shared provider model picker used by setup tests and provider flows."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.config import get_env_value
+    from hermes_cli.models import fetch_api_models, normalize_opencode_model_id
+
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if getattr(pconfig, "api_key_env_vars", None) else ""
+    base_url_env = getattr(pconfig, "base_url_env_var", "")
+    api_key = get_env_value(key_env) if key_env else ""
+    base_url = get_env_value(base_url_env) if base_url_env else ""
+    effective_base = base_url or pconfig.inference_base_url
+
+    live_models = fetch_api_models(api_key, effective_base) or []
+    model_list = live_models if live_models else list(_DEFAULT_PROVIDER_MODELS.get(provider_id, []))
+
+    if provider_id in {"opencode-zen", "opencode-go"}:
+        model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
+        current_model = normalize_opencode_model_id(provider_id, current_model)
+        model_list = list(dict.fromkeys(mid for mid in model_list if mid))
+
+    choices = list(model_list)
+    choices.append("Custom model")
+    choices.append(f"Keep current ({current_model or 'none'})")
+
+    default_idx = len(choices) - 1 if current_model else 0
+    selected_idx = prompt_choice("Select model:", choices, default_idx)
+    selected_label = choices[selected_idx]
+
+    if selected_idx < len(model_list):
+        _set_default_model(config, model_list[selected_idx])
+        return
+
+    if selected_label == "Custom model":
+        custom_model = (prompt_fn("Model name: ") or "").strip()
+        if custom_model:
+            if provider_id in {"opencode-zen", "opencode-go"}:
+                custom_model = normalize_opencode_model_id(provider_id, custom_model)
+            _set_default_model(config, custom_model)
+        return
+
+    if current_model:
+        _set_default_model(config, current_model)
+
 
 
 def _current_reasoning_effort(config: Dict[str, Any]) -> str:

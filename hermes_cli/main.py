@@ -1616,15 +1616,13 @@ def _model_flow_custom(config):
 
     try:
         base_url = input(f"API base URL [{current_url or 'e.g. https://api.example.com/v1'}]: ").strip()
-        if sys.stdin.isatty():
-            import getpass
-            api_key = getpass.getpass(
-                f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
-            ).strip()
-        else:
-            api_key = input(
-                f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
-            ).strip()
+        if not sys.stdin.isatty():
+            print("Error: interactive terminal required for API key entry.")
+            return
+        import getpass
+        api_key = getpass.getpass(
+            f"API key [{current_key[:8] + '...' if current_key else 'optional'}]: "
+        ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return

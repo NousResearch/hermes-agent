@@ -992,8 +992,24 @@ def resolve_provider(
         return "openrouter"
 
     # Auto-detect API-key providers by checking their env vars
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+    # Keep this order deliberate: tests and UX expect established providers
+    # like Xiaomi to outrank newly-added providers when both secrets exist.
+    _AUTO_PROVIDER_PRIORITY = [
+        "anthropic",
+        "gemini",
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "ai-gateway",
+        "kilocode",
+        "huggingface",
+        "xiaomi",
+        "fireworks",
+    ]
+    for pid in _AUTO_PROVIDER_PRIORITY:
+        pconfig = PROVIDER_REGISTRY.get(pid)
+        if not pconfig or pconfig.auth_type != "api_key":
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses

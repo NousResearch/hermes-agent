@@ -538,16 +538,27 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
-                # Resolve any usernames in the allowed list to numeric IDs
-                await adapter_self._resolve_allowed_usernames()
-
-                # Sync slash commands with Discord
-                try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
-                except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+                # Mark the adapter ready as soon as Discord itself is ready.
+                # Slash-command sync can be slow or hang transiently, and should
+                # not block the bot from becoming usable for normal messaging.
                 adapter_self._ready_event.set()
+
+                # Resolve any usernames in the allowed list to numeric IDs.
+                try:
+                    await adapter_self._resolve_allowed_usernames()
+                except Exception as e:  # pragma: no cover - defensive logging
+                    logger.warning("[%s] Allowed-user resolution failed: %s", adapter_self.name, e, exc_info=True)
+
+                # Sync slash commands with Discord in the background so startup
+                # doesn't timeout while waiting for command registration.
+                async def _sync_tree_background():
+                    try:
+                        synced = await adapter_self._client.tree.sync()
+                        logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    except Exception as e:  # pragma: no cover - defensive logging
+                        logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+
+                asyncio.create_task(_sync_tree_background())
 
             @self._client.event
             async def on_message(message: DiscordMessage):

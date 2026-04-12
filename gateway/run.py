@@ -1518,6 +1518,23 @@ class GatewayRunner:
                 "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
                 "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
             )
+        # Extra warning for WhatsApp bot mode: the bridge-level allowlist
+        # (WHATSAPP_ALLOWED_USERS) now denies unknown senders by default, but only
+        # when the bridge is running in bot mode.  Remind the operator to set it.
+        _whatsapp_enabled = any(
+            getattr(p, "platform", None) and getattr(p.platform, "value", "") == "whatsapp"
+            for p in getattr(self, "_adapters", [])
+        )
+        _whatsapp_mode = os.getenv("WHATSAPP_MODE", "self-chat")
+        _whatsapp_allowlist = os.getenv("WHATSAPP_ALLOWED_USERS", "").strip()
+        _whatsapp_allow_all = os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+        if _whatsapp_mode != "self-chat" and not _whatsapp_allowlist and not _whatsapp_allow_all:
+            logger.warning(
+                "WhatsApp is running in bot mode but WHATSAPP_ALLOWED_USERS is not set. "
+                "Unknown senders will be DENIED by the bridge. "
+                "Set WHATSAPP_ALLOWED_USERS=+15551234567 or WHATSAPP_ALLOW_ALL_USERS=true "
+                "to allow other users to interact with the bot.  (#8389)"
+            )
         
         # Discover and load event hooks
         self.hooks.discover_and_load()

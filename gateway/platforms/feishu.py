@@ -1835,7 +1835,13 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Schedule Feishu card actions on the adapter loop and acknowledge immediately."""
+        """Schedule Feishu card actions on the adapter loop and acknowledge immediately.
+        
+        Returns a P2CardActionTriggerResponse with toast to acknowledge the interaction.
+        This prevents Feishu from returning error 200340 (invalid ticket/interaction).
+        """
+        logger.info("[Feishu] Card action trigger received: %s", data)
+        
         loop = self._loop
         if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
@@ -1845,9 +1851,31 @@ class FeishuAdapter(BasePlatformAdapter):
                 loop,
             )
             future.add_done_callback(self._log_background_failure)
+        
         if P2CardActionTriggerResponse is None:
+            logger.warning("[Feishu] P2CardActionTriggerResponse not available")
             return None
-        return P2CardActionTriggerResponse()
+        
+        # Return a response with toast to acknowledge the interaction
+        # This tells Feishu the callback was received and processed successfully
+        from lark_oapi.event.callback.model.p2_card_action_trigger import CallBackToast
+        from lark_oapi.core.json import JSON
+        
+        toast = CallBackToast({
+            "type": "success",
+            "content": "操作已提交",  # "Action submitted" in Chinese
+        })
+        response = P2CardActionTriggerResponse()
+        response.toast = toast
+        
+        # Log the serialized response for debugging
+        try:
+            serialized = JSON.marshal(response)
+            logger.info("[Feishu] Card action response: %s", serialized)
+        except Exception as e:
+            logger.error("[Feishu] Failed to serialize response: %s", e)
+        
+        return response
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -2409,7 +2437,18 @@ class FeishuAdapter(BasePlatformAdapter):
         elif event_type in ("im.message.reaction.created_v1", "im.message.reaction.deleted_v1"):
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
-            self._on_card_action_trigger(data)
+            # For webhook mode, we need to return the toast response immediately
+            # Call the handler and get the response object
+            response_obj = self._on_card_action_trigger(data)
+            if response_obj and hasattr(response_obj, '__dict__'):
+                # Serialize the response object to dict using SDK's JSON marshal
+                from lark_oapi.core.json import JSON
+                response_json = JSON.marshal(response_obj)
+                # Parse JSON string to dict properly
+                import json
+                response_dict = json.loads(response_json)
+                return web.json_response(response_dict)
+            return web.json_response({"code": 0, "msg": "ok"})
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})

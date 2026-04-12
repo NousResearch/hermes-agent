@@ -444,9 +444,20 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        # Allow callers (e.g. delegate_task spawning `hermes acp` subprocesses)
+        # to widen or narrow the toolset via HERMES_ACP_TOOLSETS env var.
+        # Format: comma-separated toolset names, e.g. "terminal,file,web".
+        # Default is "hermes-acp" (the coding-focused editor preset).
+        import os as _os
+        _env_toolsets = _os.environ.get("HERMES_ACP_TOOLSETS", "").strip()
+        if _env_toolsets:
+            _acp_toolsets = [t.strip() for t in _env_toolsets.split(",") if t.strip()]
+        else:
+            _acp_toolsets = ["hermes-acp"]
+
         kwargs = {
             "platform": "acp",
-            "enabled_toolsets": ["hermes-acp"],
+            "enabled_toolsets": _acp_toolsets,
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,

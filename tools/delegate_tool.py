@@ -280,7 +280,19 @@ def _build_child_agent(
     else:
         parent_toolsets = set(DEFAULT_TOOLSETS)
 
-    if toolsets:
+    # When an ACP command override is set, the child is a different agent
+    # binary (e.g. `hermes acp`) with its own native tool registry.
+    # Parent toolset intersection doesn't apply — the child resolves its own
+    # tools from its own registry.  Use requested toolsets directly, or fall
+    # back to "hermes-acp" which is the full Hermes ACP toolset.
+    _has_acp_override = bool(override_acp_command or (
+        parent_agent and getattr(parent_agent, "acp_command", None)))
+    if _has_acp_override:
+        if toolsets:
+            child_toolsets = _strip_blocked_tools(list(toolsets))
+        else:
+            child_toolsets = _strip_blocked_tools(["hermes-acp"])
+    elif toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
     elif parent_agent and parent_enabled is not None:

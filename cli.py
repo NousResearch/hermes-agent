@@ -1774,6 +1774,7 @@ class HermesCLI:
         # Conversation state
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
+        self._last_user_message_at: Optional[datetime] = None
         self._resumed = False
         # Initialize SQLite session store early so /title works before first message
         self._session_db = None
@@ -7504,6 +7505,8 @@ class HermesCLI:
             from run_agent import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
+        self._last_user_message_at = datetime.now()
+
         # Add user message to history
         self.conversation_history.append({"role": "user", "content": message})
 
@@ -7953,6 +7956,30 @@ class HermesCLI:
         level = min(rms, 8000) * 7 // 8000
         return _LEVEL_BARS[level]
 
+    def _format_last_user_message_elapsed(self, *, compact: bool, now: Optional[datetime] = None) -> str:
+        """Return an elapsed-time badge for the most recent user turn."""
+        last_user_message_at = getattr(self, "_last_user_message_at", None)
+        if not isinstance(last_user_message_at, datetime):
+            return ""
+
+        if now is None:
+            now = datetime.now()
+
+        elapsed_seconds = max(0, int((now - last_user_message_at).total_seconds()))
+        hours, remainder = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        if hours > 0:
+            elapsed_label = f"{hours}h {minutes}m"
+        elif minutes > 0:
+            elapsed_label = f"{minutes}m {seconds}s"
+        else:
+            elapsed_label = f"{seconds}s"
+
+        if compact:
+            return f"[{elapsed_label}]"
+        return f"[{elapsed_label} since last user message]"
+
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
@@ -7989,6 +8016,12 @@ class HermesCLI:
             return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
+        elapsed_badge = self._format_last_user_message_elapsed(compact=compact)
+        if elapsed_badge:
+            return [
+                ("class:prompt", symbol),
+                ("class:prompt-working", f"{elapsed_badge} "),
+            ]
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:

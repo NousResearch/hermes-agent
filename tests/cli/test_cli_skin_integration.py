@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -42,6 +43,17 @@ class TestCliSkinPromptIntegration:
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ❯ ")]
 
+    def test_prompt_fragments_include_elapsed_badge_after_user_message(self):
+        cli = _make_cli_stub()
+        cli._last_user_message_at = datetime.now() - timedelta(seconds=12)
+
+        set_active_skin("default")
+        frags = cli._get_tui_prompt_fragments()
+
+        assert frags[0] == ("class:prompt", "❯ ")
+        assert frags[1][0] == "class:prompt-working"
+        assert "[12s since last user message]" in frags[1][1]
+
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}
@@ -67,6 +79,18 @@ class TestCliSkinPromptIntegration:
         assert frags[0][0] == "class:voice-recording"
         assert frags[0][1].startswith("●")
         assert "❯" not in frags[0][1]
+
+    def test_narrow_terminals_compact_elapsed_badge(self):
+        cli = _make_cli_stub()
+        cli._last_user_message_at = datetime.now() - timedelta(seconds=75)
+
+        with patch.object(HermesCLI, "_get_tui_terminal_width", return_value=50):
+            frags = cli._get_tui_prompt_fragments()
+
+        assert frags == [
+            ("class:prompt", "❯ "),
+            ("class:prompt-working", "[1m 15s] "),
+        ]
 
     def test_icon_only_skin_symbol_still_visible_in_special_states(self):
         cli = _make_cli_stub()

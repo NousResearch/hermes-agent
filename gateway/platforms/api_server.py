@@ -1614,11 +1614,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            err_msg = None
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
-            except Exception:
-                pass
+                if isinstance(result, dict) and "error" in result:
+                    err_msg = str(result["error"])
+            except Exception as e:
+                err_msg = str(e)
+
+            if err_msg:
+                # Provide a visual cue that the agent crashed natively in the chat
+                error_delta = f"\n\n[Agent Error: {err_msg}]"
+                await _emit(error_delta)
 
             # Finish chunk
             finish_chunk = {

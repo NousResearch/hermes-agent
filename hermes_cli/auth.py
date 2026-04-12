@@ -250,7 +250,37 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "xiaomi": ProviderConfig(
+        id="xiaomi",
+        name="Xiaomi MiMo",
+        auth_type="api_key",
+        inference_base_url="https://api.xiaomimimo.com/v1",
+        api_key_env_vars=("XIAOMI_API_KEY",),
+        base_url_env_var="XIAOMI_BASE_URL",
+    ),
 }
+
+
+# =============================================================================
+# Anthropic Key Helper
+# =============================================================================
+
+def get_anthropic_key() -> str:
+    """Return the first usable Anthropic credential, or ``""``.
+
+    Checks both the ``.env`` file (via ``get_env_value``) and the process
+    environment (``os.getenv``).  The fallback order mirrors the
+    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
+
+        ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
+    """
+    from hermes_cli.config import get_env_value
+
+    for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+        value = get_env_value(var) or os.getenv(var, "")
+        if value:
+            return value
+    return ""
 
 
 # =============================================================================
@@ -908,6 +938,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

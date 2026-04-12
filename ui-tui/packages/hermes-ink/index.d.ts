@@ -1,3 +1,4 @@
+/// <reference path="./ambient.d.ts" />
 export { default as useStderr } from './src/hooks/use-stderr.ts'
 export type { StderrHandle } from './src/hooks/use-stderr.ts'
 export { default as useStdout } from './src/hooks/use-stdout.ts'

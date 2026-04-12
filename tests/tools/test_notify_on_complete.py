@@ -227,6 +227,8 @@ class TestCheckpointNotify:
             "session_key": "sk1",
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
+            "watcher_user_id": "u123",
+            "watcher_user_name": "alice",
             "watcher_thread_id": "42",
             "watcher_interval": 5,
             "notify_on_complete": True,
@@ -236,6 +238,8 @@ class TestCheckpointNotify:
             assert recovered == 1
             assert len(registry.pending_watchers) == 1
             assert registry.pending_watchers[0]["notify_on_complete"] is True
+            assert registry.pending_watchers[0]["user_id"] == "u123"
+            assert registry.pending_watchers[0]["user_name"] == "alice"
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""

@@ -84,6 +84,13 @@ ngrok http 8080
 Set the resulting public URL as your Twilio webhook.
 :::
 
+**Set `SMS_WEBHOOK_URL` to the same URL you configured in Twilio.** This is required for Twilio signature validation — the adapter will refuse to start without it:
+
+```bash
+# Must match the webhook URL in your Twilio Console
+SMS_WEBHOOK_URL=https://your-server:8080/webhooks/twilio
+```
+
 The webhook port defaults to `8080`. Override with:
 
 ```bash
@@ -101,8 +108,10 @@ hermes gateway
 You should see:
 
 ```
-[sms] Twilio webhook server listening on port 8080, from: +1555***4567
+[sms] Twilio webhook server listening on 0.0.0.0:8080, from: +1555***4567
 ```
+
+If you see `Refusing to start: SMS_WEBHOOK_URL is required`, set `SMS_WEBHOOK_URL` to the public URL configured in your Twilio Console (see Step 3).
 
 Text your Twilio number — Hermes will respond via SMS.
 
@@ -113,9 +122,12 @@ Text your Twilio number — Hermes will respond via SMS.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TWILIO_ACCOUNT_SID` | Yes | Twilio Account SID (starts with `AC`) |
-| `TWILIO_AUTH_TOKEN` | Yes | Twilio Auth Token |
+| `TWILIO_AUTH_TOKEN` | Yes | Twilio Auth Token (also used for webhook signature validation) |
 | `TWILIO_PHONE_NUMBER` | Yes | Your Twilio phone number (E.164 format) |
+| `SMS_WEBHOOK_URL` | Yes | Public URL for Twilio signature validation — must match the webhook URL in your Twilio Console |
 | `SMS_WEBHOOK_PORT` | No | Webhook listener port (default: `8080`) |
+| `SMS_WEBHOOK_HOST` | No | Webhook bind address (default: `0.0.0.0`) |
+| `SMS_INSECURE_NO_SIGNATURE` | No | Set to `true` to disable signature validation (local dev only — **not for production**) |
 | `SMS_ALLOWED_USERS` | No | Comma-separated E.164 phone numbers allowed to chat |
 | `SMS_ALLOW_ALL_USERS` | No | Set to `true` to allow anyone (not recommended) |
 | `SMS_HOME_CHANNEL` | No | Phone number for cron job / notification delivery |
@@ -133,6 +145,21 @@ Text your Twilio number — Hermes will respond via SMS.
 ---
 
 ## Security
+
+### Webhook signature validation
+
+Hermes validates that inbound webhooks genuinely originate from Twilio by verifying the `X-Twilio-Signature` header (HMAC-SHA1). This prevents attackers from injecting forged messages.
+
+**`SMS_WEBHOOK_URL` is required.** Set it to the public URL configured in your Twilio Console. The adapter will refuse to start without it.
+
+For local development without a public URL, you can disable validation:
+
+```bash
+# Local dev only — NOT for production
+SMS_INSECURE_NO_SIGNATURE=true
+```
+
+### User allowlists
 
 **The gateway denies all users by default.** Configure an allowlist:
 

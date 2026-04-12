@@ -823,7 +823,36 @@ class BasePlatformAdapter(ABC):
         result = handler(self)
         if asyncio.iscoroutine(result):
             await result
-    
+
+    def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
+        """Acquire a scoped lock for this adapter. Returns True on success."""
+        from gateway.status import acquire_scoped_lock
+        self._platform_lock_scope = scope
+        self._platform_lock_identity = identity
+        acquired, existing = acquire_scoped_lock(
+            scope, identity, metadata={'platform': self.platform.value}
+        )
+        if acquired:
+            return True
+        owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+        message = (
+            f'{resource_desc} already in use'
+            + (f' (PID {owner_pid})' if owner_pid else '')
+            + '. Stop the other gateway first.'
+        )
+        logger.error('[%s] %s', self.name, message)
+        self._set_fatal_error(f'{scope}_lock', message, retryable=False)
+        return False
+
+    def _release_platform_lock(self) -> None:
+        """Release the scoped lock acquired by _acquire_platform_lock."""
+        identity = getattr(self, '_platform_lock_identity', None)
+        if not identity:
+            return
+        from gateway.status import release_scoped_lock
+        release_scoped_lock(self._platform_lock_scope, identity)
+        self._platform_lock_identity = None
+
     @property
     def name(self) -> str:
         """Human-readable name for this adapter."""

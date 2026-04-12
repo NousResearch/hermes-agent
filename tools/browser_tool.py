@@ -473,13 +473,104 @@ def _cleanup_inactive_browser_sessions():
             logger.warning("Error cleaning up inactive session %s: %s", task_id, e)
 
 
+def _reap_orphaned_browser_sessions():
+    """Scan for orphaned agent-browser daemon processes from previous runs.
+
+    When the Python process that created a browser session exits uncleanly
+    (SIGKILL, crash, gateway restart), the in-memory ``_active_sessions``
+    tracking is lost but the node + Chromium processes keep running.
+
+    This function scans the tmp directory for ``agent-browser-*`` socket dirs
+    left behind by previous runs, reads the daemon PID files, and kills any
+    daemons that are still alive but not tracked by the current process.
+
+    Called once on cleanup-thread startup — not every 30 seconds — to avoid
+    races with sessions being actively created.
+    """
+    import glob
+
+    tmpdir = _socket_safe_tmpdir()
+    pattern = os.path.join(tmpdir, "agent-browser-h_*")
+    socket_dirs = glob.glob(pattern)
+    # Also pick up CDP sessions
+    socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-cdp_*"))
+
+    if not socket_dirs:
+        return
+
+    # Build set of session_names currently tracked by this process
+    with _cleanup_lock:
+        tracked_names = {
+            info.get("session_name")
+            for info in _active_sessions.values()
+            if info.get("session_name")
+        }
+
+    reaped = 0
+    for socket_dir in socket_dirs:
+        dir_name = os.path.basename(socket_dir)
+        # dir_name is "agent-browser-{session_name}"
+        session_name = dir_name.removeprefix("agent-browser-")
+        if not session_name:
+            continue
+
+        # Skip sessions that we are actively tracking
+        if session_name in tracked_names:
+            continue
+
+        pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+        if not os.path.isfile(pid_file):
+            # No PID file — just a stale dir, remove it
+            shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        try:
+            daemon_pid = int(Path(pid_file).read_text().strip())
+        except (ValueError, OSError):
+            shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+
+        # Check if the daemon is still alive
+        try:
+            os.kill(daemon_pid, 0)  # signal 0 = existence check
+        except ProcessLookupError:
+            # Already dead, just clean up the dir
+            shutil.rmtree(socket_dir, ignore_errors=True)
+            continue
+        except PermissionError:
+            # Alive but owned by someone else — leave it alone
+            continue
+
+        # Daemon is alive and not tracked — orphan. Kill it.
+        try:
+            os.kill(daemon_pid, signal.SIGTERM)
+            logger.info("Reaped orphaned browser daemon PID %d (session %s)",
+                        daemon_pid, session_name)
+            reaped += 1
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+        # Clean up the socket directory
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+    if reaped:
+        logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+
+
 def _browser_cleanup_thread_worker():
     """
     Background thread that periodically cleans up inactive browser sessions.
     
     Runs every 30 seconds and checks for sessions that haven't been used
     within the BROWSER_SESSION_INACTIVITY_TIMEOUT period.
+    On first run, also reaps orphaned sessions from previous process lifetimes.
     """
+    # One-time orphan reap on startup
+    try:
+        _reap_orphaned_browser_sessions()
+    except Exception as e:
+        logger.warning("Orphan reap error: %s", e)
+
     while _cleanup_running:
         try:
             _cleanup_inactive_browser_sessions()

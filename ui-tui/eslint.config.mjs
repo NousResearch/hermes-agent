@@ -23,6 +23,9 @@ const customRules = {
 }
 
 export default [
+  {
+    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js']
+  },
   js.configs.recommended,
   {
     files: ['**/*.{ts,tsx}'],
@@ -89,6 +92,15 @@ export default [
     }
   },
   {
-    ignores: ['node_modules/', 'dist/', '*.config.*', 'src/**/*.js']
+    files: ['**/*.js'],
+    ignores: ['**/node_modules/**', '**/dist/**'],
+    languageOptions: {
+      globals: { ...globals.node },
+      ecmaVersion: 'latest',
+      sourceType: 'module'
+    }
+  },
+  {
+    ignores: ['*.config.*']
   }
 ]

@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
+from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +90,7 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
-def _strip_markdown(text: str) -> str:
-    """Strip common markdown formatting for iMessage plain-text delivery."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"\*(.+?)\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"__(.+?)__", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"_(.+?)_", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"```[a-zA-Z0-9_+-]*\n?", "", text)
-    text = re.sub(r"`(.+?)`", r"\1", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", r"\1", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +383,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        text = _strip_markdown(content or "")
+        text = strip_markdown(content or "")
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
         chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
@@ -679,7 +669,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return _strip_markdown(content)
+        return strip_markdown(content)
 
     # ------------------------------------------------------------------
     # Inbound attachment downloading (from #4588)

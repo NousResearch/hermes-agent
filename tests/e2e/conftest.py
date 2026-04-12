@@ -211,7 +211,8 @@ def make_adapter(platform: Platform, runner=None):
     config = PlatformConfig(enabled=True, token="e2e-test-token")
 
     if platform == Platform.DISCORD:
-        with patch.object(DiscordAdapter, "_load_participated_threads", return_value=set()):
+        from gateway.platforms.helpers import ThreadParticipationTracker
+        with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
             adapter = DiscordAdapter(config)
         platform_key = Platform.DISCORD
     elif platform == Platform.SLACK:

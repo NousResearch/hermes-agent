@@ -1594,12 +1594,17 @@ export function App({ gw }: { gw: GatewayClient }) {
             if (!pastes.length) {
               sys('no text pastes')
             } else {
-              panel('Paste Shelf', [{
-                rows: pastes.map(p => [
-                  `#${p.id} ${p.mode}`,
-                  `${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
-                ] as [string, string])
-              }])
+              panel('Paste Shelf', [
+                {
+                  rows: pastes.map(
+                    p =>
+                      [
+                        `#${p.id} ${p.mode}`,
+                        `${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
+                      ] as [string, string]
+                  )
+                }
+              ])
             }
 
             return true
@@ -1652,7 +1657,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           sys('usage: /paste [list|mode <id> <attach|excerpt|inline>|drop <id>|clear]')
 
           return true
-
         case 'logs': {
           const logText = gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
           logText ? page(logText, 'Logs') : sys('no gateway logs')
@@ -1765,7 +1769,14 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'model':
           if (!arg) {
             rpc('config.get', { key: 'provider' }).then((r: any) =>
-              panel('Model', [{ rows: [['Model', r.model], ['Provider', r.provider]] }])
+              panel('Model', [
+                {
+                  rows: [
+                    ['Model', r.model],
+                    ['Provider', r.provider]
+                  ]
+                }
+              ])
             )
           } else {
             rpc('config.set', { session_id: sid, key: 'model', value: arg.replace('--global', '').trim() }).then(
@@ -1900,6 +1911,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             }
 
             const f = (v: number) => (v ?? 0).toLocaleString()
+
             const cost =
               r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
@@ -1913,7 +1925,9 @@ export function App({ gw }: { gw: GatewayClient }) {
               ['API calls', f(r.calls)]
             ]
 
-            if (cost) rows.push(['Cost', cost])
+            if (cost) {
+              rows.push(['Cost', cost])
+            }
 
             const sections: PanelSection[] = [{ rows }]
 
@@ -1921,7 +1935,9 @@ export function App({ gw }: { gw: GatewayClient }) {
               sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
             }
 
-            if (r.compressions) sections.push({ text: `Compressions: ${r.compressions}` })
+            if (r.compressions) {
+              sections.push({ text: `Compressions: ${r.compressions}` })
+            }
 
             panel('Usage', sections)
           })
@@ -1966,13 +1982,15 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'insights':
           rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) =>
-            panel('Insights', [{
-              rows: [
-                ['Period', `${r.days} days`],
-                ['Sessions', `${r.sessions}`],
-                ['Messages', `${r.messages}`]
-              ]
-            }])
+            panel('Insights', [
+              {
+                rows: [
+                  ['Period', `${r.days} days`],
+                  ['Sessions', `${r.sessions}`],
+                  ['Messages', `${r.messages}`]
+                ]
+              }
+            ])
           )
 
           return true
@@ -1985,12 +2003,13 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return sys('no checkpoints')
               }
 
-              panel('Checkpoints', [{
-                rows: r.checkpoints.map((c: any, i: number) => [
-                  `${i + 1} ${c.hash?.slice(0, 8)}`,
-                  c.message
-                ] as [string, string])
-              }])
+              panel('Checkpoints', [
+                {
+                  rows: r.checkpoints.map(
+                    (c: any, i: number) => [`${i + 1} ${c.hash?.slice(0, 8)}`, c.message] as [string, string]
+                  )
+                }
+              ])
             })
           } else {
             const hash = sub === 'restore' || sub === 'diff' ? rArgs[0] : sub
@@ -2023,9 +2042,11 @@ export function App({ gw }: { gw: GatewayClient }) {
               return sys('no plugins')
             }
 
-            panel('Plugins', [{
-              items: r.plugins.map((p: any) => `${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`)
-            }])
+            panel('Plugins', [
+              {
+                items: r.plugins.map((p: any) => `${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`)
+              }
+            ])
           })
 
           return true
@@ -2040,10 +2061,13 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return sys('no skills installed')
               }
 
-              panel('Installed Skills', Object.entries(sk).map(([cat, names]) => ({
-                title: cat,
-                items: names as string[]
-              })))
+              panel(
+                'Installed Skills',
+                Object.entries(sk).map(([cat, names]) => ({
+                  title: cat,
+                  items: names as string[]
+                }))
+              )
             })
 
             return true
@@ -2052,17 +2076,29 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (sub === 'browse') {
             const pg = parseInt(sArgs[0] ?? '1', 10) || 1
             rpc('skills.manage', { action: 'browse', page: pg }).then((r: any) => {
-              if (!r.items?.length) return sys('no skills found in the hub')
+              if (!r.items?.length) {
+                return sys('no skills found in the hub')
+              }
 
-              const sections: PanelSection[] = [{
-                rows: r.items.map((s: any) => [
-                  s.name ?? '',
-                  (s.description ?? '').slice(0, 60) + (s.description?.length > 60 ? '…' : '')
-                ] as [string, string])
-              }]
+              const sections: PanelSection[] = [
+                {
+                  rows: r.items.map(
+                    (s: any) =>
+                      [s.name ?? '', (s.description ?? '').slice(0, 60) + (s.description?.length > 60 ? '…' : '')] as [
+                        string,
+                        string
+                      ]
+                  )
+                }
+              ]
 
-              if (r.page < r.total_pages) sections.push({ text: `/skills browse ${r.page + 1} → next page` })
-              if (r.page > 1) sections.push({ text: `/skills browse ${r.page - 1} → prev page` })
+              if (r.page < r.total_pages) {
+                sections.push({ text: `/skills browse ${r.page + 1} → next page` })
+              }
+
+              if (r.page > 1) {
+                sections.push({ text: `/skills browse ${r.page - 1} → prev page` })
+              }
 
               panel(`Skills Hub (page ${r.page}/${r.total_pages}, ${r.total} total)`, sections)
             })
@@ -2080,47 +2116,57 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'agents':
 
         case 'tasks':
-          rpc('agents.list', {}).then((r: any) => {
-            const procs = r.processes ?? []
-            const running = procs.filter((p: any) => p.status === 'running')
-            const finished = procs.filter((p: any) => p.status !== 'running')
-            const sections: PanelSection[] = []
+          rpc('agents.list', {})
+            .then((r: any) => {
+              const procs = r.processes ?? []
+              const running = procs.filter((p: any) => p.status === 'running')
+              const finished = procs.filter((p: any) => p.status !== 'running')
+              const sections: PanelSection[] = []
 
-            if (running.length) {
-              sections.push({
-                title: `Running (${running.length})`,
-                rows: running.map((p: any) => [p.session_id.slice(0, 8), p.command])
-              })
-            }
+              if (running.length) {
+                sections.push({
+                  title: `Running (${running.length})`,
+                  rows: running.map((p: any) => [p.session_id.slice(0, 8), p.command])
+                })
+              }
 
-            if (finished.length) {
-              sections.push({
-                title: `Finished (${finished.length})`,
-                rows: finished.map((p: any) => [p.session_id.slice(0, 8), p.command])
-              })
-            }
+              if (finished.length) {
+                sections.push({
+                  title: `Finished (${finished.length})`,
+                  rows: finished.map((p: any) => [p.session_id.slice(0, 8), p.command])
+                })
+              }
 
-            if (!sections.length) sections.push({ text: 'No active processes' })
+              if (!sections.length) {
+                sections.push({ text: 'No active processes' })
+              }
 
-            panel('Agents', sections)
-          }).catch(() => sys('agents command failed'))
+              panel('Agents', sections)
+            })
+            .catch(() => sys('agents command failed'))
 
           return true
 
         case 'cron':
           if (!arg || arg === 'list') {
-            rpc('cron.manage', { action: 'list' }).then((r: any) => {
-              const jobs = r.jobs ?? []
+            rpc('cron.manage', { action: 'list' })
+              .then((r: any) => {
+                const jobs = r.jobs ?? []
 
-              if (!jobs.length) return sys('no scheduled jobs')
+                if (!jobs.length) {
+                  return sys('no scheduled jobs')
+                }
 
-              panel('Cron', [{
-                rows: jobs.map((j: any) => [
-                  j.name || j.job_id?.slice(0, 12),
-                  `${j.schedule} · ${j.state ?? 'active'}`
-                ] as [string, string])
-              }])
-            }).catch(() => sys('cron command failed'))
+                panel('Cron', [
+                  {
+                    rows: jobs.map(
+                      (j: any) =>
+                        [j.name || j.job_id?.slice(0, 12), `${j.schedule} · ${j.state ?? 'active'}`] as [string, string]
+                    )
+                  }
+                ])
+              })
+              .catch(() => sys('cron command failed'))
           } else {
             gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
               .then((r: any) => sys(r?.output || '(no output)'))
@@ -2130,38 +2176,59 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'config':
-          rpc('config.show', {}).then((r: any) => {
-            panel('Config', (r.sections ?? []).map((s: any) => ({
-              title: s.title,
-              rows: s.rows
-            })))
-          }).catch(() => sys('config command failed'))
+          rpc('config.show', {})
+            .then((r: any) => {
+              panel(
+                'Config',
+                (r.sections ?? []).map((s: any) => ({
+                  title: s.title,
+                  rows: s.rows
+                }))
+              )
+            })
+            .catch(() => sys('config command failed'))
 
           return true
 
         case 'tools':
-          rpc('tools.list', { session_id: sid }).then((r: any) => {
-            if (!r.toolsets?.length) return sys('no tools')
+          rpc('tools.list', { session_id: sid })
+            .then((r: any) => {
+              if (!r.toolsets?.length) {
+                return sys('no tools')
+              }
 
-            panel('Tools', r.toolsets.map((ts: any) => ({
-              title: `${ts.enabled ? '*' : ' '} ${ts.name} [${ts.tool_count} tools]`,
-              items: ts.tools
-            })))
-          }).catch(() => sys('tools command failed'))
+              panel(
+                'Tools',
+                r.toolsets.map((ts: any) => ({
+                  title: `${ts.enabled ? '*' : ' '} ${ts.name} [${ts.tool_count} tools]`,
+                  items: ts.tools
+                }))
+              )
+            })
+            .catch(() => sys('tools command failed'))
 
           return true
 
         case 'toolsets':
-          rpc('toolsets.list', { session_id: sid }).then((r: any) => {
-            if (!r.toolsets?.length) return sys('no toolsets')
+          rpc('toolsets.list', { session_id: sid })
+            .then((r: any) => {
+              if (!r.toolsets?.length) {
+                return sys('no toolsets')
+              }
 
-            panel('Toolsets', [{
-              rows: r.toolsets.map((ts: any) => [
-                `${ts.enabled ? '(*)' : '   '} ${ts.name}`,
-                `[${ts.tool_count}] ${ts.description}`
-              ] as [string, string])
-            }])
-          }).catch(() => sys('toolsets command failed'))
+              panel('Toolsets', [
+                {
+                  rows: r.toolsets.map(
+                    (ts: any) =>
+                      [`${ts.enabled ? '(*)' : '   '} ${ts.name}`, `[${ts.tool_count}] ${ts.description}`] as [
+                        string,
+                        string
+                      ]
+                  )
+                }
+              ])
+            })
+            .catch(() => sys('toolsets command failed'))
 
           return true
 
@@ -2188,7 +2255,23 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
       }
     },
-    [catalog, compact, gw, lastUserMsg, messages, newSession, page, panel, pastes, pushActivity, rpc, send, sid, statusBar, sys]
+    [
+      catalog,
+      compact,
+      gw,
+      lastUserMsg,
+      messages,
+      newSession,
+      page,
+      panel,
+      pastes,
+      pushActivity,
+      rpc,
+      send,
+      sid,
+      statusBar,
+      sys
+    ]
   )
 
   slashRef.current = slash

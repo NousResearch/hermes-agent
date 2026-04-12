@@ -48,6 +48,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.R
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -112,6 +113,7 @@ fun NousPortalScreen(
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val strings = LocalHermesStrings.current
     val context = LocalContext.current
     var isLoading by remember { mutableStateOf(true) }
     var pageError by remember { mutableStateOf<String?>(null) }
@@ -121,8 +123,9 @@ fun NousPortalScreen(
     SideEffect {
         onContextActionsChanged(
             listOf(
+                // label = "Refresh portal"
                 ShellActionItem(
-                    label = "Refresh portal",
+                    label = strings.refreshPortal.ifBlank { "Refresh portal" },
                     description = "Reload the embedded Nous Portal page.",
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = {
@@ -133,13 +136,14 @@ fun NousPortalScreen(
                     },
                 ),
                 ShellActionItem(
-                    label = if (isFullscreen) "Minimize portal" else "Full screen portal",
+                    label = if (isFullscreen) strings.minimizePortal.ifBlank { "Minimize portal" } else strings.fullScreenPortal.ifBlank { "Full screen portal" },
                     description = "Resize the embedded portal preview without leaving the app.",
                     iconRes = if (isFullscreen) R.drawable.ic_action_minimize else R.drawable.ic_action_fullscreen,
                     onClick = { isFullscreen = !isFullscreen },
                 ),
+                // label = "Open externally"
                 ShellActionItem(
-                    label = "Open externally",
+                    label = strings.openExternally.ifBlank { "Open externally" },
                     description = "Open the full portal in your browser if the embed is limited.",
                     iconRes = R.drawable.ic_action_external,
                     onClick = {
@@ -270,7 +274,7 @@ fun NousPortalScreen(
                                         IconButton(onClick = { isFullscreen = !isFullscreen }) {
                                             Icon(
                                                 painter = painterResource(id = if (isFullscreen) R.drawable.ic_action_minimize else R.drawable.ic_action_fullscreen),
-                                                contentDescription = if (isFullscreen) "Minimize portal" else "Full screen portal",
+                                                contentDescription = if (isFullscreen) strings.minimizePortal.ifBlank { "Minimize portal" } else strings.fullScreenPortal.ifBlank { "Full screen portal" },
                                                 tint = MaterialTheme.colorScheme.primary,
                                             )
                                         }
@@ -291,6 +295,7 @@ private fun PortalGuidanceCard(
     inferenceUrl: String,
     pageError: String?,
 ) {
+    val strings = LocalHermesStrings.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -303,10 +308,12 @@ private fun PortalGuidanceCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text("Nous Portal", style = MaterialTheme.typography.titleMedium)
+            Text(strings.portalTitle.ifBlank { "Nous Portal" }, style = MaterialTheme.typography.titleMedium)
             Text(status, style = MaterialTheme.typography.bodySmall)
             Text(
-                "The embedded portal now auto-loads on this page. Use the top-right full screen button to maximize or minimize the preview, or fall back to the browser if verification gets stuck.",
+                strings.portalEmbeddedDescription.ifBlank {
+                    "The embedded portal now auto-loads on this page. Use the top-right full screen button to maximize or minimize the preview, or fall back to the browser if verification gets stuck."
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
             if (inferenceUrl.isNotBlank()) {

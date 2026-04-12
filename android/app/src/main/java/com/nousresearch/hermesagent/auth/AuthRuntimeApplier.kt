@@ -48,6 +48,8 @@ object AuthRuntimeApplier {
                 model = resolvedModel,
                 corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
                 dataSaverMode = existingSettings.dataSaverMode,
+                onDeviceBackend = existingSettings.onDeviceBackend,
+                languageTag = existingSettings.languageTag,
             )
         )
         HermesRuntimeManager.stop()

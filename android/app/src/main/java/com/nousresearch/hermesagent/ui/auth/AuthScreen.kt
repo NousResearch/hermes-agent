@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 
 @Composable
@@ -35,13 +36,14 @@ fun AuthScreen(
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val strings = LocalHermesStrings.current
     val scrollState = rememberScrollState()
 
     SideEffect {
         val actions = buildList {
             add(
                 ShellActionItem(
-                    label = "Refresh auth state",
+                    label = strings.refresh.ifBlank { "Refresh" },
                     description = "Reload local Corr3xt and provider auth status.",
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = viewModel::refresh,
@@ -74,23 +76,24 @@ fun AuthScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                 Text(uiState.globalStatus, style = MaterialTheme.typography.bodyMedium)
+                // secure callback
                 Text(
-                    "Corr3xt opens in your browser and returns to Hermes through a secure callback.",
+                    strings.authIntro,
                     style = MaterialTheme.typography.bodySmall,
                 )
 
                 OutlinedTextField(
                     value = uiState.corr3xtBaseUrl,
                     onValueChange = viewModel::updateCorr3xtBaseUrl,
-                    label = { Text("Corr3xt auth base URL") },
+                    label = { Text(strings.corr3xtAuthBaseUrl.ifBlank { "Corr3xt auth base URL" }) },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(onClick = viewModel::saveCorr3xtBaseUrl) {
-                        Text("Save auth URL")
+                        Text(strings.saveAuthUrl.ifBlank { "Save auth URL" })
                     }
                     Button(onClick = viewModel::refresh) {
-                        Text("Refresh")
+                        Text(strings.refresh.ifBlank { "Refresh" })
                     }
                 }
 
@@ -107,7 +110,7 @@ fun AuthScreen(
                                 .padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            Text("Pending Corr3xt sign-in", style = MaterialTheme.typography.titleMedium)
+                            Text(strings.pendingCorr3xtSignIn.ifBlank { "Pending Corr3xt sign-in" }, style = MaterialTheme.typography.titleMedium)
                             Text(
                                 "Waiting for Corr3xt callback for ${uiState.pendingMethodLabel}.",
                                 style = MaterialTheme.typography.bodySmall,
@@ -140,7 +143,7 @@ fun AuthScreen(
                             }
                             if (option.runtimeProvider.isNotBlank()) {
                                 Text(
-                                    "Hermes provider: ${option.runtimeProvider}",
+                                    "${strings.hermesProviderPrefix.ifBlank { "Hermes provider" }}: ${option.runtimeProvider}",
                                     style = MaterialTheme.typography.bodySmall,
                                 )
                             }
@@ -149,11 +152,11 @@ fun AuthScreen(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                             ) {
                                 Button(onClick = { viewModel.startAuth(option.id) }) {
-                                    Text(if (option.signedIn) "Reconnect" else "Sign in")
+                                    Text(if (option.signedIn) strings.reconnect.ifBlank { "Reconnect" } else strings.signIn.ifBlank { "Sign in" })
                                 }
                                 if (option.signedIn) {
                                     Button(onClick = { viewModel.signOut(option.id) }) {
-                                        Text("Sign out")
+                                        Text(strings.signOut.ifBlank { "Sign out" })
                                     }
                                 }
                             }

@@ -24,7 +24,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +47,9 @@ import com.nousresearch.hermesagent.ui.device.DeviceScreen
 import com.nousresearch.hermesagent.ui.device.DeviceViewModel
 import com.nousresearch.hermesagent.ui.portal.NousPortalScreen
 import com.nousresearch.hermesagent.ui.portal.NousPortalViewModel
+import com.nousresearch.hermesagent.ui.i18n.AppLanguage
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
+import com.nousresearch.hermesagent.ui.i18n.hermesStringsFor
 import com.nousresearch.hermesagent.ui.settings.SettingsScreen
 import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
 import com.nousresearch.hermesagent.ui.theme.HermesTheme
@@ -63,6 +68,8 @@ fun AppShellScreen(
     val deviceViewModel: DeviceViewModel = viewModel()
     val portalViewModel: NousPortalViewModel = viewModel()
     val chatViewModel: ChatViewModel = viewModel()
+    val settingsState by settingsViewModel.uiState.collectAsState()
+    val strings = hermesStringsFor(AppLanguage.fromTag(settingsState.languageTag))
 
     fun setActions(actions: List<ShellActionItem>) {
         currentActions = actions
@@ -78,39 +85,40 @@ fun AppShellScreen(
     }
 
     HermesTheme {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            containerColor = MaterialTheme.colorScheme.background,
-            topBar = {
-                HermesTopBar(
-                    section = currentSection,
-                    bootUiState = bootUiState,
-                )
-            },
-            bottomBar = {
-                HermesBottomNavigation(
-                    currentSection = currentSection,
-                    onSelect = { currentSection = it },
-                )
-            },
-            floatingActionButton = {
-                if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
-                    FloatingActionButton(onClick = { showActionSheet = true }) {
-                        Icon(
-                            painter = painterResource(id = R.drawable.ic_action_cog),
-                            contentDescription = "Open page actions",
-                        )
+        CompositionLocalProvider(LocalHermesStrings provides strings) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                containerColor = MaterialTheme.colorScheme.background,
+                topBar = {
+                    HermesTopBar(
+                        section = currentSection,
+                        bootUiState = bootUiState,
+                    )
+                },
+                bottomBar = {
+                    HermesBottomNavigation(
+                        currentSection = currentSection,
+                        onSelect = { currentSection = it },
+                    )
+                },
+                floatingActionButton = {
+                    if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
+                        FloatingActionButton(onClick = { showActionSheet = true }) {
+                            Icon(
+                                painter = painterResource(id = R.drawable.ic_action_cog),
+                                contentDescription = strings.openPageActions,
+                            )
+                        }
                     }
-                }
-            },
-        ) { innerPadding ->
-            Surface(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                color = MaterialTheme.colorScheme.background,
-            ) {
-                when (currentSection) {
+                },
+            ) { innerPadding ->
+                Surface(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    color = MaterialTheme.colorScheme.background,
+                ) {
+                    when (currentSection) {
                     AppSection.Hermes -> {
                         if (bootUiState.ready) {
                             ChatScreen(
@@ -176,16 +184,18 @@ fun AppShellScreen(
         }
     }
 }
+}
 
 @Composable
 private fun HermesTopBar(
     section: AppSection,
     bootUiState: BootUiState,
 ) {
+    val strings = LocalHermesStrings.current
     val subtitle = if (section == AppSection.Hermes && !bootUiState.ready) {
-        "Runtime setup and onboarding"
+        strings.runtimeSetupAndOnboarding.ifBlank { "Runtime setup and onboarding" }
     } else {
-        section.subtitle
+        section.subtitle(strings)
     }
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -204,11 +214,11 @@ private fun HermesTopBar(
             ) {
                 Image(
                     painter = painterResource(id = R.drawable.ic_hermes_logo),
-                    contentDescription = "Hermes logo",
+                    contentDescription = strings.hermesLogoDescription,
                     modifier = Modifier.size(34.dp),
                 )
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(section.title, style = MaterialTheme.typography.titleLarge)
+                    Text(section.title(strings), style = MaterialTheme.typography.titleLarge)
                     Text(subtitle, style = MaterialTheme.typography.bodySmall)
                 }
                 Surface(
@@ -216,7 +226,7 @@ private fun HermesTopBar(
                     shape = MaterialTheme.shapes.small,
                 ) {
                     Text(
-                        text = "ALPHA",
+                        text = strings.alphaBadge,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
                         color = MaterialTheme.colorScheme.onSecondary,
                         style = MaterialTheme.typography.labelMedium,
@@ -232,6 +242,7 @@ private fun HermesBottomNavigation(
     currentSection: AppSection,
     onSelect: (AppSection) -> Unit,
 ) {
+    val strings = LocalHermesStrings.current
     NavigationBar(
         modifier = Modifier
             .fillMaxWidth()
@@ -245,10 +256,10 @@ private fun HermesBottomNavigation(
                 icon = {
                     Icon(
                         painter = painterResource(id = section.iconRes),
-                        contentDescription = section.label,
+                        contentDescription = section.label(strings),
                     )
                 },
-                label = { Text(section.label) },
+                label = { Text(section.label(strings)) },
             )
         }
     }
@@ -265,29 +276,32 @@ private fun HermesSetupScreen(
     onContextActionsChanged: (List<ShellActionItem>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val strings = LocalHermesStrings.current
     LaunchedEffect(uiState.ready, uiState.error, uiState.status) {
         onContextActionsChanged(
             listOf(
                 ShellActionItem(
-                    label = "Accounts",
+                    label = strings.accounts.ifBlank { "Accounts" },
                     description = "Connect Corr3xt and provider sign-ins.",
                     iconRes = R.drawable.ic_nav_accounts,
                     onClick = onOpenAccounts,
                 ),
                 ShellActionItem(
-                    label = "Settings",
+                    label = strings.settings.ifBlank { "Settings" },
                     description = "Configure provider, model, and API key.",
                     iconRes = R.drawable.ic_nav_settings,
                     onClick = onOpenSettings,
                 ),
+                // label = "Nous Portal"
                 ShellActionItem(
-                    label = "Nous Portal",
+                    label = strings.portalTitle.ifBlank { "Nous Portal" },
                     description = "Open the portal page while Hermes boots.",
                     iconRes = R.drawable.ic_nav_portal,
                     onClick = onOpenPortal,
                 ),
+                // label = "Device"
                 ShellActionItem(
-                    label = "Device",
+                    label = strings.sectionDevice.ifBlank { "Device" },
                     description = "Grant files, Linux tools, and phone controls.",
                     iconRes = R.drawable.ic_nav_device,
                     onClick = onOpenDevice,
@@ -305,7 +319,7 @@ private fun HermesSetupScreen(
     ) {
         Image(
             painter = painterResource(id = R.drawable.ic_hermes_logo),
-            contentDescription = "Hermes logo",
+            contentDescription = strings.hermesLogoDescription,
             modifier = Modifier.size(72.dp),
         )
         Text(uiState.status, style = MaterialTheme.typography.headlineSmall)

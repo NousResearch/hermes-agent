@@ -47,6 +47,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.data.ProviderPresets
 import com.nousresearch.hermesagent.ui.auth.AuthViewModel
+import com.nousresearch.hermesagent.ui.i18n.LocalHermesStrings
 import com.nousresearch.hermesagent.ui.settings.SettingsViewModel
 import com.nousresearch.hermesagent.ui.shell.AppSection
 import com.nousresearch.hermesagent.ui.shell.ShellActionItem
@@ -62,6 +63,7 @@ fun ChatScreen(
     onOpenContextActions: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val strings = LocalHermesStrings.current
     val context = LocalContext.current
     val listState = rememberLazyListState()
     val ttsController = remember(context) { HermesTtsController(context) }
@@ -149,13 +151,13 @@ fun ChatScreen(
         if (uiState.isShowingHistory) {
             listOf(
                 ShellActionItem(
-                    label = "New chat",
+                    label = strings.newChat.ifBlank { "New chat" },
                     description = "Start a fresh Hermes conversation.",
                     iconRes = R.drawable.ic_nav_hermes,
                     onClick = viewModel::startNewConversation,
                 ),
                 ShellActionItem(
-                    label = "Back to chat",
+                    label = strings.backToChat.ifBlank { "Back to chat" },
                     description = "Return to the active conversation.",
                     iconRes = R.drawable.ic_nav_hermes,
                     onClick = viewModel::hideHistory,
@@ -164,25 +166,25 @@ fun ChatScreen(
         } else {
             listOf(
                 ShellActionItem(
-                    label = "History",
+                    label = strings.history.ifBlank { "History" },
                     description = "Browse previous Hermes conversations.",
                     iconRes = R.drawable.ic_action_history,
                     onClick = viewModel::showHistory,
                 ),
                 ShellActionItem(
-                    label = "New chat",
+                    label = strings.newChat.ifBlank { "New chat" },
                     description = "Start a fresh conversation without leaving Hermes.",
                     iconRes = R.drawable.ic_nav_hermes,
                     onClick = viewModel::startNewConversation,
                 ),
                 ShellActionItem(
-                    label = "Clear conversation",
+                    label = strings.clearConversation.ifBlank { "Clear conversation" },
                     description = "Remove the current conversation and start clean.",
                     iconRes = R.drawable.ic_nav_settings,
                     onClick = viewModel::clearCurrentConversation,
                 ),
                 ShellActionItem(
-                    label = "Speak last reply",
+                    label = strings.speakLastReply.ifBlank { "Speak last reply" },
                     description = "Play the latest assistant reply out loud.",
                     iconRes = R.drawable.ic_action_speaker,
                     onClick = { speak(viewModel.latestAssistantReply()) },
@@ -303,6 +305,7 @@ private fun ChatHeaderCard(
     onOpenHistory: () -> Unit,
     onOpenActions: (() -> Unit)? = null,
 ) {
+    val strings = LocalHermesStrings.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -318,11 +321,11 @@ private fun ChatHeaderCard(
         ) {
             Icon(
                 painter = painterResource(id = R.drawable.ic_nav_hermes),
-                contentDescription = "Hermes",
+                contentDescription = strings.sectionHermes,
                 tint = MaterialTheme.colorScheme.primary,
             )
             Column(modifier = Modifier.weight(1f)) {
-                Text("Hermes Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Text(strings.chatTitle.ifBlank { "Hermes Chat" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(title, style = MaterialTheme.typography.bodySmall)
             }
             Row(
@@ -332,7 +335,7 @@ private fun ChatHeaderCard(
                 IconButton(onClick = onOpenHistory) {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_action_history),
-                        contentDescription = "Open history",
+                        contentDescription = strings.openHistory.ifBlank { "Open history" },
                         tint = MaterialTheme.colorScheme.primary,
                     )
                 }
@@ -340,7 +343,7 @@ private fun ChatHeaderCard(
                     IconButton(onClick = onOpenActions) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_action_cog),
-                            contentDescription = "Open page actions",
+                            contentDescription = strings.openPageActions.ifBlank { "Open page actions" },
                             tint = MaterialTheme.colorScheme.primary,
                         )
                     }
@@ -372,6 +375,7 @@ private fun EmptyChatHint(
     onOpenAccounts: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
+    val strings = LocalHermesStrings.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
@@ -384,20 +388,20 @@ private fun EmptyChatHint(
                 .padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text("Welcome to Hermes", style = MaterialTheme.typography.titleMedium)
-            Text("Use chat for normal prompts, voice input, or native app commands like /help, /history, /provider, and /signin.")
+            Text(strings.welcomeToHermes.ifBlank { "Welcome to Hermes" }, style = MaterialTheme.typography.titleMedium)
+            Text(strings.welcomeDescription)
             Button(onClick = onNewChat, modifier = Modifier.fillMaxWidth()) {
-                Text("New chat")
+                Text(strings.newChat.ifBlank { "New chat" })
             }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(onClick = onOpenAccounts, modifier = Modifier.weight(1f)) {
-                    Text("Accounts")
+                    Text(strings.accounts.ifBlank { "Accounts" })
                 }
                 Button(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
-                    Text("Settings")
+                    Text(strings.settings.ifBlank { "Settings" })
                 }
             }
         }
@@ -471,6 +475,7 @@ private fun ConversationHistoryList(
     onStartNew: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val strings = LocalHermesStrings.current
     Column(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -482,7 +487,7 @@ private fun ConversationHistoryList(
         ) {
             Text("Conversation history", style = MaterialTheme.typography.headlineSmall)
             Button(onClick = onStartNew) {
-                Text("New chat")
+                Text(strings.newChat.ifBlank { "New chat" })
             }
         }
         if (summaries.isEmpty()) {
@@ -539,6 +544,7 @@ private fun ChatComposer(
     onMic: () -> Unit,
     onSend: () -> Unit,
 ) {
+    val strings = LocalHermesStrings.current
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -564,7 +570,7 @@ private fun ChatComposer(
                 value = input,
                 onValueChange = onInputChange,
                 modifier = Modifier.weight(1f),
-                label = { Text("Message Hermes") },
+                label = { Text(strings.messageHermes.ifBlank { "Message Hermes" }) },
                 maxLines = 5,
                 supportingText = {
                     Text(
@@ -574,7 +580,7 @@ private fun ChatComposer(
                 },
             )
             Button(onClick = onSend, enabled = !isSending) {
-                Text(if (isSending) "…" else "Send")
+                Text(if (isSending) "…" else strings.send.ifBlank { "Send" })
             }
         }
     }

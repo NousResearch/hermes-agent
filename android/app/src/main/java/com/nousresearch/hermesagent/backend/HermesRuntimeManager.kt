@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import org.json.JSONObject
@@ -32,6 +33,20 @@ object HermesRuntimeManager {
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(context.applicationContext))
             }
+            val settings = AppSettingsStore(context.applicationContext).load()
+            val localBackendStatus = OnDeviceBackendManager.ensureConfigured(
+                context.applicationContext,
+                settings.onDeviceBackend,
+            )
+            val effectiveProvider = if (localBackendStatus.started) "custom" else settings.provider
+            val effectiveModel = if (localBackendStatus.started) localBackendStatus.modelName else settings.model
+            val effectiveBaseUrl = if (localBackendStatus.started) localBackendStatus.baseUrl else settings.baseUrl
+            Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
+                "write_runtime_config",
+                effectiveProvider,
+                effectiveModel,
+                effectiveBaseUrl,
+            )
             val probeResult = PythonBootProbe.readProbe(context.applicationContext)
             val statusJson = Python.getInstance()
                 .getModule("hermes_android.server_bridge")

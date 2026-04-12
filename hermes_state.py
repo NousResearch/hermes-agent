@@ -249,86 +249,144 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    @staticmethod
+    def _is_column_exists_error(exc: sqlite3.OperationalError) -> bool:
+        """Return True if the OperationalError means the column/index already exists."""
+        msg = str(exc).lower()
+        return "duplicate column" in msg or "already exists" in msg
+
     def _init_schema(self):
-        """Create tables and FTS if they don't exist, run migrations."""
+        """Create tables and FTS if they don't exist, run migrations.
+
+        Each migration step (ALTER TABLE + version bump) runs inside a single
+        transaction so they are atomic — if the ALTER fails for a reason other
+        than "column already exists", the version is NOT bumped and the error
+        propagates.
+
+        Uses individual ``execute()`` calls instead of ``executescript()``
+        (which implicitly commits any open transaction and breaks atomicity).
+        """
         cursor = self._conn.cursor()
 
-        cursor.executescript(SCHEMA_SQL)
+        # -- Initial table creation (idempotent via IF NOT EXISTS) -----------
+        # Execute each statement individually instead of executescript() to
+        # avoid implicit commits that would break transaction safety.
+        for statement in SCHEMA_SQL.split(";"):
+            statement = statement.strip()
+            if statement:
+                cursor.execute(statement)
+        self._conn.commit()
 
-        # Check schema version and run migrations
+        # -- Check schema version and run migrations ------------------------
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
             cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            self._conn.commit()
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
             if current_version < 2:
                 # v2: add finish_reason column to messages
+                self._conn.execute("BEGIN IMMEDIATE")
                 try:
-                    cursor.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 2")
+                    try:
+                        cursor.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if not self._is_column_exists_error(exc):
+                            raise
+                    cursor.execute("UPDATE schema_version SET version = 2")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
             if current_version < 3:
                 # v3: add title column to sessions
+                self._conn.execute("BEGIN IMMEDIATE")
                 try:
-                    cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 3")
+                    try:
+                        cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
+                    except sqlite3.OperationalError as exc:
+                        if not self._is_column_exists_error(exc):
+                            raise
+                    cursor.execute("UPDATE schema_version SET version = 3")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
             if current_version < 4:
                 # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
+                self._conn.execute("BEGIN IMMEDIATE")
                 try:
-                    cursor.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                        "ON sessions(title) WHERE title IS NOT NULL"
-                    )
-                except sqlite3.OperationalError:
-                    pass  # Index already exists
-                cursor.execute("UPDATE schema_version SET version = 4")
-            if current_version < 5:
-                new_columns = [
-                    ("cache_read_tokens", "INTEGER DEFAULT 0"),
-                    ("cache_write_tokens", "INTEGER DEFAULT 0"),
-                    ("reasoning_tokens", "INTEGER DEFAULT 0"),
-                    ("billing_provider", "TEXT"),
-                    ("billing_base_url", "TEXT"),
-                    ("billing_mode", "TEXT"),
-                    ("estimated_cost_usd", "REAL"),
-                    ("actual_cost_usd", "REAL"),
-                    ("cost_status", "TEXT"),
-                    ("cost_source", "TEXT"),
-                    ("pricing_version", "TEXT"),
-                ]
-                for name, column_type in new_columns:
                     try:
-                        # name and column_type come from the hardcoded tuple above,
-                        # not user input. Double-quote identifier escaping is applied
-                        # as defense-in-depth; SQLite DDL cannot be parameterized.
-                        safe_name = name.replace('"', '""')
-                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
-                    except sqlite3.OperationalError:
-                        pass
-                cursor.execute("UPDATE schema_version SET version = 5")
+                        cursor.execute(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                            "ON sessions(title) WHERE title IS NOT NULL"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if not self._is_column_exists_error(exc):
+                            raise
+                    cursor.execute("UPDATE schema_version SET version = 4")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
+            if current_version < 5:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    new_columns = [
+                        ("cache_read_tokens", "INTEGER DEFAULT 0"),
+                        ("cache_write_tokens", "INTEGER DEFAULT 0"),
+                        ("reasoning_tokens", "INTEGER DEFAULT 0"),
+                        ("billing_provider", "TEXT"),
+                        ("billing_base_url", "TEXT"),
+                        ("billing_mode", "TEXT"),
+                        ("estimated_cost_usd", "REAL"),
+                        ("actual_cost_usd", "REAL"),
+                        ("cost_status", "TEXT"),
+                        ("cost_source", "TEXT"),
+                        ("pricing_version", "TEXT"),
+                    ]
+                    for name, column_type in new_columns:
+                        try:
+                            # name and column_type come from the hardcoded tuple above,
+                            # not user input. Double-quote identifier escaping is applied
+                            # as defense-in-depth; SQLite DDL cannot be parameterized.
+                            safe_name = name.replace('"', '""')
+                            cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_column_exists_error(exc):
+                                raise
+                    cursor.execute("UPDATE schema_version SET version = 5")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
             if current_version < 6:
                 # v6: add reasoning columns to messages table — preserves assistant
                 # reasoning text and structured reasoning_details across gateway
                 # session turns.  Without these, reasoning chains are lost on
                 # session reload, breaking multi-turn reasoning continuity for
                 # providers that replay reasoning (OpenRouter, OpenAI, Nous).
-                for col_name, col_type in [
-                    ("reasoning", "TEXT"),
-                    ("reasoning_details", "TEXT"),
-                    ("codex_reasoning_items", "TEXT"),
-                ]:
-                    try:
-                        safe = col_name.replace('"', '""')
-                        cursor.execute(
-                            f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
-                        )
-                    except sqlite3.OperationalError:
-                        pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 6")
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    for col_name, col_type in [
+                        ("reasoning", "TEXT"),
+                        ("reasoning_details", "TEXT"),
+                        ("codex_reasoning_items", "TEXT"),
+                    ]:
+                        try:
+                            safe = col_name.replace('"', '""')
+                            cursor.execute(
+                                f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
+                            )
+                        except sqlite3.OperationalError as exc:
+                            if not self._is_column_exists_error(exc):
+                                raise
+                    cursor.execute("UPDATE schema_version SET version = 6")
+                    self._conn.commit()
+                except BaseException:
+                    self._conn.rollback()
+                    raise
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -344,7 +402,14 @@ class SessionDB:
         try:
             cursor.execute("SELECT * FROM messages_fts LIMIT 0")
         except sqlite3.OperationalError:
-            cursor.executescript(FTS_SQL)
+            # Use individual execute() calls for FTS setup.
+            # Split on ";\n\n" (statement-ending semicolons followed by a blank
+            # line) to avoid breaking trigger bodies that contain inner
+            # semicolons (e.g. "BEGIN\n  INSERT ...;\nEND;").
+            for statement in FTS_SQL.split(";\n\n"):
+                statement = statement.strip().rstrip(";").strip()
+                if statement:
+                    cursor.execute(statement + ";")
 
         self._conn.commit()
 

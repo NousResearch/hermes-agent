@@ -27,6 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,33 @@ def _get_chrome_debug_candidates(system: str) -> list[str]:
         )
 
     return candidates
+
+
+def _get_cdp_socket_target(cdp_url: str, default_port: int = 9222) -> tuple[str, int]:
+    """Extract the socket host/port from a CDP URL for reachability checks."""
+    raw = (cdp_url or "").strip()
+    if not raw:
+        return "127.0.0.1", default_port
+
+    # Accept full URLs like http://host:9222, ws://host:9222/devtools/browser/...,
+    # and bare host:port values.
+    parsed = urlparse(raw if "://" in raw else f"//{raw}", scheme="http")
+    host = parsed.hostname or "127.0.0.1"
+    port = parsed.port or default_port
+    return host, port
+
+
+def _is_cdp_endpoint_reachable(cdp_url: str, timeout: float = 1.0) -> bool:
+    """Return True if the configured CDP endpoint accepts TCP connections."""
+    import socket
+
+    host, port = _get_cdp_socket_target(cdp_url)
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return True
+    except OSError:
+        return False
 
 
 def load_cli_config() -> Dict[str, Any]:
@@ -5471,24 +5499,9 @@ class HermesCLI:
 
             print()
 
-            # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
-
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
+            # Extract host/port for connectivity checks.
+            _host, _port = _get_cdp_socket_target(cdp_url)
+            _already_open = _is_cdp_endpoint_reachable(cdp_url)
 
             if _already_open:
                 print(f"   ✓ Chrome is already listening on port {_port}")
@@ -5500,15 +5513,10 @@ class HermesCLI:
                     # Wait for the port to come up
                     import time as _time
                     for _wait in range(10):
-                        try:
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(1)
-                            s.connect(("127.0.0.1", _port))
-                            s.close()
+                        if _is_cdp_endpoint_reachable(cdp_url):
                             _already_open = True
                             break
-                        except (OSError, socket.timeout):
-                            _time.sleep(0.5)
+                        _time.sleep(0.5)
                     if _already_open:
                         print(f"   ✓ Chrome launched and listening on port {_port}")
                     else:
@@ -5589,20 +5597,9 @@ class HermesCLI:
             if current:
                 print("🌐 Browser: connected to live Chrome via CDP")
                 print(f"   Endpoint: {current}")
-
-                _port = 9222
-                try:
-                    _port = int(current.rsplit(":", 1)[-1].split("/")[0])
-                except (ValueError, IndexError):
-                    pass
-                try:
-                    import socket
-                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    s.settimeout(1)
-                    s.connect(("127.0.0.1", _port))
-                    s.close()
+                if _is_cdp_endpoint_reachable(current):
                     print("   Status: ✓ reachable")
-                except (OSError, Exception):
+                else:
                     print("   Status: ⚠ not reachable (Chrome may not be running)")
             else:
                 try:

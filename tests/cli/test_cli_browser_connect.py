@@ -55,3 +55,23 @@ class TestChromeDebugLaunch:
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
         _assert_chrome_debug_cmd(captured["cmd"], installed, 9222)
+
+
+def test_cdp_socket_target_uses_configured_host():
+    from cli import _get_cdp_socket_target
+
+    assert _get_cdp_socket_target("http://172.18.144.1:9222") == ("172.18.144.1", 9222)
+    assert _get_cdp_socket_target("ws://172.18.144.1:9222/devtools/browser/abc") == ("172.18.144.1", 9222)
+
+
+def test_browser_status_checks_remote_cdp_endpoint(monkeypatch, capsys):
+    cli = HermesCLI.__new__(HermesCLI)
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://172.18.144.1:9222")
+
+    with patch("cli._is_cdp_endpoint_reachable", return_value=True) as reachable:
+        cli._handle_browser_command("/browser status")
+
+    out = capsys.readouterr().out
+    assert "Endpoint: http://172.18.144.1:9222" in out
+    assert "Status: ✓ reachable" in out
+    reachable.assert_called_once_with("http://172.18.144.1:9222")

@@ -133,6 +133,39 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, tmp_path):
+    """Verbosity != None must not crash with NameError on RedactingFormatter (#8044)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    class _CleanExitRunner:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit_cleanly = True
+            self.exit_reason = None
+            self.adapters = {}
+
+        async def start(self):
+            return True
+
+        async def stop(self):
+            return None
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+    monkeypatch.setattr("gateway.run.GatewayRunner", _CleanExitRunner)
+
+    from gateway.run import start_gateway
+
+    # verbosity=1 triggers the code path that uses RedactingFormatter.
+    # Before the fix this raised NameError.
+    ok = await start_gateway(config=GatewayConfig(), replace=False, verbosity=1)
+
+    assert ok is True
+
+
+@pytest.mark.asyncio
 async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

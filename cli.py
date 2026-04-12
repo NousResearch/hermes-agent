@@ -4278,7 +4278,7 @@ class HermesCLI:
         total = len(turns)
 
         lines = []
-        lines.append(f"  ↻ {total} messages — oldest first, scroll up for history   (q to quit, / to search)\n")
+        lines.append(f"  ↻ {total} messages — newest first, scroll up for earlier   (q to quit, / to search)\n")
         lines.append("═" * W + "\n")
 
         for i, (role, text, tools) in enumerate(turns):
@@ -4305,7 +4305,7 @@ class HermesCLI:
         if pager and pager.endswith("less"):
             try:
                 proc = _subprocess.Popen(
-                    [pager, "-R", "--quit-if-one-screen"],
+                    [pager, "-R", "+G", "--quit-if-one-screen"],
                     stdin=_subprocess.PIPE,
                 )
                 proc.communicate(output.encode("utf-8", errors="replace"))

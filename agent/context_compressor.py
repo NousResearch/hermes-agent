@@ -86,12 +86,14 @@ class ContextCompressor(ContextEngine):
         base_url: str = "",
         api_key: str = "",
         provider: str = "",
+        api_mode: str = "",
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
+        self.api_mode = api_mode
         self.context_length = context_length
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
@@ -111,11 +113,13 @@ class ContextCompressor(ContextEngine):
         api_key: str = "",
         config_context_length: int | None = None,
         provider: str = "",
+        api_mode: str = "",
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.provider = provider
+        self.api_mode = api_mode
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -438,6 +442,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         try:
             call_kwargs = {
                 "task": "compression",
+                "main_runtime": {
+                    "model": self.model,
+                    "provider": self.provider,
+                    "base_url": self.base_url,
+                    "api_key": self.api_key,
+                    "api_mode": self.api_mode,
+                },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": summary_budget * 2,
                 # timeout resolved from auxiliary.compression.timeout config by call_llm

@@ -971,6 +971,74 @@ class TestTaskSpecificOverrides:
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
 
+    def test_resolve_auto_prefers_live_main_runtime_over_persisted_config(self, monkeypatch, tmp_path):
+        """Session-only live model switches should override persisted config for auto routing."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """model:
+  default: glm-5.1
+  provider: opencode-go
+compression:
+  summary_provider: auto
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model or "resolved-model"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                    "api_mode": "codex_responses",
+                }
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert calls[0][0] == "openai-codex"
+        assert calls[0][1] == "gpt-5.4"
+        assert calls[0][2]["api_mode"] == "codex_responses"
+
+    def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
+        """Task-level compression config should beat a live session override."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+model:
+  default: glm-5.1
+  provider: opencode-go
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "google/gemini-3-flash-preview")) as mock_resolve:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                },
+            )
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.kwargs["main_runtime"] == {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+        }
+
     def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
         """compression.summary_base_url should produce a custom-endpoint client."""
         hermes_home = tmp_path / "hermes"

@@ -1307,6 +1307,7 @@ class AIAgent:
                 api_key=getattr(self, "api_key", ""),
                 config_context_length=_config_context_length,
                 provider=self.provider,
+                api_mode=self.api_mode,
             )
         self.compression_enabled = compression_enabled
 
@@ -1563,6 +1564,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
                 provider=self.provider,
+                api_mode=self.api_mode,
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
@@ -1696,6 +1698,16 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    def _current_main_runtime(self) -> Dict[str, str]:
+        """Return the live main runtime for session-scoped auxiliary routing."""
+        return {
+            "model": getattr(self, "model", "") or "",
+            "provider": getattr(self, "provider", "") or "",
+            "base_url": getattr(self, "base_url", "") or "",
+            "api_key": getattr(self, "api_key", "") or "",
+            "api_mode": getattr(self, "api_mode", "") or "",
+        }
+
     def _check_compression_model_feasibility(self) -> None:
         """Warn at session start if the auxiliary compression model's context
         window is smaller than the main model's compression threshold.
@@ -1716,7 +1728,10 @@ class AIAgent:
             from agent.auxiliary_client import get_text_auxiliary_client
             from agent.model_metadata import get_model_context_length
 
-            client, aux_model = get_text_auxiliary_client("compression")
+            client, aux_model = get_text_auxiliary_client(
+                "compression",
+                main_runtime=self._current_main_runtime(),
+            )
             if client is None or not aux_model:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "

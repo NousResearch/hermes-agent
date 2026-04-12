@@ -657,6 +657,28 @@ class TestRuntimeProviderResolution:
         assert result["api_key"] == "tid=session_token"
         assert result["base_url"] == "https://api.githubcopilot.com"
 
+    def test_runtime_copilot_enterprise_url_not_overridden_by_config(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.resolve_copilot_token",
+            lambda: (
+                "tid=session_token",
+                "https://api.enterprise.githubcopilot.com",
+                "copilot-session via COPILOT_GITHUB_TOKEN",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "copilot",
+                "base_url": "https://api.githubcopilot.com",
+                "default": "claude-opus-4.6",
+            },
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="copilot")
+        assert result["base_url"] == "https://api.enterprise.githubcopilot.com"
+
     def test_runtime_copilot_uses_responses_for_gpt_5_4(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.copilot_auth.resolve_copilot_token",

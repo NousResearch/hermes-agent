@@ -613,14 +613,28 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
       /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
       /opt/hermes                 -> /opt/hermes  (kept as-is)
+
+    The lexical (unresolved) form of *path* is preferred so that symlinks
+    pointing outside of $HOME — notably the interpreter inside a uv-managed
+    venv, whose ``venv/bin/python`` is a symlink into uv's shared Python
+    store — are preserved verbatim. Resolving those would emit the bare
+    interpreter in ExecStart and bypass the venv's site-packages at runtime.
     """
-    current_home = Path.home().resolve()
-    resolved = Path(path).resolve()
+    source = Path(path)
+    current_home = Path.home()
+    for home_candidate in (current_home, current_home.resolve()):
+        try:
+            relative = source.relative_to(home_candidate)
+            return str(Path(target_home_dir) / relative)
+        except ValueError:
+            continue
+    # Fallback: compare resolved forms so a symlinked $HOME
+    # (e.g. /home/alice -> /mnt/users/alice) still remaps cleanly.
     try:
-        relative = resolved.relative_to(current_home)
+        relative = source.resolve().relative_to(current_home.resolve())
         return str(Path(target_home_dir) / relative)
     except ValueError:
-        return str(resolved)
+        return path
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:

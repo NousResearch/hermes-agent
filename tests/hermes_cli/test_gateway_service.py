@@ -843,6 +843,30 @@ class TestRemapPathForUser:
         result = gateway_cli._remap_path_for_user(original, str(tmp_path / "alice"))
         assert result == original
 
+    def test_preserves_symlink_pointing_outside_home(self, monkeypatch, tmp_path):
+        """Regression: uv-managed venv has venv/bin/python as a symlink to an
+        interpreter outside $HOME. _remap_path_for_user must preserve the
+        lexical path so ExecStart points at the venv interpreter — resolving
+        the symlink would emit the bare python and bypass site-packages.
+        """
+        root_home = tmp_path / "root"
+        root_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+
+        # Simulate a uv-style venv: venv/bin/python -> external interpreter
+        venv_bin = root_home / "src" / "hermes-agent" / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        external_python = tmp_path / "uv-store" / "python3.11"
+        external_python.parent.mkdir(parents=True)
+        external_python.write_text("")
+        venv_python = venv_bin / "python"
+        venv_python.symlink_to(external_python)
+
+        result = gateway_cli._remap_path_for_user(str(venv_python), "/home/alice")
+
+        assert result == "/home/alice/src/hermes-agent/venv/bin/python"
+        assert "uv-store" not in result
+
 
 class TestSystemUnitPathRemapping:
     """System units must remap ALL paths from the caller's home to the target user."""

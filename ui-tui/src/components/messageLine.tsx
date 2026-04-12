@@ -20,6 +20,14 @@ export const MessageLine = memo(function MessageLine({
   msg: Msg
   t: Theme
 }) {
+  if (msg.kind === 'trail' && msg.tools?.length) {
+    return (
+      <Box flexDirection="column" marginTop={1}>
+        <ToolTrail t={t} trail={msg.tools} />
+      </Box>
+    )
+  }
+
   if (msg.role === 'tool') {
     const preview = compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14))
 

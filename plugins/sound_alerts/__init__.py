@@ -15,7 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from typing import Any
+from typing import Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def _get_complete_text() -> str:
     return os.environ.get("HERMES_SOUND_ALERTS_COMPLETE_TEXT", DEFAULT_COMPLETE_TEXT)
 
 
-def _get_audio_player() -> list[str] | None:
+def _get_audio_player() -> Optional[List[str]]:
     """Detect the system audio player command."""
     system = platform.system()
     if system == "Darwin":
@@ -66,7 +66,7 @@ def _get_audio_player() -> list[str] | None:
     return None
 
 
-def _generate_tts(text: str, voice: str) -> str | None:
+def _generate_tts(text: str, voice: str) -> Optional[str]:
     """Generate TTS audio using edge-tts. Returns path to audio file or None."""
     try:
         import edge_tts
@@ -106,7 +106,9 @@ def _play_audio(file_path: str) -> None:
 
         subprocess.run(
             cmd,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             timeout=10,
         )
     except Exception as e:

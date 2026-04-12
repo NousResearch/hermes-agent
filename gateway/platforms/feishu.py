@@ -67,8 +67,7 @@ try:
         ReplyMessageRequestBody,
         UpdateMessageRequest,
         UpdateMessageRequestBody,
-        PatchMessageRequest,
-        PatchMessageRequestBody,
+
     )
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
     from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
@@ -1573,21 +1572,11 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    async def _delay_update_approval_card(
-        self, callback_token: str, label: str, user_name: str, choice: str,
-        open_id: str = "",
+    async def _update_approval_card(
+        self, message_id: str, label: str, user_name: str, choice: str,
     ) -> None:
-        """Delay-update the approval card using the callback token (Method 2).
-
-        Calls ``POST /interactive/v1/card/update`` with the token obtained from
-        the ``card.action.trigger`` callback.  This is the official "delayed card
-        update" API — the token is valid for 30 min and can be used up to 2 times.
-
-        Must be called **after** the callback response has been sent (Method 1).
-        """
-        if not self._client or not callback_token:
-            logger.warning("[Feishu] Cannot delay-update approval card: client=%s token=%r",
-                           bool(self._client), bool(callback_token))
+        """Replace the approval card with a resolved status card."""
+        if not self._client or not message_id:
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
@@ -1604,26 +1593,23 @@ class FeishuAdapter(BasePlatformAdapter):
             ],
         }
         try:
-            from lark_oapi.core.model.base_request import BaseRequest
-            from lark_oapi.core.enum import HttpMethod, AccessTokenType
-
+            from lark_oapi.api.im.v1 import PatchMessageRequest, PatchMessageRequestBody
+            payload = json.dumps(card, ensure_ascii=False)
             request = (
-                BaseRequest.builder()
-                .http_method(HttpMethod.POST)
-                .uri("/open-apis/interactive/v1/card/update")
-                .token_types({AccessTokenType.TENANT})
-                .body({"token": callback_token, "card": {**card, "open_ids": [open_id]} if open_id else card})
+                PatchMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(PatchMessageRequestBody.builder().content(payload).build())
                 .build()
             )
-            response = await asyncio.to_thread(self._client.request, request)
-            code = getattr(response, "code", None)
-            msg = getattr(response, "msg", None)
-            if code == 0:
-                logger.info("[Feishu] Approval card delay-updated via token → %s", label)
+            resp = await asyncio.to_thread(self._client.im.v1.message.patch, request)
+            if resp and getattr(resp, "success", False):
+                logger.info("[Feishu] Approval card %s updated → %s", message_id, label)
             else:
-                logger.warning("[Feishu] Delay-update approval card failed: code=%s msg=%s", code, msg)
+                code = getattr(resp, "code", "?")
+                msg = getattr(resp, "msg", "unknown")
+                logger.warning("[Feishu] Approval card patch %s failed: code=%s msg=%s", message_id, code, msg)
         except Exception as exc:
-            logger.warning("[Feishu] Delay-update approval card exception: %s", exc)
+            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc, exc_info=True)
 
     async def send_voice(
         self,
@@ -2181,14 +2167,8 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
-            # Delay-update the card as a fallback (Method 2).
-            # Method 1 (callback response with card) fires synchronously in
-            # _on_card_action_trigger.  This delayed call uses the callback token
-            # and must execute *after* the callback response has been sent.
-            if token:
-                await asyncio.sleep(2)  # ensure callback response is sent first
-                logger.debug("[Feishu] Delay-updating approval card via token → %s", label)
-                await self._delay_update_approval_card(token, label, user_name, choice, open_id=open_id)
+            # Update the card to show the decision
+            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
             return
 
         synthetic_text = f"/card {action_tag}"

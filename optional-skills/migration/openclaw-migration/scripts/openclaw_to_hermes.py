@@ -1023,7 +1023,17 @@ class Migrator:
             .get("workspace")
         )
         if isinstance(workspace, str) and workspace.strip():
-            additions["MESSAGING_CWD"] = workspace.strip()
+            ws_path = workspace.strip()
+            # Skip if the workspace points inside the OpenClaw source directory —
+            # that path will be stale after migration and would cause the Hermes
+            # gateway to use the old OpenClaw workspace as its cwd, picking up
+            # OpenClaw's AGENTS.md, MEMORY.md, etc.
+            try:
+                inside_source = Path(ws_path).resolve().is_relative_to(self.source_root.resolve())
+            except (ValueError, OSError):
+                inside_source = False
+            if not inside_source:
+                additions["MESSAGING_CWD"] = ws_path
 
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():

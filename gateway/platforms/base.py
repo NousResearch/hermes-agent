@@ -625,10 +625,6 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
-
-    # Edit context — set when the user edits a previously sent message
-    is_edit: bool = False
-    original_text: Optional[str] = None  # Text before the edit (None if unknown)
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.

@@ -3457,31 +3457,6 @@ class GatewayRunner:
                     context_prompt += f"\n\n{vc_context}"
 
         # -----------------------------------------------------------------
-        # Message edit context — when the user edits a previously sent
-        # message, inject a prompt so the model has full context and can
-        # decide whether the edit warrants a new response.
-        # -----------------------------------------------------------------
-        if event.is_edit:
-            if event.original_text is not None:
-                context_prompt += (
-                    "\n\n[System note: The user just edited their previous message. "
-                    f"The original message was: \"{event.original_text}\"\n"
-                    "The message you are about to receive is the edited version. "
-                    "Compare the two and decide how to respond:\n"
-                    "- If the meaning changed significantly, respond to the new message.\n"
-                    "- If it's a minor correction (typo, formatting), briefly acknowledge or ignore.\n"
-                    "- Do NOT repeat your previous response verbatim.]"
-                )
-            else:
-                context_prompt += (
-                    "\n\n[System note: The user just edited a previous message. "
-                    "The original version is not available. "
-                    "The message you are about to receive is the edited version. "
-                    "Respond naturally to it, but keep in mind this is a correction "
-                    "of something they said earlier, not a new message.]"
-                )
-
-        # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
         #
         # If the user attached image(s), we run the vision tool eagerly so

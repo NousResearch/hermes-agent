@@ -1044,6 +1044,16 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                elif "generativelanguage.googleapis.com" in effective_base.lower():
+                    # Google's OpenAI-compatible endpoint only accepts x-goog-api-key.
+                    # The OpenAI SDK auto-injects Authorization: Bearer when api_key= is
+                    # set to a real value, causing HTTP 400 "Multiple authentication
+                    # credentials received".  Pass a placeholder so the SDK does not
+                    # emit Bearer, and carry the real key via x-goog-api-key instead.
+                    # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+                    real_key = client_kwargs["api_key"]
+                    client_kwargs["api_key"] = "not-used"
+                    client_kwargs["default_headers"] = {"x-goog-api-key": real_key}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -5102,6 +5112,17 @@ class AIAgent:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "portal.qwen.ai" in normalized:
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
+        elif "generativelanguage.googleapis.com" in normalized:
+            # Google's endpoint rejects Bearer tokens; use x-goog-api-key instead.
+            # Swap the real key out of api_key and into the header so the OpenAI
+            # SDK does not emit Authorization: Bearer.
+            # Fixes: https://github.com/NousResearch/hermes-agent/issues/7893
+            real_key = self._client_kwargs.get("api_key", "")
+            if real_key and real_key != "not-used":
+                self._client_kwargs["api_key"] = "not-used"
+            self._client_kwargs["default_headers"] = {
+                "x-goog-api-key": real_key or self._client_kwargs.get("api_key", ""),
+            }
         else:
             self._client_kwargs.pop("default_headers", None)
 

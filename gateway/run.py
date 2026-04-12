@@ -1518,12 +1518,25 @@ class GatewayRunner:
         # This prevents stuck sessions from being blindly resumed on restart,
         # which can create an unrecoverable loop (#7536).  Suspended sessions
         # auto-reset on the next incoming message, giving the user a clean start.
-        try:
-            suspended = self.session_store.suspend_recently_active()
-            if suspended:
-                logger.info("Suspended %d in-flight session(s) from previous run", suspended)
-        except Exception as e:
-            logger.warning("Session suspension on startup failed: %s", e)
+        #
+        # SKIP suspension after a clean (graceful) shutdown — the previous
+        # process already drained active agents, so sessions aren't stuck.
+        # This prevents unwanted auto-resets after `hermes update`,
+        # `hermes gateway restart`, or `/restart`.
+        _clean_marker = _hermes_home / ".clean_shutdown"
+        if _clean_marker.exists():
+            logger.info("Previous gateway exited cleanly — skipping session suspension")
+            try:
+                _clean_marker.unlink()
+            except Exception:
+                pass
+        else:
+            try:
+                suspended = self.session_store.suspend_recently_active()
+                if suspended:
+                    logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+            except Exception as e:
+                logger.warning("Session suspension on startup failed: %s", e)
 
         connected_count = 0
         enabled_platform_count = 0
@@ -2048,6 +2061,15 @@ class GatewayRunner:
 
             from gateway.status import remove_pid_file
             remove_pid_file()
+
+            # Write a clean-shutdown marker so the next startup knows this
+            # wasn't a crash.  suspend_recently_active() only needs to run
+            # after unexpected exits — graceful shutdowns already drain
+            # active agents, so there's no stuck-session risk.
+            try:
+                (_hermes_home / ".clean_shutdown").touch()
+            except Exception:
+                pass
 
             if self._restart_requested and self._restart_via_service:
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

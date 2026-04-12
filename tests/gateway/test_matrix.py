@@ -157,11 +157,43 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        def __init__(self, account_id="", pickle_key=""):
+        def __init__(self, account_id="", pickle_key=""):  # noqa: S301
             self.account_id = account_id
             self.pickle_key = pickle_key
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
+
+    # --- mautrix.crypto.store.asyncpg ---
+    mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
+
+    class PgCryptoStore:
+        upgrade_table = MagicMock()
+
+        def __init__(self, account_id="", pickle_key="", db=None):  # noqa: S301
+            self.account_id = account_id
+            self.pickle_key = pickle_key
+            self.db = db
+
+        async def open(self):
+            pass
+
+    mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
+
+    # --- mautrix.util ---
+    mautrix_util = types.ModuleType("mautrix.util")
+
+    # --- mautrix.util.async_db ---
+    mautrix_util_async_db = types.ModuleType("mautrix.util.async_db")
+
+    class Database:
+        @classmethod
+        def create(cls, url, upgrade_table=None):
+            db = MagicMock()
+            db.start = AsyncMock()
+            db.stop = AsyncMock()
+            return db
+
+    mautrix_util_async_db.Database = Database
 
     return {
         "mautrix": mautrix,
@@ -171,6 +203,9 @@ def _make_fake_mautrix():
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
         "mautrix.crypto.store": mautrix_crypto_store,
+        "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
+        "mautrix.util": mautrix_util,
+        "mautrix.util.async_db": mautrix_util_async_db,
     }
 
 
@@ -740,6 +775,12 @@ class TestMatrixAccessTokenAuth:
         mock_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -751,6 +792,8 @@ class TestMatrixAccessTokenAuth:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         # Patch Client constructor to return our mock
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
@@ -924,6 +967,12 @@ class TestMatrixDeviceId:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="WHOAMI_DEV"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
+                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -934,6 +983,8 @@ class TestMatrixDeviceId:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
@@ -1030,8 +1081,8 @@ class TestMatrixDeviceIdConfig:
 
 class TestMatrixSyncLoop:
     @pytest.mark.asyncio
-    async def test_sync_loop_shares_keys_when_encryption_enabled(self):
-        """_sync_loop should call crypto.share_keys() after each sync."""
+    async def test_sync_loop_dispatches_events_and_stores_token(self):
+        """_sync_loop should call handle_sync() and persist next_batch."""
         adapter = _make_adapter()
         adapter._encryption = True
         adapter._closing = False
@@ -1046,7 +1097,6 @@ class TestMatrixSyncLoop:
             return {"rooms": {"join": {"!room:example.org": {}}}, "next_batch": "s1234"}
 
         mock_crypto = MagicMock()
-        mock_crypto.share_keys = AsyncMock()
 
         mock_sync_store = MagicMock()
         mock_sync_store.get_next_batch = AsyncMock(return_value=None)
@@ -1062,7 +1112,6 @@ class TestMatrixSyncLoop:
         await adapter._sync_loop()
 
         fake_client.sync.assert_awaited_once()
-        mock_crypto.share_keys.assert_awaited_once()
         fake_client.handle_sync.assert_called_once()
         mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
@@ -1248,6 +1297,12 @@ class TestMatrixEncryptedEventHandler:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_token"
         mock_client.api.session = MagicMock()
@@ -1258,6 +1313,8 @@ class TestMatrixEncryptedEventHandler:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)

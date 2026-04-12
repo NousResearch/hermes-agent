@@ -289,3 +289,62 @@ class TestCodeExecutionBlocked:
     def test_notify_on_complete_blocked_in_sandbox(self):
         from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
         assert "notify_on_complete" in _TERMINAL_BLOCKED_PARAMS
+
+
+# =========================================================================
+# Completion consumed suppression
+# =========================================================================
+
+class TestCompletionConsumed:
+    """Test that wait/poll/log suppress redundant completion notifications."""
+
+    def test_wait_marks_completion_consumed(self, registry):
+        """wait() returning exited status marks session as consumed."""
+        s = _make_session(sid="proc_wait", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)
+
+        # Notification is in the queue
+        assert not registry.completion_queue.empty()
+        assert not registry.is_completion_consumed("proc_wait")
+
+        # Agent calls wait() — gets the result directly
+        result = registry.wait("proc_wait", timeout=1)
+        assert result["status"] == "exited"
+
+        # Now the completion is marked as consumed
+        assert registry.is_completion_consumed("proc_wait")
+
+    def test_poll_marks_completion_consumed(self, registry):
+        """poll() returning exited status marks session as consumed."""
+        s = _make_session(sid="proc_poll", notify_on_complete=True, output="done")
+        s.exited = True
+        s.exit_code = 0
+        registry._finished[s.id] = s
+
+        result = registry.poll("proc_poll")
+        assert result["status"] == "exited"
+        assert registry.is_completion_consumed("proc_poll")
+
+    def test_log_marks_completion_consumed(self, registry):
+        """read_log() on exited session marks as consumed."""
+        s = _make_session(sid="proc_log", notify_on_complete=True, output="line1\nline2")
+        s.exited = True
+        s.exit_code = 0
+        registry._finished[s.id] = s
+
+        result = registry.read_log("proc_log")
+        assert result["status"] == "exited"
+        assert registry.is_completion_consumed("proc_log")
+
+    def test_running_process_not_consumed(self, registry):
+        """poll() on a still-running process does not mark as consumed."""
+        s = _make_session(sid="proc_running", notify_on_complete=True, output="partial")
+        registry._running[s.id] = s
+
+        result = registry.poll("proc_running")
+        assert result["status"] == "running"
+        assert not registry.is_completion_consumed("proc_running")

@@ -9,7 +9,7 @@ type InkExt = typeof Ink & {
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
 
 // ── ANSI escapes ─────────────────────────────────────────────────────
 
@@ -18,7 +18,6 @@ const INV = `${ESC}[7m`
 const INV_OFF = `${ESC}[27m`
 const DIM = `${ESC}[2m`
 const DIM_OFF = `${ESC}[22m`
-const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
 
@@ -122,31 +121,6 @@ function renderWithCursor(value: string, cursor: number) {
   return done ? out : out + invert(' ')
 }
 
-// ── Forward-delete detection hook ────────────────────────────────────
-
-function useFwdDelete(active: boolean) {
-  const ref = useRef(false)
-  const { inputEmitter: ee } = useStdin()
-
-  useEffect(() => {
-    if (!active) {
-      return
-    }
-
-    const h = (d: string) => {
-      ref.current = FWD_DEL_RE.test(d)
-    }
-
-    ee.prependListener('input', h)
-
-    return () => {
-      ee.removeListener('input', h)
-    }
-  }, [active, ee])
-
-  return ref
-}
-
 // ── Types ────────────────────────────────────────────────────────────
 
 export interface PasteEvent {
@@ -171,7 +145,6 @@ interface Props {
 
 export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
-  const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
 
   const curRef = useRef(cur)
@@ -364,7 +337,7 @@ export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, pl
       }
 
       // Deletion
-      else if ((k.backspace || k.delete) && !fwdDel.current && c > 0) {
+      else if (k.backspace && c > 0) {
         if (mod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -373,7 +346,7 @@ export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, pl
           v = v.slice(0, c - 1) + v.slice(c)
           c--
         }
-      } else if (k.delete && fwdDel.current && c < v.length) {
+      } else if (k.delete && c < v.length) {
         if (mod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)

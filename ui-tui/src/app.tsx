@@ -1037,8 +1037,12 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (completions.length && input && historyIdx === null && (key.upArrow || key.downArrow)) {
+    if (completions.length && input && (key.upArrow || key.downArrow)) {
       setCompIdx(i => (key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length))
+
+      if (historyIdx !== null) {
+        setHistoryIdx(null)
+      }
 
       return
     }
@@ -1839,13 +1843,16 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'personality':
           if (arg) {
-            rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
-              sys(`personality: ${r.value || 'default'}`)
-            )
+            rpc('config.set', { session_id: sid, key: 'personality', value: arg }).then((r: any) => {
+              if (r?.cleared) {
+                setMessages([])
+                setHistoryItems([])
+              }
+
+              sys(`personality → ${r?.value}`)
+            })
           } else {
-            gw.request('slash.exec', { command: 'personality', session_id: sid })
-              .then((r: any) => panel('Personality', [{ text: r?.output || '(no output)' }]))
-              .catch(() => sys('personality command failed'))
+            rpc('config.get', { key: 'personality' }).then((r: any) => sys(`personality: ${r?.value || 'default'}`))
           }
 
           return true
@@ -2273,6 +2280,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const submit = useCallback(
     (value: string) => {
+      if (completions.length && completions[compIdx]) {
+        value = value.slice(0, compReplace) + completions[compIdx].text
+        setInput(value)
+      }
+
       if (!value.trim() && !inputBuf.length) {
         const now = Date.now()
         const dbl = now - lastEmptyAt.current < 450
@@ -2330,7 +2342,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       dispatchSubmission([...inputBuf, value].join('\n'))
     },
-    [dequeue, dispatchSubmission, inputBuf, sid]
+    [compIdx, compReplace, completions, dequeue, dispatchSubmission, inputBuf, sid]
   )
 
   // ── Derived ──────────────────────────────────────────────────────

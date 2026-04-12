@@ -204,6 +204,59 @@ def test_process_command_model_without_args_opens_modal_picker_and_captures_draf
     assert cli._app.current_buffer.text == ""
 
 
+def test_handle_model_switch_with_args_loads_custom_providers_from_config():
+    from cli import HermesCLI
+
+    cli = _make_modal_cli()
+    switch_result = SimpleNamespace(
+        success=True,
+        error_message=None,
+        new_model="step-3.5-flash",
+        target_provider="custom:stepfun-plan",
+        api_key="sk-stepfun",
+        base_url="https://api.stepfun.com/step_plan/v1",
+        api_mode="chat_completions",
+        provider_label="stepfun-plan",
+        model_info=None,
+        warning_message=None,
+        provider_changed=True,
+    )
+
+    with (
+        patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "custom_providers": [
+                    {
+                        "name": "stepfun-plan",
+                        "base_url": "https://api.stepfun.com/step_plan/v1",
+                        "model": "step-3.5-flash",
+                    }
+                ]
+            },
+        ),
+        patch("hermes_cli.model_switch.switch_model", return_value=switch_result) as switch_mock,
+        patch("cli._cprint"),
+    ):
+        HermesCLI._handle_model_switch(
+            cli,
+            "/model step-3.5-flash --provider custom:stepfun-plan",
+        )
+
+    assert cli.model == "step-3.5-flash"
+    assert cli.provider == "custom:stepfun-plan"
+    assert cli.requested_provider == "custom:stepfun-plan"
+    assert cli.base_url == "https://api.stepfun.com/step_plan/v1"
+    assert cli.api_key == "sk-stepfun"
+    assert switch_mock.call_args.kwargs["custom_providers"] == [
+        {
+            "name": "stepfun-plan",
+            "base_url": "https://api.stepfun.com/step_plan/v1",
+            "model": "step-3.5-flash",
+        }
+    ]
+
+
 def test_model_picker_provider_then_model_selection_applies_switch_result_and_restores_draft():
     from cli import HermesCLI
 

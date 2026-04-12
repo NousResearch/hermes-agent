@@ -58,6 +58,188 @@ _HERMES_MODEL_WARNING = (
 )
 
 
+def _normalize_custom_provider_hint(value: str) -> str:
+    """Normalize a custom-provider hint for loose slash-syntax matching."""
+    return (value or "").strip().lower().replace(" ", "-")
+
+
+def _collect_custom_provider_models(entry: dict) -> list[str]:
+    """Collect configured model names from a custom_providers entry."""
+    models: list[str] = []
+    seen: set[str] = set()
+
+    default_model = str(entry.get("model") or "").strip()
+    if default_model:
+        models.append(default_model)
+        seen.add(default_model.lower())
+
+    configured_models = entry.get("models")
+    if isinstance(configured_models, dict):
+        raw_models = list(configured_models.keys())
+    elif isinstance(configured_models, list):
+        raw_models = configured_models
+    else:
+        raw_models = []
+
+    for raw_model in raw_models:
+        if isinstance(raw_model, dict):
+            model_name = str(
+                raw_model.get("id")
+                or raw_model.get("name")
+                or raw_model.get("model")
+                or ""
+            ).strip()
+        else:
+            model_name = str(raw_model or "").strip()
+        if not model_name or model_name.lower() in seen:
+            continue
+        models.append(model_name)
+        seen.add(model_name.lower())
+
+    return models
+
+
+def _match_named_custom_provider(
+    requested: str,
+    custom_providers: list | None,
+) -> Optional[str]:
+    """Map a provider hint like ``stepfun`` or ``custom:stepfun-plan`` to a saved custom slug."""
+    if not custom_providers or not isinstance(custom_providers, list):
+        return None
+
+    requested_raw = (requested or "").strip().lower()
+    requested_norm = _normalize_custom_provider_hint(requested)
+    if not requested_raw or not requested_norm:
+        return None
+
+    exact_matches: list[str] = []
+    prefix_matches: list[str] = []
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+
+        display_name = str(entry.get("name") or "").strip()
+        api_url = str(
+            entry.get("base_url", "")
+            or entry.get("url", "")
+            or entry.get("api", "")
+            or ""
+        ).strip()
+        if not display_name or not api_url:
+            continue
+
+        slug = custom_provider_slug(display_name)
+        bare_slug = slug.split(":", 1)[1]
+        exact_aliases = {
+            display_name.lower(),
+            _normalize_custom_provider_hint(display_name),
+            bare_slug,
+            slug,
+        }
+
+        if requested_raw in exact_aliases or requested_norm in exact_aliases:
+            exact_matches.append(slug)
+            continue
+
+        if requested_raw.startswith("custom:"):
+            continue
+
+        if bare_slug.startswith(f"{requested_norm}-"):
+            prefix_matches.append(slug)
+
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+    if exact_matches:
+        return None
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    return None
+
+
+def _resolve_custom_provider_shortcut(
+    raw_input: str,
+    current_provider: str,
+    user_providers: dict | None,
+    custom_providers: list | None,
+) -> Optional[tuple[str, str]]:
+    """Resolve ``provider/model`` inputs against saved custom_providers."""
+    stripped = raw_input.strip()
+    if "/" not in stripped:
+        return None
+
+    provider_hint, model_name = stripped.split("/", 1)
+    provider_hint = provider_hint.strip()
+    model_name = model_name.strip()
+    if not provider_hint or not model_name:
+        return None
+
+    matched = _match_named_custom_provider(provider_hint, custom_providers)
+    if matched is not None:
+        matched_bare = matched.split(":", 1)[1]
+        requested_norm = _normalize_custom_provider_hint(provider_hint.removeprefix("custom:"))
+        if (
+            matched == current_provider
+            or provider_hint.strip().lower().startswith("custom:")
+            or requested_norm == matched_bare
+            or _detect_custom_provider_for_model(model_name, matched, custom_providers) is not None
+        ):
+            return (matched, model_name)
+
+    # Don't hijack built-in or user-defined providers like anthropic/claude-*
+    if resolve_provider_full(provider_hint, user_providers, None) is not None:
+        return None
+
+    if current_provider.startswith("custom:"):
+        current_hint = current_provider.split(":", 1)[1]
+        requested_norm = _normalize_custom_provider_hint(provider_hint.removeprefix("custom:"))
+        if requested_norm and (
+            current_hint == requested_norm or current_hint.startswith(f"{requested_norm}-")
+        ):
+            return (current_provider, model_name)
+
+    return None
+
+
+def _detect_custom_provider_for_model(
+    model_name: str,
+    current_provider: str,
+    custom_providers: list | None,
+) -> Optional[tuple[str, str]]:
+    """Find a saved custom provider that explicitly lists *model_name* in config."""
+    requested = (model_name or "").strip()
+    if not requested or not custom_providers or not isinstance(custom_providers, list):
+        return None
+
+    requested_lower = requested.lower()
+    matches: list[str] = []
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        display_name = str(entry.get("name") or "").strip()
+        api_url = str(
+            entry.get("base_url", "")
+            or entry.get("url", "")
+            or entry.get("api", "")
+            or ""
+        ).strip()
+        if not display_name or not api_url:
+            continue
+
+        slug = custom_provider_slug(display_name)
+        models = _collect_custom_provider_models(entry)
+        if not any(requested_lower == model.lower() for model in models):
+            continue
+        if slug == current_provider:
+            return (slug, requested)
+        matches.append(slug)
+
+    if len(matches) == 1:
+        return (matches[0], requested)
+    return None
+
+
 def _check_hermes_model_warning(model_name: str) -> str:
     """Return a warning string if *model_name* looks like a Hermes LLM model."""
     if "hermes" in model_name.lower():
@@ -509,8 +691,21 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
+        custom_shortcut = _resolve_custom_provider_shortcut(
+            raw_input,
+            current_provider,
+            user_providers,
+            custom_providers,
+        )
+        if custom_shortcut is not None:
+            target_provider, new_model = custom_shortcut
+            logger.debug(
+                "Resolved custom provider shortcut '%s' to %s on %s",
+                raw_input, new_model, target_provider,
+            )
+
         # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        alias_result = None if custom_shortcut is not None else resolve_alias(raw_input, current_provider)
 
         if alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
@@ -562,6 +757,14 @@ def switch_model(
                             raw_input, new_model,
                         )
 
+        custom_model_match = _detect_custom_provider_for_model(
+            new_model,
+            current_provider,
+            custom_providers,
+        )
+        if custom_model_match is not None:
+            target_provider, new_model = custom_model_match
+
         # --- Step d: Aggregator catalog search ---
         if is_aggregator(target_provider) and not resolved_alias:
             catalog = list_provider_models(target_provider)
@@ -581,7 +784,7 @@ def switch_model(
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in ("custom", "local") or (
+        is_custom = current_provider in ("custom", "local") or current_provider.startswith("custom:") or (
             "localhost" in _base or "127.0.0.1" in _base
         )
 
@@ -954,17 +1157,14 @@ def list_authenticated_providers(
             if slug in seen_slugs:
                 continue
 
-            models_list = []
-            default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
+            models_list = _collect_custom_provider_models(entry)
 
             results.append({
                 "slug": slug,
                 "name": display_name,
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
+                "models": models_list[:max_models],
                 "total_models": len(models_list),
                 "source": "user-config",
                 "api_url": api_url,
@@ -975,5 +1175,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
-

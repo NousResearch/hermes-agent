@@ -31,6 +31,10 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
                 "name": "Local (127.0.0.1:4141)",
                 "base_url": "http://127.0.0.1:4141/v1",
                 "model": "rotator-openrouter-coding",
+                "models": {
+                    "rotator-openrouter-coding": {"context_length": 131072},
+                    "backup-model": {"context_length": 65536},
+                },
             }
         ],
         max_models=50,
@@ -39,7 +43,7 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     assert any(
         p["slug"] == "custom:local-(127.0.0.1:4141)"
         and p["name"] == "Local (127.0.0.1:4141)"
-        and p["models"] == ["rotator-openrouter-coding"]
+        and p["models"] == ["rotator-openrouter-coding", "backup-model"]
         and p["api_url"] == "http://127.0.0.1:4141/v1"
         for p in providers
     )
@@ -102,3 +106,120 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+
+
+def test_switch_model_keeps_named_custom_provider_for_direct_model(monkeypatch):
+    """Named custom providers should not auto-switch away for matching bare models."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "sk-stepfun",
+            "base_url": "https://api.stepfun.com/step_plan/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *a, **k: ("minimax-cn", "MiniMax-M2.7"),
+    )
+
+    result = switch_model(
+        raw_input="step-3.5-flash",
+        current_provider="custom:stepfun-plan",
+        current_model="step-3.5-flash",
+        current_base_url="https://api.stepfun.com/step_plan/v1",
+        current_api_key="sk-stepfun",
+        custom_providers=[
+            {
+                "name": "stepfun-plan",
+                "base_url": "https://api.stepfun.com/step_plan/v1",
+                "model": "step-3.5-flash",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:stepfun-plan"
+    assert result.new_model == "step-3.5-flash"
+    assert result.base_url == "https://api.stepfun.com/step_plan/v1"
+
+
+def test_switch_model_resolves_named_custom_provider_from_slash_syntax(monkeypatch):
+    """provider/model shorthand should map unique custom-provider prefixes."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "sk-stepfun",
+            "base_url": "https://api.stepfun.com/step_plan/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="stepfun/step-3.5-flash",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.5",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="sk-openrouter",
+        custom_providers=[
+            {
+                "name": "stepfun-plan",
+                "base_url": "https://api.stepfun.com/step_plan/v1",
+                "model": "step-3.5-flash",
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:stepfun-plan"
+    assert result.provider_label == "stepfun-plan"
+    assert result.new_model == "step-3.5-flash"
+    assert result.base_url == "https://api.stepfun.com/step_plan/v1"
+
+
+def test_switch_model_auto_detects_model_listed_under_named_custom_provider(monkeypatch):
+    """Configured custom-provider models should win before built-in auto-detection."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "sk-stepfun",
+            "base_url": "https://api.stepfun.com/step_plan/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *a, **k: ("minimax-cn", "MiniMax-M2.7"),
+    )
+
+    result = switch_model(
+        raw_input="step-3.5-flash",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.5",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="sk-openrouter",
+        custom_providers=[
+            {
+                "name": "stepfun-plan",
+                "base_url": "https://api.stepfun.com/step_plan/v1",
+                "models": {
+                    "step-3.5-flash": {"context_length": 262144},
+                    "step-3.5v-mini": {"context_length": 131072},
+                },
+            }
+        ],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom:stepfun-plan"
+    assert result.new_model == "step-3.5-flash"
+    assert result.base_url == "https://api.stepfun.com/step_plan/v1"

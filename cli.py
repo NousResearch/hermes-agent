@@ -4591,21 +4591,19 @@ class HermesCLI:
 
         user_provs = None
         custom_provs = None
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if isinstance(cfg, dict):
+                user_provs = cfg.get("providers")
+                custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
             provider_display = get_label(self.provider) if self.provider else "unknown"
-
-            user_provs = None
-            custom_provs = None
-            try:
-                from hermes_cli.config import load_config
-                cfg = load_config()
-                user_provs = cfg.get("providers")
-                custom_provs = cfg.get("custom_providers")
-            except Exception:
-                pass
 
             try:
                 providers = list_authenticated_providers(

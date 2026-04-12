@@ -696,42 +696,14 @@ def _split_markdown_blocks(content: str) -> List[str]:
 
 
 def _split_delivery_units_for_weixin(content: str) -> List[str]:
-    """Split formatted content into chat-friendly delivery units.
+    """Return content as a single unit.
 
-    Weixin can render Markdown, but chat readability is better when top-level
-    line breaks become separate messages. Keep fenced code blocks intact and
-    attach indented continuation lines to the previous top-level line so
-    transformed tables/lists do not get torn apart.
+    Splitting is handled by ``_split_text_for_weixin_delivery`` based on
+    ``max_length`` only.  Keeping messages intact (instead of splitting by
+    newlines) matches the behavior of the Telegram adapter and prevents
+    flooding the user's chat with many small messages.
     """
-    units: List[str] = []
-
-    for block in _split_markdown_blocks(content):
-        if _FENCE_RE.match(block.splitlines()[0].strip()):
-            units.append(block)
-            continue
-
-        current: List[str] = []
-        for raw_line in block.splitlines():
-            line = raw_line.rstrip()
-            if not line.strip():
-                if current:
-                    units.append("\n".join(current).strip())
-                    current = []
-                continue
-
-            is_continuation = bool(current) and raw_line.startswith((" ", "\t"))
-            if is_continuation:
-                current.append(line)
-                continue
-
-            if current:
-                units.append("\n".join(current).strip())
-            current = [line]
-
-        if current:
-            units.append("\n".join(current).strip())
-
-    return [unit for unit in units if unit]
+    return [content] if content.strip() else []
 
 
 def _looks_like_chatty_line_for_weixin(line: str) -> bool:
@@ -761,13 +733,16 @@ def _looks_like_heading_line_for_weixin(line: str) -> bool:
 
 
 def _should_split_short_chat_block_for_weixin(block: str) -> bool:
-    """Split only chat-like multiline blocks into separate bubbles."""
-    lines = [line for line in block.splitlines() if line.strip()]
-    if not 2 <= len(lines) <= 6:
-        return False
-    if _looks_like_heading_line_for_weixin(lines[0]):
-        return False
-    return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
+    """Return False to keep short chat messages as a single unit.
+
+    Splitting short chat-like blocks into separate bubbles was originally
+    intended to create a more natural feel, but in practice it floods the
+    user's WeChat with many small messages.  Returning ``False`` keeps
+    the default compact behavior consistent with Telegram and other platforms.
+    Users who prefer per-line splitting can still enable it via
+    ``WEIXIN_SPLIT_MULTILINE_MESSAGES=true``.
+    """
+    return False
 
 
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:

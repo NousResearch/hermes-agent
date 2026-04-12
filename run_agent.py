@@ -6592,13 +6592,18 @@ class AIAgent:
         self.flush_memories(messages, min_turns=0)
 
         # Notify external memory provider before compression discards context
+        # and capture any insights it extracts so they survive compression (closes #7192)
+        _memory_ctx = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                _memory_ctx = self._memory_manager.on_pre_compress(messages) or ""
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compressed = self.context_compressor.compress(
+            messages, current_tokens=approx_tokens, focus_topic=focus_topic,
+            memory_context=_memory_ctx,
+        )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

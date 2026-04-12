@@ -315,7 +315,7 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None, memory_context: str = "") -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -328,6 +328,9 @@ class ContextCompressor(ContextEngine):
                 provided, the summariser prioritises preserving information
                 related to this topic and is more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            memory_context: Optional text from external memory providers (e.g.
+                Honcho, Holographic, Mem0) to inject into the summarization
+                prompt so provider-extracted insights survive compression.
 
         Returns None if all attempts fail — the caller should drop
         the middle turns without a summary rather than inject a useless
@@ -417,10 +420,10 @@ NEW TURNS TO INCORPORATE:
 
 Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new progress. Move items from "In Progress" to "Done" when completed. Move answered questions to "Resolved Questions". Remove information only if it is clearly obsolete.
 
-{_template_sections}"""
+{_template_sections}\"\"\"
         else:
             # First compaction: summarize from scratch
-            prompt = f"""{_summarizer_preamble}
+            prompt = f\"\"\"{_summarizer_preamble}
 
 Create a structured handoff summary for a different assistant that will continue this conversation after earlier turns are compacted. The next assistant should be able to understand what happened without re-reading the original turns.
 
@@ -438,6 +441,17 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget."""
+        # Inject memory provider insights when external providers contributed text (closes #7192)
+        if memory_context and memory_context.strip():
+            _mem_section = f"""
+
+## Memory Provider Insights
+The following context was extracted by external memory providers (Honcho, Holographic, Mem0, etc.) before compression. Preserve this information verbatim -- do not rephrase or summarise it:
+{memory_context.strip()}
+"""
+            prompt += _mem_section
+
+
 
         try:
             call_kwargs = {
@@ -563,6 +577,70 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         return messages
 
+    def _protect_in_flight_tool_calls(
+        self, messages: List[Dict[str, Any]], compress_start: int, compress_end: int,
+    ) -> int:
+        """Extend the tail boundary to protect in-flight tool_call chains.
+
+        Scans ``messages[compress_start:compress_end]`` for assistant messages
+        that contain ``tool_calls`` but whose results are NOT present in the
+        full message list (i.e., the results haven't arrived yet).  If found,
+        the assistant message + its results are moved from the compress range
+        into the tail by advancing ``compress_end`` past the entire chain.
+
+        This prevents pending actions from being summarised away mid-execution.
+        See GitHub issue #7506.
+        """
+        n = len(messages)
+
+        # Scan the compress range for assistant messages with tool_calls.
+        for i in range(compress_start, compress_end):
+            msg = messages[i]
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                continue
+
+            # For each tool_call, find if its result is inside the compress
+            # range or outside it.  If outside (either before or after), the
+            # entire chain must move to the tail.
+            #
+            # Cases:
+            #   a) Result inside compress range        -> normal summarization (OK)
+            #   b) Result before compress_start        -> already summarized (OK)
+            #   c) Result after compress_end           -> chain must move to tail
+            #   d) No result anywhere (pending chain)  -> chain must move to tail
+            has_pending_or_external_chain = False
+            for tc in tool_calls:
+                cid = self._get_tool_call_id(tc)
+                if not cid:
+                    continue
+                # Find where (if anywhere) this call's result appears in the full list
+                result_pos = None
+                for ri in range(i + 1, n):
+                    if messages[ri].get("role") == "tool" and messages[ri].get("tool_call_id") == cid:
+                        result_pos = ri
+                        break
+                if result_pos is None or result_pos > compress_end:
+                    # Result is missing or is past the compress boundary ->
+                    # this chain must be protected in the tail.
+                    has_pending_or_external_chain = True
+                    break
+
+            if has_pending_or_external_chain:
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression hygiene: assistant msg %d has tool_call(s) "
+                        "with result outside compress range -- excluding from "
+                        "compression (compress_end %d -> %d)",
+                        i, compress_end, i,
+                    )
+                compress_end = i
+
+        return compress_end
+
+
     def _align_boundary_forward(self, messages: List[Dict[str, Any]], idx: int) -> int:
         """Push a compress-start boundary forward past any orphan tool results.
 
@@ -663,15 +741,16 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, memory_context: str = "") -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
-          5. On re-compression, iteratively update the previous summary
+          4. Protect in-flight tool_call chains from being summarised away (closes #7506)
+          5. Summarize middle turns with structured LLM prompt
+          6. On re-compression, iteratively update the previous summary
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
@@ -681,6 +760,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 provided, the summariser will prioritise preserving information
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            memory_context: Optional text from external memory providers (e.g.
+                Honcho, Holographic, Mem0) to inject into the summarization
+                prompt so provider-extracted insights survive compression.
         """
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
@@ -710,6 +792,11 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
+        # Phase 2b: Protect in-flight tool_call chains from being summarised away (closes #7506)
+        # If an assistant message with tool_calls has its result outside the compress range,
+        # the entire chain must stay in the protected tail region.
+        compress_end = self._protect_in_flight_tool_calls(messages, compress_start, compress_end)
+
         if compress_start >= compress_end:
             return messages
 
@@ -738,7 +825,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
         # Phase 4: Assemble compressed message list
         compressed = []

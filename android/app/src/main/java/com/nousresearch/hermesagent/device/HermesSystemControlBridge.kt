@@ -23,6 +23,10 @@ import org.json.JSONObject
 
 private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "open_wifi_panel",
+    "open_mobile_network_settings",
+    "open_data_usage_settings",
+    "open_hotspot_settings",
+    "open_airplane_mode_settings",
     "open_bluetooth_settings",
     "open_connected_devices_settings",
     "open_nfc_settings",
@@ -36,6 +40,9 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
 data class HermesSystemStatus(
     val wifiEnabled: Boolean = false,
     val activeNetworkLabel: String = "Offline",
+    val airplaneModeEnabled: Boolean = false,
+    val activeNetworkMetered: Boolean = false,
+    val dataSaverEnabled: Boolean = false,
     val bluetoothSupported: Boolean = false,
     val bluetoothEnabled: Boolean = false,
     val bluetoothPermissionGranted: Boolean = false,
@@ -101,9 +108,19 @@ object HermesSystemControlBridge {
         } else {
             true
         }
+        val airplaneModeEnabled = Settings.Global.getInt(appContext.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) == 1
+        val activeNetworkMetered = connectivityManager?.isActiveNetworkMetered ?: false
+        val dataSaverEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            connectivityManager?.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
+        } else {
+            false
+        }
         return HermesSystemStatus(
             wifiEnabled = wifiManager?.isWifiEnabled == true,
             activeNetworkLabel = activeNetworkLabel(connectivityManager),
+            airplaneModeEnabled = airplaneModeEnabled,
+            activeNetworkMetered = activeNetworkMetered,
+            dataSaverEnabled = dataSaverEnabled,
             bluetoothSupported = bluetoothAdapter != null,
             bluetoothEnabled = bluetoothAdapter?.isEnabled == true,
             bluetoothPermissionGranted = bluetoothPermissionGranted,
@@ -126,6 +143,10 @@ object HermesSystemControlBridge {
         val appContext = context.applicationContext
         return when (action) {
             "open_wifi_panel" -> launchIntent(appContext, action, wifiIntent(), "Opened Wi-Fi + internet controls")
+            "open_mobile_network_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NETWORK_OPERATOR_SETTINGS), "Opened mobile network settings")
+            "open_data_usage_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_DATA_USAGE_SETTINGS), "Opened data usage settings")
+            "open_hotspot_settings" -> launchIntent(appContext, action, Intent("android.settings.TETHER_SETTINGS"), "Opened hotspot and tethering settings")
+            "open_airplane_mode_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS), "Opened airplane mode settings")
             "open_bluetooth_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_BLUETOOTH_SETTINGS), "Opened Bluetooth settings")
             "open_connected_devices_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_WIRELESS_SETTINGS), "Opened connected-device settings")
             "open_nfc_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NFC_SETTINGS), "Opened NFC settings")
@@ -210,6 +231,9 @@ object HermesSystemControlBridge {
         return JSONObject().apply {
             put("wifi_enabled", status.wifiEnabled)
             put("active_network_label", status.activeNetworkLabel)
+            put("airplane_mode_enabled", status.airplaneModeEnabled)
+            put("active_network_metered", status.activeNetworkMetered)
+            put("data_saver_enabled", status.dataSaverEnabled)
             put("bluetooth_supported", status.bluetoothSupported)
             put("bluetooth_enabled", status.bluetoothEnabled)
             put("bluetooth_permission_granted", status.bluetoothPermissionGranted)

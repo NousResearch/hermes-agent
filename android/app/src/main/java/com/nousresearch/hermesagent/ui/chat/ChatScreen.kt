@@ -306,6 +306,7 @@ private fun ChatHeaderCard(
     onOpenActions: (() -> Unit)? = null,
 ) {
     val strings = LocalHermesStrings.current
+    val displayTitle = if (title.equals("New chat", ignoreCase = true)) strings.newChat else title
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.primaryContainer,
@@ -326,7 +327,7 @@ private fun ChatHeaderCard(
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(strings.chatTitle.ifBlank { "Hermes Chat" }, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(title, style = MaterialTheme.typography.bodySmall)
+                Text(displayTitle, style = MaterialTheme.typography.bodySmall)
             }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -548,7 +549,7 @@ private fun ChatComposer(
     Surface(
         modifier = Modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
-        shape = MaterialTheme.shapes.extraLarge,
+        shape = RoundedCornerShape(28.dp),
         tonalElevation = 2.dp,
     ) {
         Row(
@@ -570,11 +571,12 @@ private fun ChatComposer(
                 value = input,
                 onValueChange = onInputChange,
                 modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(28.dp),
                 label = { Text(strings.messageHermes.ifBlank { "Message Hermes" }) },
                 maxLines = 5,
                 supportingText = {
                     Text(
-                        if (isListening) "Listening…" else "Tip: /help shows native chat commands",
+                        strings.chatCommandsTip(isListening),
                         textAlign = TextAlign.Start,
                     )
                 },

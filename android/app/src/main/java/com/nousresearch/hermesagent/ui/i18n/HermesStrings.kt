@@ -87,6 +87,369 @@ data class HermesStrings(
             AppLanguage.ENGLISH -> "Current provider profile: $providerLabel"
         }
     }
+
+    fun chatCommandsTip(isListening: Boolean): String {
+        if (isListening) {
+            return when (language) {
+                AppLanguage.CHINESE -> "正在聆听…"
+                AppLanguage.SPANISH -> "Escuchando…"
+                AppLanguage.GERMAN -> "Hört zu…"
+                AppLanguage.PORTUGUESE -> "Ouvindo…"
+                AppLanguage.FRENCH -> "Écoute…"
+                AppLanguage.ENGLISH -> "Listening…"
+            }
+        }
+        return when (language) {
+            AppLanguage.CHINESE -> "提示：/help 会显示原生命令"
+            AppLanguage.SPANISH -> "Consejo: /help muestra los comandos nativos"
+            AppLanguage.GERMAN -> "Tipp: /help zeigt die nativen Befehle"
+            AppLanguage.PORTUGUESE -> "Dica: /help mostra os comandos nativos"
+            AppLanguage.FRENCH -> "Astuce : /help affiche les commandes natives"
+            AppLanguage.ENGLISH -> "Tip: /help shows native chat commands"
+        }
+    }
+
+    fun providerLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "提供商"
+        AppLanguage.SPANISH -> "Proveedor"
+        AppLanguage.GERMAN -> "Anbieter"
+        AppLanguage.PORTUGUESE -> "Provedor"
+        AppLanguage.FRENCH -> "Fournisseur"
+        AppLanguage.ENGLISH -> "Provider"
+    }
+
+    fun baseUrlLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "基础 URL"
+        AppLanguage.SPANISH -> "URL base"
+        AppLanguage.GERMAN -> "Basis-URL"
+        AppLanguage.PORTUGUESE -> "URL base"
+        AppLanguage.FRENCH -> "URL de base"
+        AppLanguage.ENGLISH -> "Base URL"
+    }
+
+    fun modelLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "模型"
+        AppLanguage.SPANISH -> "Modelo"
+        AppLanguage.GERMAN -> "Modell"
+        AppLanguage.PORTUGUESE -> "Modelo"
+        AppLanguage.FRENCH -> "Modèle"
+        AppLanguage.ENGLISH -> "Model"
+    }
+
+    fun apiKeyLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "API 密钥"
+        AppLanguage.SPANISH -> "Clave API"
+        AppLanguage.GERMAN -> "API-Schlüssel"
+        AppLanguage.PORTUGUESE -> "Chave API"
+        AppLanguage.FRENCH -> "Clé API"
+        AppLanguage.ENGLISH -> "API Key"
+    }
+
+    fun saveLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "保存"
+        AppLanguage.SPANISH -> "Guardar"
+        AppLanguage.GERMAN -> "Speichern"
+        AppLanguage.PORTUGUESE -> "Salvar"
+        AppLanguage.FRENCH -> "Enregistrer"
+        AppLanguage.ENGLISH -> "Save"
+    }
+
+    fun providerDirectCallHelp(): String = when (language) {
+        AppLanguage.CHINESE -> "选择 Hermes 要直接调用的提供商。浏览器登录请使用账户页面；基于 API 密钥的设置请使用这里。"
+        AppLanguage.SPANISH -> "Elige el proveedor al que Hermes llamará directamente. Usa Cuentas para inicios de sesión por navegador; usa Ajustes para la configuración con clave API."
+        AppLanguage.GERMAN -> "Wähle den Anbieter, den Hermes direkt aufrufen soll. Nutze Konten für browserbasierte Anmeldungen und Einstellungen für API-Schlüssel."
+        AppLanguage.PORTUGUESE -> "Escolha o provedor que o Hermes vai chamar diretamente. Use Contas para logins no navegador; use Configurações para ajustes com chave API."
+        AppLanguage.FRENCH -> "Choisissez le fournisseur que Hermes doit appeler directement. Utilisez Comptes pour les connexions navigateur et Réglages pour la configuration par clé API."
+        AppLanguage.ENGLISH -> "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup."
+    }
+
+    fun defaultBaseUrlSummary(providerLabel: String, defaultBaseUrl: String): String = when (language) {
+        AppLanguage.CHINESE -> "$providerLabel 的默认地址：$defaultBaseUrl"
+        AppLanguage.SPANISH -> "URL predeterminada para $providerLabel: $defaultBaseUrl"
+        AppLanguage.GERMAN -> "Standard-URL für $providerLabel: $defaultBaseUrl"
+        AppLanguage.PORTUGUESE -> "URL padrão para $providerLabel: $defaultBaseUrl"
+        AppLanguage.FRENCH -> "URL par défaut pour $providerLabel : $defaultBaseUrl"
+        AppLanguage.ENGLISH -> "Default for $providerLabel: $defaultBaseUrl"
+    }
+
+    fun suggestedModelSummary(modelHint: String): String = when (language) {
+        AppLanguage.CHINESE -> "建议模型：$modelHint"
+        AppLanguage.SPANISH -> "Modelo sugerido: $modelHint"
+        AppLanguage.GERMAN -> "Vorgeschlagenes Modell: $modelHint"
+        AppLanguage.PORTUGUESE -> "Modelo sugerido: $modelHint"
+        AppLanguage.FRENCH -> "Modèle suggéré : $modelHint"
+        AppLanguage.ENGLISH -> "Suggested model: $modelHint"
+    }
+
+    fun apiKeyHelp(): String = when (language) {
+        AppLanguage.CHINESE -> "粘贴所选提供商的密钥，然后点保存以重启本地 Hermes 后端并应用新配置。"
+        AppLanguage.SPANISH -> "Pega la clave del proveedor seleccionado y pulsa Guardar para reiniciar el backend local de Hermes con la nueva configuración."
+        AppLanguage.GERMAN -> "Füge den Schlüssel für den gewählten Anbieter ein und tippe auf Speichern, um das lokale Hermes-Backend mit der neuen Konfiguration neu zu starten."
+        AppLanguage.PORTUGUESE -> "Cole a chave do provedor selecionado e toque em Salvar para reiniciar o backend local do Hermes com a nova configuração."
+        AppLanguage.FRENCH -> "Collez la clé du fournisseur sélectionné puis appuyez sur Enregistrer pour redémarrer le backend local Hermes avec la nouvelle configuration."
+        AppLanguage.ENGLISH -> "Paste the key for the selected provider, then tap Save to restart the local Hermes backend with the new config."
+    }
+
+    fun toolProfileTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "Android Alpha 工具配置"
+        AppLanguage.SPANISH -> "Perfil de herramientas Android alpha"
+        AppLanguage.GERMAN -> "Android-Alpha-Werkzeugprofil"
+        AppLanguage.PORTUGUESE -> "Perfil de ferramentas Android alpha"
+        AppLanguage.FRENCH -> "Profil d’outils Android alpha"
+        AppLanguage.ENGLISH -> "Android alpha Tool Profile"
+    }
+
+    fun toolProfileEnabledSummary(tools: String): String = when (language) {
+        AppLanguage.CHINESE -> "已启用：$tools"
+        AppLanguage.SPANISH -> "Habilitadas: $tools"
+        AppLanguage.GERMAN -> "Aktiviert: $tools"
+        AppLanguage.PORTUGUESE -> "Ativadas: $tools"
+        AppLanguage.FRENCH -> "Activés : $tools"
+        AppLanguage.ENGLISH -> "Enabled: $tools"
+    }
+
+    fun toolProfileLinuxSummary(): String = when (language) {
+        AppLanguage.CHINESE -> "Hermes 现在在 Android 应用中内置了本地 Linux 命令套件，因此 terminal/process 可以执行真实 CLI 命令，而共享文件夹工具处理文档编辑。"
+        AppLanguage.SPANISH -> "Hermes ahora incluye una suite local de comandos Linux dentro de la app Android, así que terminal/process pueden ejecutar CLI reales mientras las herramientas de carpeta compartida gestionan ediciones directas de documentos."
+        AppLanguage.GERMAN -> "Hermes enthält jetzt eine lokale Linux-Befehlssuite in der Android-App, sodass terminal/process echte CLI-Befehle ausführen können, während die Freigabeordner-Werkzeuge direkte Dokumentbearbeitungen übernehmen."
+        AppLanguage.PORTUGUESE -> "O Hermes agora inclui uma suíte local de comandos Linux dentro do app Android, então terminal/process podem executar comandos CLI reais enquanto as ferramentas de pasta compartilhada fazem edições diretas em documentos."
+        AppLanguage.FRENCH -> "Hermes inclut maintenant une suite locale de commandes Linux dans l’application Android, afin que terminal/process puissent exécuter de vraies commandes CLI tandis que les outils de dossier partagé gèrent les modifications directes des documents."
+        AppLanguage.ENGLISH -> "Hermes now has a local Linux command suite in the Android app, so terminal/process can execute real CLI commands while shared-folder tools handle direct document edits."
+    }
+
+    fun toolProfileAccessibilitySummary(): String = when (language) {
+        AppLanguage.CHINESE -> "启用 Hermes 无障碍服务后，可通过 android_ui_snapshot + android_ui_action 使用无障碍定位。"
+        AppLanguage.SPANISH -> "La orientación por accesibilidad está disponible mediante android_ui_snapshot + android_ui_action después de activar el servicio de accesibilidad de Hermes."
+        AppLanguage.GERMAN -> "Accessibility-Targeting ist über android_ui_snapshot + android_ui_action verfügbar, nachdem du den Hermes-Barrierefreiheitsdienst aktiviert hast."
+        AppLanguage.PORTUGUESE -> "A segmentação por acessibilidade fica disponível com android_ui_snapshot + android_ui_action depois que você ativa o serviço de acessibilidade do Hermes."
+        AppLanguage.FRENCH -> "Le ciblage par accessibilité est disponible via android_ui_snapshot + android_ui_action après activation du service d’accessibilité Hermes."
+        AppLanguage.ENGLISH -> "Accessibility targeting is available through android_ui_snapshot + android_ui_action after you enable the Hermes accessibility service."
+    }
+
+    fun toolProfileCommandSuiteSummary(): String = when (language) {
+        AppLanguage.CHINESE -> "Android 命令套件会解压到应用私有前缀，并通过 terminal/process 暴露，延续 Hermes 在 Termux 中相同风格的本地 CLI 用法。"
+        AppLanguage.SPANISH -> "La suite de comandos Android se extrae a un prefijo privado de la app y se expone mediante terminal/process, manteniendo el mismo estilo de uso CLI local que Hermes ya soporta en Termux."
+        AppLanguage.GERMAN -> "Die Android-Befehlssuite wird in ein app-privates Präfix entpackt und über terminal/process bereitgestellt, im selben lokalen CLI-Stil, den Hermes bereits in Termux unterstützt."
+        AppLanguage.PORTUGUESE -> "A suíte de comandos Android é extraída para um prefixo privado do app e exposta por terminal/process, no mesmo estilo de uso CLI local que o Hermes já suporta no Termux."
+        AppLanguage.FRENCH -> "La suite de commandes Android est extraite dans un préfixe privé à l’application et exposée via terminal/process, dans le même style d’utilisation CLI locale déjà pris en charge par Hermes dans Termux."
+        AppLanguage.ENGLISH -> "The Android command suite is extracted into an app-private prefix and exposed through terminal/process for the same style of local CLI usage Hermes already supports in Termux."
+    }
+
+    fun toolProfileExcludedSummary(blocked: String): String = when (language) {
+        AppLanguage.CHINESE -> "移动运行时中仍排除：$blocked"
+        AppLanguage.SPANISH -> "Aún excluido del runtime móvil: $blocked"
+        AppLanguage.GERMAN -> "Im mobilen Runtime weiterhin ausgeschlossen: $blocked"
+        AppLanguage.PORTUGUESE -> "Ainda excluído do runtime móvel: $blocked"
+        AppLanguage.FRENCH -> "Toujours exclus du runtime mobile : $blocked"
+        AppLanguage.ENGLISH -> "Still excluded from the mobile runtime: $blocked"
+    }
+
+    fun deviceGuideTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "如何使用这个 alpha 版本"
+        AppLanguage.SPANISH -> "Cómo usar esta alpha"
+        AppLanguage.GERMAN -> "So verwendest du diese Alpha"
+        AppLanguage.PORTUGUESE -> "Como usar esta alpha"
+        AppLanguage.FRENCH -> "Comment utiliser cette alpha"
+        AppLanguage.ENGLISH -> "How to use this alpha"
+    }
+
+    fun deviceGuideStep(index: Int): String = when (index) {
+        1 -> when (language) {
+            AppLanguage.CHINESE -> "1. Hermes 现在在 Android 应用内自带本地 Linux 命令套件。先让 Hermes 调用 android_device_status，再使用 terminal/process 执行完整 CLI。"
+            AppLanguage.SPANISH -> "1. Hermes ahora incluye una suite local de comandos Linux dentro de la app Android. Pídele a Hermes que llame primero a android_device_status y luego usa terminal/process para la ejecución CLI completa."
+            AppLanguage.GERMAN -> "1. Hermes bringt jetzt eine lokale Linux-Befehlssuite in der Android-App mit. Lass Hermes zuerst android_device_status aufrufen und nutze dann terminal/process für vollständige CLI-Ausführung."
+            AppLanguage.PORTUGUESE -> "1. O Hermes agora inclui uma suíte local de comandos Linux dentro do app Android. Peça ao Hermes para chamar primeiro android_device_status e depois use terminal/process para execução CLI completa."
+            AppLanguage.FRENCH -> "1. Hermes embarque maintenant une suite locale de commandes Linux dans l’application Android. Demandez d’abord à Hermes d’appeler android_device_status, puis utilisez terminal/process pour l’exécution CLI complète."
+            AppLanguage.ENGLISH -> "1. Hermes now ships a local Linux command suite inside the Android app. Ask Hermes to call android_device_status first, then use terminal/process for full CLI execution."
+        }
+        2 -> when (language) {
+            AppLanguage.CHINESE -> "2. 如果你想让 Hermes 原地编辑真实文件，请通过 Android 原生选择器授予共享文件夹访问权限。"
+            AppLanguage.SPANISH -> "2. Concede una carpeta compartida desde el selector nativo de Android si quieres que Hermes edite los archivos reales en su ubicación."
+            AppLanguage.GERMAN -> "2. Gewähre einen freigegebenen Ordner über den nativen Android-Auswahldialog, wenn Hermes echte Dateien direkt am Ort bearbeiten soll."
+            AppLanguage.PORTUGUESE -> "2. Conceda uma pasta compartilhada no seletor nativo do Android se quiser que o Hermes edite os arquivos reais no lugar."
+            AppLanguage.FRENCH -> "2. Accordez un dossier partagé via le sélecteur natif Android si vous voulez que Hermes modifie directement les vrais fichiers."
+            AppLanguage.ENGLISH -> "2. Grant a shared folder from Android's native picker if you want Hermes to edit the real files in place with android_shared_folder_list/read/write."
+        }
+        3 -> when (language) {
+            AppLanguage.CHINESE -> "3. 只有在需要草稿副本或暂存文件时，才把文件导入工作区。"
+            AppLanguage.SPANISH -> "3. Importa archivos al espacio de trabajo solo cuando quieras copias temporales o archivos de preparación."
+            AppLanguage.GERMAN -> "3. Importiere Dateien nur dann in den Arbeitsbereich, wenn du Entwurfs- oder Staging-Kopien brauchst."
+            AppLanguage.PORTUGUESE -> "3. Importe arquivos para o espaço de trabalho apenas quando quiser cópias temporárias ou de preparação."
+            AppLanguage.FRENCH -> "3. Importez des fichiers dans l’espace de travail uniquement si vous voulez des copies temporaires ou de préparation."
+            AppLanguage.ENGLISH -> "3. Import files into the workspace only when you want scratch copies or staging files."
+        }
+        4 -> when (language) {
+            AppLanguage.CHINESE -> "4. 如果你希望 Hermes 检查可见 UI 并触发更精确的操作，请启用 Hermes 无障碍服务。"
+            AppLanguage.SPANISH -> "4. Activa la accesibilidad de Hermes si quieres que inspeccione la UI visible y lance acciones más precisas además de Inicio, Atrás, Recientes, Notificaciones y Ajustes rápidos."
+            AppLanguage.GERMAN -> "4. Aktiviere die Hermes-Barrierefreiheit, wenn Hermes die sichtbare UI prüfen und gezielte Aktionen zusätzlich zu Start, Zurück, Letzte Apps, Benachrichtigungen und Schnelleinstellungen auslösen soll."
+            AppLanguage.PORTUGUESE -> "4. Ative a acessibilidade do Hermes se quiser que ele inspecione a UI visível e acione ações mais precisas além de Início, Voltar, Recentes, Notificações e Ajustes rápidos."
+            AppLanguage.FRENCH -> "4. Activez l’accessibilité Hermes si vous voulez qu’il inspecte l’interface visible et déclenche des actions ciblées en plus de Accueil, Retour, Récents, Notifications et Réglages rapides."
+            AppLanguage.ENGLISH -> "4. Enable Hermes accessibility if you want Hermes to inspect the visible UI and trigger targeted actions in addition to Home / Back / Recents / Notifications / Quick settings."
+        }
+        else -> ""
+    }
+
+    fun deviceWorkspacePath(workspacePath: String): String = when (language) {
+        AppLanguage.CHINESE -> "工作区路径：$workspacePath"
+        AppLanguage.SPANISH -> "Ruta del espacio de trabajo: $workspacePath"
+        AppLanguage.GERMAN -> "Arbeitsbereichspfad: $workspacePath"
+        AppLanguage.PORTUGUESE -> "Caminho do espaço de trabalho: $workspacePath"
+        AppLanguage.FRENCH -> "Chemin de l’espace de travail : $workspacePath"
+        AppLanguage.ENGLISH -> "Workspace path: $workspacePath"
+    }
+
+    fun portalLoadingStatus(loggedIn: Boolean): String = when (language) {
+        AppLanguage.CHINESE -> if (loggedIn) "已登录 Nous Portal" else "正在加载嵌入式 Portal 预览"
+        AppLanguage.SPANISH -> if (loggedIn) "Sesión iniciada en Nous Portal" else "Cargando la vista previa incrustada del portal"
+        AppLanguage.GERMAN -> if (loggedIn) "Bei Nous Portal angemeldet" else "Eingebettete Portal-Vorschau wird geladen"
+        AppLanguage.PORTUGUESE -> if (loggedIn) "Sessão iniciada no Nous Portal" else "Carregando a prévia incorporada do portal"
+        AppLanguage.FRENCH -> if (loggedIn) "Connecté à Nous Portal" else "Chargement de l’aperçu intégré du portail"
+        AppLanguage.ENGLISH -> if (loggedIn) "Signed in to Nous Portal" else "Loading the embedded portal preview"
+    }
+
+    fun portalFallbackStatus(error: String): String = when (language) {
+        AppLanguage.CHINESE -> "使用默认 Nous Portal URL（$error）"
+        AppLanguage.SPANISH -> "Usando la URL predeterminada de Nous Portal ($error)"
+        AppLanguage.GERMAN -> "Standard-URL von Nous Portal wird verwendet ($error)"
+        AppLanguage.PORTUGUESE -> "Usando a URL padrão do Nous Portal ($error)"
+        AppLanguage.FRENCH -> "URL Nous Portal par défaut utilisée ($error)"
+        AppLanguage.ENGLISH -> "Using default Nous Portal URL ($error)"
+    }
+
+    fun authNotSignedIn(): String = when (language) {
+        AppLanguage.CHINESE -> "未登录"
+        AppLanguage.SPANISH -> "Sin iniciar sesión"
+        AppLanguage.GERMAN -> "Nicht angemeldet"
+        AppLanguage.PORTUGUESE -> "Sem sessão iniciada"
+        AppLanguage.FRENCH -> "Non connecté"
+        AppLanguage.ENGLISH -> "Not signed in"
+    }
+
+    fun cancelPendingSignIn(): String = when (language) {
+        AppLanguage.CHINESE -> "取消等待中的登录"
+        AppLanguage.SPANISH -> "Cancelar inicio de sesión pendiente"
+        AppLanguage.GERMAN -> "Ausstehende Anmeldung abbrechen"
+        AppLanguage.PORTUGUESE -> "Cancelar login pendente"
+        AppLanguage.FRENCH -> "Annuler la connexion en attente"
+        AppLanguage.ENGLISH -> "Cancel pending sign-in"
+    }
+
+    fun authGlobalStatusDefault(): String = when (language) {
+        AppLanguage.CHINESE -> "使用 Corr3xt 登录应用或连接提供商账户。"
+        AppLanguage.SPANISH -> "Usa Corr3xt para iniciar sesión en la app o conectar cuentas de proveedor."
+        AppLanguage.GERMAN -> "Nutze Corr3xt, um dich in der App anzumelden oder Anbieter-Konten zu verbinden."
+        AppLanguage.PORTUGUESE -> "Use o Corr3xt para entrar no app ou conectar contas de provedor."
+        AppLanguage.FRENCH -> "Utilisez Corr3xt pour vous connecter à l’application ou lier des comptes fournisseurs."
+        AppLanguage.ENGLISH -> "Use Corr3xt to sign into the app or connect provider accounts."
+    }
+
+    fun authWaitingCallback(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "正在等待 $label 的 Corr3xt 回调"
+        AppLanguage.SPANISH -> "Esperando el callback de Corr3xt para $label"
+        AppLanguage.GERMAN -> "Warte auf Corr3xt-Callback für $label"
+        AppLanguage.PORTUGUESE -> "Aguardando o callback do Corr3xt para $label"
+        AppLanguage.FRENCH -> "En attente du callback Corr3xt pour $label"
+        AppLanguage.ENGLISH -> "Waiting for Corr3xt callback for $label"
+    }
+
+    fun authConnectedMethods(count: Int): String = when (language) {
+        AppLanguage.CHINESE -> "已连接 $count 个登录方式"
+        AppLanguage.SPANISH -> "$count métodos de inicio conectados"
+        AppLanguage.GERMAN -> "$count Anmeldemethoden verbunden"
+        AppLanguage.PORTUGUESE -> "$count métodos de login conectados"
+        AppLanguage.FRENCH -> "$count méthodes de connexion connectées"
+        AppLanguage.ENGLISH -> "$count sign-in methods connected"
+    }
+
+    fun authNoBrowser(): String = when (language) {
+        AppLanguage.CHINESE -> "无法打开 Corr3xt：没有可用浏览器"
+        AppLanguage.SPANISH -> "No se puede abrir Corr3xt: no hay navegador disponible"
+        AppLanguage.GERMAN -> "Corr3xt konnte nicht geöffnet werden: kein Browser verfügbar"
+        AppLanguage.PORTUGUESE -> "Não foi possível abrir o Corr3xt: nenhum navegador disponível"
+        AppLanguage.FRENCH -> "Impossible d’ouvrir Corr3xt : aucun navigateur disponible"
+        AppLanguage.ENGLISH -> "Unable to open Corr3xt: no browser is available"
+    }
+
+    fun authTryAgain(): String = when (language) {
+        AppLanguage.CHINESE -> "无法打开 Corr3xt。请检查认证 URL 后重试。"
+        AppLanguage.SPANISH -> "No se pudo abrir Corr3xt. Revisa la URL de autenticación e inténtalo de nuevo."
+        AppLanguage.GERMAN -> "Corr3xt konnte nicht geöffnet werden. Prüfe die Auth-URL und versuche es erneut."
+        AppLanguage.PORTUGUESE -> "Não foi possível abrir o Corr3xt. Verifique a URL de autenticação e tente novamente."
+        AppLanguage.FRENCH -> "Impossible d’ouvrir Corr3xt. Vérifiez l’URL d’authentification puis réessayez."
+        AppLanguage.ENGLISH -> "Unable to open Corr3xt. Check the auth URL and try again."
+    }
+
+    fun authCanceled(): String = when (language) {
+        AppLanguage.CHINESE -> "已取消等待中的 Corr3xt 登录"
+        AppLanguage.SPANISH -> "Inicio de sesión Corr3xt pendiente cancelado"
+        AppLanguage.GERMAN -> "Ausstehende Corr3xt-Anmeldung abgebrochen"
+        AppLanguage.PORTUGUESE -> "Login Corr3xt pendente cancelado"
+        AppLanguage.FRENCH -> "Connexion Corr3xt en attente annulée"
+        AppLanguage.ENGLISH -> "Canceled pending Corr3xt sign-in"
+    }
+
+    fun authDescription(methodId: String, fallback: String): String {
+        return when (methodId) {
+            "email" -> when (language) {
+                AppLanguage.CHINESE -> "通过 Corr3xt 使用邮箱链接或密码流程登录应用。"
+                AppLanguage.SPANISH -> "Inicia sesión en la app mediante Corr3xt usando un enlace por correo o un flujo con contraseña."
+                AppLanguage.GERMAN -> "Melde dich über Corr3xt mit einem E-Mail-Link oder Passwort-Flow in der App an."
+                AppLanguage.PORTUGUESE -> "Entre no app pelo Corr3xt usando um link por e-mail ou fluxo com senha."
+                AppLanguage.FRENCH -> "Connectez-vous à l’application via Corr3xt avec un lien e-mail ou un flux par mot de passe."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "google" -> when (language) {
+                AppLanguage.CHINESE -> "通过 Corr3xt 使用 Google 账户登录应用。"
+                AppLanguage.SPANISH -> "Inicia sesión en la app con una cuenta de Google mediante Corr3xt."
+                AppLanguage.GERMAN -> "Melde dich über Corr3xt mit einem Google-Konto in der App an."
+                AppLanguage.PORTUGUESE -> "Entre no app com uma conta Google pelo Corr3xt."
+                AppLanguage.FRENCH -> "Connectez-vous à l’application avec un compte Google via Corr3xt."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "phone" -> when (language) {
+                AppLanguage.CHINESE -> "通过 Corr3xt 使用短信或手机验证流程登录应用。"
+                AppLanguage.SPANISH -> "Inicia sesión en la app con un flujo de SMS o verificación por teléfono mediante Corr3xt."
+                AppLanguage.GERMAN -> "Melde dich über Corr3xt mit einem SMS- oder Telefonverifizierungsfluss in der App an."
+                AppLanguage.PORTUGUESE -> "Entre no app com um fluxo de SMS ou verificação por telefone via Corr3xt."
+                AppLanguage.FRENCH -> "Connectez-vous à l’application via Corr3xt avec un flux SMS ou de vérification téléphonique."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "chatgpt" -> when (language) {
+                AppLanguage.CHINESE -> "验证 ChatGPT Web 访问并自动同步到 Hermes Android。"
+                AppLanguage.SPANISH -> "Autentica el acceso a ChatGPT Web y sincronízalo automáticamente con Hermes Android."
+                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf ChatGPT Web und synchronisiere ihn automatisch mit Hermes Android."
+                AppLanguage.PORTUGUESE -> "Autentique o acesso ao ChatGPT Web e sincronize-o automaticamente com o Hermes Android."
+                AppLanguage.FRENCH -> "Authentifiez l’accès à ChatGPT Web et synchronisez-le automatiquement avec Hermes Android."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "claude" -> when (language) {
+                AppLanguage.CHINESE -> "验证 Anthropic / Claude 凭据并将其应用到 Hermes Android。"
+                AppLanguage.SPANISH -> "Autentica credenciales de Anthropic / Claude y aplícalas a Hermes Android."
+                AppLanguage.GERMAN -> "Authentifiziere Anthropic-/Claude-Zugangsdaten und wende sie auf Hermes Android an."
+                AppLanguage.PORTUGUESE -> "Autentique credenciais Anthropic / Claude e aplique-as ao Hermes Android."
+                AppLanguage.FRENCH -> "Authentifiez les identifiants Anthropic / Claude et appliquez-les à Hermes Android."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "gemini" -> when (language) {
+                AppLanguage.CHINESE -> "验证 Google AI Studio / Gemini 访问并将其应用到 Hermes Android。"
+                AppLanguage.SPANISH -> "Autentica el acceso a Google AI Studio / Gemini y aplícalo a Hermes Android."
+                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf Google AI Studio / Gemini und wende ihn auf Hermes Android an."
+                AppLanguage.PORTUGUESE -> "Autentique o acesso ao Google AI Studio / Gemini e aplique-o ao Hermes Android."
+                AppLanguage.FRENCH -> "Authentifiez l’accès Google AI Studio / Gemini et appliquez-le à Hermes Android."
+                AppLanguage.ENGLISH -> fallback
+            }
+            else -> fallback
+        }
+    }
+
+    fun authSignedInWith(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "已通过 $label 登录"
+        AppLanguage.SPANISH -> "Sesión iniciada con $label"
+        AppLanguage.GERMAN -> "Angemeldet mit $label"
+        AppLanguage.PORTUGUESE -> "Sessão iniciada com $label"
+        AppLanguage.FRENCH -> "Connecté avec $label"
+        AppLanguage.ENGLISH -> "Signed in with $label"
+    }
 }
 
 val LocalHermesStrings = staticCompositionLocalOf { hermesStringsFor(AppLanguage.ENGLISH) }

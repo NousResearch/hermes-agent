@@ -17,11 +17,16 @@ def test_hermes_home_includes_getting_started_actions():
 
 def test_settings_screen_includes_new_user_guidance():
     settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
-    assert 'Text("New here?"' in settings
-    assert 'Use Accounts if you want Corr3xt-based sign-in flows' in settings
-    assert 'Choose the provider you want Hermes to call directly.' in settings
-    assert 'Paste the key for the selected provider, then tap Save' in settings
+    assert 'Text(strings.settingsNewHereTitle' in settings
+    assert 'Text(strings.settingsHelpAccounts)' in settings
+    assert 'Text(strings.currentProviderProfile(providerLabel))' in settings
+    assert 'strings.apiKeyHelp()' in settings
+    assert 'New here?' in strings
+    assert 'Use Accounts if you want Corr3xt-based sign-in flows' in strings
+    assert 'Choose the provider you want Hermes to call directly.' in strings
+    assert 'Paste the key for the selected provider, then tap Save' in strings
     assert 'rememberScrollState()' in settings
     assert 'verticalScroll(' in settings
 

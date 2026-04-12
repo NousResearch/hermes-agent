@@ -8,6 +8,7 @@ import android.os.Environment
 import android.text.format.Formatter
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
+import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -36,6 +37,7 @@ data class ModelDownloadDraft(
 
 object HermesModelDownloadManager {
     private const val HUGGING_FACE_BASE = "https://huggingface.co"
+    private const val HUGGING_FACE_API = "$HUGGING_FACE_BASE/api/models/"
 
     fun modelsDirectory(context: Context): File {
         return (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
@@ -43,7 +45,7 @@ object HermesModelDownloadManager {
     }
 
     fun inspectCandidate(context: Context, draft: ModelDownloadDraft, hfToken: String): ModelDownloadInspection {
-        val resolvedUrl = resolveDownloadUrl(draft.repoOrUrl, draft.filePath, draft.revision)
+        val resolvedUrl = resolveDownloadUrl(draft, hfToken)
         val head = headProbe(resolvedUrl, hfToken)
         val totalBytes = head.contentLength.coerceAtLeast(0L)
         val memoryInfo = ActivityManager.MemoryInfo()
@@ -164,19 +166,163 @@ object HermesModelDownloadManager {
         store.setPreferredDownloadId(recordId)
     }
 
-    private fun resolveDownloadUrl(repoOrUrl: String, filePath: String, revision: String): String {
-        val trimmed = repoOrUrl.trim()
+    private fun resolveDownloadUrl(draft: ModelDownloadDraft, hfToken: String): String {
+        val trimmed = draft.repoOrUrl.trim()
+        val explicitFilePath = draft.filePath.trim().trim('/')
+        val requestedRevision = draft.revision.trim().ifBlank { "main" }
+        parseHuggingFaceReference(trimmed)?.let { reference ->
+            val resolvedRevision = reference.revision ?: requestedRevision
+            val resolvedFilePath = explicitFilePath.ifBlank {
+                reference.filePath ?: findCompatibleRepoFile(
+                    repoId = reference.repoId,
+                    revision = resolvedRevision,
+                    runtimeFlavor = draft.runtimeFlavor,
+                    hfToken = hfToken,
+                )
+            }
+            return "$HUGGING_FACE_BASE/${reference.repoId}/resolve/$resolvedRevision/$resolvedFilePath?download=true"
+        }
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
             return trimmed
         }
         val repo = trimmed.removePrefix("hf://").trim('/').ifBlank {
             throw IllegalArgumentException("Enter a Hugging Face repo or a direct model URL")
         }
-        val resolvedRevision = revision.trim().ifBlank { "main" }
-        val resolvedFilePath = filePath.trim().trim('/').ifBlank {
-            throw IllegalArgumentException("Enter the file path inside the repo")
+        val resolvedFilePath = explicitFilePath.ifBlank {
+            findCompatibleRepoFile(
+                repoId = repo,
+                revision = requestedRevision,
+                runtimeFlavor = draft.runtimeFlavor,
+                hfToken = hfToken,
+            )
         }
-        return "$HUGGING_FACE_BASE/$repo/resolve/$resolvedRevision/$resolvedFilePath?download=true"
+        return "$HUGGING_FACE_BASE/$repo/resolve/$requestedRevision/$resolvedFilePath?download=true"
+    }
+
+    private fun parseHuggingFaceReference(repoOrUrl: String): HuggingFaceReference? {
+        val trimmed = repoOrUrl.trim()
+        if (trimmed.startsWith("hf://")) {
+            val repoId = trimmed.removePrefix("hf://").trim('/').ifBlank { return null }
+            return HuggingFaceReference(repoId = repoId)
+        }
+        if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+            return HuggingFaceReference(repoId = trimmed.trim('/').ifBlank { return null })
+        }
+        val uri = Uri.parse(trimmed)
+        val host = uri.host.orEmpty().lowercase(Locale.US)
+        if (!host.contains("huggingface.co") && !host.contains("hf.co")) {
+            return null
+        }
+        val segments = uri.pathSegments.filter { it.isNotBlank() }
+        if (segments.size < 2) {
+            return null
+        }
+        val repoId = "${segments[0]}/${segments[1]}"
+        if (segments.size >= 5 && segments[2] in setOf("blob", "resolve")) {
+            val filePath = segments.drop(4).joinToString("/")
+            return HuggingFaceReference(
+                repoId = repoId,
+                revision = segments[3].ifBlank { null },
+                filePath = filePath.ifBlank { null },
+            )
+        }
+        return HuggingFaceReference(repoId = repoId)
+    }
+
+    private fun findCompatibleRepoFile(
+        repoId: String,
+        revision: String,
+        runtimeFlavor: String,
+        hfToken: String,
+    ): String {
+        val siblings = loadRepoFiles(repoId = repoId, revision = revision, hfToken = hfToken)
+        val compatible = siblings
+            .filter { isCompatibleRepoFile(it, runtimeFlavor) }
+            .sortedWith(compareBy<String> { compatibleFileRank(it, runtimeFlavor) }.thenBy { it.lowercase(Locale.US) })
+
+        return compatible.firstOrNull()
+            ?: throw IllegalArgumentException("No compatible $runtimeFlavor artifact found in huggingface.co/$repoId")
+    }
+
+    private fun loadRepoFiles(repoId: String, revision: String, hfToken: String): List<String> {
+        val metadata = fetchRepoMetadata(repoId = repoId, revision = revision, hfToken = hfToken)
+        val siblings = metadata.optJSONArray("siblings") ?: return emptyList()
+        return buildList {
+            for (index in 0 until siblings.length()) {
+                val item = siblings.optJSONObject(index) ?: continue
+                val fileName = item.optString("rfilename").ifBlank { item.optString("path") }
+                if (fileName.isNotBlank()) {
+                    add(fileName)
+                }
+            }
+        }
+    }
+
+    private fun fetchRepoMetadata(repoId: String, revision: String, hfToken: String): JSONObject {
+        val revisionEndpoint = if (revision.isBlank() || revision == "main") {
+            null
+        } else {
+            "$HUGGING_FACE_API$repoId/revision/${Uri.encode(revision)}"
+        }
+        val endpoints = listOfNotNull(revisionEndpoint, "$HUGGING_FACE_API$repoId")
+        var lastFailure: Exception? = null
+        for (endpoint in endpoints) {
+            try {
+                return getJson(endpoint, hfToken)
+            } catch (error: Exception) {
+                lastFailure = error
+            }
+        }
+        throw IllegalArgumentException(lastFailure?.message ?: "Unable to inspect huggingface.co/$repoId")
+    }
+
+    private fun getJson(url: String, hfToken: String): JSONObject {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 15_000
+            setRequestProperty("Accept", "application/json")
+            if (looksLikeHuggingFaceResource(url) && hfToken.isNotBlank()) {
+                setRequestProperty("Authorization", "Bearer $hfToken")
+            }
+        }
+        return try {
+            val responseCode = connection.responseCode
+            if (responseCode !in 200..299) {
+                val errorBody = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                val detail = errorBody.take(160).ifBlank { "HTTP $responseCode" }
+                throw IllegalArgumentException("Unable to inspect huggingface.co metadata: $detail")
+            }
+            JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun isCompatibleRepoFile(path: String, runtimeFlavor: String): Boolean {
+        val lower = path.lowercase(Locale.US)
+        return when (runtimeFlavor.uppercase(Locale.US)) {
+            "LITERT-LM" -> lower.endsWith(".litertlm")
+            else -> lower.endsWith(".gguf")
+        }
+    }
+
+    private fun compatibleFileRank(path: String, runtimeFlavor: String): Int {
+        val lower = path.lowercase(Locale.US)
+        return when (runtimeFlavor.uppercase(Locale.US)) {
+            "LITERT-LM" -> 0
+            else -> when {
+                "q4_k_m" in lower -> 0
+                "q4_k_s" in lower -> 1
+                "iq4" in lower -> 2
+                "q5_k_m" in lower -> 3
+                "q5" in lower -> 4
+                "q6" in lower -> 5
+                "q8" in lower -> 6
+                else -> 7
+            }
+        }
     }
 
     private fun headProbe(sourceUrl: String, hfToken: String): HeadProbeResult {
@@ -260,5 +406,11 @@ object HermesModelDownloadManager {
     private data class HeadProbeResult(
         val contentLength: Long,
         val acceptRanges: Boolean,
+    )
+
+    private data class HuggingFaceReference(
+        val repoId: String,
+        val revision: String? = null,
+        val filePath: String? = null,
     )
 }

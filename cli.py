@@ -49,6 +49,8 @@ from prompt_toolkit.widgets import TextArea
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit import print_formatted_text as _pt_print
 from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.keys import Keys
 try:
     from prompt_toolkit.cursor_shapes import CursorShape
     _STEADY_CURSOR = CursorShape.BLOCK  # Non-blinking block cursor
@@ -66,6 +68,28 @@ from agent.usage_pricing import (
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+_MODIFIED_ENTER_NEWLINE_SEQUENCES = {
+    "\x1b[27;2;13~": (Keys.Escape, Keys.ControlM),  # Shift+Enter
+    "\x1b[27;5;13~": Keys.ControlJ,                # Ctrl+Enter
+    "\x1b[27;6;13~": Keys.ControlJ,                # Ctrl+Shift+Enter
+}
+
+
+def _configure_modified_enter_bindings() -> None:
+    """Ensure modified Enter sequences insert newlines instead of submitting.
+
+    Some terminals emit CSI 27 "modified other key" escape sequences for
+    Shift+Enter/Ctrl+Enter/Ctrl+Shift+Enter. prompt_toolkit's default ANSI table
+    collapses these to ControlM (plain Enter), which causes Hermes to submit the
+    prompt instead of inserting a newline. Remap them so the existing newline
+    handlers can distinguish modified Enter from plain Enter.
+    """
+    for sequence, binding in _MODIFIED_ENTER_NEWLINE_SEQUENCES.items():
+        ANSI_SEQUENCES[sequence] = binding
+
+
+_configure_modified_enter_bindings()
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -8224,13 +8248,13 @@ class HermesCLI:
                 event.app.current_buffer.reset(append_to_history=True)
         
         @kb.add('escape', 'enter')
-        def handle_alt_enter(event):
-            """Alt+Enter inserts a newline for multi-line input."""
+        def handle_modified_enter_newline(event):
+            """Insert a newline for modified Enter sequences (Alt/Shift+Enter)."""
             event.current_buffer.insert_text('\n')
 
         @kb.add('c-j')
         def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
+            """Ctrl+Enter inserts a newline, including CSI modified-enter sequences."""
             event.current_buffer.insert_text('\n')
 
         @kb.add('tab', eager=True)
@@ -8597,7 +8621,7 @@ class HermesCLI:
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
-        # Create the input area with multiline (shift+enter), autocomplete, and paste handling
+        # Create the input area with multiline (modified Enter inserts newline), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
 

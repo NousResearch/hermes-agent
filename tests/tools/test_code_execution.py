@@ -184,11 +184,34 @@ class TestExecuteCode(unittest.TestCase):
         self.assertIn("hello world", result["output"])
         self.assertEqual(result["tool_calls_made"], 0)
 
-    def test_repo_root_modules_are_importable(self):
-        """Sandboxed scripts can import modules that live at the repo root."""
-        result = self._run('import hermes_constants; print(hermes_constants.__file__)')
+    def test_repo_root_not_on_pythonpath(self):
+        """Sandbox PYTHONPATH must NOT include the hermes project root.
+
+        This is a security-critical invariant: the sandbox previously added
+        the project root to PYTHONPATH, allowing credential theft via
+        ``import hermes_cli.auth`` or ``import agent.credential_pool``.
+        """
+        # Get the hermes project root (parent of tools/)
+        import tools.code_execution_tool as cet
+        hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(cet.__file__)))
+
+        result = self._run(
+            "import os, sys, json\n"
+            "info = {\n"
+            "    'pythonpath': os.environ.get('PYTHONPATH', ''),\n"
+            "    'sys_path': sys.path,\n"
+            "}\n"
+            "print(json.dumps(info))\n"
+        )
         self.assertEqual(result["status"], "success")
-        self.assertIn("hermes_constants.py", result["output"])
+        info = json.loads(result["output"].strip())
+        # PYTHONPATH env var must not contain the hermes root
+        pythonpath_dirs = [p for p in info["pythonpath"].split(os.pathsep) if p]
+        for p in pythonpath_dirs:
+            self.assertNotEqual(
+                os.path.realpath(p), os.path.realpath(hermes_root),
+                f"PYTHONPATH contains hermes root: {p}"
+            )
 
     def test_single_tool_call(self):
         """Script calls terminal and prints the result."""
@@ -687,6 +710,132 @@ class TestEnvVarFiltering(unittest.TestCase):
         finally:
             os.environ.clear()
             os.environ.update(env_backup)
+
+    def test_pythonpath_not_in_child_env(self):
+        """PYTHONPATH must not be set in the sandbox environment.
+
+        The sandbox previously added the hermes project root to PYTHONPATH,
+        enabling credential theft via ``import hermes_cli.auth``.
+        """
+        child_env = self._get_child_env()
+        self.assertNotIn("PYTHONPATH", child_env,
+                         "PYTHONPATH must not leak into sandbox environment")
+
+    def test_parent_pythonpath_not_inherited(self):
+        """Even if the parent has PYTHONPATH set, it must not reach the sandbox."""
+        child_env = self._get_child_env({"PYTHONPATH": "/some/dangerous/path"})
+        self.assertNotIn("PYTHONPATH", child_env,
+                         "Parent PYTHONPATH must not be inherited by sandbox")
+
+
+# ---------------------------------------------------------------------------
+# PYTHONPATH sandbox isolation (security critical)
+# ---------------------------------------------------------------------------
+
+@unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+class TestPythonPathSandboxIsolation(unittest.TestCase):
+    """Verify that the sandbox PYTHONPATH does not expose hermes internals.
+
+    This is the primary defense against credential theft: removing the
+    hermes project root from PYTHONPATH prevents LLM-generated scripts
+    from importing hermes internals in a development (non-pip-installed)
+    environment.
+    """
+
+    def _run(self, code, enabled_tools=None):
+        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+            result = execute_code(
+                code=code,
+                task_id="test-task",
+                enabled_tools=enabled_tools or list(SANDBOX_ALLOWED_TOOLS),
+            )
+        return json.loads(result)
+
+    def _get_hermes_root(self):
+        """Return the absolute, resolved hermes project root directory."""
+        import tools.code_execution_tool as cet
+        return os.path.realpath(
+            os.path.dirname(os.path.dirname(os.path.abspath(cet.__file__)))
+        )
+
+    def test_pythonpath_does_not_contain_hermes_root(self):
+        """The PYTHONPATH env var in the sandbox must not include the project root."""
+        hermes_root = self._get_hermes_root()
+        result = self._run(
+            "import os\n"
+            "print(os.environ.get('PYTHONPATH', 'NOT_SET'))\n"
+        )
+        self.assertEqual(result["status"], "success")
+        pythonpath = result["output"].strip()
+        if pythonpath != "NOT_SET":
+            for entry in pythonpath.split(os.pathsep):
+                self.assertNotEqual(
+                    os.path.realpath(entry), hermes_root,
+                    f"PYTHONPATH contains hermes root: {entry}"
+                )
+
+    def test_sys_path_does_not_contain_hermes_root(self):
+        """sys.path in the sandbox must not include the hermes project root."""
+        hermes_root = self._get_hermes_root()
+        result = self._run(
+            "import sys, json\n"
+            "print(json.dumps(sys.path))\n"
+        )
+        self.assertEqual(result["status"], "success")
+        child_sys_path = json.loads(result["output"].strip())
+        for entry in child_sys_path:
+            self.assertNotEqual(
+                os.path.realpath(entry), hermes_root,
+                f"sys.path contains hermes root: {entry}"
+            )
+
+    def test_pythonpath_env_not_set_in_sandbox(self):
+        """The sandbox subprocess must not have PYTHONPATH set at all."""
+        result = self._run(
+            "import os\n"
+            "pp = os.environ.get('PYTHONPATH', 'NOT_SET')\n"
+            "print(f'PYTHONPATH={pp}')\n"
+        )
+        self.assertEqual(result["status"], "success")
+        self.assertIn("PYTHONPATH=NOT_SET", result["output"])
+
+    def test_parent_pythonpath_not_leaked(self):
+        """Even if the parent process has PYTHONPATH set, the sandbox must not get it."""
+        hermes_root = self._get_hermes_root()
+        env_backup = os.environ.copy()
+        try:
+            os.environ["PYTHONPATH"] = hermes_root
+            result = self._run(
+                "import os\n"
+                "print(os.environ.get('PYTHONPATH', 'NOT_SET'))\n"
+            )
+        finally:
+            os.environ.clear()
+            os.environ.update(env_backup)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("NOT_SET", result["output"])
+
+    def test_hermes_tools_rpc_still_works(self):
+        """The hermes_tools RPC stub module must still be importable and functional."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "result = terminal('echo hi')\n"
+            "print(result.get('output', 'NO_OUTPUT'))\n"
+        )
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("mock output for: echo hi", result["output"])
+
+    def test_stdlib_still_importable(self):
+        """Standard library modules must remain importable in the sandbox."""
+        code = (
+            "import json, os, sys, math, re, datetime\n"
+            "print(f'json={json.__name__} math.pi={math.pi:.2f}')\n"
+        )
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("json=json", result["output"])
+        self.assertIn("math.pi=3.14", result["output"])
 
 
 # ---------------------------------------------------------------------------

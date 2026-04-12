@@ -151,6 +151,18 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+# Apply IPv4 preference early, before any HTTP clients are created.
+try:
+    from hermes_cli.config import load_config as _load_config_early
+    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+    _early_cfg = _load_config_early()
+    _net = _early_cfg.get("network", {})
+    if isinstance(_net, dict) and _net.get("force_ipv4"):
+        _apply_ipv4(force=True)
+    del _early_cfg, _net
+except Exception:
+    pass  # best-effort — don't crash if config isn't available yet
+
 import logging
 import time as _time
 from datetime import datetime
@@ -526,6 +538,113 @@ def _resolve_last_cli_session() -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
+    """Run a container inspect probe, returning the CompletedProcess.
+
+    Catches TimeoutExpired specifically for a human-readable message;
+    all other exceptions propagate naturally.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        label = f"sudo {backend}" if via_sudo else backend
+        print(
+            f"Error: timed out waiting for {label} to respond.\n"
+            f"The {backend} daemon may be unresponsive or starting up.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _exec_in_container(container_info: dict, cli_args: list):
+    """Replace the current process with a command inside the managed container.
+
+    Probes whether sudo is needed (rootful containers), then os.execvp
+    into the container. On success the Python process is replaced entirely
+    and the container's exit code becomes the process exit code (OS semantics).
+    On failure, OSError propagates naturally.
+
+    Args:
+        container_info: dict with backend, container_name, exec_user, hermes_bin
+        cli_args: the original CLI arguments (everything after 'hermes')
+    """
+    import shutil
+
+    backend = container_info["backend"]
+    container_name = container_info["container_name"]
+    exec_user = container_info["exec_user"]
+    hermes_bin = container_info["hermes_bin"]
+
+    runtime = shutil.which(backend)
+    if not runtime:
+        print(f"Error: {backend} not found on PATH. Cannot route to container.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Rootful containers (NixOS systemd service) are invisible to unprivileged
+    # users — Podman uses per-user namespaces, Docker needs group access.
+    # Probe whether the runtime can see the container; if not, try via sudo.
+    sudo_path = None
+    probe = _probe_container(
+        [runtime, "inspect", "--format", "ok", container_name], backend,
+    )
+    if probe.returncode != 0:
+        sudo_path = shutil.which("sudo")
+        if sudo_path:
+            probe2 = _probe_container(
+                [sudo_path, "-n", runtime, "inspect", "--format", "ok", container_name],
+                backend, via_sudo=True,
+            )
+            if probe2.returncode != 0:
+                print(
+                    f"Error: container '{container_name}' not found via {backend}.\n"
+                    f"\n"
+                    f"The container is likely running as root. Your user cannot see it\n"
+                    f"because {backend} uses per-user namespaces. Grant passwordless\n"
+                    f"sudo for {backend} — the -n (non-interactive) flag is required\n"
+                    f"because a password prompt would hang or break piped commands.\n"
+                    f"\n"
+                    f"On NixOS:\n"
+                    f"\n"
+                    f'  security.sudo.extraRules = [{{\n'
+                    f'    users = [ "{os.getenv("USER", "your-user")}" ];\n'
+                    f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
+                    f'  }}];\n'
+                    f"\n"
+                    f"Or run: sudo hermes {' '.join(cli_args)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            print(
+                f"Error: container '{container_name}' not found via {backend}.\n"
+                f"The container may be running under root. Try: sudo hermes {' '.join(cli_args)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    is_tty = sys.stdin.isatty()
+    tty_flags = ["-it"] if is_tty else ["-i"]
+
+    env_flags = []
+    for var in ("TERM", "COLORTERM", "LANG", "LC_ALL"):
+        val = os.environ.get(var)
+        if val:
+            env_flags.extend(["-e", f"{var}={val}"])
+
+    cmd_prefix = [sudo_path, "-n", runtime] if sudo_path else [runtime]
+    exec_cmd = (
+        cmd_prefix + ["exec"]
+        + tty_flags
+        + ["-u", exec_user]
+        + env_flags
+        + [container_name, hermes_bin]
+        + cli_args
+    )
+
+    os.execvp(exec_cmd[0], exec_cmd)
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
@@ -934,6 +1053,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "xiaomi": "Xiaomi MiMo",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -966,6 +1086,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1077,7 +1198,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2547,13 +2668,8 @@ def _model_flow_anthropic(config, current_model=""):
     from hermes_cli.models import _PROVIDER_MODELS
 
     # Check ALL credential sources
-    existing_key = (
-        get_env_value("ANTHROPIC_TOKEN")
-        or os.getenv("ANTHROPIC_TOKEN", "")
-        or get_env_value("ANTHROPIC_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY", "")
-        or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-    )
+    from hermes_cli.auth import get_anthropic_key
+    existing_key = get_anthropic_key()
     cc_available = False
     try:
         from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -2712,6 +2828,18 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
     config_command(args)
+
+
+def cmd_backup(args):
+    """Back up Hermes home directory to a zip file."""
+    from hermes_cli.backup import run_backup
+    run_backup(args)
+
+
+def cmd_import(args):
+    """Restore a Hermes backup from a zip file."""
+    from hermes_cli.backup import run_import
+    run_import(args)
 
 
 def cmd_version(args):
@@ -3879,7 +4007,7 @@ def cmd_update(args):
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
             service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(exclude_pids=service_pids)
+            manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
             for pid in manual_pids:
                 try:
                     os.kill(pid, _signal.SIGTERM)
@@ -4234,6 +4362,7 @@ def cmd_logs(args):
         level=getattr(args, "level", None),
         session=getattr(args, "session", None),
         since=getattr(args, "since", None),
+        component=getattr(args, "component", None),
     )
 
 
@@ -4357,7 +4486,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -4799,7 +4928,43 @@ For more help on a command:
         help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
     )
     dump_parser.set_defaults(func=cmd_dump)
-    
+
+    # =========================================================================
+    # backup command
+    # =========================================================================
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help="Back up Hermes home directory to a zip file",
+        description="Create a zip archive of your entire Hermes configuration, "
+                    "skills, sessions, and data (excludes the hermes-agent codebase)"
+    )
+    backup_parser.add_argument(
+        "-o", "--output",
+        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)"
+    )
+    backup_parser.set_defaults(func=cmd_backup)
+
+    # =========================================================================
+    # import command
+    # =========================================================================
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Restore a Hermes backup from a zip file",
+        description="Extract a previously created Hermes backup into your "
+                    "Hermes home directory, restoring configuration, skills, "
+                    "sessions, and data"
+    )
+    import_parser.add_argument(
+        "zipfile",
+        help="Path to the backup zip file"
+    )
+    import_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite existing files without confirmation"
+    )
+    import_parser.set_defaults(func=cmd_import)
+
     # =========================================================================
     # config command
     # =========================================================================
@@ -5149,6 +5314,8 @@ For more help on a command:
     mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
     mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
+    mcp_add_p.add_argument("--env", nargs="*", default=[], help="Environment variables for stdio servers (KEY=VALUE)")
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")
@@ -5411,7 +5578,8 @@ For more help on a command:
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
         help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
+                    "Always shows a preview before making changes."
     )
     claw_migrate.add_argument(
         "--source",
@@ -5420,7 +5588,7 @@ For more help on a command:
     claw_migrate.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview what would be migrated without making changes"
+        help="Preview only — stop after showing what would be migrated"
     )
     claw_migrate.add_argument(
         "--preset",
@@ -5630,6 +5798,7 @@ Examples:
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
+    hermes logs --component tools  Only show tool-related lines
     hermes logs --since 1h         Lines from the last hour
     hermes logs --since 30m -f     Follow, starting from 30 min ago
     hermes logs list               List available log files with sizes
@@ -5659,6 +5828,10 @@ Examples:
         "--since", metavar="TIME",
         help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
     )
+    logs_parser.add_argument(
+        "--component", metavar="NAME",
+        help="Filter by component: gateway, agent, tools, cli, cron",
+    )
     logs_parser.set_defaults(func=cmd_logs)
 
     # =========================================================================
@@ -5667,9 +5840,22 @@ Examples:
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
     # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
+    # ── Container-aware routing ────────────────────────────────────────
+    # When NixOS container mode is active, route ALL subcommands into
+    # the managed container.  This MUST run before parse_args() so that
+    # --help, unrecognised flags, and every subcommand are forwarded
+    # transparently instead of being intercepted by argparse on the host.
+    from hermes_cli.config import get_container_exec_info
+    container_info = get_container_exec_info()
+    if container_info:
+        _exec_in_container(container_info, sys.argv[1:])
+        # Unreachable: os.execvp never returns on success (process is replaced)
+        # and raises OSError on failure (which propagates as a traceback).
+        sys.exit(1)
+
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
     args = parser.parse_args(_processed_argv)
-    
+
     # Handle --version flag
     if args.version:
         cmd_version(args)

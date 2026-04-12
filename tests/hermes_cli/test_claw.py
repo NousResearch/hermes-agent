@@ -58,13 +58,13 @@ class TestFindOpenclawDirs:
     def test_finds_legacy_dirs(self, tmp_path):
         clawdbot = tmp_path / ".clawdbot"
         clawdbot.mkdir()
-        moldbot = tmp_path / ".moldbot"
-        moldbot.mkdir()
+        moltbot = tmp_path / ".moltbot"
+        moltbot.mkdir()
         with patch("pathlib.Path.home", return_value=tmp_path):
             found = claw_mod._find_openclaw_dirs()
         assert len(found) == 2
         assert clawdbot in found
-        assert moldbot in found
+        assert moltbot in found
 
     def test_returns_empty_when_none_exist(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):
@@ -289,12 +289,15 @@ class TestCmdMigrate:
             skill_conflict="skip", yes=False,
         )
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         with (
             patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
             patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
             patch.object(claw_mod, "get_config_path", return_value=config_path),
             patch.object(claw_mod, "prompt_yes_no", return_value=True),
-            patch.object(claw_mod, "_offer_source_archival"),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_migrate(args)
 
@@ -302,43 +305,8 @@ class TestCmdMigrate:
         assert "Migration Results" in captured.out
         assert "Migration complete!" in captured.out
 
-    def test_execute_offers_archival_on_success(self, tmp_path, capsys):
-        """After successful migration, _offer_source_archival should be called."""
-        openclaw_dir = tmp_path / ".openclaw"
-        openclaw_dir.mkdir()
-
-        fake_mod = ModuleType("openclaw_to_hermes")
-        fake_mod.resolve_selected_options = MagicMock(return_value={"soul"})
-        fake_migrator = MagicMock()
-        fake_migrator.migrate.return_value = {
-            "summary": {"migrated": 3, "skipped": 0, "conflict": 0, "error": 0},
-            "items": [
-                {"kind": "soul", "status": "migrated", "destination": str(tmp_path / "SOUL.md")},
-            ],
-        }
-        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
-
-        args = Namespace(
-            source=str(openclaw_dir),
-            dry_run=False, preset="full", overwrite=False,
-            migrate_secrets=False, workspace_target=None,
-            skill_conflict="skip", yes=True,
-        )
-
-        with (
-            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
-            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
-            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
-            patch.object(claw_mod, "save_config"),
-            patch.object(claw_mod, "load_config", return_value={}),
-            patch.object(claw_mod, "_offer_source_archival") as mock_archival,
-        ):
-            claw_mod._cmd_migrate(args)
-
-        mock_archival.assert_called_once_with(openclaw_dir, True)
-
-    def test_dry_run_skips_archival(self, tmp_path, capsys):
-        """Dry run should not offer archival."""
+    def test_dry_run_does_not_touch_source(self, tmp_path, capsys):
+        """Dry run should not modify the source directory."""
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
@@ -365,17 +333,26 @@ class TestCmdMigrate:
             patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
             patch.object(claw_mod, "save_config"),
             patch.object(claw_mod, "load_config", return_value={}),
-            patch.object(claw_mod, "_offer_source_archival") as mock_archival,
         ):
             claw_mod._cmd_migrate(args)
 
-        mock_archival.assert_not_called()
+        assert openclaw_dir.is_dir()  # Source untouched
 
     def test_execute_cancelled_by_user(self, tmp_path, capsys):
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
         config_path = tmp_path / "config.yaml"
         config_path.write_text("")
+
+        # Preview must succeed before the confirmation prompt is shown
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 1, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [{"kind": "soul", "status": "migrated", "source": "s", "destination": "d", "reason": ""}],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
 
         args = Namespace(
             source=str(openclaw_dir),
@@ -384,9 +361,15 @@ class TestCmdMigrate:
             skill_conflict="skip", yes=False,
         )
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         with (
             patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=config_path),
             patch.object(claw_mod, "prompt_yes_no", return_value=False),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_migrate(args)
 
@@ -448,7 +431,7 @@ class TestCmdMigrate:
             claw_mod._cmd_migrate(args)
 
         captured = capsys.readouterr()
-        assert "Migration failed" in captured.out
+        assert "Could not load migration script" in captured.out
 
     def test_full_preset_enables_secrets(self, tmp_path, capsys):
         """The 'full' preset should set migrate_secrets=True automatically."""
@@ -484,67 +467,6 @@ class TestCmdMigrate:
         # Migrator should have been called with migrate_secrets=True
         call_kwargs = fake_mod.Migrator.call_args[1]
         assert call_kwargs["migrate_secrets"] is True
-
-
-# ---------------------------------------------------------------------------
-# _offer_source_archival
-# ---------------------------------------------------------------------------
-
-
-class TestOfferSourceArchival:
-    """Test the post-migration archival offer."""
-
-    def test_archives_with_auto_yes(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-        (source / "workspace").mkdir()
-        (source / "workspace" / "todo.json").write_text("{}")
-
-        claw_mod._offer_source_archival(source, auto_yes=True)
-
-        captured = capsys.readouterr()
-        assert "Archived" in captured.out
-        assert not source.exists()
-        assert (tmp_path / ".openclaw.pre-migration").is_dir()
-
-    def test_skips_when_user_declines(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-
-        with patch.object(claw_mod, "prompt_yes_no", return_value=False):
-            claw_mod._offer_source_archival(source, auto_yes=False)
-
-        captured = capsys.readouterr()
-        assert "Skipped" in captured.out
-        assert source.is_dir()  # Still exists
-
-    def test_noop_when_source_missing(self, tmp_path, capsys):
-        claw_mod._offer_source_archival(tmp_path / "nonexistent", auto_yes=True)
-        captured = capsys.readouterr()
-        assert captured.out == ""  # No output
-
-    def test_shows_state_files(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-        ws = source / "workspace"
-        ws.mkdir()
-        (ws / "todo.json").write_text("{}")
-
-        with patch.object(claw_mod, "prompt_yes_no", return_value=False):
-            claw_mod._offer_source_archival(source, auto_yes=False)
-
-        captured = capsys.readouterr()
-        assert "todo.json" in captured.out
-
-    def test_handles_archive_error(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-
-        with patch.object(claw_mod, "_archive_directory", side_effect=OSError("permission denied")):
-            claw_mod._offer_source_archival(source, auto_yes=True)
-
-        captured = capsys.readouterr()
-        assert "Could not archive" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -597,10 +519,14 @@ class TestCmdCleanup:
         openclaw = tmp_path / ".openclaw"
         openclaw.mkdir()
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         args = Namespace(source=None, dry_run=False, yes=False)
         with (
             patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
             patch.object(claw_mod, "prompt_yes_no", return_value=False),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_cleanup(args)
 

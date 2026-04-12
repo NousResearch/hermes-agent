@@ -341,6 +341,18 @@ class SlackAdapter(BasePlatformAdapter):
                 ts=message_id,
                 text=formatted,
             )
+            # Clear assistant thread status after edit (streaming final chunk).
+            # Hermes uses edit_message for streamed responses, so the status
+            # must be cleared here as well as in send().  See #8387.
+            try:
+                await self._get_client(chat_id).assistant_threads_setStatus(
+                    channel_id=chat_id,
+                    thread_ts=message_id,
+                    status="",
+                )
+            except Exception:
+                pass  # Not in assistant context or lacking scope
+
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(

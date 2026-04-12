@@ -319,6 +319,11 @@ def _parse_aes_key(aes_key_b64: str) -> bytes:
     raise ValueError(f"unexpected aes_key format ({len(decoded)} decoded bytes)")
 
 
+def _encode_cdn_aes_key(aes_key: bytes) -> str:
+    """Encode AES key using the hex-text base64 format expected by Weixin CDN media items."""
+    return base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
+
+
 def _guess_chat_type(message: Dict[str, Any], account_id: str) -> Tuple[str, str]:
     room_id = str(message.get("room_id") or message.get("chat_room_id") or "").strip()
     to_user_id = str(message.get("to_user_id") or "").strip()
@@ -1636,7 +1641,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         media_item = item_builder(
             encrypt_query_param=encrypted_query_param,
-            aes_key_b64=base64.b64encode(aes_key).decode("ascii"),
+            aes_key_b64=_encode_cdn_aes_key(aes_key),
             ciphertext_size=len(ciphertext),
             plaintext_size=rawsize,
             filename=Path(path).name,

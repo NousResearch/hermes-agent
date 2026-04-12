@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock, patch
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms import weixin
-from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter, _upload_ciphertext_full_url
+from gateway.platforms.weixin import (
+    ContextTokenStore,
+    WeixinAdapter,
+    _encode_cdn_aes_key,
+    _parse_aes_key,
+    _upload_ciphertext_full_url,
+)
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -437,6 +443,14 @@ class _FakeUploadSession:
 
 
 class TestWeixinUploadHelpers:
+    def test_encode_cdn_aes_key_round_trips_via_parse_helper(self):
+        aes_key = bytes.fromhex("1738b18276339f628684646f190e96d7")
+
+        encoded = _encode_cdn_aes_key(aes_key)
+
+        assert encoded == "MTczOGIxODI3NjMzOWY2Mjg2ODQ2NDZmMTkwZTk2ZDc="
+        assert _parse_aes_key(encoded) == aes_key
+
     def test_upload_full_url_uses_post_and_returns_header(self):
         session = _FakeUploadSession(
             _FakeAsyncResponse(status=200, headers={"x-encrypted-param": "enc-param"})

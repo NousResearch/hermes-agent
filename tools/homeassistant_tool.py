@@ -38,6 +38,15 @@ def _get_config():
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
+# Regex for valid HA service/domain names (e.g. "light", "turn_on", "shell_command").
+# Only lowercase ASCII letters, digits, and underscores — no slashes, dots, or
+# other characters that could allow path traversal in URL construction.
+# The domain and service are interpolated into /api/services/{domain}/{service},
+# so allowing arbitrary strings would enable SSRF via path traversal
+# (e.g. domain="../../api/config") or blocked-domain bypass
+# (e.g. domain="shell_command/../light").
+_SERVICE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
 # Service domains blocked for security -- these allow arbitrary code/command
 # execution on the HA host or enable SSRF attacks on the local network.
 # HA provides zero service-level access control; all safety must be in our layer.
@@ -245,6 +254,14 @@ def _handle_call_service(args: dict, **kw) -> str:
     service = args.get("service", "")
     if not domain or not service:
         return tool_error("Missing required parameters: domain and service")
+
+    # Validate domain/service format BEFORE the blocklist check — prevents
+    # path traversal in /api/services/{domain}/{service} and blocklist bypass
+    # via payloads like "shell_command/../light".
+    if not _SERVICE_NAME_RE.match(domain):
+        return tool_error(f"Invalid domain format: {domain!r}")
+    if not _SERVICE_NAME_RE.match(service):
+        return tool_error(f"Invalid service format: {service!r}")
 
     if domain in _BLOCKED_DOMAINS:
         return json.dumps({

@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    LINE = "line"
 
 
 @dataclass
@@ -302,6 +303,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # LINE uses token + channel_secret
+            elif platform == Platform.LINE and config.extra.get("channel_secret"):
                 connected.append(platform)
         return connected
     
@@ -1072,6 +1076,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.BLUEBUBBLES,
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # LINE
+    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    line_secret = os.getenv("LINE_CHANNEL_SECRET")
+    if line_token and line_secret:
+        if Platform.LINE not in config.platforms:
+            config.platforms[Platform.LINE] = PlatformConfig()
+        config.platforms[Platform.LINE].enabled = True
+        config.platforms[Platform.LINE].token = line_token
+        config.platforms[Platform.LINE].extra.update({
+            "channel_secret": line_secret,
+            "webhook_host": os.getenv("LINE_WEBHOOK_HOST", "0.0.0.0"),
+            "webhook_port": int(os.getenv("LINE_WEBHOOK_PORT", "8443")),
+            "webhook_path": os.getenv("LINE_WEBHOOK_PATH", "/line/webhook"),
+        })
+    line_home = os.getenv("LINE_HOME_CHANNEL")
+    if line_home and Platform.LINE in config.platforms:
+        config.platforms[Platform.LINE].home_channel = HomeChannel(
+            platform=Platform.LINE,
+            chat_id=line_home,
+            name=os.getenv("LINE_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Session settings

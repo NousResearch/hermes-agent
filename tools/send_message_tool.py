@@ -162,6 +162,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "line": Platform.LINE,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -424,6 +425,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.LINE:
+            result = await _send_line(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -964,6 +967,25 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_line(pconfig, chat_id, message):
+    """Send via LINE Messaging API using the adapter's Push API."""
+    try:
+        from gateway.platforms.line import LineAdapter, check_line_requirements
+        if not check_line_requirements():
+            return {"error": "LINE requirements not met (need httpx + aiohttp + credentials)."}
+    except ImportError:
+        return {"error": "LINE adapter not available."}
+
+    try:
+        adapter = LineAdapter(pconfig)
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return _error(f"LINE send failed: {result.error}")
+        return {"success": True, "platform": "line", "chat_id": chat_id, "message_id": result.message_id}
+    except Exception as e:
+        return _error(f"LINE send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

@@ -2776,6 +2776,12 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "feishu_auth":
+            return await self._handle_feishu_auth(event)
+
+        if canonical == "feishu_diagnose":
+            return await self._handle_feishu_diagnose(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -4937,6 +4943,109 @@ class GatewayRunner:
         self._save_voice_modes()
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+
+    # =========================================================================
+    # Feishu/Lark commands
+    # =========================================================================
+
+    async def _handle_feishu_auth(self, event: MessageEvent) -> str:
+        """Handle /feishu_auth — trigger OAuth device flow for the calling user."""
+        try:
+            import sys
+            from pathlib import Path
+
+            # Try to load hermes-lark plugin bridge
+            plugin_dir = Path.home() / ".hermes" / "plugins" / "hermes-lark"
+            if not (plugin_dir / "bridge.py").exists():
+                plugin_dir = Path.home() / "projects" / "openclaw-lark-hermes" / "package"
+
+            bridge_dir = str(plugin_dir)
+            if bridge_dir not in sys.path:
+                sys.path.insert(0, bridge_dir)
+
+            from bridge import HermesLarkBridge
+
+            bridge = HermesLarkBridge()
+            bridge.initialize(
+                app_id=os.getenv("FEISHU_APP_ID", ""),
+                app_secret=os.getenv("FEISHU_APP_SECRET", ""),
+                domain=os.getenv("FEISHU_DOMAIN", "feishu"),
+                owner_policy=os.getenv("FEISHU_OWNER_POLICY", "multiUser"),
+            )
+
+            result = bridge.call_tool("feishu_oauth", {"action": "authorize"})
+            bridge.close()
+
+            if isinstance(result, dict) and "content" in result:
+                texts = []
+                for c in result["content"]:
+                    texts.append(c.get("text", ""))
+                return "\n".join(texts)
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        except Exception as e:
+            return f"❌ Feishu OAuth failed: {e}"
+
+    async def _handle_feishu_diagnose(self, event: MessageEvent) -> str:
+        """Handle /feishu_diagnose — show Feishu connection and OAuth status."""
+        import os as _os
+        lines = []
+        lines.append("🔍 **Feishu/Lark Diagnostics**\n")
+
+        # Check env vars
+        app_id = _os.getenv("FEISHU_APP_ID", "")
+        app_secret = _os.getenv("FEISHU_APP_SECRET", "")
+        lines.append(f"**FEISHU_APP_ID**: {'✅ ' + app_id[:8] + '...' if app_id else '❌ Not set'}")
+        lines.append(f"**FEISHU_APP_SECRET**: {'✅ Set (' + str(len(app_secret)) + ' chars)' if app_secret and app_secret != '***' else '❌ Not set or placeholder'}")
+
+        # Check plugin
+        from pathlib import Path
+        plugin_dir = Path.home() / ".hermes" / "plugins" / "hermes-lark"
+        has_plugin = (plugin_dir / "__init__.py").exists()
+        lines.append(f"**hermes-lark plugin**: {'✅ Installed' if has_plugin else '❌ Not found'}")
+
+        # Check bridge
+        has_bridge = (plugin_dir / "bridge.py").exists() or (Path.home() / "projects" / "openclaw-lark-hermes" / "package" / "bridge.py").exists()
+        lines.append(f"**bridge.py**: {'✅ Found' if has_bridge else '❌ Not found'}")
+
+        # Check hermes-lark repo
+        has_repo = (Path.home() / "projects" / "openclaw-lark-hermes").is_dir()
+        lines.append(f"**hermes-lark repo**: {'✅ Present' if has_repo else '⚠️ Not cloned'}")
+
+        # Try a quick bridge test
+        if app_id and app_secret and app_secret != "***" and has_bridge:
+            try:
+                import sys
+                bd = str(plugin_dir) if (plugin_dir / "bridge.py").exists() else str(Path.home() / "projects" / "openclaw-lark-hermes" / "package")
+                if bd not in sys.path:
+                    sys.path.insert(0, bd)
+                from bridge import HermesLarkBridge
+                b = HermesLarkBridge()
+                b.initialize(app_id=app_id, app_secret=app_secret,
+                           domain=_os.getenv("FEISHU_DOMAIN", "feishu"),
+                           owner_policy=_os.getenv("FEISHU_OWNER_POLICY", "multiUser"))
+                tools = b.list_tools()
+                lines.append(f"\n**Bridge test**: ✅ {len(tools)} tools loaded")
+
+                # Test a quick API call
+                r = b.call_tool("feishu_chat", {"action": "list"})
+                if r is None:
+                    lines.append("**API test**: ✅ Connected (no chats, expected)")
+                elif isinstance(r, dict) and isinstance(r.get("error"), str):
+                    err = r["error"]
+                    if "need_user_authorization" in err:
+                        lines.append("**API test**: ⚠️ Connected but needs OAuth (use /feishu_auth)")
+                    else:
+                        lines.append(f"**API test**: ⚠️ {err[:80]}")
+                else:
+                    lines.append("**API test**: ✅ Working")
+                b.close()
+            except Exception as e:
+                lines.append(f"\n**Bridge test**: ❌ {e}")
+        else:
+            lines.append(f"\n**Bridge test**: ⏭️ Skipped (missing credentials)")
+
+        return "\n".join(lines)
 
     async def _handle_voice_channel_input(
         self, guild_id: int, user_id: int, transcript: str

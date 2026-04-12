@@ -972,6 +972,9 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
+        # Bypass macOS system proxy for Feishu WebSocket
+        if "proxy" not in kwargs:
+            kwargs["proxy"] = None
         return await original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:

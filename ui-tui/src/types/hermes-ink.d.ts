@@ -45,6 +45,7 @@ declare module '@hermes/ink' {
   }
 
   export const Box: React.ComponentType<any>
+  export const Ansi: React.ComponentType<any>
   export const Text: React.ComponentType<any>
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number

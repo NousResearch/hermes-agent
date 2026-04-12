@@ -48,8 +48,14 @@ class MessageDeduplicator:
         if not msg_id:
             return False
         now = time.time()
-        if msg_id in self._seen:
-            return True
+        seen_at = self._seen.get(msg_id)
+        if seen_at is not None:
+            if now - seen_at <= self._ttl:
+                return True
+            # Expired entries must be treated as new messages, otherwise a
+            # long-lived process can suppress legitimate retries forever until
+            # the cache happens to overflow.
+            self._seen.pop(msg_id, None)
         self._seen[msg_id] = now
         if len(self._seen) > self._max_size:
             cutoff = now - self._ttl

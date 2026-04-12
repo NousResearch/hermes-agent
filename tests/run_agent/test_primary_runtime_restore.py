@@ -203,6 +203,23 @@ class TestRestorePrimaryRuntime:
 
         assert agent._use_prompt_caching == original_caching
 
+    def test_fallback_enables_prompt_caching_for_anthropic_compatible_endpoint(self):
+        agent = _make_agent(
+            fallback_model={"provider": "zenmux-anthropic", "model": "anthropic/claude-sonnet-4.6"},
+        )
+
+        mock_client = _mock_resolve(base_url="https://zenmux.ai/api/anthropic")
+        with (
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent._fallback_activated is True
+        assert agent.api_mode == "anthropic_messages"
+        assert agent._use_prompt_caching is True
+
     def test_restore_survives_exception(self):
         """If client rebuild fails, the method returns False gracefully."""
         agent = _make_agent()

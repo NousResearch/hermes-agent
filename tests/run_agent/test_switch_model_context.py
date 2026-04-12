@@ -72,3 +72,25 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=400_000)
+def test_switch_model_enables_prompt_caching_for_anthropic_compatible_provider(mock_ctx_len):
+    """Switching to an Anthropic-compatible /anthropic endpoint should enable caching."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    with (
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+    ):
+        agent.switch_model(
+            "anthropic/claude-sonnet-4-20250514",
+            "zenmux-anthropic",
+            api_key="sk-anthropic",
+            base_url="https://zenmux.ai/api/anthropic",
+            api_mode="anthropic_messages",
+        )
+
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._use_prompt_caching is True
+    mock_ctx_len.assert_called_once()

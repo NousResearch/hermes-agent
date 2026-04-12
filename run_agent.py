@@ -91,6 +91,7 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
+from agent.auxiliary_client import _is_anthropic_compat_endpoint
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -738,13 +739,11 @@ class AIAgent:
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
-        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
+        # Anthropic prompt caching: auto-enabled for Claude models on native
+        # Anthropic, OpenRouter, and Anthropic-compatible /anthropic endpoints.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
-        is_openrouter = self._is_openrouter_url()
-        is_claude = "claude" in self.model.lower()
-        is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        self._use_prompt_caching = self._supports_anthropic_prompt_caching()
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1013,7 +1012,12 @@ class AIAgent:
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
-            source = "native Anthropic" if is_native_anthropic else "Claude via OpenRouter"
+            if self.provider == "anthropic":
+                source = "native Anthropic"
+            elif self._is_openrouter_url():
+                source = "Claude via OpenRouter"
+            else:
+                source = "Anthropic-compatible endpoint"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
@@ -1542,10 +1546,11 @@ class AIAgent:
             )
 
         # ── Re-evaluate prompt caching ──
-        is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
-        self._use_prompt_caching = (
-            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
-            or is_native_anthropic
+        self._use_prompt_caching = self._supports_anthropic_prompt_caching(
+            provider=new_provider,
+            base_url=self.base_url,
+            api_mode=api_mode,
+            model=new_model,
         )
 
         # ── Update context compressor ──
@@ -5504,10 +5509,11 @@ class AIAgent:
                 }
 
             # Re-evaluate prompt caching for the new provider/model
-            is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
-            self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
-                or is_native_anthropic
+            self._use_prompt_caching = self._supports_anthropic_prompt_caching(
+                provider=fb_provider,
+                base_url=fb_base_url,
+                api_mode=fb_api_mode,
+                model=fb_model,
             )
 
             # Update context compressor limits for the fallback model.
@@ -5846,6 +5852,33 @@ class AIAgent:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/go" in base
+
+    def _supports_anthropic_prompt_caching(
+        self,
+        provider: str | None = None,
+        base_url: str | None = None,
+        api_mode: str | None = None,
+        model: str | None = None,
+    ) -> bool:
+        """Return True when Anthropic cache_control markers are safe to enable."""
+        effective_api_mode = api_mode if api_mode is not None else self.api_mode
+        effective_provider = (provider if provider is not None else self.provider or "").lower()
+        effective_base_url = base_url if base_url is not None else self.base_url
+        effective_model = (model if model is not None else self.model or "").lower()
+
+        if (base_url is None and self._is_openrouter_url()) or "openrouter" in (effective_base_url or "").lower():
+            return "claude" in effective_model
+
+        if effective_api_mode != "anthropic_messages":
+            return False
+
+        if effective_provider == "anthropic":
+            return True
+
+        return "claude" in effective_model and _is_anthropic_compat_endpoint(
+            effective_provider,
+            effective_base_url,
+        )
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
@@ -7982,12 +8015,14 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
-            # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
+            # Apply Anthropic prompt caching for Claude models on Anthropic-compatible
+            # endpoints (native Anthropic, OpenRouter, and /anthropic proxies).
             if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))
+                api_messages = apply_anthropic_cache_control(
+                    api_messages,
+                    cache_ttl=self._cache_ttl,
+                    native_anthropic=self._supports_anthropic_prompt_caching(),
+                )
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not

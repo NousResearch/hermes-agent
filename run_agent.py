@@ -6609,7 +6609,8 @@ class AIAgent:
                     control_action = None
 
             if control_action is not None:
-                if self._should_emit_quiet_tool_messages():
+                emit_quiet_tool_messages = getattr(self, "_should_emit_quiet_tool_messages", lambda: False)
+                if emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool

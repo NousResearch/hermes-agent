@@ -84,6 +84,64 @@ def agent_with_memory_tool():
         return a
 
 
+def _make_mock_context_compressor(context_length: int) -> MagicMock:
+    """Build a minimal compressor stub for AIAgent.__init__ tests."""
+    compressor = MagicMock()
+    compressor.context_length = context_length
+    compressor.threshold_tokens = int(context_length * 0.50)
+    compressor.get_tool_schemas.return_value = []
+    compressor.on_session_start.return_value = None
+    return compressor
+
+
+def test_aiagent_allows_explicit_context_length_override_below_minimum():
+    compressor = _make_mock_context_compressor(32_768)
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", return_value=compressor),
+        patch("hermes_cli.config.load_config", return_value={"model": {"context_length": 32_768}}),
+        patch.object(AIAgent, "_check_compression_model_feasibility", return_value=None),
+    ):
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert agent._config_context_length == 32_768
+    assert agent.context_compressor.context_length == 32_768
+
+
+def test_aiagent_rejects_sub_minimum_context_without_override():
+    compressor = _make_mock_context_compressor(32_768)
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+        patch("run_agent.ContextCompressor", return_value=compressor),
+        patch("hermes_cli.config.load_config", return_value={}),
+        patch.object(AIAgent, "_check_compression_model_feasibility", return_value=None),
+    ):
+        with pytest.raises(ValueError, match="32,768 tokens"):
+            AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+
 def test_aiagent_reuses_existing_errors_log_handler():
     """Repeated AIAgent init should not accumulate duplicate errors.log handlers."""
     root_logger = logging.getLogger()

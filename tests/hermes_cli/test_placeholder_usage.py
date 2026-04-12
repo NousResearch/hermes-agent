@@ -46,3 +46,19 @@ def test_setup_summary_marks_placeholders(tmp_path, capsys):
 
     out = capsys.readouterr().out
     assert "hermes config set <key> <value>" in out
+
+
+
+def test_show_config_lists_extended_messaging_platforms(tmp_path, capsys):
+    env = {
+        "HERMES_HOME": str(tmp_path),
+        "FEISHU_APP_ID": "app-id",
+        "SLACK_BOT_TOKEN": "xoxb-test",
+    }
+    with patch.dict(os.environ, env, clear=False):
+        show_config()
+
+    out = capsys.readouterr().out
+    assert "Feishu" in out
+    assert "Slack" in out
+    assert "WhatsApp" in out

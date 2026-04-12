@@ -5195,7 +5195,7 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    def _try_activate_fallback(self) -> bool:
+    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
         Called when the current model is failing after retries.  Swaps the
@@ -5207,6 +5207,8 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
+            self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -5349,6 +5351,9 @@ class AIAgent:
         """
         if not self._fallback_activated:
             return False
+
+        if getattr(self, "_rate_limited_until", 0) > time.monotonic():
+            return False  # primary still in rate-limit cooldown, stay on fallback
 
         rt = self._primary_runtime
         try:
@@ -8690,7 +8695,7 @@ class AIAgent:
                         pool_may_recover = pool is not None and pool.has_available()
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback():
+                            if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 continue
 

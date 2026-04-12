@@ -573,6 +573,27 @@ async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
 
 
 @pytest.mark.asyncio
+async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-display-streaming-cli-only",
+        config_data={
+            "display": {
+                "streaming": True,
+                "interim_assistant_messages": True,
+            },
+            "streaming": {"enabled": False},
+        },
+    )
+
+    assert result.get("already_sent") is not True
+    assert adapter.edits == []
+    assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

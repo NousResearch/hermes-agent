@@ -411,12 +411,21 @@ class HindsightMemoryProvider(MemoryProvider):
         """Retain conversation turn in background (non-blocking)."""
         combined = f"User: {user_content}\nAssistant: {assistant_content}"
 
+        # Per Hindsight best practices: set a descriptive context (not just
+        # "conversation") and use a stable document_id keyed to the session
+        # so repeated retains upsert instead of creating duplicates.
+        context = f"Conversation turn in session {session_id}" if session_id else "Conversation turn"
+        doc_id = f"session-{session_id}" if session_id else None
+
         def _sync():
             try:
                 client = self._get_client()
-                _run_sync(client.aretain(
-                    bank_id=self._bank_id, content=combined, context="conversation"
-                ))
+                retain_kwargs = dict(
+                    bank_id=self._bank_id, content=combined, context=context
+                )
+                if doc_id:
+                    retain_kwargs["document_id"] = doc_id
+                _run_sync(client.aretain(**retain_kwargs))
             except Exception as e:
                 logger.warning("Hindsight sync failed: %s", e)
 

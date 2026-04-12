@@ -6548,17 +6548,23 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
+
+        Args:
+            focus_topic: Optional focus string for guided compression — the
+                summariser will prioritise preserving information related to
+                this topic.  Inspired by Claude Code's ``/compact <focus>``.
 
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
         _pre_msg_count = len(messages)
         logger.info(
-            "context compression started: session=%s messages=%d tokens=~%s model=%s",
+            "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
+            focus_topic,
         )
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
@@ -6570,7 +6576,7 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

@@ -5716,13 +5716,21 @@ class GatewayRunner:
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
-        """Handle /compress command -- manually compress conversation context."""
+        """Handle /compress command -- manually compress conversation context.
+
+        Accepts an optional focus topic: ``/compress <focus>`` guides the
+        summariser to preserve information related to *focus* while being
+        more aggressive about discarding everything else.
+        """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
 
         if not history or len(history) < 4:
             return "Not enough conversation to compress (need at least 4 messages)."
+
+        # Extract optional focus topic from command args
+        focus_topic = (event.get_command_args() or "").strip() or None
 
         try:
             from run_agent import AIAgent
@@ -5765,7 +5773,7 @@ class GatewayRunner:
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
-                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens)
+                lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
             )
 
             # _compress_context already calls end_session() on the old session
@@ -5789,7 +5797,10 @@ class GatewayRunner:
                 approx_tokens,
                 new_tokens,
             )
-            lines = [f"🗜️ {summary['headline']}", summary["token_line"]]
+            lines = [f"🗜️ {summary['headline']}"]
+            if focus_topic:
+                lines.append(f"Focus: \"{focus_topic}\"")
+            lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
             return "\n".join(lines)

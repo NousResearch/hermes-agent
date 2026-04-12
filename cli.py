@@ -9211,18 +9211,14 @@ class HermesCLI:
                 self._resume_panel_open = False
                 self._resume_filter = ""
                 self._resume_searching = False
-                event.app.invalidate()
                 sid = sel.get("id", "")
                 if sid:
-                    buf = event.app.layout.get_container()
-                    ta = event.app.layout.current_window
-                    # Insert /resume command into the input area
-                    input_area = event.app.layout.focusable_windows[0]
-                    for w in event.app.layout.focusable_windows:
-                        if hasattr(w, 'control') and hasattr(w.control, 'buffer'):
-                            w.control.buffer.text = f"/resume {sid}"
-                            w.control.buffer.cursor_position = len(f"/resume {sid}")
-                            break
+                    # Use current_buffer (the input TextArea) since the resume panel
+                    # is not a focusable widget — it's rendered via FormattedTextControl
+                    buf = event.app.current_buffer
+                    buf.text = f"/resume {sid}"
+                    buf.cursor_position = len(buf.text)
+                event.app.invalidate()
 
         @kb.add('escape', filter=Condition(lambda: self._resume_panel_open), eager=True)
         def _resume_esc(event):

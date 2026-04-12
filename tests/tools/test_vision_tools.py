@@ -769,6 +769,62 @@ class TestResizeImageForVision:
         assert _RESIZE_TARGET_BYTES == 5 * 1024 * 1024
         assert _MAX_BASE64_BYTES > _RESIZE_TARGET_BYTES
 
+    def test_extreme_aspect_ratio_preserved(self, tmp_path):
+        """Extreme aspect ratios should be preserved during resize."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very wide panorama: 8000x200
+        img = Image.new("RGB", (8000, 200), (100, 150, 200))
+        path = tmp_path / "panorama.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        # Decode and check aspect ratio is roughly preserved
+        import base64
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        from io import BytesIO
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 8000 / 200  # 40:1
+        resized_ratio = resized.width / resized.height if resized.height > 0 else 0
+        # Allow some tolerance (floor clamping), but ratio should stay above 10:1
+        # With independent halving, ratio would collapse to ~1:1. Proportional
+        # scaling should keep it well above 10.
+        assert resized_ratio > 10, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(ratio {resized_ratio:.1f}, expected >10)"
+        )
+
+    def test_tall_narrow_image_preserved(self, tmp_path):
+        """Tall narrow images should also preserve aspect ratio."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very tall: 200x6000
+        img = Image.new("RGB", (200, 6000), (200, 100, 50))
+        path = tmp_path / "tall.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        import base64
+        from io import BytesIO
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 6000 / 200  # 30:1 (h/w)
+        resized_ratio = resized.height / resized.width if resized.width > 0 else 0
+        assert resized_ratio > 5, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(h/w ratio {resized_ratio:.1f}, expected >5)"
+        )
+
     def test_no_pillow_returns_original(self, tmp_path):
         """Without Pillow, oversized images should be returned as-is."""
         # Create a dummy file

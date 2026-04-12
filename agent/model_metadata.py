@@ -27,12 +27,14 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
+    "xiaomi",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "mimo", "xiaomi-mimo",
     "qwen-portal",
 })
 
@@ -149,9 +151,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
     "MiniMaxAI/MiniMax-M2.5": 204800,
-    "XiaomiMiMo/MiMo-V2-Flash": 32768,
-    "mimo-v2-pro": 1048576,
-    "mimo-v2-omni": 1048576,
+    "XiaomiMiMo/MiMo-V2-Flash": 256000,
+    "mimo-v2-pro": 1000000,
+    "mimo-v2-omni": 256000,
+    "mimo-v2-flash": 256000,
     "zai-org/GLM-5": 202752,
 }
 
@@ -176,6 +179,12 @@ _MAX_COMPLETION_KEYS = (
 
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+# Docker / Podman / Lima DNS names that resolve to the host machine
+_CONTAINER_LOCAL_SUFFIXES = (
+    ".docker.internal",
+    ".containers.internal",
+    ".lima.internal",
+)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -211,6 +220,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
+    "api.xiaomimimo.com": "xiaomi",
+    "xiaomimimo.com": "xiaomi",
 }
 
 
@@ -248,6 +259,9 @@ def is_local_endpoint(base_url: str) -> bool:
     except Exception:
         return False
     if host in _LOCAL_HOSTS:
+        return True
+    # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
+    if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
         return True
     # RFC-1918 private ranges and link-local
     import ipaddress

@@ -19,14 +19,21 @@ const renderEstimateLine = (line: string) => {
   }
 
   return line
+    .replace(/!\[(.*?)\]\(([^)\s]+)\)/g, '[image: $1]')
     .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/^#{1,3}\s+/, '')
-    .replace(/^\s*[-*]\s+/, '• ')
+    .replace(/_(.+?)_/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/==(.+?)==/g, '$1')
+    .replace(/\[\^([^\]]+)\]/g, '[$1]')
+    .replace(/^#{1,6}\s+/, '')
+    .replace(/^\s*[-*+]\s+\[( |x|X)\]\s+/, (_m, checked: string) => `• [${checked.toLowerCase() === 'x' ? 'x' : ' '}] `)
+    .replace(/^\s*[-*+]\s+/, '• ')
     .replace(/^\s*(\d+)\.\s+/, '$1. ')
-    .replace(/^>\s?/, '│ ')
+    .replace(/^\s*(?:>\s*)+/, '│ ')
 }
 
 export const compactPreview = (s: string, max: number) => {
@@ -79,26 +86,34 @@ export const scaleHex = (hex: string, k: number) => {
 }
 
 export const estimateRows = (text: string, w: number, compact = false) => {
-  let inCode = false
+  let fence: { char: '`' | '~'; len: number } | null = null
   let rows = 0
 
   for (const raw of text.split('\n')) {
     const line = stripAnsi(raw)
+    const maybeFence = line.match(/^\s*(`{3,}|~{3,})(.*)$/)
 
-    if (line.startsWith('```')) {
-      if (!inCode) {
-        const lang = line.slice(3).trim()
+    if (maybeFence) {
+      const marker = maybeFence[1]!
+      const lang = maybeFence[2]!.trim()
+
+      if (!fence) {
+        fence = {
+          char: marker[0] as '`' | '~',
+          len: marker.length
+        }
 
         if (lang) {
           rows += Math.ceil((`─ ${lang}`.length || 1) / w)
         }
+      } else if (marker[0] === fence.char && marker.length >= fence.len) {
+        fence = null
       }
-
-      inCode = !inCode
 
       continue
     }
 
+    const inCode = Boolean(fence)
     const trimmed = line.trim()
 
     if (!inCode && trimmed.startsWith('|') && /^[|\s:-]+$/.test(trimmed)) {

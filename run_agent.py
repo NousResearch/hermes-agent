@@ -7445,7 +7445,7 @@ class AIAgent:
                     provider_preferences["order"] = self.providers_order
                 if self.provider_sort:
                     provider_preferences["sort"] = self.provider_sort
-                if provider_preferences:
+                if provider_preferences and self._is_openrouter_url():
                     summary_extra_body["provider"] = provider_preferences
 
                 if summary_extra_body:

@@ -782,7 +782,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # Try aiohttp first (always available), fall back to httpx
             try:
                 import aiohttp as _aiohttp
-                async with _aiohttp.ClientSession() as http:
+                async with _aiohttp.ClientSession(trust_env=True) as http:
                     async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
                         resp.raise_for_status()
                         data = await resp.read()

@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq } from '../types.js'
+
 import { TextInput } from './textInput.js'
 
 export function ApprovalPrompt({ onChoice, req, t }: { onChoice: (s: string) => void; req: ApprovalReq; t: Theme }) {
@@ -88,20 +89,31 @@ export function ClarifyPrompt({
   useInput((ch, key) => {
     if (key.escape) {
       typing && choices.length ? setTyping(false) : onCancel()
+
       return
     }
 
-    if (typing) return
+    if (typing) {
+      return
+    }
 
-    if (key.upArrow && sel > 0) setSel(s => s - 1)
-    if (key.downArrow && sel < choices.length) setSel(s => s + 1)
+    if (key.upArrow && sel > 0) {
+      setSel(s => s - 1)
+    }
+
+    if (key.downArrow && sel < choices.length) {
+      setSel(s => s + 1)
+    }
 
     if (key.return) {
       sel === choices.length ? setTyping(true) : choices[sel] && onAnswer(choices[sel]!)
     }
 
     const n = parseInt(ch)
-    if (n >= 1 && n <= choices.length) onAnswer(choices[n - 1]!)
+
+    if (n >= 1 && n <= choices.length) {
+      onAnswer(choices[n - 1]!)
+    }
   })
 
   if (typing || !choices.length) {
@@ -126,7 +138,9 @@ export function ClarifyPrompt({
       {[...choices, 'Other (type your answer)'].map((c, i) => (
         <Text key={i}>
           <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
-          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>{i + 1}. {c}</Text>
+          <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+            {i + 1}. {c}
+          </Text>
         </Text>
       ))}
 

@@ -10,11 +10,11 @@ const FOOTNOTE_RE = /^\[\^([^\]]+)\]:\s*(.*)$/
 const DEF_RE = /^\s*:\s+(.+)$/
 const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
 const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
-const INLINE_RE =
-  new RegExp(
-    `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
-    'g'
-  )
+
+const INLINE_RE = new RegExp(
+  `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+  'g'
+)
 
 type Fence = {
   char: '`' | '~'
@@ -171,11 +171,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
       parts.push(renderAutolink(parts.length, t, url))
 
       if (tail) {
-        parts.push(
-          <Text key={parts.length}>
-            {tail}
-          </Text>
-        )
+        parts.push(<Text key={parts.length}>{tail}</Text>)
       }
     }
 
@@ -193,16 +189,8 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
   const lines = text.split('\n')
   const nodes: ReactNode[] = []
   let i = 0
-  let prevKind:
-    | 'blank'
-    | 'code'
-    | 'heading'
-    | 'list'
-    | 'paragraph'
-    | 'quote'
-    | 'rule'
-    | 'table'
-    | null = null
+
+  let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'rule' | 'table' | null = null
 
   const gap = () => {
     if (nodes.length && prevKind !== 'blank') {
@@ -400,7 +388,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
 
         nodes.push(
           <Text key={`${key}-def-${i}`}>
-            <Text color={t.color.dim}>  · </Text>
+            <Text color={t.color.dim}> · </Text>
             <MdInline t={t} text={def[1]!} />
           </Text>
         )

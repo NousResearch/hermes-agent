@@ -54,8 +54,7 @@ export const buildToolTrailLine = (name: string, context: string, error?: boolea
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 
 /** Ephemeral status lines that should vanish once the next phase starts. */
-export const isTransientTrailLine = (line: string) =>
-  line.startsWith('drafting ') || line === 'analyzing tool output…'
+export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'
 
 /** Whether a persisted/activity tool line belongs to the same tool label as a newer line. */
 export const sameToolTrailGroup = (label: string, entry: string) =>

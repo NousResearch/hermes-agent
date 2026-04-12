@@ -157,30 +157,54 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def find_gateway_pids(exclude_pids: set | None = None) -> list:
+def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
     """Find PIDs of running gateway processes.
 
     Args:
         exclude_pids: PIDs to exclude from the result (e.g. service-managed
             PIDs that should not be killed during a stale-process sweep).
+        all_profiles: When ``True``, return gateway PIDs across **all**
+            profiles (the pre-7923 global behaviour).  ``hermes update``
+            needs this because a code update affects every profile.
+            When ``False`` (default), only PIDs belonging to the current
+            Hermes profile are returned.
     """
-    pids = []
     _exclude = exclude_pids or set()
+    pids = [pid for pid in _get_service_pids() if pid not in _exclude]
     patterns = [
         "hermes_cli.main gateway",
+        "hermes_cli.main --profile",
+        "hermes_cli.main -p",
         "hermes_cli/main.py gateway",
+        "hermes_cli/main.py --profile",
+        "hermes_cli/main.py -p",
         "hermes gateway",
         "gateway/run.py",
     ]
+    current_home = str(get_hermes_home().resolve())
+    current_profile_arg = _profile_arg(current_home)
+    current_profile_name = current_profile_arg.split()[-1] if current_profile_arg else ""
+
+    def _matches_current_profile(command: str) -> bool:
+        if current_profile_name:
+            return (
+                f"--profile {current_profile_name}" in command
+                or f"-p {current_profile_name}" in command
+                or f"HERMES_HOME={current_home}" in command
+            )
+
+        if "--profile " in command or " -p " in command:
+            return False
+        if "HERMES_HOME=" in command and f"HERMES_HOME={current_home}" not in command:
+            return False
+        return True
 
     try:
         if is_windows():
-            # Windows: use wmic to search command lines
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
                 capture_output=True, text=True, timeout=10
             )
-            # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
             current_cmd = ""
             for line in result.stdout.split('\n'):
                 line = line.strip()
@@ -188,7 +212,7 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns):
+                    if any(p in current_cmd for p in patterns) and (all_profiles or _matches_current_profile(current_cmd)):
                         try:
                             pid = int(pid_str)
                             if pid != os.getpid() and pid not in pids and pid not in _exclude:
@@ -198,41 +222,57 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                     current_cmd = ""
         else:
             result = subprocess.run(
-                ["ps", "aux"],
+                ["ps", "eww", "-ax", "-o", "pid=,command="],
                 capture_output=True,
                 text=True,
                 timeout=10,
             )
             for line in result.stdout.split('\n'):
-                # Skip grep and current process
-                if 'grep' in line or str(os.getpid()) in line:
+                stripped = line.strip()
+                if not stripped or 'grep' in stripped:
                     continue
-                for pattern in patterns:
-                    if pattern in line:
-                        parts = line.split()
-                        if len(parts) > 1:
-                            try:
-                                pid = int(parts[1])
-                                if pid not in pids and pid not in _exclude:
-                                    pids.append(pid)
-                            except ValueError:
-                                continue
-                        break
-    except Exception:
+
+                pid = None
+                command = ""
+
+                parts = stripped.split(None, 1)
+                if len(parts) == 2:
+                    try:
+                        pid = int(parts[0])
+                        command = parts[1]
+                    except ValueError:
+                        pid = None
+
+                if pid is None:
+                    aux_parts = stripped.split()
+                    if len(aux_parts) > 10 and aux_parts[1].isdigit():
+                        pid = int(aux_parts[1])
+                        command = " ".join(aux_parts[10:])
+
+                if pid is None:
+                    continue
+                if pid == os.getpid() or pid in pids or pid in _exclude:
+                    continue
+                if any(pattern in command for pattern in patterns) and (all_profiles or _matches_current_profile(command)):
+                    pids.append(pid)
+    except (OSError, subprocess.TimeoutExpired):
         pass
 
     return pids
 
 
-def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None) -> int:
+def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
+                           all_profiles: bool = False) -> int:
     """Kill any running gateway processes. Returns count killed.
 
     Args:
         force: Use the platform's force-kill mechanism instead of graceful terminate.
         exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
             restarted and should not be killed).
+        all_profiles: When ``True``, kill across all profiles.  Passed
+            through to :func:`find_gateway_pids`.
     """
-    pids = find_gateway_pids(exclude_pids=exclude_pids)
+    pids = find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles)
     killed = 0
     
     for pid in pids:
@@ -633,6 +673,17 @@ def print_systemd_linger_guidance() -> None:
         print("  If you want the gateway user service to survive logout, run:")
         print("  sudo loginctl enable-linger $USER")
 
+def _launchd_user_home() -> Path:
+    """Return the real macOS user home for launchd artifacts.
+
+    Profile-mode Hermes often sets ``HOME`` to a profile-scoped directory, but
+    launchd user agents still live under the actual account home.
+    """
+    import pwd
+
+    return Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
 def get_launchd_plist_path() -> Path:
     """Return the launchd plist path, scoped per profile.
 
@@ -641,7 +692,7 @@ def get_launchd_plist_path() -> Path:
     """
     suffix = _profile_suffix()
     name = f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
-    return Path.home() / "Library" / "LaunchAgents" / f"{name}.plist"
+    return _launchd_user_home() / "Library" / "LaunchAgents" / f"{name}.plist"
 
 def _detect_venv_dir() -> Path | None:
     """Detect the active virtualenv directory.
@@ -837,6 +888,25 @@ WantedBy=default.target
 
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+def _normalize_launchd_plist_for_comparison(text: str) -> str:
+    """Normalize launchd plist text for staleness checks.
+
+    The generated plist intentionally captures a broad PATH assembled from the
+    invoking shell so user-installed tools remain reachable under launchd.
+    That makes raw text comparison unstable across shells, so ignore the PATH
+    payload when deciding whether the installed plist is stale.
+    """
+    import re
+
+    normalized = _normalize_service_definition(text)
+    return re.sub(
+        r'(<key>PATH</key>\s*<string>)(.*?)(</string>)',
+        r'\1__HERMES_PATH__\3',
+        normalized,
+        flags=re.S,
+    )
 
 
 def systemd_unit_is_current(system: bool = False) -> bool:
@@ -1220,7 +1290,7 @@ def launchd_plist_is_current() -> bool:
 
     installed = plist_path.read_text(encoding="utf-8")
     expected = generate_launchd_plist()
-    return _normalize_service_definition(installed) == _normalize_service_definition(expected)
+    return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
 
 
 def refresh_launchd_plist_if_needed() -> bool:
@@ -1981,6 +2051,36 @@ def _setup_whatsapp():
     cmd_whatsapp(argparse.Namespace())
 
 
+def _setup_email():
+    """Configure Email via the standard platform setup."""
+    email_platform = next(p for p in _PLATFORMS if p["key"] == "email")
+    _setup_standard_platform(email_platform)
+
+
+def _setup_sms():
+    """Configure SMS (Twilio) via the standard platform setup."""
+    sms_platform = next(p for p in _PLATFORMS if p["key"] == "sms")
+    _setup_standard_platform(sms_platform)
+
+
+def _setup_dingtalk():
+    """Configure DingTalk via the standard platform setup."""
+    dingtalk_platform = next(p for p in _PLATFORMS if p["key"] == "dingtalk")
+    _setup_standard_platform(dingtalk_platform)
+
+
+def _setup_feishu():
+    """Configure Feishu / Lark via the standard platform setup."""
+    feishu_platform = next(p for p in _PLATFORMS if p["key"] == "feishu")
+    _setup_standard_platform(feishu_platform)
+
+
+def _setup_wecom():
+    """Configure WeCom (Enterprise WeChat) via the standard platform setup."""
+    wecom_platform = next(p for p in _PLATFORMS if p["key"] == "wecom")
+    _setup_standard_platform(wecom_platform)
+
+
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():
@@ -2540,7 +2640,7 @@ def gateway_command(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
-            killed = kill_gateway_processes()
+            killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")

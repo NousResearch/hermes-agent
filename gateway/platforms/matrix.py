@@ -92,6 +92,7 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
 )
+from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
 
@@ -216,8 +217,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._pending_megolm: list = []
 
         # Thread participation tracking (for require_mention bypass)
-        self._bot_participated_threads: set = self._load_participated_threads()
-        self._MAX_TRACKED_THREADS = 500
+        self._threads = ThreadParticipationTracker("matrix")
 
         # Mention/thread gating — parsed once from env vars.
         self._require_mention: bool = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
@@ -1019,7 +1019,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Require-mention gating.
         if not is_dm:
             is_free_room = room_id in self._free_rooms
-            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+            in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
                 if not is_mentioned:
                     return None
@@ -1027,7 +1027,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # DM mention-thread.
         if is_dm and not thread_id and self._dm_mention_threads and is_mentioned:
             thread_id = event_id
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         # Strip mention from body.
         if is_mentioned:
@@ -1036,7 +1036,7 @@ class MatrixAdapter(BasePlatformAdapter):
         # Auto-thread.
         if not is_dm and not thread_id and self._auto_thread:
             thread_id = event_id
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
         source = self.build_source(
@@ -1048,7 +1048,7 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
         if thread_id:
-            self._track_thread(thread_id)
+            self._threads.mark(thread_id)
 
         self._background_read_receipt(room_id, event_id)
 
@@ -1696,48 +1696,6 @@ class MatrixAdapter(BasePlatformAdapter):
             rid: (rid in dm_room_ids)
             for rid in self._joined_rooms
         }
-
-    # ------------------------------------------------------------------
-    # Thread participation tracking
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _thread_state_path() -> Path:
-        """Path to the persisted thread participation set."""
-        from hermes_cli.config import get_hermes_home
-        return get_hermes_home() / "matrix_threads.json"
-
-    @classmethod
-    def _load_participated_threads(cls) -> set:
-        """Load persisted thread IDs from disk."""
-        path = cls._thread_state_path()
-        try:
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return set(data)
-        except Exception as e:
-            logger.debug("Could not load matrix thread state: %s", e)
-        return set()
-
-    def _save_participated_threads(self) -> None:
-        """Persist the current thread set to disk (best-effort)."""
-        path = self._thread_state_path()
-        try:
-            thread_list = list(self._bot_participated_threads)
-            if len(thread_list) > self._MAX_TRACKED_THREADS:
-                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
-                self._bot_participated_threads = set(thread_list)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(thread_list), encoding="utf-8")
-        except Exception as e:
-            logger.debug("Could not save matrix thread state: %s", e)
-
-    def _track_thread(self, thread_id: str) -> None:
-        """Add a thread to the participation set and persist."""
-        if thread_id not in self._bot_participated_threads:
-            self._bot_participated_threads.add(thread_id)
-            self._save_participated_threads()
 
     # ------------------------------------------------------------------
     # Mention detection helpers

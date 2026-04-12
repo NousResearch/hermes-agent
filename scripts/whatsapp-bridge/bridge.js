@@ -561,8 +561,11 @@ if (PAIR_ONLY) {
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
     if (ALLOWED_USERS.size > 0) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
+    } else if (WHATSAPP_MODE === 'self-chat') {
+      console.log(`🔒 Self-chat mode: only messages from your own number are processed`);
     } else {
-      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
+      console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set in bot mode — messages from unknown senders will be DENIED`);
+      console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone1,phone2> or WHATSAPP_ALLOW_ALL_USERS=true to allow senders`);
     }
     console.log();
     startSocket();

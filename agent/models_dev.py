@@ -143,6 +143,9 @@ class ProviderInfo:
 # Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
+    "openai": "openai",
+    # Hermes "openai-codex" provider uses OpenAI's model catalog.
+    "openai-codex": "openai",
     "anthropic": "anthropic",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",

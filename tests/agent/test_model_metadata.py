@@ -208,6 +208,17 @@ class TestGetModelContextLength:
         assert get_model_context_length("test/model") == 32000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.models_dev.lookup_models_dev_context")
+    def test_openai_codex_provider_uses_models_dev_context(self, mock_lookup, mock_fetch):
+        mock_fetch.return_value = {}
+        mock_lookup.return_value = 400000
+
+        result = get_model_context_length("gpt-5.4-mini", provider="openai-codex")
+
+        assert result == 400000
+        mock_lookup.assert_called_once_with("openai-codex", "gpt-5.4-mini")
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_fallback_to_defaults(self, mock_fetch):
         mock_fetch.return_value = {}
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000

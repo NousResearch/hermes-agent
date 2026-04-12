@@ -17,11 +17,14 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     auth_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/AuthModels.kt").read_text(encoding="utf-8")
     auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
 
-    for label in ["Email", "Google", "Phone", "ChatGPT", "Claude", "Gemini"]:
+    for label in ["Email", "Google", "Phone", "ChatGPT", "Claude", "Gemini", "Qwen", "Z.AI"]:
         assert label in auth_models
     assert 'Corr3xt auth base URL' in auth_screen
     assert 'Pending Corr3xt sign-in' in auth_screen
-    assert 'Cancel pending sign-in' in auth_screen
+    assert 'strings.cancelPendingSignIn()' in auth_screen
+    assert 'strings.authRefreshDescription()' in auth_screen
+    assert 'strings.authCancelPendingDescription()' in auth_screen
+    assert 'strings.authWaitingCallbackFor(uiState.pendingMethodLabel)' in auth_screen
     assert 'secure callback' in auth_screen
     assert 'Sign in' in auth_screen
     assert 'extraBottomSpacing' in auth_screen
@@ -40,12 +43,14 @@ def test_main_activity_and_manifest_handle_auth_callbacks():
     assert 'android:resizeableActivity="true"' in manifest
 
 
-def test_provider_presets_include_chatgpt_claude_and_gemini():
+def test_provider_presets_include_chatgpt_claude_gemini_qwen_and_zai():
     presets = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/data/ProviderPresets.kt").read_text(encoding="utf-8")
 
     assert 'id = "chatgpt-web"' in presets
     assert 'id = "anthropic"' in presets
     assert 'id = "gemini"' in presets
+    assert 'id = "qwen-oauth"' in presets
+    assert 'id = "zai"' in presets
 
 
 def test_auth_callback_hardening_strings_and_base_url_validation_exist():

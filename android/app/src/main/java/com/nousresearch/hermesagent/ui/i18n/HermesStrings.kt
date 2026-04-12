@@ -438,8 +438,145 @@ data class HermesStrings(
                 AppLanguage.FRENCH -> "Authentifiez l’accès Google AI Studio / Gemini et appliquez-le à Hermes Android."
                 AppLanguage.ENGLISH -> fallback
             }
+            "qwen" -> when (language) {
+                AppLanguage.CHINESE -> "验证 Qwen OAuth 访问并自动同步到 Hermes Android。"
+                AppLanguage.SPANISH -> "Autentica el acceso con Qwen OAuth y sincronízalo automáticamente con Hermes Android."
+                AppLanguage.GERMAN -> "Authentifiziere den Zugriff über Qwen OAuth und synchronisiere ihn automatisch mit Hermes Android."
+                AppLanguage.PORTUGUESE -> "Autentique o acesso do Qwen OAuth e sincronize-o automaticamente com o Hermes Android."
+                AppLanguage.FRENCH -> "Authentifiez l’accès Qwen OAuth et synchronisez-le automatiquement avec Hermes Android."
+                AppLanguage.ENGLISH -> fallback
+            }
+            "zai" -> when (language) {
+                AppLanguage.CHINESE -> "验证 Z.AI / GLM 访问并将其应用到 Hermes Android。"
+                AppLanguage.SPANISH -> "Autentica el acceso de Z.AI / GLM y aplícalo a Hermes Android."
+                AppLanguage.GERMAN -> "Authentifiziere den Zugriff auf Z.AI / GLM und wende ihn auf Hermes Android an."
+                AppLanguage.PORTUGUESE -> "Autentique o acesso da Z.AI / GLM e aplique-o ao Hermes Android."
+                AppLanguage.FRENCH -> "Authentifiez l’accès Z.AI / GLM et appliquez-le à Hermes Android."
+                AppLanguage.ENGLISH -> fallback
+            }
             else -> fallback
         }
+    }
+
+    fun authRefreshDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "重新加载本地 Corr3xt 与提供商登录状态。"
+        AppLanguage.SPANISH -> "Vuelve a cargar el estado local de Corr3xt y de los proveedores."
+        AppLanguage.GERMAN -> "Lädt den lokalen Corr3xt- und Anbieter-Anmeldestatus neu."
+        AppLanguage.PORTUGUESE -> "Recarrega o estado local do Corr3xt e dos provedores."
+        AppLanguage.FRENCH -> "Recharge l’état local de Corr3xt et des fournisseurs."
+        AppLanguage.ENGLISH -> "Reload local Corr3xt and provider auth status."
+    }
+
+    fun authCancelPendingDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "停止等待当前的 Corr3xt 回调。"
+        AppLanguage.SPANISH -> "Deja de esperar el callback actual de Corr3xt."
+        AppLanguage.GERMAN -> "Beendet das Warten auf den aktuellen Corr3xt-Callback."
+        AppLanguage.PORTUGUESE -> "Para de aguardar o callback atual do Corr3xt."
+        AppLanguage.FRENCH -> "Arrête d’attendre le callback Corr3xt en cours."
+        AppLanguage.ENGLISH -> "Stop waiting for the current Corr3xt callback."
+    }
+
+    fun authWaitingCallbackFor(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "正在等待 $label 的 Corr3xt 回调。"
+        AppLanguage.SPANISH -> "Esperando el callback de Corr3xt para $label."
+        AppLanguage.GERMAN -> "Warte auf den Corr3xt-Callback für $label."
+        AppLanguage.PORTUGUESE -> "Aguardando o callback do Corr3xt para $label."
+        AppLanguage.FRENCH -> "En attente du callback Corr3xt pour $label."
+        AppLanguage.ENGLISH -> "Waiting for Corr3xt callback for $label."
+    }
+
+    fun localDownloadsExampleGuidance(): String = when (language) {
+        AppLanguage.CHINESE -> "示例：GGUF 可使用 `Qwen/Qwen2.5-1.5B-Instruct-GGUF` 或 `bartowski/microsoft_Phi-4-mini-instruct-GGUF`；LiteRT-LM 可使用 `litert-community/Qwen2.5-1.5B-Instruct`、`litert-community/Phi-4-mini-instruct`、`litert-community/DeepSeek-R1-Distill-Qwen-1.5B`，以及 `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`。Google AI Edge Gallery 目前用这些精挑细选的 LiteRT-LM 仓库支持 Gemma、Qwen 和 DeepSeek；Nemotron / Cascade 这类模型目前更适合通过 llama.cpp + GGUF 运行。"
+        AppLanguage.SPANISH -> "Ejemplos: para GGUF usa `Qwen/Qwen2.5-1.5B-Instruct-GGUF` o `bartowski/microsoft_Phi-4-mini-instruct-GGUF`; para LiteRT-LM usa `litert-community/Qwen2.5-1.5B-Instruct`, `litert-community/Phi-4-mini-instruct`, `litert-community/DeepSeek-R1-Distill-Qwen-1.5B` y `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`. Google AI Edge Gallery hoy se apoya en estos repos LiteRT-LM curados para Gemma, Qwen y DeepSeek; familias como Nemotron / Cascade siguen siendo más prácticas con llama.cpp + GGUF."
+        AppLanguage.GERMAN -> "Beispiele: Für GGUF nutze `Qwen/Qwen2.5-1.5B-Instruct-GGUF` oder `bartowski/microsoft_Phi-4-mini-instruct-GGUF`; für LiteRT-LM nutze `litert-community/Qwen2.5-1.5B-Instruct`, `litert-community/Phi-4-mini-instruct`, `litert-community/DeepSeek-R1-Distill-Qwen-1.5B` sowie `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`. Google AI Edge Gallery stützt sich derzeit auf diese kuratierten LiteRT-LM-Repos für Gemma, Qwen und DeepSeek; Nemotron-/Cascade-Familien sind aktuell mit llama.cpp + GGUF praktischer."
+        AppLanguage.PORTUGUESE -> "Exemplos: para GGUF use `Qwen/Qwen2.5-1.5B-Instruct-GGUF` ou `bartowski/microsoft_Phi-4-mini-instruct-GGUF`; para LiteRT-LM use `litert-community/Qwen2.5-1.5B-Instruct`, `litert-community/Phi-4-mini-instruct`, `litert-community/DeepSeek-R1-Distill-Qwen-1.5B` e `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`. Hoje o Google AI Edge Gallery depende desses repositórios LiteRT-LM curados para Gemma, Qwen e DeepSeek; famílias como Nemotron / Cascade ainda são mais práticas com llama.cpp + GGUF."
+        AppLanguage.FRENCH -> "Exemples : pour GGUF, utilisez `Qwen/Qwen2.5-1.5B-Instruct-GGUF` ou `bartowski/microsoft_Phi-4-mini-instruct-GGUF` ; pour LiteRT-LM, utilisez `litert-community/Qwen2.5-1.5B-Instruct`, `litert-community/Phi-4-mini-instruct`, `litert-community/DeepSeek-R1-Distill-Qwen-1.5B` ainsi que `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`. Google AI Edge Gallery s’appuie aujourd’hui sur ces dépôts LiteRT-LM sélectionnés pour Gemma, Qwen et DeepSeek ; des familles comme Nemotron / Cascade restent plus pratiques via llama.cpp + GGUF."
+        AppLanguage.ENGLISH -> "Examples: for GGUF use `Qwen/Qwen2.5-1.5B-Instruct-GGUF` or `bartowski/microsoft_Phi-4-mini-instruct-GGUF`; for LiteRT-LM use `litert-community/Qwen2.5-1.5B-Instruct`, `litert-community/Phi-4-mini-instruct`, `litert-community/DeepSeek-R1-Distill-Qwen-1.5B`, and `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm`. Google AI Edge Gallery currently relies on these curated LiteRT-LM repos for Gemma, Qwen, and DeepSeek; Nemotron / Cascade families are still more practical through llama.cpp + GGUF."
+    }
+
+    fun downloadManagerReliabilityDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "意外断线会由 Android DownloadManager 安全处理。如果手机在下载过程中关机，Hermes 会在重启后重新加载已保存的进度。若移动数据一直暂停，请打开系统下载界面，或使用下方按钮在允许移动数据 / 漫游后重新开始。"
+        AppLanguage.SPANISH -> "Android DownloadManager maneja con seguridad las pérdidas de conexión inesperadas. Si el teléfono se apaga a mitad de la descarga, Hermes volverá a cargar el progreso guardado al reiniciarse. Si los datos móviles siguen pausados, abre la pantalla de descargas del sistema o reinicia la descarga abajo permitiendo datos móviles / roaming."
+        AppLanguage.GERMAN -> "Unerwartete Verbindungsabbrüche werden vom Android-Downloadmanager sicher behandelt. Wenn sich das Telefon mitten im Download ausschaltet, lädt Hermes den gespeicherten Fortschritt nach dem Neustart erneut. Falls mobile Daten weiter pausiert bleiben, öffne die System-Downloads oder starte den Download unten mit erlaubten mobilen Daten / Roaming neu."
+        AppLanguage.PORTUGUESE -> "Perdas inesperadas de conexão são tratadas com segurança pelo Android DownloadManager. Se o telefone desligar no meio do download, o Hermes recarrega o progresso salvo após reiniciar. Se os dados móveis continuarem pausados, abra a tela de downloads do sistema ou reinicie abaixo permitindo dados móveis / roaming."
+        AppLanguage.FRENCH -> "Les pertes de connexion inattendues sont gérées en toute sécurité par Android DownloadManager. Si le téléphone s’éteint pendant le téléchargement, Hermes recharge la progression enregistrée après le redémarrage. Si les données mobiles restent bloquées, ouvrez l’écran de téléchargements système ou relancez ci-dessous en autorisant les données mobiles / l’itinérance."
+        AppLanguage.ENGLISH -> "Unexpected connection loss is handled safely by Android DownloadManager. If the phone shuts down mid-download, Hermes reloads the saved progress after restart. If mobile data stays paused, open the system Downloads screen or restart below with mobile data / roaming allowed."
+    }
+
+    fun localDownloadStatusLabel(status: String): String {
+        return when (status.trim().lowercase()) {
+            "queued" -> when (language) {
+                AppLanguage.CHINESE -> "排队中"
+                AppLanguage.SPANISH -> "En cola"
+                AppLanguage.GERMAN -> "In Warteschlange"
+                AppLanguage.PORTUGUESE -> "Na fila"
+                AppLanguage.FRENCH -> "En file d’attente"
+                AppLanguage.ENGLISH -> "Queued"
+            }
+            "downloading" -> when (language) {
+                AppLanguage.CHINESE -> "下载中"
+                AppLanguage.SPANISH -> "Descargando"
+                AppLanguage.GERMAN -> "Wird heruntergeladen"
+                AppLanguage.PORTUGUESE -> "Baixando"
+                AppLanguage.FRENCH -> "Téléchargement"
+                AppLanguage.ENGLISH -> "Downloading"
+            }
+            "paused" -> when (language) {
+                AppLanguage.CHINESE -> "已暂停"
+                AppLanguage.SPANISH -> "Pausado"
+                AppLanguage.GERMAN -> "Pausiert"
+                AppLanguage.PORTUGUESE -> "Pausado"
+                AppLanguage.FRENCH -> "En pause"
+                AppLanguage.ENGLISH -> "Paused"
+            }
+            "completed" -> when (language) {
+                AppLanguage.CHINESE -> "已完成"
+                AppLanguage.SPANISH -> "Completado"
+                AppLanguage.GERMAN -> "Abgeschlossen"
+                AppLanguage.PORTUGUESE -> "Concluído"
+                AppLanguage.FRENCH -> "Terminé"
+                AppLanguage.ENGLISH -> "Completed"
+            }
+            "failed" -> when (language) {
+                AppLanguage.CHINESE -> "失败"
+                AppLanguage.SPANISH -> "Falló"
+                AppLanguage.GERMAN -> "Fehlgeschlagen"
+                AppLanguage.PORTUGUESE -> "Falhou"
+                AppLanguage.FRENCH -> "Échec"
+                AppLanguage.ENGLISH -> "Failed"
+            }
+            "missing" -> when (language) {
+                AppLanguage.CHINESE -> "缺失"
+                AppLanguage.SPANISH -> "Falta"
+                AppLanguage.GERMAN -> "Fehlt"
+                AppLanguage.PORTUGUESE -> "Ausente"
+                AppLanguage.FRENCH -> "Manquant"
+                AppLanguage.ENGLISH -> "Missing"
+            }
+            else -> status
+        }
+    }
+
+    fun localDownloadStatusLine(runtimeFlavor: String, status: String): String {
+        return "$runtimeFlavor · ${localDownloadStatusLabel(status)}"
+    }
+
+    fun restartOnMobileData(): String = when (language) {
+        AppLanguage.CHINESE -> "通过移动数据重新开始"
+        AppLanguage.SPANISH -> "Reiniciar con datos móviles"
+        AppLanguage.GERMAN -> "Über mobile Daten neu starten"
+        AppLanguage.PORTUGUESE -> "Reiniciar com dados móveis"
+        AppLanguage.FRENCH -> "Redémarrer via les données mobiles"
+        AppLanguage.ENGLISH -> "Restart on mobile data"
+    }
+
+    fun openSystemDownloads(): String = when (language) {
+        AppLanguage.CHINESE -> "打开系统下载"
+        AppLanguage.SPANISH -> "Abrir descargas del sistema"
+        AppLanguage.GERMAN -> "System-Downloads öffnen"
+        AppLanguage.PORTUGUESE -> "Abrir downloads do sistema"
+        AppLanguage.FRENCH -> "Ouvrir les téléchargements système"
+        AppLanguage.ENGLISH -> "Open system Downloads"
     }
 
     fun authSignedInWith(label: String): String = when (language) {

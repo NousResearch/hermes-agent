@@ -8,9 +8,11 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
     strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
     chat = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
     auth_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthViewModel.kt").read_text(encoding="utf-8")
+    auth_screen = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/auth/AuthScreen.kt").read_text(encoding="utf-8")
     device = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/device/DeviceScreen.kt").read_text(encoding="utf-8")
     tool_profile = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/ToolProfileCard.kt").read_text(encoding="utf-8")
     settings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
     portal = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/portal/NousPortalScreen.kt").read_text(encoding="utf-8")
 
     for key in [
@@ -24,14 +26,25 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
         'portalLoadingStatus',
         'authNotSignedIn',
         'cancelPendingSignIn',
+        'authRefreshDescription',
+        'authWaitingCallbackFor',
+        'localDownloadsExampleGuidance',
+        'downloadManagerReliabilityDescription',
+        'localDownloadStatusLine',
+        'restartOnMobileData',
+        'openSystemDownloads',
     ]:
         assert key in strings
 
     assert 'strings.chatCommandsTip' in chat
     assert 'currentStrings()' in auth_view_model
+    assert 'strings.authRefreshDescription()' in auth_screen
+    assert 'strings.authWaitingCallbackFor(uiState.pendingMethodLabel)' in auth_screen
     assert 'strings.deviceGuideTitle' in device
     assert 'strings.toolProfileTitle' in tool_profile
     assert 'strings.providerLabel' in settings
+    assert 'strings.localDownloadsExampleGuidance()' in downloads_section
+    assert 'strings.downloadManagerReliabilityDescription()' in downloads_section
     assert 'strings.portalLoadingStatus' in portal
 
 
@@ -52,21 +65,26 @@ def test_settings_backend_toggles_sync_with_download_runtime_target_controls():
     assert 'AppSettingsStore(application)' in downloads_view_model
 
 
-def test_gemma4_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
+def test_mobile_repo_guidance_and_runtime_switches_keep_download_copy_in_sync():
     downloads_section = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
     downloads_view_model = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsViewModel.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
     litert_proxy = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/LiteRtLmOpenAiProxy.kt").read_text(encoding="utf-8")
 
-    assert 'gemma-4-E2B-it-litert-lm' in downloads_section
-    assert 'Google AI Edge Gallery' in downloads_section
+    assert 'strings.localDownloadsExampleGuidance()' in downloads_section
     assert 'runtimeFlavorOverride = effectiveRuntimeFlavor' in downloads_section
     assert 'inspectionStatus = ""' in downloads_view_model
     assert 'candidateSummary = ""' in downloads_view_model
     assert 'runtimeFlavorOverride' in downloads_view_model
+    assert 'restartDownloadOnMobileData(' in downloads_view_model
     assert 'litert-community/gemma-4-E2B-it-litert-lm' in download_manager
     assert 'litert-community/gemma-4-E4B-it-litert-lm' in download_manager
-    assert 'No compatible GGUF artifact found in huggingface.co/' in download_manager
+    assert 'litert-community/Qwen2.5-1.5B-Instruct' in download_manager
+    assert 'litert-community/DeepSeek-R1-Distill-Qwen-1.5B' in download_manager
+    assert 'litert-community/Phi-4-mini-instruct' in download_manager
+    assert 'Qwen/Qwen2.5-1.5B-Instruct-GGUF' in download_manager
+    assert 'bartowski/microsoft_Phi-4-mini-instruct-GGUF' in download_manager
+    assert 'llama.cpp + GGUF for Nemotron / Cascade families' in download_manager
     assert 'Backend.GPU() to "gpu"' in litert_proxy
     assert 'Backend.CPU() to "cpu"' in litert_proxy
     assert 'put("accelerator", runtimeBackendLabel)' in litert_proxy

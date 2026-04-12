@@ -88,6 +88,24 @@ object AuthCatalog {
             defaultBaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
             defaultModel = "gemini-2.5-pro",
         ),
+        AuthOption(
+            id = "qwen",
+            label = "Qwen",
+            description = "Authenticate Qwen OAuth access and sync it into Hermes Android automatically.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "qwen-oauth",
+            defaultBaseUrl = "https://portal.qwen.ai/v1",
+            defaultModel = "qwen3-coder-plus",
+        ),
+        AuthOption(
+            id = "zai",
+            label = "Z.AI",
+            description = "Authenticate Z.AI / GLM access and apply it to Hermes Android.",
+            scope = AuthScope.RuntimeProvider,
+            runtimeProvider = "zai",
+            defaultBaseUrl = "https://api.z.ai/api/paas/v4",
+            defaultModel = "glm-5",
+        ),
     )
 
     fun find(id: String): AuthOption? = options.firstOrNull { it.id == id }

@@ -44,7 +44,7 @@ fun AuthScreen(
             add(
                 ShellActionItem(
                     label = strings.refresh.ifBlank { "Refresh" },
-                    description = "Reload local Corr3xt and provider auth status.",
+                    description = strings.authRefreshDescription(),
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = viewModel::refresh,
                 )
@@ -52,8 +52,8 @@ fun AuthScreen(
             if (uiState.hasPendingRequest) {
                 add(
                     ShellActionItem(
-                        label = "Cancel pending sign-in",
-                        description = "Stop waiting for the current Corr3xt callback.",
+                        label = strings.cancelPendingSignIn(),
+                        description = strings.authCancelPendingDescription(),
                         iconRes = R.drawable.ic_nav_settings,
                         onClick = viewModel::cancelPendingRequest,
                     )
@@ -112,7 +112,7 @@ fun AuthScreen(
                         ) {
                             Text(strings.pendingCorr3xtSignIn.ifBlank { "Pending Corr3xt sign-in" }, style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "Waiting for Corr3xt callback for ${uiState.pendingMethodLabel}.",
+                                strings.authWaitingCallbackFor(uiState.pendingMethodLabel),
                                 style = MaterialTheme.typography.bodySmall,
                             )
                             Button(onClick = viewModel::cancelPendingRequest) {

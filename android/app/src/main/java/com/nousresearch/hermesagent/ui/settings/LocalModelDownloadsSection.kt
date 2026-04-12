@@ -139,7 +139,7 @@ fun LocalModelDownloadsSection(
                 }
             }
             Text(
-                "Examples: repo `unsloth/gemma-3-1b-it-GGUF` with file `gemma-3-1b-it-Q4_K_M.gguf`, or LiteRT-LM repos like `litert-community/gemma-4-E2B-it-litert-lm` / `litert-community/gemma-4-E4B-it-litert-lm` with `.litertlm` artifacts. Google AI Edge Gallery's Gemma 4 support uses those LiteRT community repos instead of the raw `google/gemma-4-E2B` page.",
+                strings.localDownloadsExampleGuidance(),
                 style = MaterialTheme.typography.bodySmall,
             )
             FlowRow(
@@ -165,7 +165,7 @@ fun LocalModelDownloadsSection(
             HorizontalDivider()
             Text(strings.downloadManagerTitle.ifBlank { "Download manager" }, style = MaterialTheme.typography.titleSmall)
             Text(
-                "Unexpected connection loss is handled safely by Android DownloadManager. If the phone shuts down mid-download, Hermes reloads the saved progress after restart and can continue where the system download left off.",
+                strings.downloadManagerReliabilityDescription(),
                 style = MaterialTheme.typography.bodySmall,
             )
             if (uiState.downloads.isEmpty()) {
@@ -190,7 +190,7 @@ fun LocalModelDownloadsSection(
                             ) {
                                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(item.title, style = MaterialTheme.typography.titleSmall)
-                                    Text("${item.runtimeFlavor} · ${item.statusLabel}", style = MaterialTheme.typography.labelMedium)
+                                    Text(strings.localDownloadStatusLine(item.runtimeFlavor, item.statusLabel), style = MaterialTheme.typography.labelMedium)
                                 }
                                 if (item.isPreferred) {
                                     Text(strings.preferredLocalModel.ifBlank { "Preferred local model" }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary)
@@ -213,6 +213,16 @@ fun LocalModelDownloadsSection(
                                 if (!item.isPreferred && item.statusLabel == "completed") {
                                     Button(onClick = { viewModel.setPreferredDownload(item.id) }) {
                                         Text(strings.setPreferred.ifBlank { "Set preferred" })
+                                    }
+                                }
+                                if (item.canRestartOnMobileData) {
+                                    Button(onClick = { viewModel.restartDownloadOnMobileData(item.id) }) {
+                                        Text(strings.restartOnMobileData())
+                                    }
+                                }
+                                if (item.canOpenSystemDownloads) {
+                                    Button(onClick = viewModel::openSystemDownloads) {
+                                        Text(strings.openSystemDownloads())
                                     }
                                 }
                                 Button(onClick = { viewModel.removeDownload(item.id) }) {

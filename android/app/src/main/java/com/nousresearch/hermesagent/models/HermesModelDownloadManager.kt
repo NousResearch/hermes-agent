@@ -3,6 +3,8 @@ package com.nousresearch.hermesagent.models
 import android.app.ActivityManager
 import android.app.DownloadManager
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Environment
 import android.text.format.Formatter
@@ -38,6 +40,29 @@ data class ModelDownloadDraft(
 object HermesModelDownloadManager {
     private const val HUGGING_FACE_BASE = "https://huggingface.co"
     private const val HUGGING_FACE_API = "$HUGGING_FACE_BASE/api/models/"
+    private val LITERT_ALIAS_REPOS = mapOf(
+        "google/gemma-4-e2b" to "litert-community/gemma-4-E2B-it-litert-lm",
+        "google/gemma-4-e2b-it" to "litert-community/gemma-4-E2B-it-litert-lm",
+        "google/gemma-4-e4b" to "litert-community/gemma-4-E4B-it-litert-lm",
+        "google/gemma-4-e4b-it" to "litert-community/gemma-4-E4B-it-litert-lm",
+        "qwen/qwen2.5-1.5b-instruct" to "litert-community/Qwen2.5-1.5B-Instruct",
+        "deepseek-ai/deepseek-r1-distill-qwen-1.5b" to "litert-community/DeepSeek-R1-Distill-Qwen-1.5B",
+        "microsoft/phi-4-mini-instruct" to "litert-community/Phi-4-mini-instruct",
+    )
+    private val GGUF_RECOMMENDED_REPOS = mapOf(
+        "qwen/qwen2.5-1.5b-instruct" to "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+        "deepseek-ai/deepseek-r1-distill-qwen-1.5b" to "unsloth/DeepSeek-R1-Distill-Qwen-1.5B-GGUF",
+        "microsoft/phi-4-mini-instruct" to "bartowski/microsoft_Phi-4-mini-instruct-GGUF",
+        "nvidia/llama-3.1-nemotron-nano-8b-v1" to "bartowski/nvidia_Llama-3.1-Nemotron-Nano-8B-v1-GGUF",
+        "nvidia/nemotron-cascade-8b" to "bartowski/nvidia_Nemotron-Cascade-8B-GGUF",
+        "nvidia/nemotron-cascade-8b-thinking" to "bartowski/nvidia_Nemotron-Cascade-8B-Thinking-GGUF",
+    )
+
+    private data class NetworkPolicySnapshot(
+        val label: String,
+        val isMetered: Boolean,
+        val isRoaming: Boolean,
+    )
 
     fun modelsDirectory(context: Context): File {
         return (context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
@@ -76,6 +101,57 @@ object HermesModelDownloadManager {
         draft: ModelDownloadDraft,
         hfToken: String,
         dataSaverMode: Boolean,
+        allowMetered: Boolean = !dataSaverMode,
+        allowRoaming: Boolean = false,
+    ): LocalModelDownloadRecord {
+        val record = enqueueDownloadRecord(
+            context = context,
+            draft = draft,
+            hfToken = hfToken,
+            dataSaverMode = dataSaverMode,
+            allowMetered = allowMetered,
+            allowRoaming = allowRoaming,
+        )
+        store.upsertDownload(record)
+        return record
+    }
+
+    fun restartDownloadOnMobileData(
+        context: Context,
+        store: LocalModelDownloadStore,
+        recordId: String,
+        hfToken: String,
+    ): LocalModelDownloadRecord? {
+        val existing = store.findDownload(recordId) ?: return null
+        val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        runCatching { downloadManager.remove(existing.downloadManagerId) }
+        runCatching { File(existing.destinationPath).delete() }
+        val restarted = enqueueDownloadRecord(
+            context = context,
+            draft = ModelDownloadDraft(
+                repoOrUrl = existing.repoOrUrl,
+                filePath = existing.filePath,
+                revision = existing.revision,
+                runtimeFlavor = existing.runtimeFlavor,
+            ),
+            hfToken = hfToken,
+            dataSaverMode = false,
+            allowMetered = true,
+            allowRoaming = true,
+            recordId = existing.id,
+        )
+        store.upsertDownload(restarted)
+        return restarted
+    }
+
+    private fun enqueueDownloadRecord(
+        context: Context,
+        draft: ModelDownloadDraft,
+        hfToken: String,
+        dataSaverMode: Boolean,
+        allowMetered: Boolean,
+        allowRoaming: Boolean,
+        recordId: String = UUID.randomUUID().toString(),
     ): LocalModelDownloadRecord {
         val inspection = inspectCandidate(context, draft, hfToken)
         val targetFile = modelsDirectory(context).resolve(uniqueFileName(modelsDirectory(context), inspection.destinationFileName))
@@ -84,8 +160,8 @@ object HermesModelDownloadManager {
             setDescription("Downloading a local model for Hermes")
             setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
             setVisibleInDownloadsUi(true)
-            setAllowedOverRoaming(false)
-            setAllowedOverMetered(!dataSaverMode)
+            setAllowedOverRoaming(allowRoaming)
+            setAllowedOverMetered(allowMetered)
             if (looksLikeHuggingFaceResource(inspection.sourceUrl) && hfToken.isNotBlank()) {
                 addRequestHeader("Authorization", "Bearer $hfToken")
             }
@@ -93,8 +169,8 @@ object HermesModelDownloadManager {
         }
         val downloadManager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         val downloadId = downloadManager.enqueue(request)
-        val record = LocalModelDownloadRecord(
-            id = UUID.randomUUID().toString(),
+        return LocalModelDownloadRecord(
+            id = recordId,
             title = inspection.title,
             sourceUrl = inspection.sourceUrl,
             repoOrUrl = draft.repoOrUrl,
@@ -107,16 +183,17 @@ object HermesModelDownloadManager {
             totalBytes = inspection.totalBytes,
             downloadedBytes = 0L,
             status = "queued",
-            statusMessage = if (dataSaverMode) {
-                "Queued with Data saver mode: large transfers wait for Wi‑Fi / unmetered connectivity"
-            } else {
-                "Queued in Android DownloadManager"
-            },
+            statusMessage = queuedStatusMessage(
+                context = context,
+                dataSaverMode = dataSaverMode,
+                allowMetered = allowMetered,
+                allowRoaming = allowRoaming,
+            ),
             ramWarning = inspection.ramWarning,
             supportsResume = inspection.supportsResume,
+            allowMetered = allowMetered,
+            allowRoaming = allowRoaming,
         )
-        store.upsertDownload(record)
-        return record
     }
 
     fun refreshDownloads(context: Context, store: LocalModelDownloadStore): List<LocalModelDownloadRecord> {
@@ -141,7 +218,7 @@ object HermesModelDownloadManager {
             val totalBytes = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES)).coerceAtLeast(record.totalBytes)
             val reason = cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_REASON))
             val localUri = cursor.getString(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_LOCAL_URI)).orEmpty()
-            val statusPair = statusLabel(status, reason)
+            val statusPair = statusLabel(context, record, status, reason)
             return record.copy(
                 destinationPath = localUri.removePrefix("file://").ifBlank { record.destinationPath },
                 downloadedBytes = downloadedBytes,
@@ -242,7 +319,7 @@ object HermesModelDownloadManager {
         if (explicitFilePath.isNotBlank() || reference.filePath != null || !runtimeFlavor.equals("LiteRT-LM", ignoreCase = true)) {
             return reference
         }
-        val aliasRepoId = gemma4LiteRtAlias(reference.repoId) ?: return reference
+        val aliasRepoId = liteRtAlias(reference.repoId) ?: return reference
         return reference.copy(
             repoId = aliasRepoId,
             revision = null,
@@ -266,25 +343,28 @@ object HermesModelDownloadManager {
     }
 
     private fun noCompatibleArtifactMessage(repoId: String, runtimeFlavor: String): String {
-        val aliasRepoId = gemma4LiteRtAlias(repoId)
+        val aliasRepoId = liteRtAlias(repoId)
         val normalizedRepoId = repoId.lowercase(Locale.US)
+        val ggufSuggestion = GGUF_RECOMMENDED_REPOS[normalizedRepoId]
         return when {
             runtimeFlavor.equals("GGUF", ignoreCase = true) && normalizedRepoId in GEMMA4_SOURCE_REPOS ->
                 "No compatible GGUF artifact found in huggingface.co/$repoId. Google AI Edge Gallery runs Gemma 4 from LiteRT-LM repos like ${aliasRepoId ?: "litert-community/gemma-4-E2B-it-litert-lm"}, not from the raw google model page."
 
+            runtimeFlavor.equals("GGUF", ignoreCase = true) && ggufSuggestion != null ->
+                "No compatible GGUF artifact found in huggingface.co/$repoId. Try the GGUF-ready repo $ggufSuggestion instead."
+
             runtimeFlavor.equals("LiteRT-LM", ignoreCase = true) && aliasRepoId != null ->
                 "No compatible LiteRT-LM artifact found in huggingface.co/$repoId. Try the mobile-ready repo $aliasRepoId instead."
+
+            runtimeFlavor.equals("LiteRT-LM", ignoreCase = true) && ("nemotron" in normalizedRepoId || "cascade" in normalizedRepoId) ->
+                "No compatible LiteRT-LM artifact found in huggingface.co/$repoId. Hermes currently recommends llama.cpp + GGUF for Nemotron / Cascade families."
 
             else -> "No compatible $runtimeFlavor artifact found in huggingface.co/$repoId"
         }
     }
 
-    private fun gemma4LiteRtAlias(repoId: String): String? {
-        return when (repoId.lowercase(Locale.US)) {
-            "google/gemma-4-e2b", "google/gemma-4-e2b-it" -> "litert-community/gemma-4-E2B-it-litert-lm"
-            "google/gemma-4-e4b", "google/gemma-4-e4b-it" -> "litert-community/gemma-4-E4B-it-litert-lm"
-            else -> null
-        }
+    private fun liteRtAlias(repoId: String): String? {
+        return LITERT_ALIAS_REPOS[repoId.lowercase(Locale.US)]
     }
 
     private fun loadRepoFiles(repoId: String, revision: String, hfToken: String): List<String> {
@@ -423,15 +503,65 @@ object HermesModelDownloadManager {
         return url.contains("huggingface.co", ignoreCase = true) || url.contains("hf.co", ignoreCase = true)
     }
 
-    private fun statusLabel(status: Int, reason: Int): Pair<String, String> {
+    private fun activeNetworkPolicySnapshot(context: Context): NetworkPolicySnapshot {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val capabilities = connectivityManager?.getNetworkCapabilities(connectivityManager.activeNetwork)
+        if (capabilities == null) {
+            return NetworkPolicySnapshot(label = "offline", isMetered = false, isRoaming = false)
+        }
+        val label = when {
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "Wi‑Fi"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+            else -> "network"
+        }
+        val isMetered = !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+        val isRoaming = capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) &&
+            !capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)
+        return NetworkPolicySnapshot(label = label, isMetered = isMetered, isRoaming = isRoaming)
+    }
+
+    private fun queuedStatusMessage(
+        context: Context,
+        dataSaverMode: Boolean,
+        allowMetered: Boolean,
+        allowRoaming: Boolean,
+    ): String {
+        val network = activeNetworkPolicySnapshot(context)
+        return when {
+            !allowRoaming && network.isRoaming ->
+                "Queued while roaming is blocked for this download. Use Wi‑Fi or restart on mobile data to allow roaming."
+            dataSaverMode || !allowMetered ->
+                "Queued with Data saver mode: large transfers wait for Wi‑Fi / unmetered connectivity"
+            else -> "Queued in Android DownloadManager over ${network.label}"
+        }
+    }
+
+    private fun statusLabel(
+        context: Context,
+        record: LocalModelDownloadRecord,
+        status: Int,
+        reason: Int,
+    ): Pair<String, String> {
+        val network = activeNetworkPolicySnapshot(context)
         return when (status) {
-            DownloadManager.STATUS_PENDING -> "queued" to "Waiting for Android to start the transfer"
+            DownloadManager.STATUS_PENDING -> "queued" to when {
+                !record.allowRoaming && network.isRoaming ->
+                    "Waiting because roaming downloads are blocked. Restart on mobile data or switch to Wi‑Fi."
+                !record.allowMetered && network.isMetered ->
+                    "Waiting for Wi‑Fi / unmetered connectivity. Restart on mobile data to continue over cellular."
+                else -> "Waiting for Android to start the transfer"
+            }
             DownloadManager.STATUS_RUNNING -> "downloading" to "Downloading in the background with system-managed resume support"
-            DownloadManager.STATUS_PAUSED -> "paused" to when (reason) {
-                DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Paused until network connectivity returns"
-                DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Paused until Wi‑Fi / unmetered connectivity is available"
-                DownloadManager.PAUSED_WAITING_TO_RETRY -> "Paused while Android retries the connection"
-                DownloadManager.PAUSED_UNKNOWN -> "Paused by Android"
+            DownloadManager.STATUS_PAUSED -> "paused" to when {
+                !record.allowRoaming && network.isRoaming ->
+                    "Paused because Android treats the current connection as roaming. Restart on mobile data or switch to Wi‑Fi."
+                !record.allowMetered && (reason == DownloadManager.PAUSED_QUEUED_FOR_WIFI || network.isMetered) ->
+                    "Paused until Wi‑Fi / unmetered connectivity is available. Restart on mobile data below to continue over cellular."
+                reason == DownloadManager.PAUSED_WAITING_FOR_NETWORK -> "Paused until network connectivity returns"
+                reason == DownloadManager.PAUSED_QUEUED_FOR_WIFI -> "Paused until Wi‑Fi / unmetered connectivity is available"
+                reason == DownloadManager.PAUSED_WAITING_TO_RETRY -> "Paused while Android retries the connection"
+                reason == DownloadManager.PAUSED_UNKNOWN -> "Paused by Android"
                 else -> "Paused by Android"
             }
             DownloadManager.STATUS_SUCCESSFUL -> "completed" to "Download completed and saved locally"

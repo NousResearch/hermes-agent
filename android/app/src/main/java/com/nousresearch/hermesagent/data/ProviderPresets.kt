@@ -40,6 +40,18 @@ object ProviderPresets {
             modelHint = "gemini-2.5-pro",
         ),
         ProviderPreset(
+            id = "qwen-oauth",
+            label = "Qwen OAuth",
+            baseUrl = "https://portal.qwen.ai/v1",
+            modelHint = "qwen3-coder-plus",
+        ),
+        ProviderPreset(
+            id = "zai",
+            label = "Z.AI / GLM",
+            baseUrl = "https://api.z.ai/api/paas/v4",
+            modelHint = "glm-5",
+        ),
+        ProviderPreset(
             id = "nous",
             label = "Nous",
             baseUrl = "",

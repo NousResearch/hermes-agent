@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -8,7 +9,13 @@ import tempfile
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
-from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+    quoted_mkdir_command,
+    quoted_rm_command,
+    unique_parent_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +57,7 @@ class SSHEnvironment(BaseEnvironment):
             get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
             upload_fn=self._scp_upload,
             delete_fn=self._ssh_delete,
+            bulk_upload_fn=self._ssh_bulk_upload,
         )
         self._sync_manager.sync(force=True)
 
@@ -107,9 +115,8 @@ class SSHEnvironment(BaseEnvironment):
         """Create base ~/.hermes directory tree on remote in one SSH call."""
         base = f"{self._remote_home}/.hermes"
         dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
-        mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
         cmd = self._build_ssh_command()
-        cmd.append(mkdir_cmd)
+        cmd.append(quoted_mkdir_command(dirs))
         subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
@@ -130,6 +137,84 @@ class SSHEnvironment(BaseEnvironment):
         result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
+
+    def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single tar-over-SSH stream.
+
+        Pipes ``tar c`` on the local side through an SSH connection to
+        ``tar x`` on the remote, transferring all files in one TCP stream
+        instead of spawning a subprocess per file.  Directory creation is
+        batched into a single ``mkdir -p`` call beforehand.
+
+        Typical improvement: ~580 files goes from O(N) scp round-trips
+        to a single streaming transfer.
+        """
+        if not files:
+            return
+
+        parents = unique_parent_dirs(files)
+        if parents:
+            cmd = self._build_ssh_command()
+            cmd.append(quoted_mkdir_command(parents))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
+
+        # Symlink staging avoids fragile GNU tar --transform rules.
+        with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            for host_path, remote_path in files:
+                staged = os.path.join(staging, remote_path.lstrip("/"))
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                os.symlink(os.path.abspath(host_path), staged)
+
+            tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
+            ssh_cmd = self._build_ssh_command()
+            ssh_cmd.append("tar xf - -C /")
+
+            tar_proc = subprocess.Popen(
+                tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            try:
+                ssh_proc = subprocess.Popen(
+                    ssh_cmd, stdin=tar_proc.stdout, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except Exception:
+                tar_proc.kill()
+                tar_proc.wait()
+                raise
+
+            # Allow tar_proc to receive SIGPIPE if ssh_proc exits early
+            tar_proc.stdout.close()
+
+            try:
+                _, ssh_stderr = ssh_proc.communicate(timeout=120)
+                # Use communicate() instead of wait() to drain stderr and
+                # avoid deadlock if tar produces more than PIPE_BUF of errors.
+                tar_stderr_raw = b""
+                if tar_proc.poll() is None:
+                    _, tar_stderr_raw = tar_proc.communicate(timeout=10)
+                else:
+                    tar_stderr_raw = tar_proc.stderr.read() if tar_proc.stderr else b""
+            except subprocess.TimeoutExpired:
+                tar_proc.kill()
+                ssh_proc.kill()
+                tar_proc.wait()
+                ssh_proc.wait()
+                raise RuntimeError("SSH bulk upload timed out")
+
+            if tar_proc.returncode != 0:
+                raise RuntimeError(
+                    f"tar create failed (rc={tar_proc.returncode}): "
+                    f"{tar_stderr_raw.decode(errors='replace').strip()}"
+                )
+            if ssh_proc.returncode != 0:
+                raise RuntimeError(
+                    f"tar extract over SSH failed (rc={ssh_proc.returncode}): "
+                    f"{ssh_stderr.decode(errors='replace').strip()}"
+                )
+
+        logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
 
     def _ssh_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files in one SSH call."""

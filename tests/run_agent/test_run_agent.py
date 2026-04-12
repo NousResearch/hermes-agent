@@ -2742,74 +2742,12 @@ class TestSystemPromptStability:
         assert "Hermes Agent" in agent._cached_system_prompt
 
 class TestBudgetPressure:
-    """Budget pressure warning system (issue #414)."""
+    """Budget exhaustion grace call system."""
 
-    def test_no_warning_below_caution(self, agent):
-        agent.max_iterations = 60
-        assert agent._get_budget_warning(30) is None
-
-    def test_caution_at_70_percent(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(42)
-        assert msg is not None
-        assert "[BUDGET:" in msg
-        assert "18 iterations left" in msg
-
-    def test_warning_at_90_percent(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(54)
-        assert "[BUDGET WARNING:" in msg
-        assert "Provide your final response NOW" in msg
-
-    def test_last_iteration(self, agent):
-        agent.max_iterations = 60
-        msg = agent._get_budget_warning(59)
-        assert "1 iteration(s) left" in msg
-
-    def test_disabled(self, agent):
-        agent.max_iterations = 60
-        agent._budget_pressure_enabled = False
-        assert agent._get_budget_warning(55) is None
-
-    def test_zero_max_iterations(self, agent):
-        agent.max_iterations = 0
-        assert agent._get_budget_warning(0) is None
-
-    def test_injects_into_json_tool_result(self, agent):
-        """Warning should be injected as _budget_warning field in JSON tool results."""
-        import json
-        agent.max_iterations = 10
-        messages = [
-            {"role": "tool", "content": json.dumps({"output": "done", "exit_code": 0}), "tool_call_id": "tc1"}
-        ]
-        warning = agent._get_budget_warning(9)
-        assert warning is not None
-        # Simulate the injection logic
-        last_content = messages[-1]["content"]
-        parsed = json.loads(last_content)
-        parsed["_budget_warning"] = warning
-        messages[-1]["content"] = json.dumps(parsed, ensure_ascii=False)
-        result = json.loads(messages[-1]["content"])
-        assert "_budget_warning" in result
-        assert "BUDGET WARNING" in result["_budget_warning"]
-        assert result["output"] == "done"  # original content preserved
-
-    def test_appends_to_non_json_tool_result(self, agent):
-        """Warning should be appended as text for non-JSON tool results."""
-        agent.max_iterations = 10
-        messages = [
-            {"role": "tool", "content": "plain text result", "tool_call_id": "tc1"}
-        ]
-        warning = agent._get_budget_warning(9)
-        # Simulate injection logic for non-JSON
-        last_content = messages[-1]["content"]
-        try:
-            import json
-            json.loads(last_content)
-        except (json.JSONDecodeError, TypeError):
-            messages[-1]["content"] = last_content + f"\n\n{warning}"
-        assert "plain text result" in messages[-1]["content"]
-        assert "BUDGET WARNING" in messages[-1]["content"]
+    def test_grace_call_flags_initialized(self, agent):
+        """Agent should have budget grace call flags."""
+        assert agent._budget_exhausted_injected is False
+        assert agent._budget_grace_call is False
 
 
 class TestSafeWriter:

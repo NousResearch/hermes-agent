@@ -191,6 +191,37 @@ class TestNonStringContent:
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
 
+    def test_summary_call_passes_live_main_runtime(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="gpt-5.4",
+                provider="openai-codex",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_key="codex-token",
+                api_mode="codex_responses",
+                quiet_mode=True,
+            )
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        assert mock_call.call_args.kwargs["main_runtime"] == {
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        }
+
 
 class TestSummaryFailureCooldown:
     def test_summary_failure_enters_cooldown_and_skips_retry(self):
@@ -576,11 +607,19 @@ class TestSummaryTargetRatio:
         assert c.summary_target_ratio == 0.80
 
     def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%."""
+        """Default compression threshold should be 50%, with a 64K floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.threshold_percent == 0.50
-        assert c.threshold_tokens == 50_000
+        # 50% of 100K = 50K, but the floor is 64K
+        assert c.threshold_tokens == 64_000
+
+    def test_threshold_floor_does_not_apply_above_128k(self):
+        """On large-context models the 50% percentage is used directly."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        # 50% of 200K = 100K, which is above the 64K floor
+        assert c.threshold_tokens == 100_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

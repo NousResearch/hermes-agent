@@ -2005,6 +2005,12 @@ def _setup_wecom():
     _gateway_setup_wecom()
 
 
+def _setup_wecom_callback():
+    """Configure WeCom Callback (self-built app) via gateway setup."""
+    from hermes_cli.gateway import _setup_wecom_callback as _gw_setup
+    _gw_setup()
+
+
 def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
@@ -2130,6 +2136,7 @@ _GATEWAY_PLATFORMS = [
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
     ("WeCom (Enterprise WeChat)", "WECOM_BOT_ID", _setup_wecom),
+    ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),

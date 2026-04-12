@@ -216,6 +216,51 @@ def get_env_path() -> Path:
     return get_hermes_home() / ".env"
 
 
+# ─── Network Preferences ─────────────────────────────────────────────────────
+
+
+def apply_ipv4_preference(force: bool = False) -> None:
+    """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 connections.
+
+    On servers with broken or unreachable IPv6, Python tries AAAA records
+    first and hangs for the full TCP timeout before falling back to IPv4.
+    This affects httpx, requests, urllib, the OpenAI SDK — everything that
+    uses ``socket.getaddrinfo``.
+
+    When *force* is True, patches ``getaddrinfo`` so that calls with
+    ``family=AF_UNSPEC`` (the default) resolve as ``AF_INET`` instead,
+    skipping IPv6 entirely.  If no A record exists, falls back to the
+    original unfiltered resolution so pure-IPv6 hosts still work.
+
+    Safe to call multiple times — only patches once.
+    Set ``network.force_ipv4: true`` in ``config.yaml`` to enable.
+    """
+    if not force:
+        return
+
+    import socket
+
+    # Guard against double-patching
+    if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):
+        return
+
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+        if family == 0:  # AF_UNSPEC — caller didn't request a specific family
+            try:
+                return _original_getaddrinfo(
+                    host, port, socket.AF_INET, type, proto, flags
+                )
+            except socket.gaierror:
+                # No A record — fall back to full resolution (pure-IPv6 hosts)
+                return _original_getaddrinfo(host, port, family, type, proto, flags)
+        return _original_getaddrinfo(host, port, family, type, proto, flags)
+
+    _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
+    socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 

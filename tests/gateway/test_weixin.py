@@ -64,13 +64,44 @@ class TestWeixinFormatting:
 
 
 class TestWeixinChunking:
-    def test_split_text_keeps_short_multiline_message_in_single_chunk(self):
+    def test_split_text_splits_short_chatty_replies_into_separate_bubbles(self):
         adapter = _make_adapter()
 
         content = adapter.format_message("第一行\n第二行\n第三行")
         chunks = adapter._split_text(content)
 
-        assert chunks == ["第一行\n第二行\n第三行"]
+        assert chunks == ["第一行", "第二行", "第三行"]
+
+    def test_split_text_keeps_structured_table_block_together(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "- Setting: Timeout\n  Value: 30s\n- Setting: Retries\n  Value: 3"
+        )
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["- Setting: Timeout\n  Value: 30s\n- Setting: Retries\n  Value: 3"]
+
+    def test_split_text_keeps_four_line_structured_blocks_together(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "今天结论：\n"
+            "- 留存下降 3%\n"
+            "- 转化上涨 8%\n"
+            "- 主要问题在首日激活"
+        )
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["今天结论：\n- 留存下降 3%\n- 转化上涨 8%\n- 主要问题在首日激活"]
+
+    def test_split_text_keeps_heading_with_body_together(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("## 结论\n这是正文")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["**结论**\n这是正文"]
 
     def test_split_text_keeps_short_reformatted_table_in_single_chunk(self):
         adapter = _make_adapter()

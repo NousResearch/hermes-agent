@@ -505,3 +505,81 @@ class TestSegmentBreakOnToolBoundary:
         assert len(sent_texts) == 3
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
+
+
+class TestInterimCommentaryMessages:
+    @pytest.mark.asyncio
+    async def test_commentary_message_stays_separate_from_final_stream(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_commentary("I'll inspect the repository first.")
+        consumer.on_delta("Done.")
+        consumer.finish()
+
+        await consumer.run()
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["I'll inspect the repository first.", "Done."]
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_failed_final_send_does_not_mark_final_response_sent(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=False, message_id=None))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_delta("Done.")
+        consumer.finish()
+
+        await consumer.run()
+
+        assert consumer.final_response_sent is False
+        assert consumer.already_sent is False
+
+    @pytest.mark.asyncio
+    async def test_success_without_message_id_marks_visible_and_sends_only_tail(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id=None),
+            SimpleNamespace(success=True, message_id=None),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉"),
+        )
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" world")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["Hello ▉", "world"]
+        assert consumer.already_sent is True
+        assert consumer.final_response_sent is True

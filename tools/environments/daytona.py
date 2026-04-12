@@ -15,7 +15,13 @@ from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
 )
-from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+    quoted_mkdir_command,
+    quoted_rm_command,
+    unique_parent_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,11 +156,9 @@ class DaytonaEnvironment(BaseEnvironment):
         if not files:
             return
 
-        # Pre-create all unique parent directories in one shell call
-        parents = sorted({str(Path(remote).parent) for _, remote in files})
+        parents = unique_parent_dirs(files)
         if parents:
-            mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(p) for p in parents)
-            self._sandbox.process.exec(mkdir_cmd)
+            self._sandbox.process.exec(quoted_mkdir_command(parents))
 
         uploads = [
             FileUpload(source=host_path, destination=remote_path)

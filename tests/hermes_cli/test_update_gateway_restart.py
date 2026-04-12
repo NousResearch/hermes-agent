@@ -798,3 +798,120 @@ class TestFindGatewayPidsExclude:
         pids = gateway_cli.find_gateway_pids()
 
         assert pids == [100]
+
+
+# ---------------------------------------------------------------------------
+# Gateway mode writes exit code before restart (#8300)
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayModeWritesExitCodeEarly:
+    """When running as ``hermes update --gateway``, the exit code marker must be
+    written *before* the gateway restart attempt.  Without this, systemd's
+    ``KillMode=mixed`` kills the update process (and its wrapping shell) during
+    the cgroup teardown, so the shell epilogue that normally writes the exit
+    code never executes.  The new gateway's update watcher then polls for 30
+    minutes and sends a spurious timeout message.
+    """
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_written_in_gateway_mode(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        # Point HERMES_HOME at a temp dir so the marker file lands there
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        # Also patch the module-level ref used by cmd_update
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+
+        args = SimpleNamespace(gateway=True)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+        assert exit_code_path.exists(), ".update_exit_code not written in gateway mode"
+        assert exit_code_path.read_text() == "0"
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_not_written_in_normal_mode(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        """Non-gateway mode should NOT write the exit code (the shell does it)."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+
+        args = SimpleNamespace(gateway=False)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+        assert not exit_code_path.exists(), ".update_exit_code should not be written outside gateway mode"
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_exit_code_written_before_restart_call(
+        self, mock_run, _mock_which, capsys, tmp_path, monkeypatch,
+    ):
+        """Exit code must exist BEFORE systemctl restart is called."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        import hermes_cli.config as _cfg
+        monkeypatch.setattr(_cfg, "get_hermes_home", lambda: hermes_home)
+        import hermes_cli.main as _main_mod
+        monkeypatch.setattr(_main_mod, "get_hermes_home", lambda: hermes_home)
+
+        exit_code_path = hermes_home / ".update_exit_code"
+
+        # Track whether exit code exists when systemctl restart is called
+        exit_code_existed_at_restart = []
+
+        original_side_effect = _make_run_side_effect(
+            commit_count="1", systemd_active=True,
+        )
+
+        def tracking_side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "systemctl" in joined and "restart" in joined:
+                exit_code_existed_at_restart.append(exit_code_path.exists())
+            return original_side_effect(cmd, **kwargs)
+
+        mock_run.side_effect = tracking_side_effect
+
+        args = SimpleNamespace(gateway=True)
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(args)
+
+        assert exit_code_existed_at_restart, "systemctl restart was never called"
+        assert exit_code_existed_at_restart[0] is True, \
+            ".update_exit_code must exist BEFORE systemctl restart (cgroup kill race)"

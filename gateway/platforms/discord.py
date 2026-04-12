@@ -456,6 +456,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
+        self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -545,14 +546,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
-
-                # Sync slash commands with Discord
-                try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
-                except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
                 adapter_self._ready_event.set()
+
+                if adapter_self._post_connect_task and not adapter_self._post_connect_task.done():
+                    adapter_self._post_connect_task.cancel()
+                adapter_self._post_connect_task = asyncio.create_task(
+                    adapter_self._run_post_connect_initialization()
+                )
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -686,13 +686,35 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
 
+        if self._post_connect_task and not self._post_connect_task.done():
+            self._post_connect_task.cancel()
+            try:
+                await self._post_connect_task
+            except asyncio.CancelledError:
+                pass
+
         self._running = False
         self._client = None
         self._ready_event.clear()
+        self._post_connect_task = None
 
         self._release_platform_lock()
 
         logger.info("[%s] Disconnected", self.name)
+
+    async def _run_post_connect_initialization(self) -> None:
+        """Finish non-critical startup work after Discord is connected."""
+        if not self._client:
+            return
+        try:
+            synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+            logger.info("[%s] Synced %d slash command(s)", self.name, len(synced))
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Slash command sync timed out after 30s", self.name)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""

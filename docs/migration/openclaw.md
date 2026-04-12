@@ -118,7 +118,7 @@ For executed migrations, the full report is saved to `~/.hermes/migration/opencl
 ## Troubleshooting
 
 ### "OpenClaw directory not found"
-The migration looks for `~/.openclaw` by default, then tries `~/.clawdbot` and `~/.moldbot`. If your OpenClaw is installed elsewhere, use `--source`:
+The migration looks for `~/.openclaw` by default, then tries `~/.clawdbot` and `~/.moltbot`. If your OpenClaw is installed elsewhere, use `--source`:
 ```bash
 hermes claw migrate --source /path/to/.openclaw
 ```

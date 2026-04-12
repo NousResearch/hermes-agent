@@ -28,11 +28,15 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self._completion_consumed: set = set()
 
     def get(self, session_id):
         if self._sessions:
             return self._sessions.pop(0)
         return None
+
+    def is_completion_consumed(self, session_id):
+        return session_id in self._completion_consumed
 
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:

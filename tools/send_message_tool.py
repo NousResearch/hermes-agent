@@ -158,6 +158,7 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,

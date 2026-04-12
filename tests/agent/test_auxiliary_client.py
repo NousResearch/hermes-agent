@@ -971,6 +971,74 @@ class TestTaskSpecificOverrides:
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
 
+    def test_resolve_auto_prefers_live_main_runtime_over_persisted_config(self, monkeypatch, tmp_path):
+        """Session-only live model switches should override persisted config for auto routing."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """model:
+  default: glm-5.1
+  provider: opencode-go
+compression:
+  summary_provider: auto
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model or "resolved-model"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                    "api_mode": "codex_responses",
+                }
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert calls[0][0] == "openai-codex"
+        assert calls[0][1] == "gpt-5.4"
+        assert calls[0][2]["api_mode"] == "codex_responses"
+
+    def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
+        """Task-level compression config should beat a live session override."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+model:
+  default: glm-5.1
+  provider: opencode-go
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "google/gemini-3-flash-preview")) as mock_resolve:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                },
+            )
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.kwargs["main_runtime"] == {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+        }
+
     def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
         """compression.summary_base_url should produce a custom-endpoint client."""
         hermes_home = tmp_path / "hermes"
@@ -1560,3 +1628,74 @@ class TestStaleBaseUrlWarning:
 
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Warning should not fire a second time"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-compatible image block conversion
+# ---------------------------------------------------------------------------
+
+class TestAnthropicCompatImageConversion:
+    """Tests for _is_anthropic_compat_endpoint and _convert_openai_images_to_anthropic."""
+
+    def test_known_providers_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("minimax", "")
+        assert _is_anthropic_compat_endpoint("minimax-cn", "")
+
+    def test_openrouter_not_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert not _is_anthropic_compat_endpoint("openrouter", "")
+        assert not _is_anthropic_compat_endpoint("anthropic", "")
+
+    def test_url_based_detection(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
+        assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
+        assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
+
+    def test_base64_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][1]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "base64"
+        assert img_block["source"]["media_type"] == "image/png"
+        assert img_block["source"]["data"] == "iVBOR="
+
+    def test_url_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][0]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "url"
+        assert img_block["source"]["url"] == "https://example.com/img.jpg"
+
+    def test_text_only_messages_unchanged(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{"role": "user", "content": "Hello"}]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0] is messages[0]  # same object, not copied
+
+    def test_jpeg_media_type_parsed(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"

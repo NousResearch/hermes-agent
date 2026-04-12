@@ -23,7 +23,7 @@ hermes claw migrate --preset full --yes
 
 The migration always shows a full preview of what will be imported before making any changes. Review the list, then confirm to proceed.
 
-Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moldbot/` directories are detected automatically. Same for legacy config filenames (`clawdbot.json`, `moldbot.json`).
+Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moltbot/` directories are detected automatically. Same for legacy config filenames (`clawdbot.json`, `moltbot.json`).
 
 ## Options
 
@@ -234,7 +234,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 ### "OpenClaw directory not found"
 
-The migration checks `~/.openclaw/`, then `~/.clawdbot/`, then `~/.moldbot/`. If your installation is elsewhere, use `--source /path/to/your/openclaw`.
+The migration checks `~/.openclaw/`, then `~/.clawdbot/`, then `~/.moltbot/`. If your installation is elsewhere, use `--source /path/to/your/openclaw`.
 
 ### "No provider API keys found"
 

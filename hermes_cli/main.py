@@ -152,6 +152,18 @@ try:
 except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
+# Apply IPv4 preference early, before any HTTP clients are created.
+try:
+    from hermes_cli.config import load_config as _load_config_early
+    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+    _early_cfg = _load_config_early()
+    _net = _early_cfg.get("network", {})
+    if isinstance(_net, dict) and _net.get("force_ipv4"):
+        _apply_ipv4(force=True)
+    del _early_cfg, _net
+except Exception:
+    pass  # best-effort — don't crash if config isn't available yet
+
 import logging
 import time as _time
 from datetime import datetime
@@ -527,6 +539,113 @@ def _resolve_last_session(source: str = "cli") -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _probe_container(cmd: list, backend: str, via_sudo: bool = False):
+    """Run a container inspect probe, returning the CompletedProcess.
+
+    Catches TimeoutExpired specifically for a human-readable message;
+    all other exceptions propagate naturally.
+    """
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        label = f"sudo {backend}" if via_sudo else backend
+        print(
+            f"Error: timed out waiting for {label} to respond.\n"
+            f"The {backend} daemon may be unresponsive or starting up.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _exec_in_container(container_info: dict, cli_args: list):
+    """Replace the current process with a command inside the managed container.
+
+    Probes whether sudo is needed (rootful containers), then os.execvp
+    into the container. On success the Python process is replaced entirely
+    and the container's exit code becomes the process exit code (OS semantics).
+    On failure, OSError propagates naturally.
+
+    Args:
+        container_info: dict with backend, container_name, exec_user, hermes_bin
+        cli_args: the original CLI arguments (everything after 'hermes')
+    """
+    import shutil
+
+    backend = container_info["backend"]
+    container_name = container_info["container_name"]
+    exec_user = container_info["exec_user"]
+    hermes_bin = container_info["hermes_bin"]
+
+    runtime = shutil.which(backend)
+    if not runtime:
+        print(f"Error: {backend} not found on PATH. Cannot route to container.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Rootful containers (NixOS systemd service) are invisible to unprivileged
+    # users — Podman uses per-user namespaces, Docker needs group access.
+    # Probe whether the runtime can see the container; if not, try via sudo.
+    sudo_path = None
+    probe = _probe_container(
+        [runtime, "inspect", "--format", "ok", container_name], backend,
+    )
+    if probe.returncode != 0:
+        sudo_path = shutil.which("sudo")
+        if sudo_path:
+            probe2 = _probe_container(
+                [sudo_path, "-n", runtime, "inspect", "--format", "ok", container_name],
+                backend, via_sudo=True,
+            )
+            if probe2.returncode != 0:
+                print(
+                    f"Error: container '{container_name}' not found via {backend}.\n"
+                    f"\n"
+                    f"The container is likely running as root. Your user cannot see it\n"
+                    f"because {backend} uses per-user namespaces. Grant passwordless\n"
+                    f"sudo for {backend} — the -n (non-interactive) flag is required\n"
+                    f"because a password prompt would hang or break piped commands.\n"
+                    f"\n"
+                    f"On NixOS:\n"
+                    f"\n"
+                    f'  security.sudo.extraRules = [{{\n'
+                    f'    users = [ "{os.getenv("USER", "your-user")}" ];\n'
+                    f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
+                    f'  }}];\n'
+                    f"\n"
+                    f"Or run: sudo hermes {' '.join(cli_args)}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        else:
+            print(
+                f"Error: container '{container_name}' not found via {backend}.\n"
+                f"The container may be running under root. Try: sudo hermes {' '.join(cli_args)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    is_tty = sys.stdin.isatty()
+    tty_flags = ["-it"] if is_tty else ["-i"]
+
+    env_flags = []
+    for var in ("TERM", "COLORTERM", "LANG", "LC_ALL"):
+        val = os.environ.get(var)
+        if val:
+            env_flags.extend(["-e", f"{var}={val}"])
+
+    cmd_prefix = [sudo_path, "-n", runtime] if sudo_path else [runtime]
+    exec_cmd = (
+        cmd_prefix + ["exec"]
+        + tty_flags
+        + ["-u", exec_user]
+        + env_flags
+        + [container_name, hermes_bin]
+        + cli_args
+    )
+
+    os.execvp(exec_cmd[0], exec_cmd)
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
@@ -1202,6 +1321,7 @@ def select_provider_and_model(args=None):
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
                 "model": entry.get("model", ""),
+                "api_mode": entry.get("api_mode", ""),
             }
         return custom_provider_map
 
@@ -2050,6 +2170,12 @@ def _model_flow_named_custom(config, provider_info):
     model["base_url"] = base_url
     if api_key:
         model["api_key"] = api_key
+    # Apply api_mode from custom_providers entry, or clear stale value
+    custom_api_mode = provider_info.get("api_mode", "")
+    if custom_api_mode:
+        model["api_mode"] = custom_api_mode
+    else:
+        model.pop("api_mode", None)  # let runtime auto-detect from URL
     save_config(cfg)
     deactivate_provider()
 
@@ -2587,8 +2713,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print()
         override = ""
     if override and base_url_env:
-        save_env_value(base_url_env, override)
-        effective_base = override
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+        else:
+            save_env_value(base_url_env, override)
+            effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)
@@ -2923,6 +3052,18 @@ def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
     config_command(args)
+
+
+def cmd_backup(args):
+    """Back up Hermes home directory to a zip file."""
+    from hermes_cli.backup import run_backup
+    run_backup(args)
+
+
+def cmd_import(args):
+    """Restore a Hermes backup from a zip file."""
+    from hermes_cli.backup import run_import
+    run_import(args)
 
 
 def cmd_version(args):
@@ -4042,6 +4183,26 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         
+        # Write exit code *before* the gateway restart attempt.
+        # When running as ``hermes update --gateway`` (spawned by the gateway's
+        # /update command), this process lives inside the gateway's systemd
+        # cgroup.  ``systemctl restart hermes-gateway`` kills everything in the
+        # cgroup (KillMode=mixed → SIGKILL to remaining processes), including
+        # us and the wrapping bash shell.  The shell never reaches its
+        # ``printf $status > .update_exit_code`` epilogue, so the exit-code
+        # marker file is never created.  The new gateway's update watcher then
+        # polls for 30 minutes and sends a spurious timeout message.
+        #
+        # Writing the marker here — after git pull + pip install succeed but
+        # before we attempt the restart — ensures the new gateway sees it
+        # regardless of how we die.
+        if gateway_mode:
+            _exit_code_path = get_hermes_home() / ".update_exit_code"
+            try:
+                _exit_code_path.write_text("0")
+            except OSError:
+                pass
+        
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
@@ -4475,6 +4636,7 @@ def cmd_logs(args):
         level=getattr(args, "level", None),
         session=getattr(args, "session", None),
         since=getattr(args, "since", None),
+        component=getattr(args, "component", None),
     )
 
 
@@ -5066,7 +5228,43 @@ For more help on a command:
         help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
     )
     dump_parser.set_defaults(func=cmd_dump)
-    
+
+    # =========================================================================
+    # backup command
+    # =========================================================================
+    backup_parser = subparsers.add_parser(
+        "backup",
+        help="Back up Hermes home directory to a zip file",
+        description="Create a zip archive of your entire Hermes configuration, "
+                    "skills, sessions, and data (excludes the hermes-agent codebase)"
+    )
+    backup_parser.add_argument(
+        "-o", "--output",
+        help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)"
+    )
+    backup_parser.set_defaults(func=cmd_backup)
+
+    # =========================================================================
+    # import command
+    # =========================================================================
+    import_parser = subparsers.add_parser(
+        "import",
+        help="Restore a Hermes backup from a zip file",
+        description="Extract a previously created Hermes backup into your "
+                    "Hermes home directory, restoring configuration, skills, "
+                    "sessions, and data"
+    )
+    import_parser.add_argument(
+        "zipfile",
+        help="Path to the backup zip file"
+    )
+    import_parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="Overwrite existing files without confirmation"
+    )
+    import_parser.set_defaults(func=cmd_import)
+
     # =========================================================================
     # config command
     # =========================================================================
@@ -5416,6 +5614,8 @@ For more help on a command:
     mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
     mcp_add_p.add_argument("--args", nargs="*", default=[], help="Arguments for stdio command")
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
+    mcp_add_p.add_argument("--preset", help="Known MCP preset name")
+    mcp_add_p.add_argument("--env", nargs="*", default=[], help="Environment variables for stdio servers (KEY=VALUE)")
 
     mcp_rm_p = mcp_sub.add_parser("remove", aliases=["rm"], help="Remove an MCP server")
     mcp_rm_p.add_argument("name", help="Server name to remove")
@@ -5898,6 +6098,7 @@ Examples:
     hermes logs gateway -n 100     Show last 100 lines of gateway.log
     hermes logs --level WARNING    Only show WARNING and above
     hermes logs --session abc123   Filter by session ID
+    hermes logs --component tools  Only show tool-related lines
     hermes logs --since 1h         Lines from the last hour
     hermes logs --since 30m -f     Follow, starting from 30 min ago
     hermes logs list               List available log files with sizes
@@ -5927,6 +6128,10 @@ Examples:
         "--since", metavar="TIME",
         help="Show lines since TIME ago (e.g. 1h, 30m, 2d)",
     )
+    logs_parser.add_argument(
+        "--component", metavar="NAME",
+        help="Filter by component: gateway, agent, tools, cli, cron",
+    )
     logs_parser.set_defaults(func=cmd_logs)
 
     # =========================================================================
@@ -5935,9 +6140,22 @@ Examples:
     # Pre-process argv so unquoted multi-word session names after -c / -r
     # are merged into a single token before argparse sees them.
     # e.g. ``hermes -c Pokemon Agent Dev`` → ``hermes -c 'Pokemon Agent Dev'``
+    # ── Container-aware routing ────────────────────────────────────────
+    # When NixOS container mode is active, route ALL subcommands into
+    # the managed container.  This MUST run before parse_args() so that
+    # --help, unrecognised flags, and every subcommand are forwarded
+    # transparently instead of being intercepted by argparse on the host.
+    from hermes_cli.config import get_container_exec_info
+    container_info = get_container_exec_info()
+    if container_info:
+        _exec_in_container(container_info, sys.argv[1:])
+        # Unreachable: os.execvp never returns on success (process is replaced)
+        # and raises OSError on failure (which propagates as a traceback).
+        sys.exit(1)
+
     _processed_argv = _coalesce_session_name_args(sys.argv[1:])
     args = parser.parse_args(_processed_argv)
-    
+
     # Handle --version flag
     if args.version:
         cmd_version(args)

@@ -1303,6 +1303,49 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _write_codex_cli_tokens(
+    access_token: str,
+    refresh_token: str,
+    *,
+    last_refresh: Optional[str] = None,
+) -> None:
+    """Write refreshed tokens back to ~/.codex/auth.json.
+
+    OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
+    When Hermes refreshes a token it consumes the old refresh_token; if we
+    don't write the new pair back, the Codex CLI (or VS Code extension) will
+    fail with ``refresh_token_reused`` on its next refresh attempt.
+
+    This mirrors the Anthropic write-back to ~/.claude/.credentials.json
+    via ``_write_claude_code_credentials()``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home:
+        codex_home = str(Path.home() / ".codex")
+    auth_path = Path(codex_home).expanduser() / "auth.json"
+    try:
+        existing: Dict[str, Any] = {}
+        if auth_path.is_file():
+            existing = json.loads(auth_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            existing = {}
+
+        tokens_dict = existing.get("tokens")
+        if not isinstance(tokens_dict, dict):
+            tokens_dict = {}
+        tokens_dict["access_token"] = access_token
+        tokens_dict["refresh_token"] = refresh_token
+        existing["tokens"] = tokens_dict
+        if last_refresh is not None:
+            existing["last_refresh"] = last_refresh
+
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        auth_path.chmod(0o600)
+    except (OSError, IOError) as exc:
+        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -1425,6 +1468,12 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
+    # Write back to ~/.codex/auth.json so Codex CLI / VS Code stay in sync.
+    _write_codex_cli_tokens(
+        refreshed["access_token"],
+        refreshed["refresh_token"],
+        last_refresh=refreshed.get("last_refresh"),
+    )
     return updated_tokens
 
 

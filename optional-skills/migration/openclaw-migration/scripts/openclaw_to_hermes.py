@@ -376,6 +376,24 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
     return dest
 
 
+# ── Brand rewriting ─────────────────────────────────────────
+# Replace OpenClaw brand names with Hermes in migrated text so that
+# memory entries, user profiles, SOUL.md, and workspace instructions
+# read as self-referential to the new agent identity.
+_REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
+    (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
+    (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
+    (re.compile(r'\bMoltBot\b', re.IGNORECASE), 'Hermes'),
+]
+
+
+def rebrand_text(text: str) -> str:
+    """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes."""
+    for pattern, replacement in _REBRAND_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def parse_existing_memory_entries(path: Path) -> List[str]:
     if not path.exists():
         return []
@@ -782,12 +800,13 @@ class Migrator:
         path.write_text("\n".join(entries) + "\n", encoding="utf-8")
         return path
 
-    def copy_file(self, source: Path, destination: Path, kind: str) -> None:
+    def copy_file(self, source: Path, destination: Path, kind: str,
+                  transform: Optional[Any] = None) -> None:
         if not source or not source.exists():
             return
 
         if destination.exists():
-            if sha256_file(source) == sha256_file(destination):
+            if not transform and sha256_file(source) == sha256_file(destination):
                 self.record(kind, source, destination, "skipped", "Target already matches source")
                 return
             if not self.overwrite:
@@ -797,7 +816,13 @@ class Migrator:
         if self.execute:
             backup_path = self.maybe_backup(destination)
             ensure_parent(destination)
-            shutil.copy2(source, destination)
+            if transform:
+                content = read_text(source)
+                content = transform(content)
+                destination.write_text(content, encoding="utf-8")
+                shutil.copystat(source, destination)
+            else:
+                shutil.copy2(source, destination)
             self.record(kind, source, destination, "migrated", backup=str(backup_path) if backup_path else None)
         else:
             self.record(kind, source, destination, "migrated", "Would copy")
@@ -807,7 +832,7 @@ class Migrator:
         if not source:
             self.record("soul", None, self.target_root / "SOUL.md", "skipped", "No OpenClaw SOUL.md found")
             return
-        self.copy_file(source, self.target_root / "SOUL.md", kind="soul")
+        self.copy_file(source, self.target_root / "SOUL.md", kind="soul", transform=rebrand_text)
 
     def migrate_workspace_agents(self) -> None:
         source = self.source_candidate(
@@ -821,7 +846,7 @@ class Migrator:
             self.record("workspace-agents", source, None, "skipped", "No workspace target was provided")
             return
         destination = self.workspace_target / WORKSPACE_INSTRUCTIONS_FILENAME
-        self.copy_file(source, destination, kind="workspace-agents")
+        self.copy_file(source, destination, kind="workspace-agents", transform=rebrand_text)
 
     def migrate_memory(self, source: Optional[Path], destination: Path, limit: int, kind: str) -> None:
         if not source or not source.exists():
@@ -832,6 +857,7 @@ class Migrator:
         if not incoming:
             self.record(kind, source, destination, "skipped", "No importable entries found")
             return
+        incoming = [rebrand_text(entry) for entry in incoming]
 
         existing = parse_existing_memory_entries(destination)
         merged, stats, overflowed = merge_entries(existing, incoming, limit)
@@ -927,7 +953,7 @@ class Migrator:
 
     def load_openclaw_config(self) -> Dict[str, Any]:
         # Check current name and legacy config filenames
-        for name in ("openclaw.json", "clawdbot.json", "moldbot.json"):
+        for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
             config_path = self.source_root / name
             if config_path.exists():
                 try:
@@ -997,7 +1023,17 @@ class Migrator:
             .get("workspace")
         )
         if isinstance(workspace, str) and workspace.strip():
-            additions["MESSAGING_CWD"] = workspace.strip()
+            ws_path = workspace.strip()
+            # Skip if the workspace points inside the OpenClaw source directory —
+            # that path will be stale after migration and would cause the Hermes
+            # gateway to use the old OpenClaw workspace as its cwd, picking up
+            # OpenClaw's AGENTS.md, MEMORY.md, etc.
+            try:
+                inside_source = Path(ws_path).resolve().is_relative_to(self.source_root.resolve())
+            except (ValueError, OSError):
+                inside_source = False
+            if not inside_source:
+                additions["MESSAGING_CWD"] = ws_path
 
         allowlist_path = self.source_root / "credentials" / "telegram-default-allowFrom.json"
         if allowlist_path.exists():
@@ -1543,6 +1579,7 @@ class Migrator:
         if not all_incoming:
             self.record("daily-memory", source_dir, destination, "skipped", "No importable entries found in daily memory files")
             return
+        all_incoming = [rebrand_text(entry) for entry in all_incoming]
 
         existing = parse_existing_memory_entries(destination)
         merged, stats, overflowed = merge_entries(existing, all_incoming, self.memory_limit)

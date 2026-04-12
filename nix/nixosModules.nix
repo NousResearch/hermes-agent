@@ -499,6 +499,16 @@
           default = "ubuntu:24.04";
           description = "OCI container image. The container pulls this at runtime via Docker/Podman.";
         };
+
+        hostUsers = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          description = ''
+            Interactive users who get a ~/.hermes symlink to the service
+            stateDir. These users are automatically added to the hermes group.
+          '';
+          example = [ "sidbin" ];
+        };
       };
     };
 
@@ -557,6 +567,25 @@
         environment.variables.HERMES_HOME = "${cfg.stateDir}/.hermes";
       })
 
+      # ── Host user group membership ─────────────────────────────────────
+      (lib.mkIf (cfg.container.enable && cfg.container.hostUsers != []) {
+        users.users = lib.genAttrs cfg.container.hostUsers (user: {
+          extraGroups = [ cfg.group ];
+        });
+      })
+
+      # ── Warnings ──────────────────────────────────────────────────────
+      (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
+        warnings = [
+          ''
+            services.hermes-agent: container.enable is true and container.hostUsers
+            is set, but addToSystemPackages is false. Without a host-installed hermes
+            binary, container routing will not work for interactive users.
+            Set addToSystemPackages = true or ensure hermes is on PATH.
+          ''
+        ];
+      })
+
       # ── Directories ───────────────────────────────────────────────────
       {
         systemd.tmpfiles.rules = [
@@ -610,6 +639,59 @@
           touch ${cfg.stateDir}/.hermes/.managed
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.managed
           chmod 0644 ${cfg.stateDir}/.hermes/.managed
+
+          # Container mode metadata — tells the host CLI to exec into the
+          # container instead of running locally. Removed when container mode
+          # is disabled so the host CLI falls back to native execution.
+          ${if cfg.container.enable then ''
+            cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
+# Written by NixOS activation script. Do not edit manually.
+backend=${cfg.container.backend}
+container_name=${containerName}
+exec_user=${cfg.user}
+hermes_bin=${containerDataDir}/current-package/bin/hermes
+HERMES_CONTAINER_MODE_EOF
+            chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
+            chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
+          '' else ''
+            rm -f ${cfg.stateDir}/.hermes/.container-mode
+
+            # Remove symlink bridge for hostUsers
+            ${lib.concatStringsSep "\n" (map (user:
+              let
+                userHome = config.users.users.${user}.home;
+                symlinkPath = "${userHome}/.hermes";
+              in ''
+                if [ -L "${symlinkPath}" ] && [ "$(readlink "${symlinkPath}")" = "${cfg.stateDir}/.hermes" ]; then
+                  rm -f "${symlinkPath}"
+                  echo "hermes-agent: removed symlink ${symlinkPath}"
+                fi
+              '') cfg.container.hostUsers)}
+          ''}
+
+          # ── Symlink bridge for interactive users ───────────────────────
+          # Create ~/.hermes -> stateDir/.hermes for each hostUser so the
+          # host CLI shares state with the container service.
+          # Only runs when container mode is enabled.
+          ${lib.optionalString cfg.container.enable
+            (lib.concatStringsSep "\n" (map (user:
+              let
+                userHome = config.users.users.${user}.home;
+                symlinkPath = "${userHome}/.hermes";
+                target = "${cfg.stateDir}/.hermes";
+              in ''
+                if [ -d "${symlinkPath}" ] && [ ! -L "${symlinkPath}" ]; then
+                  # Real directory — back it up, then create symlink.
+                  # (ln -sfn cannot atomically replace a directory.)
+                  _backup="${symlinkPath}.bak.$(date +%s)"
+                  echo "hermes-agent: backing up existing ${symlinkPath} to $_backup"
+                  mv "${symlinkPath}" "$_backup"
+                fi
+                # For everything else (existing symlink, doesn't exist, etc.)
+                # ln -sfn handles it: replaces symlinks, creates new ones.
+                ln -sfn "${target}" "${symlinkPath}"
+                chown -h ${user}:${cfg.group} "${symlinkPath}"
+              '') cfg.container.hostUsers))}
 
           # Seed auth file if provided
           ${lib.optionalString (cfg.authFile != null) ''

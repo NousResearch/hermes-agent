@@ -108,6 +108,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/dingtalk',
         'user-guide/messaging/feishu',
         'user-guide/messaging/wecom',
+        'user-guide/messaging/wecom-callback',
         'user-guide/messaging/weixin',
         'user-guide/messaging/bluebubbles',
         'user-guide/messaging/open-webui',
@@ -175,6 +176,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'developer-guide/adding-tools',
             'developer-guide/adding-providers',
+            'developer-guide/adding-platform-adapters',
             'developer-guide/memory-provider-plugin',
             'developer-guide/context-engine-plugin',
             'developer-guide/creating-skills',

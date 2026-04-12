@@ -40,11 +40,18 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
 
 
 def get_current_session_key(default: str = "default") -> str:
-    """Return the active session key, preferring context-local state."""
+    """Return the active session key, preferring context-local state.
+
+    Resolution order:
+    1. approval-specific contextvars (set by gateway before agent.run)
+    2. session_context contextvars (set by _set_session_env)
+    3. os.environ fallback (CLI, cron, tests)
+    """
     session_key = _approval_session_key.get()
     if session_key:
         return session_key
-    return os.getenv("HERMES_SESSION_KEY", default)
+    from gateway.session_context import get_session_env
+    return get_session_env("HERMES_SESSION_KEY", default)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.

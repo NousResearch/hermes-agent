@@ -12,7 +12,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from hermes_constants import get_hermes_home, get_skills_dir
+from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
@@ -365,6 +365,36 @@ PLATFORM_HINTS = {
         "will be downloaded and sent as native media when possible."
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Environment hints — execution-environment awareness for the agent.
+# Unlike PLATFORM_HINTS (which describe the messaging channel), these describe
+# the machine/OS the agent's tools actually run on.
+# ---------------------------------------------------------------------------
+
+WSL_ENVIRONMENT_HINT = (
+    "You are running inside WSL (Windows Subsystem for Linux). "
+    "The Windows host filesystem is mounted under /mnt/ — "
+    "/mnt/c/ is the C: drive, /mnt/d/ is D:, etc. "
+    "The user's Windows files are typically at "
+    "/mnt/c/Users/<username>/Desktop/, Documents/, Downloads/, etc. "
+    "When the user references Windows paths or desktop files, translate "
+    "to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover "
+    "the Windows username if needed."
+)
+
+
+def build_environment_hints() -> str:
+    """Return environment-specific guidance for the system prompt.
+
+    Detects WSL, and can be extended for Termux, Docker, etc.
+    Returns an empty string when no special environment is detected.
+    """
+    hints: list[str] = []
+    if is_wsl():
+        hints.append(WSL_ENVIRONMENT_HINT)
+    return "\n\n".join(hints)
+
 
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
@@ -726,8 +756,16 @@ def build_skills_system_prompt(
 
         result = (
             "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If one clearly matches your task, "
-            "load it with skill_view(name) and follow its instructions. "
+            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+            "Err on the side of loading — it is always better to have context you don't need "
+            "than to miss critical steps, pitfalls, or established workflows. "
+            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+            "and proven workflows that outperform general-purpose approaches. Load the skill "
+            "even if you think you could handle the task with basic tools like web_search or terminal. "
+            "Skills also encode the user's preferred approach, conventions, and quality standards "
+            "for tasks like code review, planning, and testing — load them even for tasks you "
+            "already know how to do, because the skill defines how it should be done here.\n"
             "If a skill has issues, fix it with skill_manage(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
@@ -737,7 +775,7 @@ def build_skills_system_prompt(
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
             "\n"
-            "If none match, proceed normally without loading a skill."
+            "Only proceed without loading a skill if genuinely none are relevant to the task."
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

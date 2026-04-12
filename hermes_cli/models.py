@@ -546,6 +546,20 @@ _PROVIDER_ALIASES = {
 }
 
 
+def get_default_model_for_provider(provider: str) -> str:
+    """Return the default model for a provider, or empty string if unknown.
+
+    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
+    model a user would be offered first in the ``hermes model`` picker.
+
+    Used as a fallback when the user has configured a provider but never
+    selected a model (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``).
+    """
+    models = _PROVIDER_MODELS.get(provider, [])
+    return models[0] if models else ""
+
+
 def _openrouter_model_is_free(pricing: Any) -> bool:
     """Return True when both prompt and completion pricing are zero."""
     if not isinstance(pricing, dict):
@@ -1808,6 +1822,35 @@ def validate_requested_model(
             "recognized": False,
             "message": message,
         }
+
+    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
+    if normalized == "openai-codex":
+        try:
+            codex_models = provider_model_ids("openai-codex")
+        except Exception:
+            codex_models = []
+        if codex_models:
+            if requested_for_lookup in set(codex_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    f"It may still work if your account has access to it."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)

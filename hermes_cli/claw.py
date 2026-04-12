@@ -57,12 +57,27 @@ def _is_openclaw_running() -> bool:
     """Check whether an OpenClaw process appears to be running."""
     if sys.platform == "win32":
         try:
+            # First check for dedicated executables
+            for exe in ("openclaw.exe", "clawd.exe"):
+                result = subprocess.run(
+                    ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
+                    capture_output=True, text=True, timeout=5
+                )
+                if exe in result.stdout.lower():
+                    return True
+
+            # Check node.exe processes for openclaw/clawd in command line.
+            # tasklist does not include command lines, so we use PowerShell.
+            ps_cmd = (
+                'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
+                'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
+                'Select-Object -First 1 ProcessId'
+            )
             result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq node.exe"],
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
                 capture_output=True, text=True, timeout=5
             )
-            output = result.stdout.lower()
-            return "openclaw" in output or "clawd" in output
+            return bool(result.stdout.strip())
         except Exception:
             return False
 
@@ -95,7 +110,12 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     )
     print_info("Recommendation: stop OpenClaw before migrating.")
     print()
-    if not auto_yes and not prompt_yes_no("Continue anyway?", default=False):
+    if auto_yes:
+        return
+    if not sys.stdin.isatty():
+        print_info("Non-interactive session — continuing to preview only.")
+        return
+    if not prompt_yes_no("Continue anyway?", default=False):
         print_info("Migration cancelled. Stop OpenClaw and try again.")
         sys.exit(0)
 

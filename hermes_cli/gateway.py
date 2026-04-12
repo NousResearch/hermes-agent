@@ -2100,12 +2100,6 @@ def _setup_dingtalk():
     _setup_standard_platform(dingtalk_platform)
 
 
-def _setup_feishu():
-    """Configure Feishu / Lark via the standard platform setup."""
-    feishu_platform = next(p for p in _PLATFORMS if p["key"] == "feishu")
-    _setup_standard_platform(feishu_platform)
-
-
 def _setup_wecom():
     """Configure WeCom (Enterprise WeChat) via the standard platform setup."""
     wecom_platform = next(p for p in _PLATFORMS if p["key"] == "wecom")
@@ -2415,7 +2409,6 @@ def _setup_feishu():
         "Use DM pairing approval (recommended)",
         "Allow all direct messages",
         "Only allow listed user IDs",
-        "Disable direct messages",
     ]
     access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
     if access_idx == 0:
@@ -2427,16 +2420,12 @@ def _setup_feishu():
         save_env_value("FEISHU_ALLOW_ALL_USERS", "true")
         save_env_value("FEISHU_ALLOWED_USERS", "")
         print_warning("  Open DM access enabled for Feishu / Lark.")
-    elif access_idx == 2:
+    else:
         save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
         default_allow = open_id or ""
         allowlist = prompt("  Allowed user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
         save_env_value("FEISHU_ALLOWED_USERS", allowlist)
         print_success("  Allowlist saved.")
-    else:
-        save_env_value("FEISHU_ALLOW_ALL_USERS", "false")
-        save_env_value("FEISHU_ALLOWED_USERS", "")
-        print_warning("  Direct messages disabled.")
 
     # ── Group policy ──
     print()

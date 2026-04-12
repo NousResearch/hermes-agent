@@ -626,6 +626,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
+        # Apply IPv4 preference if configured.
+        try:
+            from hermes_constants import apply_ipv4_preference
+            _net_cfg = _cfg.get("network", {})
+            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
+                apply_ipv4_preference(force=True)
+        except Exception:
+            pass
+
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()

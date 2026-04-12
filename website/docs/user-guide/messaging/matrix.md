@@ -272,6 +272,18 @@ When E2EE is enabled, Hermes:
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
 
+### Cross-Signing Verification (Recommended)
+
+If your Matrix account has cross-signing enabled (the default in Element), set the recovery key so the bot can self-sign its device on startup. Without this, other Matrix clients may refuse to share encryption sessions with the bot after a device key rotation.
+
+```bash
+MATRIX_RECOVERY_KEY=EsT... your recovery key here
+```
+
+**Where to find it:** In Element, go to **Settings** → **Security & Privacy** → **Encryption** → your recovery key (also called the "Security Key"). This is the key you were asked to save when you first set up cross-signing.
+
+On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
+
 :::warning
 If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
 :::
@@ -374,7 +386,7 @@ changed identity keys for the same device as suspicious.
      -d '{
        "type": "m.login.password",
        "identifier": {"type": "m.id.user", "user": "@hermes:your-server.org"},
-       "password": "your-password",
+       "password": "***",
        "initial_device_display_name": "Hermes Agent"
      }'
    ```
@@ -388,17 +400,27 @@ changed identity keys for the same device as suspicious.
    rm -f ~/.hermes/platforms/matrix/store/crypto_store.*
    ```
 
-3. **Force your Matrix client to rotate the encryption session**. In Element,
+3. **Set your recovery key** (if you use cross-signing — most Element users do). Add to `~/.hermes/.env`:
+
+   ```bash
+   MATRIX_RECOVERY_KEY=EsT... your recovery key here
+   ```
+
+   This lets the bot self-sign with cross-signing keys on startup, so Element trusts the new device immediately. Without this, Element may see the new device as unverified and refuse to share encryption sessions. Find your recovery key in Element under **Settings** → **Security & Privacy** → **Encryption**.
+
+4. **Force your Matrix client to rotate the encryption session**. In Element,
    open the DM room with the bot and type `/discardsession`. This forces Element
    to create a new encryption session and share it with the bot's new device.
 
-4. **Restart the gateway**:
+5. **Restart the gateway**:
 
    ```bash
    hermes gateway run
    ```
 
-5. **Send a new message**. The bot should decrypt and respond normally.
+   If `MATRIX_RECOVERY_KEY` is set, you should see `Matrix: cross-signing verified via recovery key` in the logs.
+
+6. **Send a new message**. The bot should decrypt and respond normally.
 
 :::note
 After migration, messages sent *before* the upgrade cannot be decrypted -- the old

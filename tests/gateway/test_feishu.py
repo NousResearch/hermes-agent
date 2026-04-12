@@ -455,11 +455,8 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_progress")
         self.assertEqual(captured["request"].message_id, "om_progress")
-        self.assertEqual(captured["request"].request_body.msg_type, "text")
-        self.assertEqual(
-            captured["request"].request_body.content,
-            json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
-        )
+        # _build_outbound_payload now returns interactive cards
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):

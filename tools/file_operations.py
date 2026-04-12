@@ -97,8 +97,13 @@ def _get_safe_write_root() -> Optional[str]:
 
 
 def _is_write_denied(path: str) -> bool:
-    """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    """Return True if path is on the write deny list.
+
+    Resolves symlinks via Path.resolve() so that a symlink pointing to a
+    protected path (e.g. ``/tmp/link -> ~/.ssh/authorized_keys``) is
+    correctly denied.
+    """
+    resolved = str(Path(os.path.expanduser(str(path))).resolve())
 
     # 1) Static deny list
     if resolved in WRITE_DENIED_PATHS:

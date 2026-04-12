@@ -121,6 +121,24 @@ class TestDeriveBaseUrl:
             == "https://api.enterprise.githubcopilot.com"
         )
 
+    def test_malformed_proxy_ep_javascript(self):
+        from hermes_cli.copilot_auth import (
+            _derive_base_url_from_token,
+            DEFAULT_COPILOT_API_BASE_URL,
+        )
+
+        token = "tid=abc;proxy-ep=javascript:alert(1);exp=999"
+        assert _derive_base_url_from_token(token) == DEFAULT_COPILOT_API_BASE_URL
+
+    def test_malformed_proxy_ep_empty_value(self):
+        from hermes_cli.copilot_auth import (
+            _derive_base_url_from_token,
+            DEFAULT_COPILOT_API_BASE_URL,
+        )
+
+        token = "tid=abc;proxy-ep=;exp=999"
+        assert _derive_base_url_from_token(token) == DEFAULT_COPILOT_API_BASE_URL
+
 
 class TestSessionTokenCache:
     """Session token caching and loading."""

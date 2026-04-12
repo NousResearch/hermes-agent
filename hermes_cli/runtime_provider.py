@@ -198,8 +198,8 @@ def _resolve_runtime_from_pool_entry(
                 api_key = session_token
                 if session_base_url:
                     base_url = session_base_url.rstrip("/")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Copilot session token exchange failed in pool path: %s", exc)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider

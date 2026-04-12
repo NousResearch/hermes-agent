@@ -176,7 +176,7 @@ def _derive_base_url_from_token(token: str) -> str:
         host = parsed.hostname or ""
     except Exception:
         return DEFAULT_COPILOT_API_BASE_URL
-    if not host:
+    if not host or "." not in host:
         return DEFAULT_COPILOT_API_BASE_URL
     # proxy.enterprise.githubcopilot.com -> api.enterprise.githubcopilot.com
     api_host = re.sub(r"^proxy\.", "api.", host, flags=re.IGNORECASE)

@@ -109,6 +109,7 @@ class SlackAdapter(BasePlatformAdapter):
         # events, and they carry the user/thread identity needed for stable
         # session + memory scoping.
         self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
+        self._msg_to_thread: Dict[str, str] = {}  # message_id -> thread_ts cache (#8387)
         self._ASSISTANT_THREADS_MAX = 5000
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
@@ -301,10 +302,15 @@ class SlackAdapter(BasePlatformAdapter):
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
 
-            # Explicitly clear assistant thread status after reply.
-            # Slack's assistant.threads.setStatus auto-clears on reply in
-            # simple cases, but when MCP tools execute post-response the
-            # status persists and blocks the compose box.  See #8387.
+            # Cache message_id -> thread_ts for edit_message status clear (#8387)
+            if thread_ts and sent_ts:
+                self._msg_to_thread[sent_ts] = thread_ts
+                if len(self._msg_to_thread) > 200:
+                    excess = list(self._msg_to_thread.keys())[:100]
+                    for k in excess:
+                        del self._msg_to_thread[k]
+
+            # Clear assistant thread status after reply (fix for #8387)
             if thread_ts:
                 try:
                     await self._get_client(chat_id).assistant_threads_setStatus(
@@ -342,16 +348,17 @@ class SlackAdapter(BasePlatformAdapter):
                 text=formatted,
             )
             # Clear assistant thread status after edit (streaming final chunk).
-            # Hermes uses edit_message for streamed responses, so the status
-            # must be cleared here as well as in send().  See #8387.
-            try:
-                await self._get_client(chat_id).assistant_threads_setStatus(
-                    channel_id=chat_id,
-                    thread_ts=message_id,
-                    status="",
-                )
-            except Exception:
-                pass  # Not in assistant context or lacking scope
+            # Look up cached thread_ts from send(). See #8387.
+            _thread_ts = self._msg_to_thread.get(message_id)
+            if _thread_ts:
+                try:
+                    await self._get_client(chat_id).assistant_threads_setStatus(
+                        channel_id=chat_id,
+                        thread_ts=_thread_ts,
+                        status='',
+                    )
+                except Exception:
+                    pass  # Not in assistant context or lacking scope
 
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging

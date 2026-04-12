@@ -225,7 +225,13 @@ class GatewayStreamConsumer:
                         self._message_id = None
                         self._last_sent_text = ""
 
-                    display_text = self._accumulated
+                    # If all accumulated content is inside think blocks,
+                    # show a thinking hint instead of an empty message.
+                    _cleaned = self._clean_for_display(self._accumulated)
+                    if not _cleaned.strip() and self._accumulated.strip():
+                        display_text = self._THINKING_HINT
+                    else:
+                        display_text = self._accumulated
                     if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
@@ -241,7 +247,8 @@ class GatewayStreamConsumer:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
                         elif current_update_visible:
-                            self._final_response_sent = True
+                            # Do a final edit without the cursor so ▉ is removed.
+                            self._final_response_sent = await self._send_or_edit(self._accumulated)
                         elif self._message_id:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
@@ -288,17 +295,92 @@ class GatewayStreamConsumer:
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
 
+    # All known reasoning/thinking tag names (lowercase).  Must stay in sync
+    # with _strip_think_blocks() in run_agent.py and _extract_reasoning().
+    _THINK_TAG_NAMES = frozenset({
+        'think', 'thinking', 'reasoning', 'thought', 'reasoning_scratchpad',
+    })
+    # Used for partial-tag prefix matching (case-insensitive).
+    _THINK_TAG_PREFIXES = [
+        'think', 'thinking', 'reasoning', 'thought', 'reasoning_scratchpad',
+    ]
+
+    _THINKING_HINT = "💭 思考中..."
+
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip think/reasoning blocks and MEDIA: directives from display text.
 
-        The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        Uses a character-level parser instead of regex to correctly handle
+        non-standard tag formats produced by models like GLM-5.1 where tags
+        may lack closing ``>`` delimiters (e.g. ``<think content</think rest``).
+
+        Handles:
+        * Standard XML-style: ``<think...>content</think...>``
+        * Newline-delimited:  ``<think\\ncontent\\n</think\\n>``
+        * No-bracket-close:    ``<think content</think remaining``  (GLM-5.1)
+        * Partial tags:        ``<thi``, ``<rea`` (streaming in progress)
+        * Orphan closing:      ``</think`` at start (opening was in prior chunk)
+        * MEDIA: directives and ``[[audio_as_voice]]`` markers
         """
+        text = text or ""
+        if not text:
+            return text
+
+        tag_names = GatewayStreamConsumer._THINK_TAG_NAMES
+        prefixes = GatewayStreamConsumer._THINK_TAG_PREFIXES
+
+        result: list[str] = []
+        i = 0
+        in_think = False
+        n = len(text)
+
+        while i < n:
+            if text[i] == '<':
+                # --- Try to identify a think/reasoning tag ---
+                slash = (i + 1 < n and text[i + 1] == '/')
+                tag_start = i + (2 if slash else 1)
+
+                # Extract tag name (alpha + underscore)
+                j = tag_start
+                while j < n and (text[j].isalpha() or text[j] == '_'):
+                    j += 1
+                tag_name = text[tag_start:j].lower()
+
+                if tag_name in tag_names:
+                    if not slash:
+                        # Opening tag: valid if followed by '>', whitespace, or EOF
+                        if j >= n or text[j] in ('>', ' ', '\n', '\t', '\r'):
+                            in_think = True
+                            # Skip past '>' if present
+                            if j < n and text[j] == '>':
+                                j += 1
+                            i = j
+                            continue
+                    else:
+                        # Closing tag: always strip it
+                        while j < n and text[j] not in ('>', ' ', '\n', '\r', '\t'):
+                            j += 1
+                        if j < n and text[j] == '>':
+                            j += 1
+                        in_think = False
+                        i = j
+                        continue
+
+                # Partial tag name at end of string (streaming in progress)?
+                if not slash and not in_think and j == n and tag_name:
+                    for pt in prefixes:
+                        if pt.startswith(tag_name) and 0 < len(tag_name) < len(pt):
+                            # Drop everything from '<' onward
+                            return ''.join(result)
+
+            if not in_think:
+                result.append(text[i])
+            i += 1
+
+        text = ''.join(result)
+
+        # --- MEDIA: directives ---
         if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")

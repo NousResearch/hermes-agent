@@ -1867,18 +1867,71 @@ class AIAgent:
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
     
+    # Tag names recognised by _strip_think_blocks (must stay in sync with
+    # GatewayStreamConsumer._THINK_TAG_NAMES in stream_consumer.py).
+    _THINK_TAG_NAMES = frozenset({
+        'think', 'thinking', 'reasoning', 'thought', 'reasoning_scratchpad',
+    })
+    _THINK_TAG_PREFIXES = [
+        'think', 'thinking', 'reasoning', 'thought', 'reasoning_scratchpad',
+    ]
+
     def _strip_think_blocks(self, content: str) -> str:
-        """Remove reasoning/thinking blocks from content, returning only visible text."""
+        """Remove reasoning/thinking blocks from content, returning only visible text.
+
+        Uses a character-level parser to handle non-standard tag formats
+        (e.g. GLM-5.1 tags without closing ``>`` delimiters) in addition to
+        standard XML-style and newline-delimited blocks.  Also strips the
+        legacy ``🤔...ENDED`` inline reasoning markers.
+        """
         if not content:
             return ""
-        # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>
-        content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
-        content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
-        content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
-        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
-        return content
+        # Legacy inline reasoning markers (🤔...ENDED)
+        content = re.sub(r'🤔.*?ENDED', '', content, flags=re.DOTALL)
+
+        tag_names = self._THINK_TAG_NAMES
+        prefixes = self._THINK_TAG_PREFIXES
+        result: list[str] = []
+        i = 0
+        in_think = False
+        n = len(content)
+
+        while i < n:
+            if content[i] == '<':
+                slash = (i + 1 < n and content[i + 1] == '/')
+                tag_start = i + (2 if slash else 1)
+                j = tag_start
+                while j < n and (content[j].isalpha() or content[j] == '_'):
+                    j += 1
+                tag_name = content[tag_start:j].lower()
+
+                if tag_name in tag_names:
+                    if not slash:
+                        if j >= n or content[j] in ('>', ' ', '\n', '\t', '\r'):
+                            in_think = True
+                            if j < n and content[j] == '>':
+                                j += 1
+                            i = j
+                            continue
+                    else:
+                        while j < n and content[j] not in ('>', ' ', '\n', '\r', '\t'):
+                            j += 1
+                        if j < n and content[j] == '>':
+                            j += 1
+                        in_think = False
+                        i = j
+                        continue
+
+                if not slash and not in_think and j == n and tag_name:
+                    for pt in prefixes:
+                        if pt.startswith(tag_name) and 0 < len(tag_name) < len(pt):
+                            return ''.join(result)
+
+            if not in_think:
+                result.append(content[i])
+            i += 1
+
+        return ''.join(result)
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -2003,6 +2056,7 @@ class AIAgent:
                 r"<think>(.*?)</think>",
                 r"<thinking>(.*?)</thinking>",
                 r"<reasoning>(.*?)</reasoning>",
+                r"<thought>(.*?)</thought>",
                 r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
             )
             for pattern in inline_patterns:

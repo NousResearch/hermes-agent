@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _import_codex_cli_tokens,
+    _write_codex_cli_tokens,
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
@@ -693,6 +694,14 @@ class CredentialPool:
                         self._replace_entry(synced, updated)
                         self._persist()
                         self._sync_device_code_entry_to_auth_store(updated)
+                        try:
+                            _write_codex_cli_tokens(
+                                updated.access_token,
+                                updated.refresh_token,
+                                last_refresh=updated.last_refresh,
+                            )
+                        except Exception as wexc:
+                            logger.debug("Failed to write refreshed Codex tokens to CLI file (retry): %s", wexc)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Codex retry refresh also failed: %s", retry_exc)
@@ -718,6 +727,17 @@ class CredentialPool:
         # _seed_from_singletons() on the next load_pool() sees fresh state
         # instead of re-seeding stale/consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
+        # Write refreshed tokens back to ~/.codex/auth.json so Codex CLI
+        # and VS Code don't hit "refresh_token_reused" on their next refresh.
+        if self.provider == "openai-codex":
+            try:
+                _write_codex_cli_tokens(
+                    updated.access_token,
+                    updated.refresh_token,
+                    last_refresh=updated.last_refresh,
+                )
+            except Exception as wexc:
+                logger.debug("Failed to write refreshed Codex tokens to CLI file: %s", wexc)
         return updated
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:

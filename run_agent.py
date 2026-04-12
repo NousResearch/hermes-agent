@@ -1748,11 +1748,29 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
-            aux_context = get_model_context_length(
-                aux_model,
-                base_url=aux_base_url,
-                api_key=aux_api_key,
-            )
+
+            def _normalize_model_name(model_name: str) -> str:
+                model_name = (model_name or "").strip().lower()
+                if "/" in model_name:
+                    model_name = model_name.rsplit("/", 1)[-1]
+                return model_name
+
+            same_model = _normalize_model_name(aux_model) == _normalize_model_name(self.model)
+            same_endpoint = aux_base_url.rstrip("/") == str(getattr(self, "base_url", "")).rstrip("/")
+
+            if same_model and same_endpoint:
+                # Compression defaults to the active model. Reuse the already
+                # resolved main-model context so explicit config overrides
+                # (for example model.context_length on custom endpoints) are
+                # honored instead of re-querying metadata and falling back to
+                # generic family defaults like GPT-5 = 128K.
+                aux_context = self.context_compressor.context_length
+            else:
+                aux_context = get_model_context_length(
+                    aux_model,
+                    base_url=aux_base_url,
+                    api_key=aux_api_key,
+                )
 
             threshold = self.context_compressor.threshold_tokens
             if aux_context < threshold:

@@ -212,6 +212,58 @@ def test_just_below_threshold_warns(mock_get_client, mock_ctx_len):
     assert "small-model" in messages[0]
 
 
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_reuses_main_context_when_compression_model_matches_active_model(
+    mock_get_client, mock_ctx_len
+):
+    """If compression resolves to the active model on the same endpoint,
+    reuse the already-resolved main context instead of re-querying metadata.
+    """
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.80)
+    agent.model = "gpt-5.4"
+    agent.base_url = "https://sub2api.tizi.lifestyle/v1"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://sub2api.tizi.lifestyle/v1/"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "gpt-5.4")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 0
+    assert agent._compression_warning is None
+    mock_ctx_len.assert_not_called()
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_explicit_different_compression_model_uses_its_own_context(
+    mock_get_client, mock_ctx_len
+):
+    """A distinct compression model should still be checked independently."""
+    agent = _make_agent(main_context=1_000_000, threshold_percent=0.80)
+    agent.model = "gpt-5.4"
+    agent.base_url = "https://sub2api.tizi.lifestyle/v1"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "google/gemini-3-flash-preview")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "google/gemini-3-flash-preview" in messages[0]
+    mock_ctx_len.assert_called_once()
+
+
 # ── Two-phase: __init__ + run_conversation replay ───────────────────
 
 

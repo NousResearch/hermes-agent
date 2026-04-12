@@ -158,6 +158,14 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "mistral",
             },
+            {
+                "name": "Cartesia AI",
+                "tag": "High-quality voices via sonic-3 model, needs CARTESIA_API_KEY",
+                "env_vars": [
+                    {"key": "CARTESIA_API_KEY", "prompt": "Cartesia AI API key", "url": "https://cartesia.ai/"},
+                ],
+                "tts_provider": "cartesia",
+            },
         ],
     },
     "web": {

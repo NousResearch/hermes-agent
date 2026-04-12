@@ -2,12 +2,13 @@
 """
 Text-to-Speech Tool Module
 
-Supports six TTS providers:
+Supports seven TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
+- Cartesia AI (sonic-3): High-quality voices, needs CARTESIA_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -91,6 +92,9 @@ DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+DEFAULT_CARTESIA_MODEL = "sonic-3"
+DEFAULT_CARTESIA_VOICE_ID = "a0e99841-438c-4a64-b679-ae501e7d6091"  # Default Cartesia voice
+DEFAULT_CARTESIA_BASE_URL = "https://api.cartesia.ai"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -434,6 +438,87 @@ def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
 
 # ===========================================================================
+# Provider: Cartesia AI TTS (sonic-3 model)
+# ===========================================================================
+def _generate_cartesia_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using Cartesia AI TTS API.
+
+    Args:
+        text: Text to convert.
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = os.getenv("CARTESIA_API_KEY", "")
+    if not api_key:
+        raise ValueError("CARTESIA_API_KEY not set. Get one at https://cartesia.ai/")
+
+    cartesia_config = tts_config.get("cartesia", {})
+    model = cartesia_config.get("model", DEFAULT_CARTESIA_MODEL)
+    voice_id = cartesia_config.get("voice_id", DEFAULT_CARTESIA_VOICE_ID)
+    language = cartesia_config.get("language", "en")
+    base_url = cartesia_config.get("base_url", DEFAULT_CARTESIA_BASE_URL)
+
+    # Determine output format based on file extension
+    if output_path.endswith(".ogg"):
+        container = "ogg"
+        encoding = "opus"
+    elif output_path.endswith(".wav"):
+        container = "wav"
+        encoding = "pcm_s16le"
+    elif output_path.endswith(".mp3"):
+        container = "mp3"
+        encoding = "mp3"
+    else:
+        container = "raw"
+        encoding = "pcm_f32le"
+
+    payload = {
+        "model_id": model,
+        "voice": {
+            "mode": "id",
+            "id": voice_id
+        },
+        "output_format": {
+            "container": container,
+            "encoding": encoding,
+            "sample_rate": 24000 if container != "raw" else 8000
+        },
+        "transcript": text,
+        "language": language
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "Cartesia-Version": "2026-03-01"
+    }
+
+    response = requests.post(
+        f"{base_url.rstrip('/')}/tts/bytes",
+        json=payload,
+        headers=headers,
+        timeout=60
+    )
+    response.raise_for_status()
+
+    # Cartesia returns raw audio bytes
+    audio_bytes = response.content
+    if not audio_bytes:
+        raise RuntimeError("Cartesia TTS returned empty audio data")
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -561,7 +646,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral", "cartesia"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -609,6 +694,10 @@ def text_to_speech_tool(
                 }, ensure_ascii=False)
             logger.info("Generating speech with Mistral Voxtral TTS...")
             _generate_mistral_tts(text, file_str, tts_config)
+
+        elif provider == "cartesia":
+            logger.info("Generating speech with Cartesia AI TTS...")
+            _generate_cartesia_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -664,7 +753,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai", "mistral"):
+        elif provider in ("elevenlabs", "openai", "mistral", "cartesia"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -739,6 +828,8 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     if _check_neutts_available():
+        return True
+    if os.getenv("CARTESIA_API_KEY"):
         return True
     return False
 

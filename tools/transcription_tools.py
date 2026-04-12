@@ -2,12 +2,14 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with three providers:
+Provides speech-to-text transcription with multiple providers:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
   - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
   - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
+  - **mistral** (paid) — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
+  - **cartesia** (paid) — Cartesia AI STT API (ink-whisper), requires ``CARTESIA_API_KEY``.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -69,6 +71,7 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_CARTESIA_STT_MODEL = os.getenv("STT_CARTESIA_MODEL", "ink-whisper")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -254,6 +257,14 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "cartesia":
+            if os.getenv("CARTESIA_API_KEY"):
+                return "cartesia"
+            logger.warning(
+                "STT provider 'cartesia' configured but CARTESIA_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
     # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
@@ -271,6 +282,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if os.getenv("CARTESIA_API_KEY"):
+        logger.info("No local STT available, using Cartesia AI STT API")
+        return "cartesia"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -586,6 +600,59 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: cartesia (Cartesia AI STT - ink-whisper model)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_cartesia(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Cartesia AI STT API (ink-whisper model)."""
+    import requests
+
+    api_key = os.getenv("CARTESIA_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "CARTESIA_API_KEY not set"}
+
+    # Language from config or auto-detect
+    stt_config = _load_stt_config()
+    language = stt_config.get("cartesia", {}).get("language", "")
+
+    try:
+        with open(file_path, "rb") as audio_file:
+            files = {"file": (Path(file_path).name, audio_file, "audio/mpeg")}
+            data = {"model": model_name}
+            if language:
+                data["language"] = language
+
+            response = requests.post(
+                "https://api.cartesia.ai/stt",
+                files=files,
+                data=data,
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=120
+            )
+            response.raise_for_status()
+
+            result = response.json()
+            transcript_text = result.get("text", "").strip()
+
+            logger.info(
+                "Transcribed %s via Cartesia API (%s, %d chars)",
+                Path(file_path).name, model_name, len(transcript_text)
+            )
+
+            return {"success": True, "transcript": transcript_text, "provider": "cartesia"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except requests.exceptions.RequestException as e:
+        logger.error("Cartesia transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Cartesia transcription failed: {e}"}
+    except Exception as e:
+        logger.error("Cartesia transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Cartesia transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -596,7 +663,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     Provider priority:
       1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid) > Mistral > Cartesia
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -651,6 +718,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "cartesia":
+        cartesia_cfg = stt_config.get("cartesia", {})
+        model_name = model or cartesia_cfg.get("model", DEFAULT_CARTESIA_STT_MODEL)
+        return _transcribe_cartesia(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -659,7 +731,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, set CARTESIA_API_KEY for Cartesia AI STT, "
+            "or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

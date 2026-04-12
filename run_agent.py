@@ -2116,12 +2116,33 @@ class AIAgent:
                 with open(_os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
+                    # Use the primary model for background review, not the
+                    # current turn's model which may be a cheap/weak model
+                    # from smart routing that lacks tool-calling ability.
+                    _review_model = self.model
+                    _review_provider = self.provider
+                    _review_kwargs = {}
+                    try:
+                        from hermes_cli.config import load_config as _load_review_cfg
+                        _rcfg = _load_review_cfg()
+                        _model_cfg = _rcfg.get("model", {}) or {}
+                        if isinstance(_model_cfg, dict) and _model_cfg.get("default"):
+                            _review_model = _model_cfg["default"]
+                            _review_provider = _model_cfg.get("provider") or self.provider
+                            if _model_cfg.get("base_url"):
+                                _review_kwargs["base_url"] = _model_cfg["base_url"]
+                            if _model_cfg.get("api_key"):
+                                _review_kwargs["api_key"] = _model_cfg["api_key"]
+                    except Exception:
+                        pass  # Fall back to current model
+
                     review_agent = AIAgent(
-                        model=self.model,
+                        model=_review_model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
-                        provider=self.provider,
+                        provider=_review_provider,
+                        **_review_kwargs,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled

@@ -60,12 +60,14 @@ class TestSessionLifecycle:
             response_id="resp_123",
             history_len=4,
             history_fingerprint="abc123",
+            backend="responses:http://localhost:1234/v1",
         )
 
         session = db.get_session("s1")
         assert session["codex_previous_response_id"] == "resp_123"
         assert session["codex_previous_response_history_len"] == 4
         assert session["codex_previous_response_history_fingerprint"] == "abc123"
+        assert session["codex_previous_response_backend"] == "responses:http://localhost:1234/v1"
 
     def test_update_codex_previous_response_clears_invalid_values(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -74,18 +76,21 @@ class TestSessionLifecycle:
             response_id="resp_123",
             history_len=4,
             history_fingerprint="abc123",
+            backend="responses:http://localhost:1234/v1",
         )
         db.update_codex_previous_response(
             "s1",
             response_id="   ",
             history_len=-1,
             history_fingerprint="",
+            backend="",
         )
 
         session = db.get_session("s1")
         assert session["codex_previous_response_id"] is None
         assert session["codex_previous_response_history_len"] == 0
         assert session["codex_previous_response_history_fingerprint"] is None
+        assert session["codex_previous_response_backend"] is None
 
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -969,7 +974,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 8
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1025,17 +1030,18 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to the latest schema.
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 8
 
-        # Verify title column exists and is NULL for existing sessions
+        # Verify new session metadata columns exist and are NULL for existing sessions.
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+        assert session["codex_previous_response_backend"] is None
 
         # Verify we can set title on migrated session
         assert migrated_db.set_session_title("existing", "Migrated Title") is True

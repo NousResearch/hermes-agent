@@ -591,6 +591,29 @@ class TestLocalResponsesPreviousResponseIdThreading:
         agent.client = MagicMock()
         return agent
 
+    def _make_persisted_responses_agent(self, monkeypatch, db, session_id, *, base_url):
+        provider = "openai-codex" if "api.openai.com" in base_url else "custom"
+        agent = AIAgent(
+            api_key="test-key",
+            base_url=base_url,
+            provider=provider,
+            api_mode="codex_responses",
+            max_iterations=4,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id=session_id,
+            session_db=db,
+            persist_session=True,
+        )
+        monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
+        monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+        monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
+        monkeypatch.setattr(agent, "_build_system_prompt", lambda *a, **k: "system prompt")
+        monkeypatch.setattr(agent, "_save_session_log", lambda *a, **k: None)
+        agent.model = "gpt-5"
+        return agent
+
     @staticmethod
     def _responses_response(response_id, text):
         return SimpleNamespace(
@@ -634,6 +657,81 @@ class TestLocalResponsesPreviousResponseIdThreading:
         assert "previous_response_id" not in kwargs_seen[0]
         assert kwargs_seen[1]["previous_response_id"] == "resp_local_1"
         assert kwargs_seen[1]["input"] == [{"role": "user", "content": "follow up"}]
+
+    def test_resumed_session_does_not_reuse_previous_response_id_across_supported_backends(self, monkeypatch, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "resume-cross-backend"
+        db.create_session(session_id=session_id, source="cli", model="gpt-5")
+
+        first_agent = self._make_persisted_responses_agent(
+            monkeypatch, db, session_id, base_url="http://localhost:1234/v1"
+        )
+        first_seen = []
+
+        def first_fake_api(kwargs):
+            first_seen.append(kwargs)
+            return self._responses_response("resp_local_1", "First reply")
+
+        monkeypatch.setattr(first_agent, "_interruptible_api_call", first_fake_api)
+        first = first_agent.run_conversation("hello", conversation_history=[])
+
+        session = db.get_session(session_id)
+        assert session["codex_previous_response_id"] == "resp_local_1"
+        assert "codex_previous_response_backend" in session
+        assert session["codex_previous_response_backend"] is not None
+        assert "previous_response_id" not in first_seen[0]
+
+        resumed_agent = self._make_persisted_responses_agent(
+            monkeypatch, db, session_id, base_url="https://api.openai.com/v1"
+        )
+        resumed_seen = []
+
+        def resumed_fake_api(kwargs):
+            resumed_seen.append(kwargs)
+            return self._responses_response("resp_openai_2", "Second reply")
+
+        monkeypatch.setattr(resumed_agent, "_interruptible_api_call", resumed_fake_api)
+        second = resumed_agent.run_conversation("follow up", conversation_history=first["messages"])
+
+        assert second["final_response"] == "Second reply"
+        assert "previous_response_id" not in resumed_seen[0]
+        assert resumed_seen[0]["input"] == resumed_agent._chat_messages_to_responses_input(
+            first["messages"] + [{"role": "user", "content": "follow up"}]
+        )
+        db.close()
+
+    def test_resumed_session_reuses_previous_response_id_on_same_supported_backend(self, monkeypatch, tmp_path):
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "resume-same-backend"
+        db.create_session(session_id=session_id, source="cli", model="gpt-5")
+
+        first_agent = self._make_persisted_responses_agent(
+            monkeypatch, db, session_id, base_url="http://localhost:1234/v1"
+        )
+
+        monkeypatch.setattr(
+            first_agent,
+            "_interruptible_api_call",
+            lambda kwargs: self._responses_response("resp_local_1", "First reply"),
+        )
+        first = first_agent.run_conversation("hello", conversation_history=[])
+
+        resumed_agent = self._make_persisted_responses_agent(
+            monkeypatch, db, session_id, base_url="http://localhost:1234/v1"
+        )
+        resumed_seen = []
+
+        def resumed_fake_api(kwargs):
+            resumed_seen.append(kwargs)
+            return self._responses_response("resp_local_2", "Second reply")
+
+        monkeypatch.setattr(resumed_agent, "_interruptible_api_call", resumed_fake_api)
+        second = resumed_agent.run_conversation("follow up", conversation_history=first["messages"])
+
+        assert second["final_response"] == "Second reply"
+        assert resumed_seen[0]["previous_response_id"] == "resp_local_1"
+        assert resumed_seen[0]["input"] == [{"role": "user", "content": "follow up"}]
+        db.close()
 
 
 class TestChatMessagesToResponsesInput:

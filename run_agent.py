@@ -38,6 +38,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlsplit
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -636,6 +637,7 @@ class AIAgent:
         self._codex_previous_response_id = None
         self._codex_previous_response_history_len = 0
         self._codex_previous_response_history_fingerprint = None
+        self._codex_previous_response_backend = None
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
@@ -1817,6 +1819,32 @@ class AIAgent:
         if "chatgpt.com/backend-api/codex" in url:
             return False
         return self._is_direct_openai_url(url) or is_local_endpoint(url)
+
+    def _previous_response_backend_key(self, base_url: str = None) -> Optional[str]:
+        """Return a narrow, stable identity for the backend minting Responses ids."""
+        raw_url = (base_url or self.base_url or "").strip()
+        if not raw_url:
+            return None
+        normalized_url = raw_url.lower()
+
+        if "chatgpt.com/backend-api/codex" in normalized_url:
+            return "chatgpt.com/backend-api/codex"
+        if "models.github.ai" in normalized_url:
+            return "models.github.ai"
+        if "api.githubcopilot.com" in normalized_url:
+            return "api.githubcopilot.com"
+        if self._is_direct_openai_url(normalized_url):
+            return "api.openai.com"
+        if is_local_endpoint(normalized_url):
+            parsed = urlsplit(raw_url)
+            scheme = (parsed.scheme or "http").lower()
+            hostname = (parsed.hostname or "").lower()
+            if not hostname:
+                return None
+            port = f":{parsed.port}" if parsed.port else ""
+            path = (parsed.path or "").rstrip("/")
+            return f"{scheme}://{hostname}{port}{path}"
+        return None
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -3596,6 +3624,8 @@ class AIAgent:
         previous_response_id = getattr(self, "_codex_previous_response_id", None)
         history_len = getattr(self, "_codex_previous_response_history_len", None)
         history_fingerprint = getattr(self, "_codex_previous_response_history_fingerprint", None)
+        persisted_backend = getattr(self, "_codex_previous_response_backend", None)
+        current_backend = self._previous_response_backend_key()
 
         can_thread = (
             isinstance(previous_response_id, str)
@@ -3603,6 +3633,8 @@ class AIAgent:
             and isinstance(history_len, int)
             and history_len >= 0
             and isinstance(history_fingerprint, str)
+            and isinstance(persisted_backend, str)
+            and persisted_backend == current_backend
             and history_len <= len(history_messages)
             and self._responses_history_fingerprint(history_messages[:history_len]) == history_fingerprint
         )
@@ -3622,6 +3654,7 @@ class AIAgent:
                 getattr(self, "_codex_previous_response_id", None),
                 history_len=getattr(self, "_codex_previous_response_history_len", 0),
                 history_fingerprint=getattr(self, "_codex_previous_response_history_fingerprint", None),
+                backend=getattr(self, "_codex_previous_response_backend", None),
             )
         except Exception as e:
             logger.debug("Session DB update_codex_previous_response failed: %s", e)
@@ -3634,6 +3667,7 @@ class AIAgent:
         response_id = session_row.get("codex_previous_response_id")
         history_len = session_row.get("codex_previous_response_history_len")
         history_fingerprint = session_row.get("codex_previous_response_history_fingerprint")
+        backend = session_row.get("codex_previous_response_backend")
 
         self._codex_previous_response_id = (
             response_id.strip() if isinstance(response_id, str) and response_id.strip() else None
@@ -3641,6 +3675,9 @@ class AIAgent:
         self._codex_previous_response_history_len = history_len if isinstance(history_len, int) and history_len >= 0 else 0
         self._codex_previous_response_history_fingerprint = (
             history_fingerprint if isinstance(history_fingerprint, str) and history_fingerprint else None
+        )
+        self._codex_previous_response_backend = (
+            backend.strip() if isinstance(backend, str) and backend.strip() else None
         )
 
     def _remember_codex_previous_response(self, response: Any, history_messages: List[Dict[str, Any]]) -> None:
@@ -3660,6 +3697,7 @@ class AIAgent:
         self._codex_previous_response_history_len = len(stored_history)
         # Fingerprint only the durable conversation history, not ephemeral API-only prefixes.
         self._codex_previous_response_history_fingerprint = self._responses_history_fingerprint(stored_history)
+        self._codex_previous_response_backend = self._previous_response_backend_key()
         self._persist_codex_previous_response_state()
 
     def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:

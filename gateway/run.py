@@ -497,6 +497,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _RESTART_RESUME_PATH = _hermes_home / "gateway_restart_resume.json"
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -540,6 +541,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._running_events: Dict[str, MessageEvent] = {}  # Active inbound event per session
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1259,6 +1261,118 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _serialize_restart_resume_entry(self, session_key: str, event: MessageEvent) -> Dict[str, Any]:
+        source = event.source.to_dict() if getattr(event, "source", None) else {}
+        return {
+            "session_key": session_key,
+            "event": {
+                "text": event.text or "",
+                "message_type": getattr(event.message_type, "value", MessageType.TEXT.value),
+                "source": source,
+                "message_id": event.message_id,
+                "media_urls": list(event.media_urls or []),
+                "media_types": list(event.media_types or []),
+                "reply_to_message_id": event.reply_to_message_id,
+                "reply_to_text": event.reply_to_text,
+                "auto_skill": event.auto_skill,
+                "internal": bool(event.internal),
+                "timestamp": event.timestamp.isoformat() if getattr(event, "timestamp", None) else None,
+            },
+        }
+
+    def _save_restart_resume_entries(self, entries: List[Dict[str, Any]]) -> None:
+        try:
+            self._RESTART_RESUME_PATH.parent.mkdir(parents=True, exist_ok=True)
+            atomic_yaml_write(self._RESTART_RESUME_PATH, {"entries": entries})
+        except Exception as e:
+            logger.warning("Failed saving restart-resume entries: %s", e)
+
+    def _build_restart_resume_entries(self) -> List[Dict[str, Any]]:
+        entries: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for session_key, event in list(self._running_events.items()):
+            if not event or session_key in seen:
+                continue
+            seen.add(session_key)
+            entries.append(self._serialize_restart_resume_entry(session_key, event))
+        return entries
+
+    def _persist_restart_resume_entries(self) -> None:
+        entries = self._build_restart_resume_entries()
+        if entries:
+            self._save_restart_resume_entries(entries)
+        else:
+            try:
+                self._RESTART_RESUME_PATH.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _load_restart_resume_entries(self) -> List[Dict[str, Any]]:
+        try:
+            if not self._RESTART_RESUME_PATH.exists():
+                return []
+            with open(self._RESTART_RESUME_PATH, encoding="utf-8") as f:
+                text = f.read().strip()
+            if not text:
+                return []
+            data = json.loads(text)
+            entries = data.get("entries", []) if isinstance(data, dict) else []
+            return entries if isinstance(entries, list) else []
+        except Exception as e:
+            logger.warning("Failed loading restart-resume entries: %s", e)
+            return []
+
+    async def _resume_interrupted_turns(self) -> None:
+        entries = self._load_restart_resume_entries()
+        if not entries:
+            return
+
+        try:
+            self._RESTART_RESUME_PATH.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        resumed = 0
+        for entry in entries:
+            try:
+                payload = entry.get("event") or {}
+                source_dict = payload.get("source") or {}
+                source = SessionSource.from_dict(source_dict)
+                msg_type_raw = payload.get("message_type") or MessageType.TEXT.value
+                try:
+                    message_type = MessageType(msg_type_raw)
+                except Exception:
+                    message_type = MessageType.TEXT
+                ts_raw = payload.get("timestamp")
+                try:
+                    ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.now()
+                except Exception:
+                    ts = datetime.now()
+                event = MessageEvent(
+                    text=payload.get("text") or "",
+                    message_type=message_type,
+                    source=source,
+                    message_id=payload.get("message_id"),
+                    media_urls=list(payload.get("media_urls") or []),
+                    media_types=list(payload.get("media_types") or []),
+                    reply_to_message_id=payload.get("reply_to_message_id"),
+                    reply_to_text=payload.get("reply_to_text"),
+                    auto_skill=payload.get("auto_skill"),
+                    internal=bool(payload.get("internal", False)),
+                    timestamp=ts,
+                )
+                adapter = self.adapters.get(source.platform)
+                if not adapter:
+                    logger.warning("Cannot resume interrupted turn for %s: adapter unavailable", source.platform)
+                    continue
+                await adapter.handle_message(event)
+                resumed += 1
+            except Exception as e:
+                logger.warning("Failed resuming interrupted turn: %s", e)
+
+        if resumed:
+            logger.info("Resumed %d interrupted turn(s) after gateway restart", resumed)
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
@@ -1539,6 +1653,9 @@ class GatewayRunner:
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
+        # Resume any interrupted in-flight turns captured during restart drain timeout.
+        await self._resume_interrupted_turns()
+
         # Start background session expiry watcher for proactive memory flushing
         asyncio.create_task(self._session_expiry_watcher())
 
@@ -1809,6 +1926,8 @@ class GatewayRunner:
                     timeout,
                     self._running_agent_count(),
                 )
+                if self._restart_requested:
+                    self._persist_restart_resume_entries()
                 self._interrupt_running_agents(
                     "Gateway restarting" if self._restart_requested else "Gateway shutting down"
                 )
@@ -2692,6 +2811,7 @@ class GatewayRunner:
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         _msg_preview = (event.text or "")[:80].replace("\n", " ")
+        self._running_events[_quick_key] = event
         logger.info(
             "inbound message: platform=%s user=%s chat=%s msg=%r",
             _platform_name, source.user_name or source.user_id or "unknown",
@@ -8009,6 +8129,8 @@ class GatewayRunner:
                         await task
                     except asyncio.CancelledError:
                         pass
+            if session_key:
+                self._running_events.pop(session_key, None)
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

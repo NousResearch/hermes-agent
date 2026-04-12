@@ -321,8 +321,15 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         from faster_whisper import WhisperModel
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
         if _local_model is None or _local_model_name != model_name:
-            logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
+            logger.info(
+                "Loading faster-whisper model '%s' on CPU/int8 (first load downloads the model)...",
+                model_name,
+            )
+            # Force CPU mode in WSL/desktop setups where CTranslate2 may detect a
+            # partial CUDA runtime and later fail at inference with missing libcublas.
+            # CPU int8 is slower than a healthy GPU path but far more reliable for
+            # always-on voice-note transcription.
+            _local_model = WhisperModel(model_name, device="cpu", compute_type="int8")
             _local_model_name = model_name
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.

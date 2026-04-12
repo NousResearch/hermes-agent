@@ -406,9 +406,15 @@ If you want to try systemd anyway, make sure it's enabled:
 5. Verify: `systemctl is-system-running` should say "running" or "degraded"
 
 :::tip Auto-start on Windows boot
-For reliable auto-start, use Windows Task Scheduler to launch WSL + the gateway on login:
-1. Create a task that runs `wsl -d Ubuntu -- bash -lc 'hermes gateway run'`
-2. Set it to trigger on user logon
+For reliable auto-start, use Windows Task Scheduler to launch WSL on login, but make the startup command idempotent so repeated logon/startup triggers do not bounce a healthy gateway.
+
+Recommended pattern:
+1. Create a small bootstrap script that checks `systemctl --user is-active hermes-gateway`
+2. If the gateway is already active, exit successfully without restarting it
+3. Only start the gateway when it is inactive
+4. Trigger that script on user logon
+
+Avoid wiring Task Scheduler or Startup-folder automation to an unconditional `hermes gateway restart` or to a wrapper that restarts the service whenever it is already running — repeated startup triggers can interrupt in-flight Telegram/Discord/Slack conversations.
 :::
 
 #### macOS: Node.js / ffmpeg / other tools not found by gateway

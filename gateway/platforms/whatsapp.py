@@ -30,6 +30,7 @@ from typing import Dict, Optional, Any
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
+_WHATSAPP_BARE_PHONE_RE = re.compile(r"^\+?[\d\s().-]+$")
 
 
 def _kill_port_process(port: int) -> None:
@@ -98,6 +99,26 @@ def check_whatsapp_requirements() -> bool:
         return result.returncode == 0
     except Exception:
         return False
+
+
+def _normalize_outbound_whatsapp_chat_id(value: Optional[str]) -> str:
+    """Normalize outbound WhatsApp targets to bridge-safe JID format."""
+    if not value:
+        return ""
+
+    normalized = str(value).strip()
+    if ":" in normalized and "@" in normalized:
+        normalized = normalized.replace(":", "@", 1)
+
+    if "@" in normalized:
+        return normalized
+
+    if _WHATSAPP_BARE_PHONE_RE.fullmatch(normalized):
+        digits = re.sub(r"\D+", "", normalized)
+        if digits:
+            return f"{digits}@s.whatsapp.net"
+
+    return normalized
 
 
 class WhatsAppAdapter(BasePlatformAdapter):
@@ -195,12 +216,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _normalize_whatsapp_id(value: Optional[str]) -> str:
-        if not value:
-            return ""
-        normalized = str(value).strip()
-        if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
-        return normalized
+        return _normalize_outbound_whatsapp_chat_id(value)
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:
         bot_ids = set()
@@ -548,8 +564,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
+            normalized_chat_id = _normalize_outbound_whatsapp_chat_id(chat_id)
             payload = {
-                "chatId": chat_id,
+                "chatId": normalized_chat_id,
                 "message": content,
             }
             if reply_to:
@@ -624,8 +641,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if not os.path.exists(file_path):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
+            normalized_chat_id = _normalize_outbound_whatsapp_chat_id(chat_id)
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": normalized_chat_id,
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -714,9 +732,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
+            normalized_chat_id = _normalize_outbound_whatsapp_chat_id(chat_id)
             await self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": normalized_chat_id},
                 timeout=aiohttp.ClientTimeout(total=5)
             )
         except Exception:
@@ -732,8 +751,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
+            normalized_chat_id = _normalize_outbound_whatsapp_chat_id(chat_id)
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                f"http://127.0.0.1:{self._bridge_port}/chat/{normalized_chat_id}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:

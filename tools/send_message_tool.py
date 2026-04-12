@@ -626,11 +626,14 @@ async def _send_whatsapp(extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        from gateway.platforms.whatsapp import _normalize_outbound_whatsapp_chat_id
+
         bridge_port = extra.get("bridge_port", 3000)
+        normalized_chat_id = _normalize_outbound_whatsapp_chat_id(chat_id)
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"http://localhost:{bridge_port}/send",
-                json={"chatId": chat_id, "message": message},
+                json={"chatId": normalized_chat_id, "message": message},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 if resp.status == 200:
@@ -638,7 +641,7 @@ async def _send_whatsapp(extra, chat_id, message):
                     return {
                         "success": True,
                         "platform": "whatsapp",
-                        "chat_id": chat_id,
+                        "chat_id": normalized_chat_id,
                         "message_id": data.get("messageId"),
                     }
                 body = await resp.text()

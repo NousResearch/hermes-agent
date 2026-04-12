@@ -5208,7 +5208,14 @@ class AIAgent:
         mappings.
         """
         if reason in (FailoverReason.rate_limit, FailoverReason.billing):
-            self._rate_limited_until = time.monotonic() + 60
+            # Only start cooldown when leaving the primary provider.  If we're
+            # already on a fallback and chain-switching, the primary wasn't the
+            # source of the 429 so the cooldown should not be reset/extended.
+            fallback_already_active = bool(getattr(self, "_fallback_activated", False))
+            current_provider = (getattr(self, "provider", "") or "").strip().lower()
+            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+            if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
+                self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
             return False
 

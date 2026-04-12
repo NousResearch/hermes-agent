@@ -2208,6 +2208,77 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_participated_threads.add(thread_id)
             self._save_participated_threads()
 
+    def _summarize_referenced_message(self, referenced: Any) -> Optional[str]:
+        """Return text context for a referenced Discord message.
+
+        Prefer plain text content. If the referenced message has no text, fall
+        back to a concise attachment/embed summary so reply context still has a
+        useful anchor.
+        """
+        if not referenced:
+            return None
+
+        content = (getattr(referenced, "content", None) or "").strip()
+        if content:
+            return content
+
+        parts = []
+        author = getattr(referenced, "author", None)
+        author_name = (
+            getattr(author, "display_name", None)
+            or getattr(author, "name", None)
+            or ""
+        )
+
+        attachments = list(getattr(referenced, "attachments", None) or [])
+        if attachments:
+            attachment_labels = []
+            for att in attachments[:3]:
+                filename = getattr(att, "filename", None) or "attachment"
+                content_type = getattr(att, "content_type", None) or "file"
+                attachment_labels.append(f"{filename} ({content_type})")
+            extra = "" if len(attachments) <= 3 else f" +{len(attachments) - 3} more"
+            parts.append(
+                f"Referenced message had {len(attachments)} attachment(s): "
+                f"{', '.join(attachment_labels)}{extra}"
+            )
+
+        embeds = list(getattr(referenced, "embeds", None) or [])
+        if embeds:
+            parts.append(f"Referenced message had {len(embeds)} embed(s)")
+
+        if not parts:
+            return None
+        prefix = f"{author_name}: " if author_name else ""
+        return prefix + " | ".join(parts)
+
+    async def _resolve_referenced_message_text(self, message: DiscordMessage) -> tuple[Optional[str], Optional[str]]:
+        """Resolve Discord reply metadata into (reply_to_message_id, reply_to_text)."""
+        reference = getattr(message, "reference", None)
+        reference_message_id = getattr(reference, "message_id", None) if reference else None
+        if not reference_message_id:
+            return None, None
+
+        reply_to_message_id = str(reference_message_id)
+        referenced = getattr(reference, "resolved", None)
+        if referenced is None:
+            fetch_channel = getattr(message, "channel", None)
+            channel_id = getattr(reference, "channel_id", None)
+            if channel_id and self._client:
+                fetch_channel = self._client.get_channel(int(channel_id)) or fetch_channel
+                if fetch_channel is None:
+                    try:
+                        fetch_channel = await self._client.fetch_channel(int(channel_id))
+                    except Exception:
+                        fetch_channel = getattr(message, "channel", None)
+            if fetch_channel and hasattr(fetch_channel, "fetch_message"):
+                try:
+                    referenced = await fetch_channel.fetch_message(int(reference_message_id))
+                except Exception as e:
+                    logger.debug("[%s] Could not fetch referenced Discord message %s: %s", self.name, reference_message_id, e)
+
+        return reply_to_message_id, self._summarize_referenced_message(referenced)
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -2345,27 +2416,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                         ext = ".jpg"
-                    cached_path = await cache_image_from_url(att.url, ext=ext)
+                    image_url = getattr(att, "proxy_url", None) or att.url
+                    cached_path = await cache_image_from_url(image_url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user image: {cached_path}", flush=True)
                 except Exception as e:
                     print(f"[Discord] Failed to cache image attachment: {e}", flush=True)
-                    # Fall back to the CDN URL if caching fails
-                    media_urls.append(att.url)
+                    # Fall back to the proxy/CDN URL if caching fails
+                    media_urls.append(getattr(att, "proxy_url", None) or att.url)
                     media_types.append(content_type)
             elif content_type.startswith("audio/"):
                 try:
                     ext = "." + content_type.split("/")[-1].split(";")[0]
                     if ext not in (".ogg", ".mp3", ".wav", ".webm", ".m4a"):
                         ext = ".ogg"
-                    cached_path = await cache_audio_from_url(att.url, ext=ext)
+                    audio_url = getattr(att, "proxy_url", None) or att.url
+                    cached_path = await cache_audio_from_url(audio_url, ext=ext)
                     media_urls.append(cached_path)
                     media_types.append(content_type)
                     print(f"[Discord] Cached user audio: {cached_path}", flush=True)
                 except Exception as e:
                     print(f"[Discord] Failed to cache audio attachment: {e}", flush=True)
-                    media_urls.append(att.url)
+                    fallback_audio_url = getattr(att, "proxy_url", None) or att.url
+                    media_urls.append(fallback_audio_url)
                     media_types.append(content_type)
             else:
                 # Document attachments: download, cache, and optionally inject text
@@ -2435,6 +2509,8 @@ class DiscordAdapter(BasePlatformAdapter):
         if not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
+        reply_to_message_id, reply_to_text = await self._resolve_referenced_message_text(message)
+
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -2443,7 +2519,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message_id=str(message.id),
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=str(message.reference.message_id) if message.reference else None,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
             timestamp=message.created_at,
         )
 

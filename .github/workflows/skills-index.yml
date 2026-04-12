@@ -1,34 +1,64 @@
-name: Deploy Site
+name: Build Skills Index
 
 on:
+  schedule:
+    # Run twice daily: 6 AM and 6 PM UTC
+    - cron: '0 6,18 * * *'
+  workflow_dispatch:  # Manual trigger
   push:
     branches: [main]
     paths:
-      - 'website/**'
-      - 'landingpage/**'
-      - 'skills/**'
-      - 'optional-skills/**'
-      - '.github/workflows/deploy-site.yml'
-  workflow_dispatch:
+      - 'scripts/build_skills_index.py'
+      - '.github/workflows/skills-index.yml'
 
 permissions:
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  build-and-deploy:
+  build-index:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install httpx pyyaml
+
+      - name: Build skills index
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/build_skills_index.py
+
+      - name: Upload index artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-index
+          path: website/static/api/skills-index.json
+          retention-days: 7
+
+  deploy-with-index:
+    needs: build-index
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    # Only deploy on schedule or manual trigger (not on every push to the script)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: skills-index
+          path: website/static/api/
 
       - uses: actions/setup-node@v4
         with:
@@ -41,18 +71,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
-        run: pip install pyyaml httpx
+        run: pip install pyyaml
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
-
-      - name: Build skills index (if not already present)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ ! -f website/static/api/skills-index.json ]; then
-            python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
-          fi
 
       - name: Install dependencies
         run: npm ci
@@ -65,11 +87,8 @@ jobs:
       - name: Stage deployment
         run: |
           mkdir -p _site/docs
-          # Landing page at root
           cp -r landingpage/* _site/
-          # Docusaurus at /docs/
           cp -r website/build/* _site/docs/
-          # CNAME so GitHub Pages keeps the custom domain between deploys
           echo "hermes-agent.nousresearch.com" > _site/CNAME
 
       - name: Upload artifact

@@ -349,7 +349,7 @@ async def test_inbound_reaction_from_bot_ignored(adapter):
     adapter.handle_message = AsyncMock()
 
     # Bot reacting on its own message — user_id matches client.user.id
-    payload = _make_reaction_payload(user_id=99999)
+    payload = _make_reaction_payload(user_id=adapter._client.user.id)
 
     await adapter._handle_inbound_reaction(payload, "added")
 
@@ -463,6 +463,61 @@ async def test_inbound_reaction_channel_fetch_failure_handled(adapter):
     adapter.handle_message = AsyncMock()
     adapter._client.get_channel = MagicMock(return_value=None)
     adapter._client.fetch_channel = AsyncMock(side_effect=Exception("channel not found"))
+
+    payload = _make_reaction_payload()
+
+    # Should not raise
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_no_feedback_loop_on_raw_message(adapter):
+    """Synthetic event's raw_message should be the payload, not the bot's Message.
+
+    Passing the fetched Message as raw_message causes on_processing_start/complete
+    to add 👀/✅/❌ reactions on the bot's own message (feedback loop).
+    Using the payload (which has no add_reaction) prevents this.
+    """
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    payload = _make_reaction_payload()
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    event = adapter.handle_message.await_args.args[0]
+    # raw_message must NOT be the Discord Message (which has add_reaction)
+    assert not hasattr(event.raw_message, "add_reaction")
+    assert event.raw_message is payload
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_dm_fallback_user_name(adapter):
+    """When payload.member is None (DM context), user_name falls back to user_id string."""
+    adapter.handle_message = AsyncMock()
+    bot_user = adapter._client.user
+
+    channel = _make_mock_channel(bot_user)
+    adapter._client.get_channel = MagicMock(return_value=channel)
+
+    # member=None simulates DM context
+    payload = _make_reaction_payload(member=None)
+
+    await adapter._handle_inbound_reaction(payload, "added")
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_name == "42"
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_client_none_handled(adapter):
+    """When _client is None (post-disconnect race), handler should not crash."""
+    adapter.handle_message = AsyncMock()
+    adapter._client = None
 
     payload = _make_reaction_payload()
 

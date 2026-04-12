@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "exa": {
+      "baseUrl": "https://mcp.exa.ai/mcp"
+    },
+    "weibo": {
+      "command": "mcp-server-weibo"
+    },
+    "douyin": {
+      "command": "command://source ~/.agent-reach-venv/bin/activate && python3 -m douyin_mcp_server"
+    }
+  },
+  "imports": []
+}

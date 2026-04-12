@@ -7963,6 +7963,60 @@ class GatewayRunner:
                 except Exception:
                     pass
 
+            # External memory provider: sync the completed turn.
+            if agent and hasattr(agent, '_memory_manager') and agent._memory_manager:
+                try:
+                    agent._memory_manager.sync_all(message, final_response, session_id=effective_session_id)
+                except Exception:
+                    pass
+            
+            # OpenViking session auto-sync
+            try:
+                from tools.openviking_tool import openviking_add_memory
+                import threading, json
+                
+                # Collect full conversation history (existing history + new turn)
+                full_conversation = []
+                # Add existing history
+                for msg in agent_history:
+                    full_conversation.append({
+                        "role": msg.get("role", msg.get("name", "")),
+                        "content": msg.get("content", "")
+                    })
+                # Add the new user message
+                full_conversation.append({"role": "user", "content": message})
+                # Add the new assistant response
+                full_conversation.append({"role": "assistant", "content": final_response})
+                # Add metadata
+                metadata = {
+                    "session_id": effective_session_id,
+                    "platform": source.platform if hasattr(source, 'platform') else "unknown",
+                    "user_id": source.user_id if hasattr(source, 'user_id') else "unknown",
+                    "chat_id": source.chat_id if hasattr(source, 'chat_id') else "unknown",
+                    "model": _resolved_model,
+                    "input_tokens": _input_toks,
+                    "output_tokens": _output_toks,
+                    "timestamp": int(time.time())
+                }
+                # Wrap for OpenViking add-memory
+                sync_content = json.dumps({
+                    "type": "session_turn",
+                    "metadata": metadata,
+                    "messages": full_conversation
+                }, ensure_ascii=False)
+                
+                # Run in background thread to not block response
+                def _sync_ov():
+                    try:
+                        openviking_add_memory(sync_content)
+                        logger.info(f"Successfully synced session turn {effective_session_id} to OpenViking")
+                    except Exception as e:
+                        logger.warning(f"Failed to sync session turn {effective_session_id} to OpenViking: {e}")
+                
+                threading.Thread(target=_sync_ov, daemon=True).start()
+            except Exception as e:
+                logger.warning(f"OpenViking sync skipped: {e}")
+
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),

@@ -166,20 +166,31 @@ DEFAULT_CONTEXT_LENGTHS = {
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
+    "contextWindow",      # camelCase (volcengine/ark)
+    "contextwindow",     # lowercase no underscore
     "max_context_length",
     "max_position_embeddings",
     "max_model_len",
+    "maxModelLen",       # camelCase
     "max_input_tokens",
+    "maxInputTokens",    # camelCase
     "max_sequence_length",
+    "maxSequenceLength", # camelCase
     "max_seq_len",
+    "maxSeqLen",         # camelCase
     "n_ctx_train",
+    "nCtxTrain",         # camelCase
     "n_ctx",
+    "nCtx",              # camelCase
 )
 
 _MAX_COMPLETION_KEYS = (
     "max_completion_tokens",
+    "maxCompletionTokens", # camelCase (volcengine/ark)
     "max_output_tokens",
+    "maxOutputTokens",    # camelCase
     "max_tokens",
+    "maxTokens",         # camelCase (volcengine/ark)
 )
 
 # Local server hostnames / address patterns

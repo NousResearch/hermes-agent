@@ -127,6 +127,8 @@ class TestMatrixSyncAuthRetry:
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
+        adapter._encryption = False
+        adapter._pending_megolm = []
 
         sync_count = 0
 

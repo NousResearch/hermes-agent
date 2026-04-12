@@ -941,10 +941,19 @@ class MatrixAdapter(BasePlatformAdapter):
         # Resume from the token stored during the initial sync.
         next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
-            try:
+              try:
                 sync_data = await client.sync(
                     since=next_batch, timeout=30000,
                 )
+                # nio returns SyncError objects for some permanent failures.
+                if hasattr(sync_data, "message"):
+                    err_msg = str(sync_data.message)
+                    if "M_UNKNOWN_TOKEN" in err_msg or "401" in err_msg or "403" in err_msg:
+                        logger.error("Matrix: permanent auth error: %s — stopping sync", err_msg)
+                        return
+                    logger.warning("Matrix: sync error: %s — retrying in 5s", err_msg)
+                    await asyncio.sleep(5)
+                    continue
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})

@@ -1,0 +1,18 @@
+┌─────────────────────────────────────────────────────────┐
+│           ⚕ Hermes Gateway Starting...                 │
+├─────────────────────────────────────────────────────────┤
+│  Messaging platforms + cron scheduler                    │
+│  Press Ctrl+C to stop                                   │
+└─────────────────────────────────────────────────────────┘
+
+[Lark] [2026-04-12 14:37:55,757] [INFO] connected to wss://msg-frontier.feishu.cn/ws/v2?fpid=493&aid=552564&device_id=7627758260103924670&access_key=f6a6b16bb8e101b01b3efb462dbe3b7c&service_id=33554678&ticket=8a5c1fcb-d00b-45bc-a07a-b4e3fe499150 [conn_id=7627758260103924670]
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.platforms.base: [Feishu] Failed to send media (): File not found: <screenshot_path>
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable
+WARNING gateway.run: OpenViking sync skipped: Object of type Platform is not JSON serializable

@@ -857,13 +857,18 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             text = "(attachment)"
         # --- End attachment handling ---
 
+        # Extract chatGuid — try direct fields first, then fall back to
+        # the chats array (BB webhook payloads often only populate chats[]).
         chat_guid = self._value(
             record.get("chatGuid"),
             payload.get("chatGuid"),
             record.get("chat_guid"),
             payload.get("chat_guid"),
-            payload.get("guid"),
         )
+        if not chat_guid:
+            _chats = record.get("chats") or payload.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

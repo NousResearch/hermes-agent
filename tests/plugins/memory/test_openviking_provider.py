@@ -148,3 +148,46 @@ class TestSyncTurn:
         # Should have called commit
         commit_calls = [(c[0], c[1]) for c in fake_httpx.calls if "/commit" in str(c[1])]
         assert len(commit_calls) >= 1
+
+
+class TestVikingRemember:
+    """Test that viking_remember() commits immediately for cross-session recall."""
+
+    def test_remember_commits_immediately(self, provider, fake_httpx):
+        """viking_remember() should commit immediately so the memory is searchable across sessions."""
+        result = provider.handle_tool_call("viking_remember", {"content": "My favorite color is blue"})
+
+        # Should have added the message
+        post_calls = [(c[0], c[1]) for c in fake_httpx.calls if c[0] == "post"]
+        session_msg_calls = [c for c in post_calls if "/messages" in str(c[1])]
+        assert len(session_msg_calls) == 1
+
+        # Should have committed immediately
+        commit_calls = [c for c in post_calls if "/commit" in str(c[1])]
+        assert len(commit_calls) == 1
+
+        assert "stored" in result
+
+    def test_remember_with_category_commits(self, provider, fake_httpx):
+        """viking_remember() with category should also commit immediately."""
+        provider.handle_tool_call("viking_remember", {
+            "content": "Likes coffee",
+            "category": "preference",
+        })
+
+        post_calls = [(c[0], c[1]) for c in fake_httpx.calls if c[0] == "post"]
+        commit_calls = [c for c in post_calls if "/commit" in str(c[1])]
+        assert len(commit_calls) == 1
+
+
+class TestVikingSearch:
+    """Test that viking_search() returns formatted results."""
+
+    def test_search_returns_formatted_results(self, provider, fake_httpx):
+        """viking_search() should return formatted search results."""
+        result = provider.handle_tool_call("viking_search", {"query": "favorite color"})
+
+        post_calls = [(c[0], c[1]) for c in fake_httpx.calls if c[0] == "post"]
+        assert any("/search/find" in str(c[1]) for c in post_calls)
+        assert "results" in result
+

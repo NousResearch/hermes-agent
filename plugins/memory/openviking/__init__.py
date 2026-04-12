@@ -207,8 +207,8 @@ REMEMBER_SCHEMA = {
     "name": "viking_remember",
     "description": (
         "Explicitly store a fact or memory in the OpenViking knowledge base. "
-        "Use for important information the agent should remember long-term. "
-        "The system automatically categorizes and indexes the memory."
+        "The memory is indexed immediately and searchable across all sessions. "
+        "Use for important information the agent should remember long-term."
     ),
     "parameters": {
         "type": "object",
@@ -630,9 +630,15 @@ class OpenVikingMemoryProvider(MemoryProvider):
             ],
         })
 
+        # Commit immediately so the memory becomes searchable across sessions.
+        try:
+            self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
+        except Exception as e:
+            logger.debug("OpenViking commit after remember failed: %s", e)
+
         return json.dumps({
             "status": "stored",
-            "message": "Memory recorded. Will be extracted and indexed on session commit.",
+            "message": "Memory recorded and indexed for cross-session recall.",
         })
 
     def _tool_add_resource(self, args: dict) -> str:

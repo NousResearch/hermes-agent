@@ -185,6 +185,38 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
     assert "TELEGRAM_BOT_TOKEN=123:abc" in env_text
 
 
+def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
+    """MESSAGING_CWD pointing inside the OpenClaw source dir should be skipped."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    # Workspace path is inside the source directory
+    ws_path = str(source / "workspace")
+    (source / "credentials").mkdir(parents=True)
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": ws_path}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=target / "migration-report",
+        selected_options={"messaging-settings"},
+    )
+    migrator.migrate()
+
+    env_path = target / ".env"
+    if env_path.exists():
+        assert "MESSAGING_CWD" not in env_path.read_text(encoding="utf-8")
+
+
 def test_migrator_can_execute_only_selected_categories(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"

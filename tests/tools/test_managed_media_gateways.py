@@ -1,5 +1,6 @@
 import sys
 import types
+import json
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
@@ -208,6 +209,57 @@ def test_managed_fal_submit_reuses_cached_sync_client(monkeypatch):
 
     assert captured["sync_client_inits"] == 1
     assert captured["http_client"] is first_client
+
+
+def test_music_generation_uses_shared_managed_fal_gateway(monkeypatch):
+    captured = {}
+    _install_fake_tools_package()
+    _install_fake_fal_client(captured)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.setenv("FAL_QUEUE_GATEWAY_URL", "http://127.0.0.1:3009")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    image_generation_tool = _load_tool_module(
+        "tools.image_generation_tool",
+        "image_generation_tool.py",
+    )
+    music_generation_tool = _load_tool_module(
+        "tools.music_generation_tool",
+        "music_generation_tool.py",
+    )
+    monkeypatch.setattr(image_generation_tool, "check_image_generation_requirements", lambda: True)
+
+    class FakeHandle:
+        def get(self):
+            return {
+                "audio": {
+                    "url": "https://cdn.example.com/generated.mp3",
+                    "content_type": "audio/mpeg",
+                    "file_name": "generated.mp3",
+                }
+            }
+
+    original_submit = image_generation_tool._submit_fal_request
+
+    def wrapped_submit(model, arguments):
+        handle = original_submit(model, arguments)
+        captured["music_model"] = model
+        return FakeHandle() if handle is not None else handle
+
+    monkeypatch.setattr(image_generation_tool, "_submit_fal_request", wrapped_submit)
+
+    result = music_generation_tool.music_generate_tool("warm synthwave groove", duration_seconds=45)
+
+    payload = json.loads(result)
+    assert payload["success"] is True
+    assert payload["audio"] == "https://cdn.example.com/generated.mp3"
+    assert captured["music_model"] == "fal-ai/elevenlabs/music"
+    assert captured["submit_url"] == "http://127.0.0.1:3009/fal-ai/elevenlabs/music"
+    assert captured["arguments"] == {
+        "prompt": "warm synthwave groove",
+        "music_length_ms": 45000,
+        "force_instrumental": True,
+    }
 
 
 def test_openai_tts_uses_managed_audio_gateway_when_direct_key_absent(monkeypatch, tmp_path):

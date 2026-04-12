@@ -294,6 +294,11 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
         "hermes_cli.nous_subscription.get_nous_auth_status",
         lambda: {"logged_in": True},
     )
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.is_managed_tool_gateway_ready",
+        lambda vendor: vendor == "browser-use",
+    )
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
 
@@ -351,7 +356,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._prompt_toolset_checklist",
-        lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
+        lambda *args, **kwargs: {"web", "image_gen", "music_gen", "tts", "browser"},
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
     # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run

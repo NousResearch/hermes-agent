@@ -141,3 +141,8 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_core_platform_toolset_includes_music_generation(self):
+        from toolsets import _HERMES_CORE_TOOLS
+
+        assert "music_generate" in _HERMES_CORE_TOOLS

@@ -466,6 +466,7 @@ def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, m
             features={
                 "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                 "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "music_gen": NousFeatureState("music_gen", "Music generation", True, False, False, False, False, True, ""),
                 "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
                 "browser": NousFeatureState("browser", "Browser automation", True, True, True, False, True, True, "Camofox"),
                 "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
@@ -493,6 +494,7 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
             features={
                 "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                 "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "music_gen": NousFeatureState("music_gen", "Music generation", True, False, False, False, False, True, ""),
                 "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
                 "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "Browserbase"),
                 "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),

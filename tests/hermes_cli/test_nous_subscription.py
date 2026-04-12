@@ -149,3 +149,33 @@ def test_get_nous_subscription_features_requires_agent_browser_for_browserbase(m
     assert features.browser.active is False
     assert features.browser.managed_by_nous is False
     assert features.browser.current_provider == "Browserbase"
+
+
+def test_apply_nous_managed_defaults_marks_music_gen_without_fal_key(monkeypatch):
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns,
+        "get_nous_subscription_features",
+        lambda config: ns.NousSubscriptionFeatures(
+            subscribed=True,
+            nous_auth_present=True,
+            provider_is_nous=True,
+            features={
+                "web": ns.NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": ns.NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "music_gen": ns.NousFeatureState("music_gen", "Music generation", True, False, False, False, False, True, ""),
+                "tts": ns.NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": ns.NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
+                "modal": ns.NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
+            },
+        ),
+    )
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+
+    changed = ns.apply_nous_managed_defaults(
+        {},
+        enabled_toolsets={"music_gen"},
+    )
+
+    assert "music_gen" in changed

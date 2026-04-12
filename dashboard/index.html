@@ -58,6 +58,8 @@ table{width:100%;border-collapse:collapse;}th{text-align:left;padding:.5rem .75r
 <nav class="nav">
   <div class="nav-logo">Hermes</div>
   <button class="ni on" onclick="go('ov')" id="n-ov"><span class="ni-ico">&#9679;</span>Overview</button>
+  <button class="ni" onclick="go('chat')" id="n-chat"><span class="ni-ico">&#9993;</span>Chat</button>
+  <button class="ni" onclick="go('rag')" id="n-rag" style="display:none"><span class="ni-ico">&#9878;</span>FC-RAG</button>
   <button class="ni" onclick="go('mcp')" id="n-mcp"><span class="ni-ico">&#9881;</span>MCP</button>
   <button class="ni" onclick="go('cron')" id="n-cron"><span class="ni-ico">&#8986;</span>Cron</button>
   <button class="ni" onclick="go('sk')" id="n-sk"><span class="ni-ico">&#9733;</span>Skills</button>
@@ -73,6 +75,14 @@ table{width:100%;border-collapse:collapse;}th{text-align:left;padding:.5rem .75r
 <main style="flex:1;overflow-y:auto;padding:1.5rem 2rem;">
   <div id="restart-banner"></div>
   <div id="p-ov" class="page on"><div class="fb mb"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;">Overview</h1></div><div id="ov"></div></div>
+  <div id="p-chat" class="page">
+    <div class="fb mb"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;">Chat</h1><div class="row"><select class="inp" id="chat-plat" style="width:140px;font-size:.75rem" onchange="chatReload()"><option value="internal">Internal</option><option value="telegram">Telegram</option><option value="all">All platforms</option></select><button class="btn btn-g" onclick="chatReload()">Refresh</button></div></div>
+    <div style="display:grid;grid-template-columns:280px 1fr;gap:.75rem;height:calc(100vh - 8rem);">
+      <div class="card" style="overflow-y:auto;padding:.25rem;"><div id="chat-list"></div></div>
+      <div class="card" style="display:flex;flex-direction:column;overflow:hidden;"><div id="chat-view" style="flex:1;overflow-y:auto;padding:.85rem 1rem;"></div><div id="chat-input-wrap" style="border-top:1px solid var(--b4);padding:.5rem .75rem;display:none;"><div style="display:flex;gap:.4rem;"><textarea class="inp" id="chat-input" placeholder="메시지 입력…" style="min-height:48px;max-height:120px;font-family:var(--ff);font-size:.82rem;" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend();}"></textarea><button class="btn btn-p" onclick="chatSend()" id="chat-send-btn" style="flex-shrink:0;">Send</button></div><div style="font-size:.62rem;color:var(--t4);margin-top:.25rem;">Enter: 전송, Shift+Enter: 줄바꿈</div></div></div>
+    </div>
+  </div>
+  <div id="p-rag" class="page"><div class="fb mb"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;">FC-RAG Queries</h1><button class="btn btn-g" onclick="ragLoad()">Refresh</button></div><div id="rag-stats" class="mb"></div><div id="rag-list"></div></div>
   <div id="p-mcp" class="page"><div class="fb mb"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;">MCP Servers</h1><div class="row"><button class="btn btn-g" onclick="mcpPaste()">Paste Config</button><button class="btn btn-p" onclick="mcpAddModal()">+ Add</button></div></div><div id="mcp-l"></div></div>
   <div id="p-cron" class="page"><div class="fb mb"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;">Cron Jobs</h1><button class="btn btn-p" onclick="cronModal()">+ Create</button></div><div id="cron-l"></div></div>
   <div id="p-sk" class="page"><h1 style="font-size:1.25rem;font-weight:590;letter-spacing:-.03em;margin-bottom:.6rem;">Skills</h1><input class="inp mb" id="skq" placeholder="Search skills..." oninput="skF()"><div id="sk-l"></div></div>
@@ -88,7 +98,7 @@ table{width:100%;border-collapse:collapse;}th{text-align:left;padding:.5rem .75r
 <div id="gm" class="modal-bg" style="display:none" onclick="if(event.target===this)gmClose()"><div class="modal" id="gm-body"></div></div>
 
 <script>
-const A='/api/dashboard',H='Bearer '+(new URLSearchParams(location.search).get('key')||'');
+const A='/api/dashboard',H='Bearer '+(new URLSearchParams(location.search).get('key')||'lexdiff-hermes-local');
 const J=JSON.stringify,P=JSON.parse,$=id=>document.getElementById(id);
 async function api(p,o={}){try{const r=await fetch(A+p,{...o,headers:{Authorization:H,'Content-Type':'application/json',...o.headers}});if(!r.ok){const t=await r.text().catch(()=>'');toast(`API ${r.status}: ${t.slice(0,80)}`,'err');return{};}return await r.json();}catch(e){toast('Network error: '+e.message,'err');return{};}}
 function esc(s){if(s==null)return'';const d=document.createElement('div');d.textContent=String(s);return d.innerHTML.replace(/'/g,'&#39;').replace(/\\/g,'&#92;');}
@@ -198,6 +208,8 @@ async function mmApply(){
 // ── Overview ──
 async function loadOv(){
   const[d,au,dk]=await Promise.all([api('/overview'),api('/auth'),api('/disk')]);
+  // Feature flags: FC-RAG 탭은 서버에서 활성화된 경우만 노출
+  if(d.features&&d.features.fc_rag){const nb=$('n-rag');if(nb)nb.style.display='';}
   const g=d.gateway||{},fm=b=>b>1048576?(b/1048576).toFixed(1)+' MB':(b/1024).toFixed(0)+' KB';
   const pl=Object.entries(g.platforms||{}).map(([k,v])=>{const s=typeof v==='object'?v.state:v;return`<div style="display:flex;justify-content:space-between;padding:.35rem 0;font-size:.8rem;"><span style="color:var(--t2)">${esc(k)}</span><span class="pill ${s==='connected'?'pg':'pr'}">${esc(s)}</span></div>`;}).join('');
   const cr=(d.cron_summary||[]).map(j=>`<tr><td style="font-weight:510">${esc(j.name)}</td><td><span class="pill ${j.enabled?'pg':'pr'}">${j.enabled?'ON':'OFF'}</span></td><td><span class="pill ${j.last_status==='ok'?'pg':j.last_status?'pr':'po'}">${esc(j.last_status||'-')}</span></td><td style="color:var(--t4);font-size:.75rem">${esc(j.deliver)}</td><td style="color:var(--t4);font-size:.75rem">${j.next_run?new Date(j.next_run).toLocaleString('ko-KR'):'-'}</td></tr>`).join('');
@@ -316,7 +328,226 @@ async function logClear(){await api('/logs/clear',{method:'POST'});toast('Cleare
 async function sessLoad(){const d=await api('/sessions');$('sess-c').innerHTML=`<div class="card"><table><thead><tr><th>Session</th><th>Size</th><th>Modified</th><th></th></tr></thead><tbody>${d.map(s=>`<tr><td style="font-size:.78rem;font-family:var(--mono)">${esc(s.name)}</td><td style="color:var(--t3)">${(s.size/1024).toFixed(1)} KB</td><td style="color:var(--t3)">${esc(s.modified)}</td><td><button class="btn btn-d" style="padding:.15rem .45rem;font-size:.68rem" onclick="ask('Delete this session?',()=>sessDel('${esc(s.name)}'))">Del</button></td></tr>`).join('')}</tbody></table></div>`;}
 async function sessDel(n){await api(`/sessions/${n}`,{method:'DELETE'});toast('Deleted');sessLoad();}
 
-const LD={ov:loadOv,mcp:mcpLoad,cron:cronLoad,sk:skLoad,cfg:cfgLoad,env:envLoad,soul:soulLoad,log:logLoad,sess:sessLoad};
+// ── FC-RAG ──
+let _ragQ=[];
+function _dur(ms){return ms<1000?ms+'ms':(ms/1000).toFixed(1)+'s';}
+function _ragTs(iso){if(!iso)return'-';const d=new Date(iso);return d.toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});}
+async function ragLoad(){
+  const[st,qr]=await Promise.all([api('/fc-rag/stats'),api('/fc-rag/queries?limit=50')]);
+  _ragQ=qr.queries||[];
+  // Stats cards
+  const src=Object.entries(st.bySource||{}).map(([k,v])=>`<span class="pill ${k==='hermes'?'pb':k==='gemini'?'po':'pr'}" style="margin:.1rem">${esc(k)}: ${v}</span>`).join('')||'-';
+  const cx=Object.entries(st.byComplexity||{}).map(([k,v])=>`<span class="pill ${k==='simple'?'pg':k==='moderate'?'po':'pr'}" style="margin:.1rem">${esc(k)}: ${v}</span>`).join('')||'-';
+  $('rag-stats').innerHTML=`
+    <div class="g4 mb">
+      <div class="card"><div class="stat"><div class="sv">${st.total||0}</div><div class="sl">Total Queries</div></div></div>
+      <div class="card"><div class="stat"><div class="sv">${st.avgDurationMs?((st.avgDurationMs/1000).toFixed(1)+'s'):'—'}</div><div class="sl">Avg Duration</div></div></div>
+      <div class="card"><div class="stat"><div class="sv" style="color:${st.errorRate>10?'var(--red)':'var(--green)'}">${st.errorRate||0}%</div><div class="sl">Error Rate</div></div></div>
+      <div class="card"><div class="stat"><div class="sv">${(st.daily||[]).length}</div><div class="sl">Active Days</div></div></div>
+    </div>
+    <div class="g2 mb"><div class="card"><div class="card-h">Source</div><div style="padding:.5rem .75rem">${src}</div></div><div class="card"><div class="card-h">Complexity</div><div style="padding:.5rem .75rem">${cx}</div></div></div>`;
+  // Query list
+  const rows=_ragQ.map((q,i)=>{
+    const t=new Date(q.ts);const tStr=t.toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const dur=(q.durationMs/1000).toFixed(1)+'s';
+    const sc=q.source==='hermes'||q.source==='claude'?'pb':q.source==='gemini'?'po':'pr';
+    const ec=q.error?'pr':'pg';
+    const tools=(q.tools||[]).map(t=>`<span style="font-size:.65rem;padding:.05rem .3rem;border-radius:3px;background:var(--b4);color:var(--t3);margin:.05rem">${esc(t)}</span>`).join(' ')||'-';
+    const clickable=q.hasTrace;
+    return`<tr style="${clickable?'cursor:pointer;':''}transition:background .1s;" ${clickable?`onclick="ragToggle(${i})" onmouseover="this.style.background='var(--b3)'" onmouseout="this.style.background=''"`:''}>
+      <td style="font-size:.75rem;color:var(--t3);white-space:nowrap">${esc(tStr)}</td>
+      <td style="font-size:.8rem;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(q.query)}">${esc(q.query)}</td>
+      <td><span class="pill ${sc}">${esc(q.source||'?')}</span></td>
+      <td style="font-size:.78rem;color:var(--t2)">${dur}</td>
+      <td style="font-size:.78rem">${q.answerLength||0}<span style="color:var(--t4)">ch</span></td>
+      <td style="font-size:.78rem"><span style="color:var(--green)">${q.citationCount||0}</span>/<span style="color:var(--accent)">${q.verifiedCount||0}</span></td>
+      <td><span class="pill ${ec}">${q.error?'ERR':'OK'}</span>${clickable?'<span style="font-size:.6rem;color:var(--t4);margin-left:.3rem;" id="rag-arr-'+i+'">&#9654;</span>':''}</td>
+    </tr><tr id="rag-detail-row-${i}" style="display:none;"><td colspan="7" style="padding:0;border:none;"><div id="rag-detail-${i}" style="padding:.5rem .75rem;"></div></td></tr>`;
+  }).join('');
+  $('rag-list').innerHTML=`<div class="card"><table><thead><tr><th>Time</th><th>Query</th><th>Source</th><th>Duration</th><th>Answer</th><th>Cite/Ver</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div style="font-size:.7rem;color:var(--t4);margin-top:.5rem">Total: ${qr.total||0} queries</div>`;
+}
+async function ragToggle(i){
+  const row=$('rag-detail-row-'+i),det=$('rag-detail-'+i),arr=$('rag-arr-'+i);
+  if(!row)return;
+  if(row.style.display!=='none'){row.style.display='none';if(arr)arr.style.transform='';return;}
+  if(arr)arr.style.transform='rotate(90deg)';
+  row.style.display='';
+  if(det.dataset.loaded){return;}
+  det.innerHTML='<div style="color:var(--t4);font-size:.72rem;padding:.5rem;">trace 로딩...</div>';
+  const q=_ragQ[i];if(!q||!q.traceId)return;
+  try{
+    const d=await api('/fc-rag/trace/'+q.traceId);
+    if(!d.trace){det.innerHTML='<div style="color:var(--t4);font-size:.72rem;padding:.5rem;">trace 데이터 없음</div>';return;}
+    const tr=d.trace,startMs=new Date(tr.startedAt).getTime();
+    const evL={
+      hermes_start:['Hermes 시작','var(--green)'],hermes_retry:['재시도','var(--orange)'],
+      hermes_internal_error:['Hermes 에러','var(--red)'],hermes_failed:['Hermes 실패','var(--red)'],
+      bridge_start:['Bridge','#60a5fa'],gemini_start:['Gemini','#60a5fa'],
+      tool_call:['Tool 호출','#a78bfa'],tool_result:['Tool 결과','#8b5cf6'],
+      answer:['답변','var(--green)'],error:['에러','var(--red)'],
+      system_prompt:['System','#64748b'],user_query:['User','#60a5fa'],
+      assistant_reasoning:['사고','#94a3b8'],assistant_message:['답변','var(--green)'],
+    };
+    const renderBlock=(txt,color)=>`<pre style="white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:.68rem;line-height:1.5;color:${color||'var(--t2)'};background:var(--bg0);border:1px solid var(--b4);border-radius:4px;padding:.5rem .65rem;margin:.25rem 0;max-height:400px;overflow:auto;">${esc(txt)}</pre>`;
+    const evts=(tr.events||[]).map((e,idx)=>{
+      const off=new Date(e.ts).getTime()-startMs;
+      const[label,color]=evL[e.event]||[e.event,'var(--t3)'];
+      let detail='';
+      if(e.event==='tool_call'&&e.data.name){
+        const args=e.data.args?(typeof e.data.args==='string'?e.data.args:JSON.stringify(e.data.args,null,2)):'';
+        detail=`<div><span style="font-family:var(--mono);font-size:.7rem;background:var(--b4);padding:.15rem .4rem;border-radius:3px;color:#c4b5fd;">${esc(String(e.data.name))}</span>${args?renderBlock(args,'#c4b5fd'):''}</div>`;
+      }
+      else if(e.event==='tool_result'){
+        const r=typeof e.data.result==='string'?e.data.result:JSON.stringify(e.data.result||e.data,null,2);
+        detail=renderBlock(r);
+      }
+      else if(e.event==='system_prompt'||e.event==='user_query'||e.event==='assistant_message'||e.event==='assistant_reasoning'){
+        detail=renderBlock(String(e.data.content||''),e.event==='assistant_reasoning'?'var(--t3)':undefined);
+      }
+      else if(e.event==='error'||e.event==='hermes_failed')detail=`<span style="font-size:.7rem;color:var(--red);">${esc(String(e.data.message||JSON.stringify(e.data)))}</span>`;
+      else if(Object.keys(e.data||{}).length)detail=`<span style="font-size:.65rem;color:var(--t4);font-family:var(--mono);">${esc(JSON.stringify(e.data).slice(0,200))}</span>`;
+      return`<div style="display:flex;align-items:flex-start;gap:.5rem;padding:.35rem .3rem;border-bottom:1px solid var(--b4);">
+        <span style="flex-shrink:0;width:3rem;text-align:right;font-family:var(--mono);font-size:.62rem;color:var(--t4);padding-top:.1rem;">+${_dur(off)}</span>
+        <span style="flex-shrink:0;width:5rem;font-weight:590;font-size:.68rem;color:${color};padding-top:.1rem;">${label}</span>
+        <div style="flex:1;min-width:0;overflow:hidden;">${detail}</div>
+      </div>`;
+    }).join('');
+    const modelInfo=tr.model?` &middot; <span style="color:var(--accent);">${esc(tr.model)}</span>`:'';
+    const sessionInfo=tr.sessionId?` &middot; session: <span style="font-family:var(--mono);color:var(--t3);">${esc(tr.sessionId)}</span>`:'';
+    const hdr=`<div style="font-size:.7rem;color:var(--t4);margin-bottom:.5rem;padding:.25rem 0;">시작: ${_ragTs(tr.startedAt)} ${tr.completedAt?'~ 완료: '+_ragTs(tr.completedAt)+' ('+_dur(new Date(tr.completedAt).getTime()-startMs)+')':''} &middot; ${(tr.events||[]).length}개 이벤트${modelInfo}${sessionInfo}</div>`;
+    det.innerHTML=`<div style="padding:.65rem .75rem;border:1px solid var(--b4);border-radius:6px;background:var(--bg1);margin:.35rem 0;">${hdr}${evts}</div>`;
+    det.dataset.loaded='1';
+  }catch(e){det.innerHTML=`<div style="color:var(--red);font-size:.72rem;padding:.5rem;">trace 로드 실패</div>`;}
+}
+
+// ── Chat ──
+// 내부 채팅 히스토리 (브라우저 세션 내)
+let _chatHistory=[]; // [{role,content}]
+let _chatSessions=[];
+let _chatSelected=null; // 세션 파일명 (telegram/api) 또는 null=internal
+
+function _chatEscPre(s){return esc(String(s||''));}
+
+async function chatLoad(){
+  chatReload();
+}
+
+async function chatReload(){
+  const plat=$('chat-plat').value;
+  if(plat==='internal'){
+    _chatSelected=null;
+    // 세션 목록 대신 "내부 채팅" 단일 항목 표시
+    $('chat-list').innerHTML=`<div style="padding:.6rem .75rem;background:var(--card-h);border-radius:6px;margin:.25rem;cursor:default;"><div style="font-size:.78rem;font-weight:590;color:var(--accent);">내부 채팅</div><div style="font-size:.68rem;color:var(--t4);margin-top:.15rem;">GPT-5.4 via Hermes</div></div>`;
+    _renderInternalChat();
+    $('chat-input-wrap').style.display='';
+    return;
+  }
+  // telegram/all
+  $('chat-input-wrap').style.display='none';
+  const d=await api('/chat/sessions?platform='+encodeURIComponent(plat));
+  _chatSessions=d.sessions||[];
+  if(_chatSessions.length===0){
+    $('chat-list').innerHTML=`<div style="padding:1rem;text-align:center;color:var(--t4);font-size:.75rem;">세션 없음</div>`;
+    $('chat-view').innerHTML=`<div style="color:var(--t4);text-align:center;padding:2rem;">세션을 선택하세요</div>`;
+    return;
+  }
+  $('chat-list').innerHTML=_chatSessions.map((s,i)=>{
+    const updated=s.updated?new Date(s.updated).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'-';
+    const preview=s.lastUser||s.lastAssistant||'(empty)';
+    const platPill=s.platform==='telegram'?'<span class="pill po" style="font-size:.58rem;">TG</span>':s.platform==='api'?'<span class="pill pb" style="font-size:.58rem;">API</span>':`<span class="pill pr" style="font-size:.58rem;">${esc(s.platform||'?')}</span>`;
+    return`<div class="chat-item" data-idx="${i}" onclick="chatOpenSession(${i})" style="padding:.55rem .7rem;border-bottom:1px solid var(--b4);cursor:pointer;transition:background .1s;" onmouseover="this.style.background='var(--card-h)'" onmouseout="this.style.background=''">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:.35rem;">${platPill}<span style="font-size:.62rem;color:var(--t4);">${esc(updated)}</span></div>
+      <div style="font-size:.72rem;color:var(--t2);margin-top:.25rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(preview)}</div>
+      <div style="font-size:.6rem;color:var(--t4);margin-top:.15rem;">${s.messageCount} msgs</div>
+    </div>`;
+  }).join('');
+  // auto-select first
+  chatOpenSession(0);
+}
+
+async function chatOpenSession(idx){
+  const s=_chatSessions[idx];if(!s)return;
+  _chatSelected=s.file.replace(/\.json$/,'');
+  const d=await api('/chat/sessions/'+encodeURIComponent(_chatSelected));
+  if(d.error){$('chat-view').innerHTML=`<div style="color:var(--red);padding:1rem;">${esc(d.error)}</div>`;return;}
+  _renderMessages(d.messages||[],d);
+}
+
+function _renderMessages(msgs,meta){
+  const mk=(role,content,extras)=>{
+    const isUser=role==='user';
+    const isAssistant=role==='assistant';
+    const isTool=role==='tool';
+    const bg=isUser?'rgba(94,106,210,.12)':isAssistant?'rgba(39,166,68,.06)':'var(--bg0)';
+    const border=isUser?'rgba(94,106,210,.25)':isAssistant?'rgba(39,166,68,.15)':'var(--b4)';
+    const label=isUser?'User':isAssistant?'Assistant':isTool?'Tool':role;
+    const color=isUser?'var(--accent)':isAssistant?'var(--green)':'var(--t4)';
+    return`<div style="margin:.45rem 0;padding:.55rem .75rem;background:${bg};border:1px solid ${border};border-radius:6px;">
+      <div style="font-size:.62rem;font-weight:590;color:${color};margin-bottom:.25rem;text-transform:uppercase;letter-spacing:.05em;">${label}</div>
+      <div style="font-size:.78rem;line-height:1.55;color:var(--t1);white-space:pre-wrap;word-break:break-word;">${_chatEscPre(content)}</div>
+      ${extras||''}
+    </div>`;
+  };
+  const parts=msgs.map(m=>{
+    let extras='';
+    if(m.toolCalls&&m.toolCalls.length){
+      extras='<div style="margin-top:.35rem;font-size:.65rem;color:var(--t4);">'+m.toolCalls.map(tc=>`<div style="margin-top:.15rem;"><span style="font-family:var(--mono);background:var(--b4);padding:.08rem .3rem;border-radius:3px;color:#c4b5fd;">→ ${esc(tc.name||'?')}</span>${tc.args?`<span style="margin-left:.35rem;font-family:var(--mono);color:var(--t4);">${esc(typeof tc.args==='string'?tc.args:JSON.stringify(tc.args).slice(0,200))}</span>`:''}</div>`).join('')+'</div>';
+    }
+    if(m.reasoning){
+      extras=`<details style="margin-top:.35rem;"><summary style="font-size:.62rem;color:var(--t4);cursor:pointer;">Reasoning</summary><div style="margin-top:.25rem;padding:.35rem .5rem;background:var(--bg0);border-radius:4px;font-size:.7rem;color:var(--t3);white-space:pre-wrap;line-height:1.5;">${_chatEscPre(m.reasoning)}</div></details>`+extras;
+    }
+    return mk(m.role,m.content,extras);
+  }).join('');
+  const hdr=`<div style="font-size:.66rem;color:var(--t4);margin-bottom:.5rem;padding-bottom:.4rem;border-bottom:1px solid var(--b4);">
+    <span style="color:var(--accent);">${esc(meta.platform||'?')}</span> · ${esc(meta.sessionId||'')} · ${esc(meta.model||'')} · ${msgs.length} messages
+  </div>`;
+  $('chat-view').innerHTML=hdr+parts;
+  $('chat-view').scrollTop=$('chat-view').scrollHeight;
+}
+
+function _renderInternalChat(){
+  if(_chatHistory.length===0){
+    $('chat-view').innerHTML=`<div style="color:var(--t4);text-align:center;padding:2rem;font-size:.8rem;">내부 채팅 시작<br><span style="font-size:.7rem;margin-top:.5rem;display:block;">아래에 메시지를 입력하세요</span></div>`;
+    return;
+  }
+  const parts=_chatHistory.map(m=>{
+    const isUser=m.role==='user';
+    const bg=isUser?'rgba(94,106,210,.12)':'rgba(39,166,68,.06)';
+    const border=isUser?'rgba(94,106,210,.25)':'rgba(39,166,68,.15)';
+    const label=isUser?'You':'Hermes';
+    const color=isUser?'var(--accent)':'var(--green)';
+    return`<div style="margin:.45rem 0;padding:.55rem .75rem;background:${bg};border:1px solid ${border};border-radius:6px;">
+      <div style="font-size:.62rem;font-weight:590;color:${color};margin-bottom:.25rem;">${label}</div>
+      <div style="font-size:.78rem;line-height:1.55;white-space:pre-wrap;word-break:break-word;">${_chatEscPre(m.content)}</div>
+    </div>`;
+  }).join('');
+  $('chat-view').innerHTML=parts;
+  $('chat-view').scrollTop=$('chat-view').scrollHeight;
+}
+
+async function chatSend(){
+  const ta=$('chat-input'),btn=$('chat-send-btn');
+  const msg=ta.value.trim();if(!msg)return;
+  ta.value='';btn.disabled=true;btn.innerHTML='<span class="spinner"></span>';
+  _chatHistory.push({role:'user',content:msg});
+  _renderInternalChat();
+  // placeholder assistant
+  _chatHistory.push({role:'assistant',content:'…'});
+  _renderInternalChat();
+  try{
+    const hist=_chatHistory.slice(0,-2); // exclude placeholder + current user
+    const r=await api('/chat/send',{method:'POST',body:J({message:msg,history:hist})});
+    _chatHistory.pop(); // remove placeholder
+    if(r.error){_chatHistory.push({role:'assistant',content:'[오류] '+r.error});}
+    else{_chatHistory.push({role:'assistant',content:r.reply||'(empty response)'});}
+  }catch(e){_chatHistory.pop();_chatHistory.push({role:'assistant',content:'[네트워크 오류] '+e.message});}
+  _renderInternalChat();
+  btn.disabled=false;btn.innerHTML='Send';
+  ta.focus();
+}
+
+const LD={ov:loadOv,chat:chatLoad,rag:ragLoad,mcp:mcpLoad,cron:cronLoad,sk:skLoad,cfg:cfgLoad,env:envLoad,soul:soulLoad,log:logLoad,sess:sessLoad};
 loadOv();
 </script>
 </body>

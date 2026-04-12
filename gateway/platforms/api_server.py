@@ -1782,8 +1782,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
-            # FC-RAG log ingestion
-            self._app.router.add_post("/api/fc-rag-log", self._handle_fc_rag_log)
+            # FC-RAG log ingestion (LexDiff-specific; gated by HERMES_FC_RAG_ENABLED)
+            if os.getenv("HERMES_FC_RAG_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+                self._app.router.add_post("/api/fc-rag-log", self._handle_fc_rag_log)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)

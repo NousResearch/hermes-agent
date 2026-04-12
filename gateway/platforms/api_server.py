@@ -334,6 +334,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self.gateway_runner = None  # Set by GatewayRunner after instantiation
+        # Telegram Mini App auth
+        self._tg_bot_token: str = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        self._tg_owner_id: str = os.getenv("TELEGRAM_OWNER_ID", "") or os.getenv("TELEGRAM_ALLOWED_USERS", "")
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -427,6 +431,184 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # Auth helpers
+    # ------------------------------------------------------------------
+
+    def _authenticate(self, request: "web.Request") -> Optional["web.Response"]:
+        """Combined auth: accepts either Telegram Ed25519 signature or Bearer token.
+
+        Returns None if either auth method passes. Returns a 401 response
+        only if BOTH methods fail or are missing.
+        """
+        auth_header = request.headers.get("Authorization", "")
+        has_bearer = auth_header.startswith("Bearer ")
+        tg_init = request.headers.get("X-Telegram-Init-Data", "")
+
+        # Try Telegram Ed25519 auth — but only if a bot token is configured AND
+        # X-Telegram-Init-Data header is present
+        if self._tg_bot_token and tg_init:
+            tg_err = self._validate_telegram_init_data(request)
+            if tg_err is None:
+                logger.info(
+                    "[api_server] Auth OK: Telegram Ed25519 (owner verified, initData=%s)",
+                    bool(tg_init),
+                )
+                return None  # Telegram auth passed
+
+            if tg_err != "_SKIPPED":
+                # If the error is a 403 (owner check failed), return immediately —
+                # don't fall through to Bearer, since a valid Bearer token should
+                # NOT bypass the owner-only restriction.
+                if hasattr(tg_err, "status") and tg_err.status == 403:
+                    logger.warning(
+                        "[api_server] Access DENIED — owner check failed (path: %s)",
+                        request.path,
+                    )
+                    return tg_err
+
+                logger.warning(
+                    "[api_server] Auth FAILED — Telegram Ed25519: %s | Bearer present: %s | path: %s",
+                    str(tg_err)[:80],
+                    has_bearer,
+                    request.path,
+                )
+        elif not self._tg_bot_token:
+            logger.info(
+                "[api_server] Telegram auth skipped: no bot token configured"
+            )
+        else:
+            logger.info(
+                "[api_server] Telegram auth skipped: no X-Telegram-Init-Data header"
+            )
+
+        # Try Bearer token auth
+        bearer_err = self._check_auth(request)
+        if bearer_err is None:
+            logger.info("[api_server] Auth OK: Bearer token")
+            return None  # Bearer auth passed
+
+        logger.warning(
+            "[api_server] Auth FAILED — Bearer: %s | path: %s",
+            bearer_err.status,
+            request.path,
+        )
+        return bearer_err
+
+    # ------------------------------------------------------------------
+    # Telegram initData validation
+    # ------------------------------------------------------------------
+
+    def _validate_telegram_init_data(self, request: "web.Request") -> Optional[Dict[str, Any]]:
+        """Validate Telegram WebApp initData from X-Telegram-Init-Data header.
+
+        Returns None if validation passes (caller is the authorised owner).
+        Returns a web.Response (401/403) if validation fails.
+        Returns "_SKIPPED" if no bot token is configured.
+
+        Uses Ed25519 signature validation (Telegram Bot API 8.0+) with
+        Telegram's published public key. This is more reliable than the
+        HMAC-SHA256 method and does not require the bot token for validation.
+
+        Per Telegram docs (https://core.telegram.org/bots/webapps):
+          data_check_string = "bot_id:WebAppData\\n" + sorted key=value pairs
+          signature is Ed25519(public_key, data_check_string)
+        """
+        init_data = request.headers.get("X-Telegram-Init-Data", "").strip()
+
+        if not init_data:
+            return "_SKIPPED"  # No initData — let _authenticate fall through to Bearer
+
+        if not self._tg_bot_token:
+            return "_SKIPPED"  # No bot token — let _authenticate fall through to Bearer
+
+        try:
+            from urllib.parse import unquote
+            import base64
+
+            # 1. Parse initData — URL-decode values for the check string
+            raw_pairs = {}
+            signature_b64 = None
+            for part in init_data.split("&"):
+                if "=" in part:
+                    key, val = part.split("=", 1)
+                    key = key.strip()
+                    if key == "signature":
+                        signature_b64 = val
+                    elif key not in ("hash", "signature"):
+                        raw_pairs[key] = unquote(val)
+
+            if not signature_b64:
+                return web.json_response(
+                    {"error": {"message": "Missing signature in initData", "type": "auth_error"}},
+                    status=401,
+                )
+
+            # 2. Build check string: "bot_id:WebAppData\n" + sorted key=value pairs
+            bot_id = self._tg_bot_token.split(":")[0] if ":" in self._tg_bot_token else ""
+            check_items = [f"{k}={raw_pairs[k]}" for k in sorted(raw_pairs.keys())]
+            check_string = f"{bot_id}:WebAppData\n" + "\n".join(check_items)
+
+            # 3. Verify Ed25519 signature with Telegram's production public key
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+            TG_ED25519_PUBKEY = "e7bf03a2fa4602af4580703d88dda5bb59f32ed8b02a56c187fe7d34caed242d"
+            pub_key = Ed25519PublicKey.from_public_bytes(bytes.fromhex(TG_ED25519_PUBKEY))
+
+            # Decode base64url signature (add padding if needed)
+            sig_padded = signature_b64 + "=" * (-len(signature_b64) % 4)
+            sig_bytes = base64.urlsafe_b64decode(sig_padded)
+
+            try:
+                pub_key.verify(sig_bytes, check_string.encode())
+            except Exception:
+                logger.warning(
+                    "[api_server] Ed25519 signature mismatch — initData is not from Telegram"
+                )
+                return web.json_response(
+                    {"error": {"message": "Invalid initData signature", "type": "auth_error"}},
+                    status=401,
+                )
+
+            # 4. Check auth_date freshness (within 24 hours)
+            auth_date_str = raw_pairs.get("auth_date", "0")
+            auth_date = int(auth_date_str) if auth_date_str else 0
+            if time.time() - auth_date > 86400:
+                return web.json_response(
+                    {"error": {"message": "initData expired", "type": "auth_error"}},
+                    status=401,
+                )
+
+            # 5. Extract user and enforce owner-only access
+            user_json = raw_pairs.get("user", "{}")
+            user = json.loads(user_json)
+            user_id = str(user.get("id", ""))
+
+            if self._tg_owner_id and user_id != self._tg_owner_id:
+                logger.warning(
+                    "[api_server] Owner check FAILED — received user_id=%s expected=%s",
+                    user_id,
+                    self._tg_owner_id,
+                )
+                return web.json_response(
+                    {"error": {"message": "Access denied", "type": "auth_error", "code": "not_owner"}},
+                    status=403,
+                )
+
+            logger.info(
+                "[api_server] Telegram Ed25519 OK — user_id=%s auth_date=%s",
+                user_id,
+                auth_date,
+            )
+            return None  # Auth OK
+
+        except Exception as e:
+            logger.warning("[api_server] initData validation error: %s", e)
+            return web.json_response(
+                {"error": {"message": f"initData validation failed: {e}", "type": "auth_error"}},
+                status=401,
+            )
+
+    # ------------------------------------------------------------------
     # Session DB helper
     # ------------------------------------------------------------------
 
@@ -502,12 +684,37 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
-        """GET /health — simple health check."""
-        return web.json_response({"status": "ok", "platform": "hermes-agent"})
+        """GET /health — system health check with resource usage."""
+        try:
+            import psutil
+            cpu = psutil.cpu_percent(interval=0.1)
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage('/')
+            boot_time = psutil.boot_time()
+            uptime = time.time() - boot_time
+            load = psutil.getloadavg() if hasattr(psutil, 'getloadavg') else None
+            return web.json_response({
+                "status": "ok",
+                "platform": "hermes-agent",
+                "cpu_percent": round(cpu, 1),
+                "memory_percent": round(mem.percent, 1),
+                "memory_used_gb": round(mem.used / (1024**3), 1),
+                "memory_total_gb": round(mem.total / (1024**3), 1),
+                "disk_percent": round(disk.percent, 1),
+                "uptime": round(uptime, 0),
+                "load_avg": list(load) if load else None,
+            })
+        except Exception:
+            # Fallback if psutil not available
+            return web.json_response({"status": "ok", "platform": "hermes-agent"})
+
+    async def _handle_miniapp_redirect(self, request: "web.Request") -> "web.Response":
+        """GET /miniapp — redirect to /miniapp/index.html."""
+        raise web.HTTPFound("/miniapp/index.html")
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -528,7 +735,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -580,21 +787,22 @@ class APIServerAdapter(BasePlatformAdapter):
         # When provided, history is loaded from state.db instead of from the request body.
         #
         # Security: session continuation exposes conversation history, so it is
-        # only allowed when the API key is configured and the request is
-        # authenticated.  Without this gate, any unauthenticated client could
-        # read arbitrary session history by guessing/enumerating session IDs.
+        # only allowed when the request is authenticated — either via API key or
+        # via validated Telegram initData.  Without this gate, any unauthenticated
+        # client could read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
+            has_api_key_auth = bool(self._api_key)
+            has_telegram_auth = bool(request.headers.get("X-Telegram-Init-Data", "").strip())
+            if not has_api_key_auth and not has_telegram_auth:
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
-                    "no API key configured.  Set API_SERVER_KEY to enable "
-                    "session continuity."
+                    "no API key or Telegram initData."
                 )
                 return web.json_response(
                     _openai_error(
-                        "Session continuation requires API key authentication. "
-                        "Configure API_SERVER_KEY to enable this feature."
+                        "Session continuation requires authentication. "
+                        "Provide API key or Telegram initData."
                     ),
                     status=403,
                 )
@@ -885,7 +1093,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
         """POST /v1/responses — OpenAI Responses API format."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -1076,7 +1284,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_response(self, request: "web.Request") -> "web.Response":
         """GET /v1/responses/{response_id} — retrieve a stored response."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -1089,7 +1297,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_response(self, request: "web.Request") -> "web.Response":
         """DELETE /v1/responses/{response_id} — delete a stored response."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -1160,9 +1368,334 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         return job_id, None
 
+    # ------------------------------------------------------------------
+    # Slash Command Handler
+    # ------------------------------------------------------------------
+
+    async def _handle_command(self, request: "web.Request") -> "web.Response":
+        """POST /api/command — dispatch a slash command through the gateway.
+
+        Body: { "command": "/status", "args": "" }
+        Returns: { "output": "..." }
+        """
+        auth_err = self._authenticate(request)
+        if auth_err:
+            return auth_err
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        raw_command = body.get("command", "").strip()
+        if not raw_command:
+            return web.json_response({"error": "Missing 'command' field"}, status=400)
+
+        args = body.get("args", "")
+
+        # Build the full text (e.g. "/status" or "/model glm-5.1")
+        full_text = raw_command
+        if args:
+            full_text += " " + args
+
+        # Dispatch through the gateway runner if available
+        if self.gateway_runner is not None:
+            try:
+                from gateway.platforms.base import MessageEvent, SessionSource, Platform, MessageType
+                from gateway.session import SessionSource as _Src
+
+                source = _Src(
+                    platform=Platform.API_SERVER,
+                    chat_id="miniapp",
+                    chat_name="Mini App",
+                    chat_type="dm",
+                    user_id="miniapp-user",
+                    user_name="MiniApp",
+                )
+                event = MessageEvent(
+                    text=full_text,
+                    message_type=MessageType.TEXT,
+                    source=source,
+                )
+                result = await self.gateway_runner._handle_message(event)
+                if result is None:
+                    result = ""
+
+                # Derive a stable session ID for this command context
+                cmd_session_id = f"miniapp-cmd-{hashlib.sha256(full_text.encode()).hexdigest()[:16]}"
+                return web.json_response(
+                    {"output": str(result), "session_id": cmd_session_id},
+                    headers={"X-Hermes-Session-Id": cmd_session_id},
+                )
+            except Exception as e:
+                logger.exception("[%s] Command dispatch error: %s", self.name, e)
+                return web.json_response({"output": f"Command error: {e}"}, status=500)
+        else:
+            return web.json_response({"error": "Gateway runner not available"}, status=503)
+
+    async def _handle_debug_headers(self, request: "web.Request") -> "web.Response":
+        """GET /api/debug-headers — echo back relevant request headers for debugging."""
+        return web.json_response({
+            "tg_init_data": request.headers.get("X-Telegram-Init-Data", ""),
+            "session_id": request.headers.get("X-Hermes-Session-Id", ""),
+            "content_type": request.headers.get("Content-Type", ""),
+            "user_agent": request.headers.get("User-Agent", ""),
+            "origin": request.headers.get("Origin", ""),
+            "all_headers": dict(request.headers),
+        })
+
+    async def _handle_debug_hmac(self, request: "web.Request") -> "web.Response":
+        """GET /api/debug-hmac — compute HMAC locally on whatever Telegram sends, log result."""
+        import hashlib, hmac as hmac_lib, time
+        from urllib.parse import unquote
+        tg_init = request.headers.get("X-Telegram-Init-Data", "").strip()
+        if not tg_init:
+            return web.json_response({"error": "no initData"}, status=400)
+
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        bot_id = bot_token.split(":")[0] if ":" in bot_token else ""
+        secret_key = hmac_lib.new(bot_token.encode(), b"WebAppData", hashlib.sha256).digest()
+
+        # Parse fields
+        raw_pairs = {}
+        hash_val = None
+        for part in tg_init.split("&"):
+            if "=" in part:
+                key, val = part.split("=", 1)
+                key = key.strip()
+                if key == "hash":
+                    hash_val = val
+                elif key not in ("hash", "signature"):
+                    raw_pairs[key] = val
+
+        # Method 1: bot_id={bot_id}\nWebAppData\n + all sorted
+        check_1 = "\n".join([f"bot_id={bot_id}", "WebAppData"] + [f"{k}={raw_pairs[k]}" for k in sorted(raw_pairs.keys())])
+        hash_1 = hmac_lib.new(secret_key, check_1.encode(), hashlib.sha256).hexdigest()
+
+        # Method 2: sorted only (no bot_id prefix)
+        check_2 = "\n".join([f"{k}={raw_pairs[k]}" for k in sorted(raw_pairs.keys())])
+        hash_2 = hmac_lib.new(secret_key, check_2.encode(), hashlib.sha256).hexdigest()
+
+        # Method 3: bot_id={bot_id}\nWebAppData\nauth_date=...\nquery_id=...\nuser=...
+        check_3_items = [f"bot_id={bot_id}", "WebAppData"]
+        for k in sorted(raw_pairs.keys()):
+            check_3_items.append(f"{k}={raw_pairs[k]}")
+        check_3 = "\n".join(check_3_items)
+        hash_3 = hmac_lib.new(secret_key, check_3.encode(), hashlib.sha256).hexdigest()
+
+        logger.info("[HMAC-DB] raw_initData=%r", tg_init[:500])
+        logger.info("[HMAC-DB] bot_id=%s hash_received=%s", bot_id, hash_val)
+        logger.info("[HMAC-DB] check_1 (bot_id+WebAppData+sorted)=%s -> hash=%s", check_1[:200], hash_1)
+        logger.info("[HMAC-DB] check_2 (sorted only)=%s -> hash=%s", check_2[:200], hash_2)
+
+        return web.json_response({
+            "received_hash": hash_val,
+            "method_1_bot_id_ws": {"check": check_1[:300], "hash": hash_1},
+            "method_2_sorted_only": {"check": check_2[:300], "hash": hash_2},
+            "raw_pairs_keys": list(raw_pairs.keys()),
+            "raw_pairs_sample": {k: raw_pairs[k][:50] for k in list(raw_pairs.keys())[:5]},
+        })
+
+    async def _handle_debug_auth(self, request: "web.Request") -> "web.Response":
+        """GET /api/debug-auth — diagnose auth state without enforcing it."""
+        tg_init = request.headers.get("X-Telegram-Init-Data", "")
+        auth_hdr = request.headers.get("Authorization", "")
+        has_bearer = auth_hdr.startswith("Bearer ")
+        bot_token_configured = bool(self._tg_bot_token)
+        api_key_configured = bool(self._api_key)
+        owner_id = self._tg_owner_id
+
+        # Parse initData if present
+        user_info = None
+        hash_present = False
+        auth_date = None
+        if tg_init:
+            try:
+                from urllib.parse import parse_qs
+                parsed = parse_qs(tg_init)
+                hash_present = bool(parsed.get("hash", [""])[0])
+                auth_date = parsed.get("auth_date", [None])[0]
+                user_json = parsed.get("user", ["{}"])[0]
+                user_info = json.loads(user_json) if user_json else None
+            except Exception:
+                pass
+
+        return web.json_response({
+            "gateway": {
+                "bot_token_configured": bot_token_configured,
+                "api_key_configured": api_key_configured,
+                "owner_id": owner_id,
+                "bot_id_from_token": self._tg_bot_token.split(":")[0] if self._tg_bot_token else None,
+            },
+            "request": {
+                "has_telegram_init_data": bool(tg_init),
+                "init_data_length": len(tg_init),
+                "hash_present": hash_present,
+                "auth_date": auth_date,
+                "user": user_info,
+                "has_bearer": has_bearer,
+                "bearer_prefix": auth_hdr[:20] if has_bearer else None,
+            },
+            "expected_auth": (
+                "Telegram HMAC" if tg_init else
+                "Bearer token" if has_bearer else
+                "Either Telegram HMAC or Bearer token"
+            ),
+        })
+
+    # ------------------------------------------------------------------
+    # Model & session info endpoints
+    # ------------------------------------------------------------------
+
+    async def _handle_model_info(self, request: "web.Request") -> "web.Response":
+        """GET /api/model-info — return active model metadata.
+
+        Derives model name, provider, and context window from the gateway's
+        resolved runtime configuration — no hardcoding.
+        """
+        auth_err = self._authenticate(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from gateway.run import _resolve_gateway_model, _load_gateway_config
+            config = _load_gateway_config()
+            model_full = _resolve_gateway_model(config)
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, str):
+                model_cfg = {}
+
+            # Resolve provider
+            provider = model_cfg.get("provider", "")
+            base_url = model_cfg.get("base_url", "")
+
+            # Resolve context length using Hermes's own model metadata system
+            context_length = 0
+            try:
+                from agent.model_metadata import get_model_context_length
+                config_ctx = model_cfg.get("context_length")
+                if config_ctx:
+                    try:
+                        config_ctx = int(config_ctx)
+                    except (ValueError, TypeError):
+                        config_ctx = None
+                api_key = model_cfg.get("api_key", "")
+                context_length = get_model_context_length(
+                    model=model_full,
+                    base_url=base_url,
+                    api_key=api_key,
+                    config_context_length=config_ctx,
+                    provider=provider,
+                )
+            except Exception:
+                logger.debug("model-info: could not resolve context_length")
+
+            # Model short name (same logic as CLI status bar)
+            model_short = model_full.split("/")[-1] if "/" in model_full else model_full
+            if model_short.endswith(".gguf"):
+                model_short = model_short[:-5]
+
+            return web.json_response({
+                "model": model_full,
+                "model_short": model_short,
+                "provider": provider,
+                "context_length": context_length,
+            })
+        except Exception as e:
+            return web.json_response({
+                "model": self._model_name,
+                "model_short": self._model_name,
+                "provider": "",
+                "context_length": 0,
+                "error": str(e),
+            })
+
+    async def _handle_session_usage(self, request: "web.Request") -> "web.Response":
+        """GET /api/session-usage — return cumulative token usage for the session.
+
+        Queries the session DB for token counts. Falls back to the last
+        agent's session counters if available.
+        """
+        auth_err = self._authenticate(request)
+        if auth_err:
+            return auth_err
+
+        sid = request.headers.get("X-Hermes-Session-Id", "") or request.query.get("session_id", "")
+
+        # Try to get usage from the most recent agent for this session
+        usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "session_id": sid,
+        }
+
+        # Check if there's an active session with an agent we can query
+        try:
+            session_db = self._ensure_session_db()
+            if session_db and sid:
+                session = session_db.get_session(sid)
+                if session:
+                    meta = session.get("metadata", {}) if isinstance(session, dict) else {}
+                    usage["prompt_tokens"] = meta.get("prompt_tokens", 0)
+                    usage["completion_tokens"] = meta.get("completion_tokens", 0)
+                    usage["total_tokens"] = meta.get("total_tokens", 0)
+        except Exception:
+            pass
+
+        return web.json_response(usage)
+
+    async def _handle_list_commands(self, request: "web.Request") -> "web.Response":
+        """GET /api/commands — return the Hermes command registry for the Mini App menu."""
+        auth_err = self._authenticate(request)
+        if auth_err:
+            return auth_err
+        try:
+            # Import lazily to avoid circular imports at module load time
+            from hermes_cli.commands import COMMAND_REGISTRY
+            commands = []
+            for cmd in COMMAND_REGISTRY:
+                commands.append({
+                    "name": cmd.name,
+                    "description": cmd.description,
+                    "category": cmd.category,
+                    "aliases": list(cmd.aliases) if cmd.aliases else [],
+                    "args_hint": cmd.args_hint,
+                    "subcommands": list(cmd.subcommands) if cmd.subcommands else [],
+                    "cli_only": cmd.cli_only,
+                    "gateway_only": cmd.gateway_only,
+                })
+            return web.json_response({"commands": commands})
+        except Exception as e:
+            logger.exception("[%s] List commands error: %s", self.name, e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_list_processes(self, request: "web.Request") -> "web.Response":
+        """GET /api/processes — list running background processes."""
+        auth_err = self._authenticate(request)
+        if auth_err:
+            return auth_err
+        try:
+            from tools.process_registry import process_registry
+            sessions = process_registry.list_sessions()
+            # Return lightweight info for the UI
+            processes = []
+            for s in sessions:
+                processes.append({
+                    "name": s.get("name") or s.get("session_id", "?")[:8],
+                    "session_id": s.get("session_id"),
+                    "running": s.get("running", False),
+                    "pid": s.get("pid"),
+                    "cpu": s.get("cpu_percent"),
+                    "mem": s.get("mem_percent"),
+                })
+            return web.json_response({"processes": processes})
+        except Exception as e:
+            logger.exception("[%s] List processes error: %s", self.name, e)
+            return web.json_response({"error": str(e)}, status=500)
+
     async def _handle_list_jobs(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs — list all cron jobs."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1177,7 +1710,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1225,7 +1758,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1244,7 +1777,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1277,7 +1810,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1296,7 +1829,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1315,7 +1848,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1334,7 +1867,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
         cron_err = self._check_jobs_available()
@@ -1503,7 +2036,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -1657,7 +2190,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
-        auth_err = self._check_auth(request)
+        auth_err = self._authenticate(request)
         if auth_err:
             return auth_err
 
@@ -1749,9 +2282,29 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Slash command dispatch + Mini App endpoints
+            self._app.router.add_post("/api/command", self._handle_command)
+            self._app.router.add_get("/api/commands", self._handle_list_commands)
+            self._app.router.add_get("/api/processes", self._handle_list_processes)
+            # Debug: echo headers to see what Telegram is sending
+            self._app.router.add_get("/api/debug-headers", self._handle_debug_headers)
+            self._app.router.add_get("/api/debug-auth", self._handle_debug_auth)
+            self._app.router.add_get("/api/debug-hmac", self._handle_debug_hmac)
+            # Model & session info for Mini App
+            self._app.router.add_get("/api/model-info", self._handle_model_info)
+            self._app.router.add_get("/api/session-usage", self._handle_session_usage)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            # Telegram Mini App static file serving
+            miniapp_dir = os.path.join(os.path.expanduser("~"), ".hermes", "miniapp")
+            if os.path.isdir(miniapp_dir):
+                # Register exact-path redirects BEFORE static prefix route
+                # so /miniapp and /miniapp/ don't get swallowed by static's 403
+                self._app.router.add_get("/miniapp", self._handle_miniapp_redirect)
+                self._app.router.add_get("/miniapp/", self._handle_miniapp_redirect)
+                self._app.router.add_static("/miniapp", miniapp_dir, show_index=False)
+                logger.info("[%s] Mini App static files served from %s", self.name, miniapp_dir)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

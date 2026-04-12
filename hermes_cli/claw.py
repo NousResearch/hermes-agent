@@ -53,21 +53,39 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 # Known OpenClaw directory names (current + legacy)
 _OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
 
-def _is_openclaw_running() -> bool:
-    """Check whether an OpenClaw process appears to be running."""
+def _detect_openclaw_processes() -> list[str]:
+    """Detect running OpenClaw processes and services.
+
+    Returns a list of human-readable descriptions of what was found.
+    An empty list means nothing was detected.
+    """
+    found: list[str] = []
+
+    # -- systemd service (Linux) ------------------------------------------
+    if sys.platform != "win32":
+        try:
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip() == "active":
+                found.append("systemd service: openclaw-gateway.service")
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    # -- process scan ------------------------------------------------------
     if sys.platform == "win32":
         try:
-            # First check for dedicated executables
             for exe in ("openclaw.exe", "clawd.exe"):
                 result = subprocess.run(
                     ["tasklist", "/FI", f"IMAGENAME eq {exe}"],
-                    capture_output=True, text=True, timeout=5
+                    capture_output=True, text=True, timeout=5,
                 )
                 if exe in result.stdout.lower():
-                    return True
+                    found.append(f"process: {exe}")
 
-            # Check node.exe processes for openclaw/clawd in command line.
-            # tasklist does not include command lines, so we use PowerShell.
+            # Node.js-hosted OpenClaw — tasklist doesn't show command lines,
+            # so fall back to PowerShell.
             ps_cmd = (
                 'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '
@@ -75,20 +93,25 @@ def _is_openclaw_running() -> bool:
             )
             result = subprocess.run(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
-                capture_output=True, text=True, timeout=5
+                capture_output=True, text=True, timeout=5,
             )
-            return bool(result.stdout.strip())
+            if result.stdout.strip():
+                found.append(f"node.exe process with openclaw in command line (PID {result.stdout.strip()})")
         except Exception:
-            return False
-
-    for cmd in (["pgrep", "-f", "openclaw"], ["pgrep", "-f", "clawd"]):
+            pass
+    else:
         try:
-            result = subprocess.run(cmd, capture_output=True, timeout=3)
+            result = subprocess.run(
+                ["pgrep", "-f", "openclaw"],
+                capture_output=True, text=True, timeout=3,
+            )
             if result.returncode == 0:
-                return True
+                pids = result.stdout.strip().split()
+                found.append(f"openclaw process(es) (PIDs: {', '.join(pids)})")
         except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-    return False
+            pass
+
+    return found
 
 
 def _warn_if_openclaw_running(auto_yes: bool) -> None:
@@ -98,11 +121,14 @@ def _warn_if_openclaw_running(auto_yes: bool) -> None:
     token. Migrating while OpenClaw is running causes both to fight for the
     same token.
     """
-    if not _is_openclaw_running():
+    running = _detect_openclaw_processes()
+    if not running:
         return
 
     print()
-    print_error("OpenClaw appears to be running.")
+    print_error("OpenClaw appears to be running:")
+    for detail in running:
+        print_info(f"  * {detail}")
     print_info(
         "Messaging platforms (Telegram, Discord, Slack) only allow one "
         "active session per bot token. If you continue, both OpenClaw and "
@@ -227,34 +253,6 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
                 findings.append((state_path, f"Workspace {kind}: {rel}"))
 
     return findings
-
-
-def _check_openclaw_running() -> list:
-    """Check if any OpenClaw processes or services are still running."""
-    import subprocess
-    running = []
-    # Check systemd service
-    try:
-        result = subprocess.run(
-            ["systemctl", "--user", "is-active", "openclaw-gateway.service"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.stdout.strip() == "active":
-            running.append("systemd service: openclaw-gateway.service")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    # Check running processes
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", "openclaw"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            pids = result.stdout.strip().split()
-            running.append(f"openclaw process(es) running (PIDs: {', '.join(pids)})")
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return running
 
 
 def _archive_directory(source_dir: Path, dry_run: bool = False) -> Path:
@@ -528,18 +526,25 @@ def _cmd_cleanup(args):
         print()
         print_success("No OpenClaw directories found. Nothing to clean up.")
         return
-    # Warn if OpenClaw is still running
-    running = _check_openclaw_running()
+
+    # Warn if OpenClaw is still running — archiving while the service is
+    # active causes it to recreate an empty skeleton directory (#8502).
+    running = _detect_openclaw_processes()
     if running:
         print()
-        print_warning("OpenClaw appears to be still running:")
-        for proc in running:
-            print_warning(f"  • {proc}")
-        print_warning("Archiving .openclaw/ while the service is active may cause it to")
-        print_warning("immediately recreate an empty skeleton directory, destroying your config.")
-        print_warning("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
+        print_error("OpenClaw appears to be still running:")
+        for detail in running:
+            print_info(f"  * {detail}")
+        print_info(
+            "Archiving .openclaw/ while the service is active may cause it to "
+            "immediately recreate an empty skeleton directory, destroying your config."
+        )
+        print_info("Stop OpenClaw first: systemctl --user stop openclaw-gateway.service")
         print()
         if not auto_yes:
+            if not sys.stdin.isatty():
+                print_info("Non-interactive session — aborting. Stop OpenClaw and re-run.")
+                return
             if not prompt_yes_no("Proceed anyway?", default=False):
                 print_info("Aborted. Stop OpenClaw first, then re-run: hermes claw cleanup")
                 return

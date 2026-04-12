@@ -839,8 +839,11 @@ def list_authenticated_providers(
                     if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
                         has_creds = True
                         break
-        if not has_creds and overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
+        # Check auth store and credential pool for non-env-var credentials.
+        # This applies to OAuth providers AND api_key providers that also
+        # support OAuth (e.g. anthropic supports both API key and Claude Code
+        # OAuth via external credential files).
+        if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
@@ -853,6 +856,38 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
+        # Fallback: check the credential pool with full auto-seeding.
+        # This catches credentials that exist in external stores (e.g.
+        # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
+        # imports on demand but aren't in the raw auth.json yet.
+        if not has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(hermes_slug)
+                if pool.has_credentials():
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
+        # Fallback: check external credential files directly.
+        # The credential pool gates anthropic behind
+        # is_provider_explicitly_configured() to prevent auxiliary tasks
+        # from silently consuming Claude Code tokens (PR #4210).
+        # But the /model picker is discovery-oriented — we WANT to show
+        # providers the user can switch to, even if they aren't currently
+        # configured.
+        if not has_creds and hermes_slug == "anthropic":
+            try:
+                from agent.anthropic_adapter import (
+                    read_claude_code_credentials,
+                    read_hermes_oauth_credentials,
+                )
+                hermes_creds = read_hermes_oauth_credentials()
+                cc_creds = read_claude_code_credentials()
+                if (hermes_creds and hermes_creds.get("accessToken")) or \
+                   (cc_creds and cc_creds.get("accessToken")):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Anthropic external creds check failed: %s", exc)
         if not has_creds:
             continue
 

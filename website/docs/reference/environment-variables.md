@@ -232,6 +232,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
 | `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
 | `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
+| `WECOM_CALLBACK_CORP_ID` | WeCom enterprise Corp ID for callback self-built app |
+| `WECOM_CALLBACK_CORP_SECRET` | Corp secret for the self-built app |
+| `WECOM_CALLBACK_AGENT_ID` | Agent ID of the self-built app |
+| `WECOM_CALLBACK_TOKEN` | Callback verification token |
+| `WECOM_CALLBACK_ENCODING_AES_KEY` | AES key for callback encryption |
+| `WECOM_CALLBACK_HOST` | Callback server bind address (default: `0.0.0.0`) |
+| `WECOM_CALLBACK_PORT` | Callback server port (default: `8645`) |
+| `WECOM_CALLBACK_ALLOWED_USERS` | Comma-separated user IDs for allowlist |
+| `WECOM_CALLBACK_ALLOW_ALL_USERS` | Set `true` to allow all users without an allowlist |
 | `WEIXIN_ACCOUNT_ID` | Weixin account ID obtained via QR login through iLink Bot API |
 | `WEIXIN_TOKEN` | Weixin authentication token obtained via QR login through iLink Bot API |
 | `WEIXIN_BASE_URL` | Override Weixin iLink Bot API base URL (default: `https://ilinkai.weixin.qq.com`) |
@@ -268,6 +277,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATRIX_FREE_RESPONSE_ROOMS` | Comma-separated room IDs where bot responds without `@mention` |
 | `MATRIX_AUTO_THREAD` | Auto-create threads for room messages (default: `true`) |
 | `MATRIX_DM_MENTION_THREADS` | Create a thread when bot is `@mentioned` in a DM (default: `false`) |
+| `MATRIX_RECOVERY_KEY` | Recovery key for cross-signing verification after device key rotation. Recommended for E2EE setups with cross-signing enabled. |
 | `HASS_TOKEN` | Home Assistant Long-Lived Access Token (enables HA platform + tools) |
 | `HASS_URL` | Home Assistant URL (default: `http://homeassistant.local:8123`) |
 | `WEBHOOK_ENABLED` | Enable the webhook platform adapter (`true`/`false`) |

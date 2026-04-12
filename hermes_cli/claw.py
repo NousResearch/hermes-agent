@@ -50,7 +50,7 @@ _OPENCLAW_SCRIPT_INSTALLED = (
 )
 
 # Known OpenClaw directory names (current + legacy)
-_OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moldbot")
+_OPENCLAW_DIR_NAMES = (".openclaw", ".clawdbot", ".moltbot")
 
 def _warn_if_gateway_running(auto_yes: bool) -> None:
     """Check if a Hermes gateway is running with connected platforms.
@@ -216,7 +216,7 @@ def _cmd_migrate(args):
         source_dir = Path.home() / ".openclaw"
         if not source_dir.is_dir():
             # Try legacy directory names
-            for legacy in (".clawdbot", ".moldbot"):
+            for legacy in (".clawdbot", ".moltbot"):
                 candidate = Path.home() / legacy
                 if candidate.is_dir():
                     source_dir = candidate

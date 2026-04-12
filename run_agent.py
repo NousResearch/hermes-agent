@@ -1050,6 +1050,7 @@ class AIAgent:
         self._session_db = session_db
         self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
+        self._db_flush_failed = False  # tracks whether a flush attempt failed
         if self._session_db:
             try:
                 self._session_db.create_session(
@@ -2248,8 +2249,19 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
+            # Clear the failure flag on successful flush
+            if self._db_flush_failed:
+                logger.info("Session DB flush recovered after previous failure")
+                self._db_flush_failed = False
         except Exception as e:
-            logger.warning("Session DB append_message failed: %s", e)
+            self._db_flush_failed = True
+            logger.error(
+                "Session DB flush failed: %s (%d messages at risk). "
+                "Messages may still be in JSONL — prefer JSONL on resume if "
+                "conversation appears incomplete.",
+                e,
+                len(messages) - self._last_flushed_db_idx,
+            )
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """

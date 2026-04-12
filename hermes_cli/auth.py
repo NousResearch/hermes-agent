@@ -991,9 +991,30 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
-    # Auto-detect API-key providers by checking their env vars
-    for pid, pconfig in PROVIDER_REGISTRY.items():
-        if pconfig.auth_type != "api_key":
+    # Auto-detect API-key providers by checking their env vars.
+    # Keep an explicit priority order so adding new providers does not
+    # silently change which ambient credential wins in auto mode.
+    provider_priority = [
+        "anthropic",
+        "gemini",
+        "zai",
+        "kimi-coding",
+        "minimax",
+        "minimax-cn",
+        "deepseek",
+        "xai",
+        "ai-gateway",
+        "opencode-zen",
+        "opencode-go",
+        "kilocode",
+        "huggingface",
+        "xiaomi",
+        "fireworks",
+        "alibaba",
+    ]
+    for pid in provider_priority:
+        pconfig = PROVIDER_REGISTRY.get(pid)
+        if not pconfig or pconfig.auth_type != "api_key":
             continue
         # GitHub tokens are commonly present for repo/tool access but should not
         # hijack inference auto-selection unless the user explicitly chooses

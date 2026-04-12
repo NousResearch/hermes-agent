@@ -8,11 +8,16 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import urllib.request
 import urllib.error
+import urllib.parse
 from difflib import get_close_matches
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 COPILOT_BASE_URL = "https://api.githubcopilot.com"
 COPILOT_MODELS_URL = f"{COPILOT_BASE_URL}/models"
@@ -1200,6 +1205,27 @@ def _merge_unique_model_ids(*groups: list[str]) -> list[str]:
     return merged
 
 
+_ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
+_MAX_FIREWORKS_COLLECTION_PAGES = 10
+_MAX_REMOTE_MODEL_ID_LEN = 200
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_RE.sub("", value or "")
+
+
+def _sanitize_remote_model_id(model_id: Any) -> Optional[str]:
+    if not isinstance(model_id, str):
+        return None
+    without_ansi = _strip_ansi(model_id)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in without_ansi):
+        return None
+    cleaned = without_ansi.strip()
+    if not cleaned or len(cleaned) > _MAX_REMOTE_MODEL_ID_LEN:
+        return None
+    return cleaned
+
+
 def _fetch_fireworks_collection(
     *,
     api_key: str,
@@ -1214,7 +1240,12 @@ def _fetch_fireworks_collection(
 
     items: list[dict[str, Any]] = []
     page_token: Optional[str] = None
+    page_count = 0
     while True:
+        page_count += 1
+        if page_count > _MAX_FIREWORKS_COLLECTION_PAGES:
+            logger.debug("Stopping Fireworks pagination for %s after %d pages", path, _MAX_FIREWORKS_COLLECTION_PAGES)
+            break
         params: list[tuple[str, str]] = []
         if filter_expr:
             params.append(("filter", filter_expr))
@@ -1288,9 +1319,9 @@ def _fetch_fireworks_models(
                 status_code = str(status.get("code") or "").strip().upper()
                 if status_code and status_code != "OK":
                     continue
-            model_id = item.get("name")
-            if isinstance(model_id, str) and model_id.strip():
-                model_ids.append(model_id.strip())
+            model_id = _sanitize_remote_model_id(item.get("name"))
+            if model_id:
+                model_ids.append(model_id)
 
     return _merge_unique_model_ids(model_ids) or None
 
@@ -1343,7 +1374,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             creds = resolve_api_key_provider_credentials("fireworks")
             live = _fetch_fireworks_models(str(creds.get("api_key") or "").strip())
             if live:
-                return _merge_unique_model_ids(FIREWORKS_FIRE_PASS_MODELS, live)
+                sanitized_live = [mid for mid in (_sanitize_remote_model_id(item) for item in live) if mid]
+                return _merge_unique_model_ids(FIREWORKS_FIRE_PASS_MODELS, sanitized_live)
         except Exception:
             pass
         return list(_PROVIDER_MODELS.get("fireworks", []))

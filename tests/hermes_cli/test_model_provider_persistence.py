@@ -100,6 +100,19 @@ class TestProviderPersistsAfterModelSave:
         )
         assert model.get("default") == "kimi-k2.5"
 
+    def test_api_key_provider_requires_tty_for_secret_prompt(self, config_home, monkeypatch, capsys):
+        """Non-interactive stdin should refuse API key entry instead of prompting."""
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.delenv("KIMI_API_KEY", raising=False)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+
+        _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
+
+        captured = capsys.readouterr()
+        assert "interactive terminal required" in captured.out.lower()
+
     def test_copilot_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot should persist provider/base_url/model together."""
         from hermes_cli.main import _model_flow_copilot

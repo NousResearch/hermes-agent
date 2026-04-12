@@ -188,6 +188,7 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
 
+
 class TestFilterNousFreeModels:
     """Tests for filter_nous_free_models — Nous Portal free-model policy."""
 
@@ -365,7 +366,7 @@ class TestCheckNousFreeTierCache:
     def test_result_is_cached(self, mock_is_free, mock_fetch):
         """Second call within TTL returns cached result without API call."""
         mock_fetch.return_value = {"subscription": {"monthly_charge": 0}}
-        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
+        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "***"}), \
              patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
             result1 = check_nous_free_tier()
             result2 = check_nous_free_tier()
@@ -379,7 +380,7 @@ class TestCheckNousFreeTierCache:
     def test_cache_expires_after_ttl(self, mock_is_free, mock_fetch):
         """After TTL expires, the API is called again."""
         mock_fetch.return_value = {"subscription": {"monthly_charge": 20}}
-        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
+        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "***"}), \
              patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
             result1 = check_nous_free_tier()
             assert mock_fetch.call_count == 1
@@ -396,6 +397,7 @@ class TestCheckNousFreeTierCache:
     def test_cache_ttl_is_short(self):
         """TTL should be short enough to catch upgrades quickly (<=5 min)."""
         assert _FREE_TIER_CACHE_TTL <= 300
+
 
 class TestFireworksProviderMetadata:
     def test_provider_label_present(self):
@@ -435,7 +437,7 @@ class TestFireworksProviderMetadata:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             lambda provider_id: {
                 "provider": provider_id,
-                "api_key": "fw-key",
+                "api_key": "***",
                 "base_url": "https://api.fireworks.ai/inference/v1",
                 "source": "FIREWORKS_API_KEY",
             },
@@ -491,7 +493,7 @@ class TestFetchFireworksModels:
             "hermes_cli.auth.resolve_api_key_provider_credentials",
             lambda provider_id: {
                 "provider": provider_id,
-                "api_key": "fw-key",
+                "api_key": "***",
                 "base_url": "https://api.fireworks.ai/inference/v1",
                 "source": "FIREWORKS_API_KEY",
             },
@@ -559,3 +561,78 @@ class TestFetchFireworksModels:
         ids = _fetch_fireworks_models(api_key="fw-key")
 
         assert ids == ["accounts/fireworks/models/deepseek-v3p1"]
+
+
+class TestFireworksModelFetching:
+    def test_strip_ansi_removes_escape_sequences(self):
+        from hermes_cli.models import _strip_ansi
+
+        assert _strip_ansi("\x1b[31maccounts/fireworks/models/glm-5\x1b[0m") == "accounts/fireworks/models/glm-5"
+
+    def test_sanitize_remote_model_id_rejects_controls_and_long_values(self):
+        from hermes_cli.models import _sanitize_remote_model_id
+
+        assert _sanitize_remote_model_id("accounts/fireworks/models/glm-5\n") is None
+        assert _sanitize_remote_model_id("a" * 300) is None
+
+    def test_fetch_fireworks_collection_caps_pagination(self, monkeypatch):
+        from hermes_cli.models import _fetch_fireworks_collection
+
+        calls = []
+
+        class _Resp:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                import json
+                return json.dumps(self._payload).encode()
+
+        def fake_urlopen(req, timeout=0):
+            calls.append(req.full_url)
+            idx = len(calls)
+            return _Resp({
+                "models": [{"name": f"accounts/fireworks/models/model-{idx}"}],
+                "nextPageToken": f"page-{idx}",
+            })
+
+        monkeypatch.setattr(_models_mod.urllib.request, "urlopen", fake_urlopen)
+        items = _fetch_fireworks_collection(
+            api_key="fw-test",
+            path="/v1/accounts/test/models",
+            items_key="models",
+        )
+
+        assert items is not None
+        assert len(calls) == 10
+
+    def test_provider_model_ids_fireworks_sanitizes_live_results(self, monkeypatch):
+        from hermes_cli.models import provider_model_ids, FIREWORKS_FIRE_PASS_MODELS
+
+        monkeypatch.setattr(
+            _models_mod,
+            "_fetch_fireworks_models",
+            lambda api_key=None, timeout=5.0: [
+                "accounts/fireworks/models/good-model",
+                "\x1b[31maccounts/fireworks/models/evil\x1b[0m",
+                "bad\nmodel",
+            ],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            lambda provider: {"api_key": "***", "base_url": "https://api.fireworks.ai/inference/v1"},
+        )
+
+        result = provider_model_ids("fireworks")
+
+        assert FIREWORKS_FIRE_PASS_MODELS[0] in result
+        assert "accounts/fireworks/models/good-model" in result
+        assert "accounts/fireworks/models/evil" in result
+        assert all("\x1b" not in model for model in result)
+        assert all("\n" not in model for model in result)

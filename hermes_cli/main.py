@@ -2486,6 +2486,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     if not existing_key:
         print(f"No {pconfig.name} API key configured.")
         if key_env:
+            if not sys.stdin.isatty():
+                print("Error: interactive terminal required for API key entry.")
+                return
             try:
                 import getpass
                 new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()

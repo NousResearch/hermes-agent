@@ -288,6 +288,12 @@ class TestResolveProvider:
         monkeypatch.setenv("HF_TOKEN", "hf_test_token")
         assert resolve_provider("auto") == "huggingface"
 
+    def test_auto_prefers_xiaomi_over_fireworks_when_both_keys_exist(self, monkeypatch):
+        """Fireworks should not silently hijack Xiaomi auto-selection."""
+        monkeypatch.setenv("XIAOMI_API_KEY", "xiaomi-key")
+        monkeypatch.setenv("FIREWORKS_API_KEY", "fireworks-key")
+        assert resolve_provider("auto") == "xiaomi"
+
     def test_openrouter_takes_priority_over_glm(self, monkeypatch):
         """OpenRouter API key should win over GLM in auto-detection."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

@@ -398,15 +398,16 @@ async def _send_message(
     context_token: Optional[str],
     client_id: str,
 ) -> None:
+    if not text or not text.strip():
+        raise ValueError("_send_message: text must not be empty")
     message: Dict[str, Any] = {
         "from_user_id": "",
         "to_user_id": to,
         "client_id": client_id,
         "message_type": MSG_TYPE_BOT,
         "message_state": MSG_STATE_FINISH,
+        "item_list": [{"type": ITEM_TEXT, "text_item": {"text": text}}],
     }
-    if text:
-        message["item_list"] = [{"type": ITEM_TEXT, "text_item": {"text": text}}]
     if context_token:
         message["context_token"] = context_token
     await _api_post(
@@ -813,6 +814,8 @@ def _split_text_for_weixin_delivery(
     """
     if split_per_line:
         # Legacy: one message per top-level delivery unit.
+        if not content:
+            return []
         if len(content) <= max_length and "\n" not in content:
             return [content]
         chunks: List[str] = []
@@ -821,14 +824,16 @@ def _split_text_for_weixin_delivery(
                 chunks.append(unit)
                 continue
             chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-        return chunks or [content]
+        return [c for c in chunks if c] or [content]
 
     # Compact (default): single message when under the limit — unless the
     # content looks like a short chatty exchange, in which case split into
     # separate bubbles for a more natural chat feel.
     if len(content) <= max_length:
+        if not content:
+            return []
         return (
-            _split_delivery_units_for_weixin(content)
+            [u for u in _split_delivery_units_for_weixin(content) if u]
             if _should_split_short_chat_block_for_weixin(content)
             else [content]
         )
@@ -1041,6 +1046,10 @@ class WeixinAdapter(BasePlatformAdapter):
     """Native Hermes adapter for Weixin personal accounts."""
 
     MAX_MESSAGE_LENGTH = 4000
+
+    # WeChat does not support editing sent messages — streaming must use the
+    # fallback "send-final-only" path so the cursor (▉) is never left visible.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEIXIN)
@@ -1451,7 +1460,7 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         try:
-            chunks = self._split_text(self.format_message(content))
+            chunks = [c for c in self._split_text(self.format_message(content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(

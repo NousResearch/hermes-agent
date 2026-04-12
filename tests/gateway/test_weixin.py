@@ -374,3 +374,126 @@ class TestWeixinRemoteMediaSafety:
                 assert "Blocked unsafe URL" in str(exc)
             else:
                 raise AssertionError("expected ValueError for unsafe URL")
+
+
+class TestWeixinBlankMessagePrevention:
+    """Regression tests for the blank-bubble bugs.
+
+    Three separate guards now prevent a blank WeChat message from ever being
+    dispatched:
+
+    1. ``_split_text_for_weixin_delivery("")`` returns ``[]`` — not ``[""]``.
+    2. ``send()`` filters out empty/whitespace-only chunks before calling
+       ``_send_text_chunk``.
+    3. ``_send_message()`` raises ``ValueError`` for empty text as a last-resort
+       safety net.
+    """
+
+    # ------------------------------------------------------------------
+    # Guard 1: _split_text returns [] for empty content
+    # ------------------------------------------------------------------
+
+    def test_split_text_returns_empty_list_for_empty_string(self):
+        adapter = _make_adapter()
+        assert adapter._split_text("") == []
+
+    def test_split_text_returns_empty_list_for_empty_string_split_per_line(self):
+        adapter = WeixinAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "account_id": "acct",
+                    "token": "***",
+                    "split_multiline_messages": True,
+                },
+            )
+        )
+        assert adapter._split_text("") == []
+
+    # ------------------------------------------------------------------
+    # Guard 2: send() skips empty chunks — _send_message is never called
+    # ------------------------------------------------------------------
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_empty_content_does_not_call_send_message(self, send_message_mock):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+
+        result = asyncio.run(adapter.send("wxid_test123", ""))
+
+        assert result.success is True
+        send_message_mock.assert_not_awaited()
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_whitespace_only_content_does_not_call_send_message(self, send_message_mock):
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+
+        result = asyncio.run(adapter.send("wxid_test123", "   \n  "))
+
+        assert result.success is True
+        send_message_mock.assert_not_awaited()
+
+    # ------------------------------------------------------------------
+    # Guard 3: _send_message raises ValueError for empty text
+    # ------------------------------------------------------------------
+
+    def test_send_message_raises_for_empty_text(self):
+        import pytest
+        from gateway.platforms.weixin import _send_message
+
+        session_mock = AsyncMock()
+
+        with pytest.raises(ValueError, match="text must not be empty"):
+            asyncio.run(
+                _send_message(
+                    session_mock,
+                    base_url="https://weixin.example.com",
+                    token="tok",
+                    to="wxid_test",
+                    text="",
+                    context_token=None,
+                    client_id="test-client-id",
+                )
+            )
+
+    def test_send_message_raises_for_whitespace_only_text(self):
+        import pytest
+        from gateway.platforms.weixin import _send_message
+
+        session_mock = AsyncMock()
+
+        with pytest.raises(ValueError, match="text must not be empty"):
+            asyncio.run(
+                _send_message(
+                    session_mock,
+                    base_url="https://weixin.example.com",
+                    token="tok",
+                    to="wxid_test",
+                    text="   \n  ",
+                    context_token=None,
+                    client_id="test-client-id",
+                )
+            )
+
+
+class TestWeixinSupportsMessageEditing:
+    """WeixinAdapter must declare SUPPORTS_MESSAGE_EDITING = False so the
+    stream consumer never appends the ▉ cursor to outgoing messages.
+
+    WeChat has no edit-message API — any message sent with the cursor appended
+    would leave it permanently visible in the chat.
+    """
+
+    def test_adapter_declares_no_edit_support(self):
+        assert WeixinAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+    def test_instance_also_has_no_edit_support(self):
+        adapter = _make_adapter()
+        assert getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True) is False

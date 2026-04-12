@@ -13,8 +13,8 @@ import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
 import { type PasteEvent, TextInput } from './components/textInput.js'
-import { Thinking, ToolTrail } from './components/thinking.js'
-import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
+import { ToolTrail } from './components/thinking.js'
+import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
@@ -28,7 +28,8 @@ import {
   isToolTrailResultLine,
   isTransientTrailLine,
   pick,
-  sameToolTrailGroup
+  sameToolTrailGroup,
+  toolTrailLabel
 } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
@@ -324,8 +325,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [sid, setSid] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME)
   const [info, setInfo] = useState<SessionInfo | null>(null)
-  const [thinking, setThinking] = useState(false)
-  const [turnKey, setTurnKey] = useState(0)
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [tools, setTools] = useState<ActiveTool[]>([])
   const [busy, setBusy] = useState(false)
@@ -489,7 +488,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         return
       }
 
-      const label = TOOL_VERBS.clarify ?? 'clarify'
+      const label = toolTrailLabel('clarify')
 
       setTrail(turnToolsRef.current.filter(l => !sameToolTrailGroup(label, l)))
       setTurnTrail(turnToolsRef.current)
@@ -554,7 +553,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   }, [pushActivity, rpc, sid])
 
   const idle = () => {
-    setThinking(false)
     setTools([])
     setTurnTrail([])
     setBusy(false)
@@ -1297,8 +1295,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'message.start':
-          setThinking(true)
-          setTurnKey(k => k + 1)
           setBusy(true)
           setReasoning('')
           setActivity([])
@@ -1384,9 +1380,14 @@ export function App({ gw }: { gw: GatewayClient }) {
           setTools(prev => {
             const done = prev.find(t => t.id === p.tool_id)
             const name = done?.name ?? p.name
-            const ctx = (p.error as string) || done?.context || ''
-            const label = TOOL_VERBS[name] ?? name
-            const line = buildToolTrailLine(name, ctx, !!p.error)
+            const label = toolTrailLabel(name)
+
+            const line = buildToolTrailLine(
+              name,
+              done?.context || '',
+              !!p.error,
+              (p.error as string) || (p.summary as string) || ''
+            )
 
             toolCompleteRibbonRef.current = { label, line }
             const remaining = prev.filter(t => t.id !== p.tool_id)
@@ -2400,6 +2401,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const durationLabel = sid ? fmtDuration(clockNow - sessionStartedAt) : ''
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+  const showProgressArea = Boolean(
+    (busy && !streaming) || (busy ? activity.length : 0) || tools.length || turnTrail.length
+  )
+  const showStreamingArea = Boolean(streaming)
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -2421,18 +2426,23 @@ export function App({ gw }: { gw: GatewayClient }) {
       ))}
 
       <Box flexDirection="column" paddingX={1}>
-        <ToolTrail
-          activity={busy ? activity : []}
-          animateCot={busy && !streaming}
-          t={theme}
-          tools={tools}
-          trail={turnTrail}
-        />
+        {showProgressArea && (
+          <Box marginBottom={showStreamingArea ? 1 : 0}>
+            <ToolTrail
+              activity={busy ? activity : []}
+              busy={busy && !streaming}
+              reasoning={busy && !streaming ? reasoning : ''}
+              t={theme}
+              tools={tools}
+              trail={turnTrail}
+            />
+          </Box>
+        )}
 
-        {busy && !tools.length && !streaming && <Thinking key={turnKey} reasoning={reasoning} t={theme} />}
-
-        {streaming && (
-          <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
+        {showStreamingArea && (
+          <Box>
+            <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
+          </Box>
         )}
 
         {pasteReview && (

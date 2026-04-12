@@ -1,16 +1,17 @@
-import { Text } from '@hermes/ink'
-import { memo, useEffect, useState } from 'react'
+import { Box, Text } from '@hermes/ink'
+import { memo, type ReactNode, useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
-import { FACES, TOOL_VERBS, VERBS } from '../constants.js'
+import { FACES, VERBS } from '../constants.js'
 import {
-  isToolTrailResultLine,
-  lastCotTrailIndex,
+  formatToolCall,
+  parseToolTrailResultLine,
   pick,
   scaleHex,
   THINKING_COT_FADE,
   THINKING_COT_MAX,
-  thinkingCotTail
+  thinkingCotTail,
+  toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, ActivityItem } from '../types.js'
@@ -18,18 +19,13 @@ import type { ActiveTool, ActivityItem } from '../types.js'
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
 
-const tone = (item: ActivityItem, t: Theme) =>
-  item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
-
-const activityGlyph = (item: ActivityItem) => (item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·')
-
-const TreeFork = ({ last }: { last: boolean }) => <Text dimColor>{last ? '└─ ' : '├─ '}</Text>
-
 const fmtElapsed = (ms: number) => {
   const sec = Math.max(0, ms) / 1000
 
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
+
+// ── Spinner ──────────────────────────────────────────────────────────
 
 export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
   const [spin] = useState(() => {
@@ -49,100 +45,20 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
   return <Text color={color}>{spin.frames[frame]}</Text>
 }
 
-export const ToolTrail = memo(function ToolTrail({
-  t,
-  tools = [],
-  trail = [],
-  activity = [],
-  animateCot = false
-}: {
-  t: Theme
-  tools?: ActiveTool[]
-  trail?: string[]
-  activity?: ActivityItem[]
-  animateCot?: boolean
-}) {
-  const [now, setNow] = useState(() => Date.now())
+// ── Detail row ───────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!tools.length) {
-      return
-    }
+type DetailRow = { color: string; content: ReactNode; dimColor?: boolean; key: string }
 
-    const id = setInterval(() => setNow(Date.now()), 200)
-
-    return () => clearInterval(id)
-  }, [tools.length])
-
-  if (!trail.length && !tools.length && !activity.length) {
-    return null
-  }
-
-  const act = activity.slice(-4)
-  const rowCount = trail.length + tools.length + act.length
-  const activeCotIdx = animateCot && !tools.length ? lastCotTrailIndex(trail) : -1
-
+function Detail({ color, content, dimColor, t }: DetailRow & { t: Theme }) {
   return (
-    <>
-      {trail.map((line, i) => {
-        const lastInBlock = i === rowCount - 1
-
-        if (isToolTrailResultLine(line)) {
-          return (
-            <Text
-              color={line.endsWith(' ✗') ? t.color.error : t.color.dim}
-              dimColor={!line.endsWith(' ✗')}
-              key={`t-${i}`}
-            >
-              <TreeFork last={lastInBlock} />
-              {line}
-            </Text>
-          )
-        }
-
-        if (i === activeCotIdx) {
-          return (
-            <Text color={t.color.dim} key={`c-${i}`}>
-              <TreeFork last={lastInBlock} />
-              <Spinner color={t.color.amber} variant="think" /> {line}
-            </Text>
-          )
-        }
-
-        return (
-          <Text color={t.color.dim} dimColor key={`c-${i}`}>
-            <TreeFork last={lastInBlock} />
-            {line}
-          </Text>
-        )
-      })}
-
-      {tools.map((tool, j) => {
-        const lastInBlock = trail.length + j === rowCount - 1
-
-        return (
-          <Text color={t.color.dim} key={tool.id}>
-            <TreeFork last={lastInBlock} />
-            <Spinner color={t.color.amber} variant="tool" /> {TOOL_VERBS[tool.name] ?? tool.name}
-            {tool.context ? `: ${tool.context}` : ''}
-            {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
-          </Text>
-        )
-      })}
-
-      {act.map((item, k) => {
-        const lastInBlock = trail.length + tools.length + k === rowCount - 1
-
-        return (
-          <Text color={tone(item, t)} dimColor={item.tone === 'info'} key={`a-${item.id}`}>
-            <TreeFork last={lastInBlock} />
-            {activityGlyph(item)} {item.text}
-          </Text>
-        )
-      })}
-    </>
+    <Text color={color} dimColor={dimColor}>
+      <Text dimColor> └ </Text>
+      {content}
+    </Text>
   )
-})
+}
+
+// ── Thinking (pre-tool fallback) ─────────────────────────────────────
 
 export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: string; t: Theme }) {
   const [tick, setTick] = useState(0)
@@ -157,7 +73,7 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
   const clipped = reasoning.length > THINKING_COT_MAX
 
   return (
-    <>
+    <Box flexDirection="column">
       <Text color={t.color.dim}>
         <Spinner color={t.color.dim} /> {FACES[tick % FACES.length] ?? '(•_•)'}{' '}
         {VERBS[tick % VERBS.length] ?? 'thinking'}…
@@ -177,6 +93,166 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
           </Text>
         </Text>
       ) : null}
-    </>
+    </Box>
+  )
+})
+
+// ── ToolTrail (canonical progress block) ─────────────────────────────
+
+type Group = { color: string; content: ReactNode; details: DetailRow[]; key: string }
+
+export const ToolTrail = memo(function ToolTrail({
+  busy = false,
+  reasoning = '',
+  t,
+  tools = [],
+  trail = [],
+  activity = []
+}: {
+  busy?: boolean
+  reasoning?: string
+  t: Theme
+  tools?: ActiveTool[]
+  trail?: string[]
+  activity?: ActivityItem[]
+}) {
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (!tools.length) {
+      return
+    }
+    const id = setInterval(() => setNow(Date.now()), 200)
+
+    return () => clearInterval(id)
+  }, [tools.length])
+
+  if (!busy && !trail.length && !tools.length && !activity.length) {
+    return null
+  }
+
+  const groups: Group[] = []
+  const meta: DetailRow[] = []
+
+  const detail = (row: DetailRow) => {
+    const g = groups.at(-1)
+    g ? g.details.push(row) : meta.push(row)
+  }
+
+  // ── trail → groups + details ────────────────────────────────────
+
+  for (const [i, line] of trail.entries()) {
+    const parsed = parseToolTrailResultLine(line)
+
+    if (parsed) {
+      groups.push({
+        color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
+        content: parsed.detail ? parsed.call : `${parsed.call} ${parsed.mark}`,
+        details: [],
+        key: `tr-${i}`
+      })
+
+      if (parsed.detail) {
+        detail({
+          color: parsed.mark === '✗' ? t.color.error : t.color.dim,
+          content: parsed.detail,
+          dimColor: parsed.mark !== '✗',
+          key: `tr-${i}-d`
+        })
+      }
+
+      continue
+    }
+
+    if (line.startsWith('drafting ')) {
+      groups.push({
+        color: t.color.cornsilk,
+        content: toolTrailLabel(line.slice(9).replace(/…$/, '').trim()),
+        details: [{ color: t.color.dim, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
+        key: `tr-${i}`
+      })
+
+      continue
+    }
+
+    if (line === 'analyzing tool output…') {
+      detail({
+        color: t.color.dim,
+        content: groups.length ? (
+          <>
+            <Spinner color={t.color.amber} variant="think" /> {line}
+          </>
+        ) : (
+          line
+        ),
+        dimColor: true,
+        key: `tr-${i}`
+      })
+
+      continue
+    }
+
+    meta.push({ color: t.color.dim, content: line, dimColor: true, key: `tr-${i}` })
+  }
+
+  // ── live tools → groups ─────────────────────────────────────────
+
+  for (const tool of tools) {
+    groups.push({
+      color: t.color.cornsilk,
+      content: (
+        <>
+          <Spinner color={t.color.amber} variant="tool" /> {formatToolCall(tool.name, tool.context || '')}
+          {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
+        </>
+      ),
+      details: [],
+      key: tool.id
+    })
+  }
+
+  // ── reasoning tail → child of last group ────────────────────────
+
+  const reasoningTail = thinkingCotTail(reasoning)
+
+  if (groups.length && reasoningTail) {
+    detail({ color: t.color.dim, content: reasoningTail, dimColor: true, key: 'cot' })
+  }
+
+  // ── activity → meta ─────────────────────────────────────────────
+
+  for (const item of activity.slice(-4)) {
+    const glyph = item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·'
+    const color = item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
+
+    meta.push({ color, content: `${glyph} ${item.text}`, dimColor: item.tone === 'info', key: `a-${item.id}` })
+  }
+
+  // ── render ──────────────────────────────────────────────────────
+
+  return (
+    <Box flexDirection="column">
+      {busy && !groups.length && <Thinking reasoning={reasoning} t={t} />}
+
+      {groups.map(g => (
+        <Box flexDirection="column" key={g.key}>
+          <Text color={g.color}>
+            <Text color={t.color.amber}>● </Text>
+            {g.content}
+          </Text>
+
+          {g.details.map(d => (
+            <Detail {...d} key={d.key} t={t} />
+          ))}
+        </Box>
+      ))}
+
+      {meta.map((row, i) => (
+        <Text color={row.color} dimColor={row.dimColor} key={row.key}>
+          <Text dimColor>{i === meta.length - 1 ? '└ ' : '├ '}</Text>
+          {row.content}
+        </Text>
+      ))}
+    </Box>
   )
 })

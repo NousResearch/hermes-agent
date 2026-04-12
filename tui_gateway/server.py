@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -279,6 +280,10 @@ def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
 
+def _reasoning_visible(sid: str) -> bool:
+    return _session_show_reasoning(sid) or _session_tool_progress_mode(sid) == "verbose"
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
@@ -436,6 +441,49 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
+def _fmt_tool_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return ""
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    if seconds < 60:
+        return f"{round(seconds)}s"
+    mins, secs = divmod(int(round(seconds)), 60)
+    return f"{mins}m {secs}s" if secs else f"{mins}m"
+
+
+def _count_list(obj: object, *path: str) -> int | None:
+    cur = obj
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return len(cur) if isinstance(cur, list) else None
+
+
+def _tool_summary(name: str, result: str, duration_s: float | None) -> str | None:
+    try:
+        data = json.loads(result)
+    except Exception:
+        data = None
+
+    dur = _fmt_tool_duration(duration_s)
+    suffix = f" in {dur}" if dur else ""
+    text = None
+
+    if name == "web_search" and isinstance(data, dict):
+        n = _count_list(data, "data", "web")
+        if n is not None:
+            text = f"Did {n} {'search' if n == 1 else 'searches'}"
+
+    elif name == "web_extract" and isinstance(data, dict):
+        n = _count_list(data, "results") or _count_list(data, "data", "results")
+        if n is not None:
+            text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
+
+    return f"{text or 'Completed'}{suffix}" if (text or dur) else None
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
@@ -447,6 +495,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
             pass
+        session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
         _emit("tool.start", sid, {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)})
 
@@ -455,8 +504,16 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     payload = {"tool_id": tool_call_id, "name": name}
     session = _sessions.get(sid)
     snapshot = None
+    started_at = None
     if session is not None:
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
+        started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
+    duration_s = time.time() - started_at if started_at else None
+    if duration_s is not None:
+        payload["duration_s"] = duration_s
+    summary = _tool_summary(name, result, duration_s)
+    if summary:
+        payload["summary"] = summary
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -469,15 +526,29 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         _emit("tool.complete", sid, payload)
 
 
+def _on_tool_progress(
+    sid: str,
+    event_type: str,
+    name: str | None = None,
+    preview: str | None = None,
+    _args: dict | None = None,
+    **_kwargs,
+):
+    if not _tool_progress_enabled(sid) or event_type != "tool.started" or not name:
+        return
+    _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
+
+
 def _agent_cbs(sid: str) -> dict:
     return dict(
         tool_start_callback=lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         tool_complete_callback=lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
-        tool_progress_callback=lambda name, preview, args: _tool_progress_enabled(sid)
-        and _emit("tool.progress", sid, {"name": name, "preview": preview}),
+        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
+            sid, event_type, name, preview, args, **kwargs
+        ),
         tool_gen_callback=lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
         thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _session_show_reasoning(sid) and _emit("reasoning.delta", sid, {"text": text}),
+        reasoning_callback=lambda text: _reasoning_visible(sid) and _emit("reasoning.delta", sid, {"text": text}),
         status_callback=lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         clarify_callback=lambda q, c: _block("clarify.request", sid, {"question": q, "choices": c}),
     )
@@ -559,6 +630,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "show_reasoning": _load_show_reasoning(),
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
+        "tool_started_at": {},
     }
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))

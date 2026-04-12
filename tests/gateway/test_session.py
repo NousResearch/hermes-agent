@@ -1,9 +1,11 @@
 """Tests for gateway session management."""
 
 import json
-import pytest
+from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
+import pytest
 from gateway.config import Platform, HomeChannel, GatewayConfig, PlatformConfig
 from gateway.session import (
     SessionSource,
@@ -802,6 +804,25 @@ class TestSessionStoreEntriesAttribute:
         store._loaded = True
         assert hasattr(store, "_entries")
         assert not hasattr(store, "_sessions")
+
+
+class TestSuspendRecentlyActive:
+    def test_suspends_recent_datetime_entries(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        entry = MagicMock()
+        entry.suspended = False
+        entry.updated_at = datetime.now() - timedelta(seconds=60)
+        store._entries = {"k1": entry}
+
+        assert store.suspend_recently_active(max_age_seconds=120) == 1
+        assert entry.suspended is True
+        store._save.assert_called_once()
 
 
 class TestHasAnySessions:

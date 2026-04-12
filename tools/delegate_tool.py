@@ -1070,10 +1070,10 @@ def _build_child_agent(
     # Register child for interrupt propagation
     if hasattr(parent_agent, "_active_children"):
         lock = getattr(parent_agent, "_active_children_lock", None)
-        if lock:
-            with lock:
-                parent_agent._active_children.append(child)
-        else:
+        if lock is None:
+            lock = threading.Lock()
+            parent_agent._active_children_lock = lock
+        with lock:
             parent_agent._active_children.append(child)
 
     # Announce the spawn immediately — the child may sit in a queue
@@ -1771,10 +1771,10 @@ def _run_single_child(
         if hasattr(parent_agent, "_active_children"):
             try:
                 lock = getattr(parent_agent, "_active_children_lock", None)
-                if lock:
-                    with lock:
-                        parent_agent._active_children.remove(child)
-                else:
+                if lock is None:
+                    lock = threading.Lock()
+                    parent_agent._active_children_lock = lock
+                with lock:
                     parent_agent._active_children.remove(child)
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)

@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import time
 from unittest.mock import MagicMock, patch
@@ -618,6 +619,35 @@ class TestCosignVerification:
         assert mock_checksum.called  # reached SHA-256 step
         assert mock_cosign.called  # cosign was invoked
 
+    @patch("tools.tirith_security.os.chmod")
+    @patch("tools.tirith_security.shutil.move")
+    @patch("tools.tirith_security._verify_checksum", return_value=True)
+    @patch("tools.tirith_security.shutil.which", return_value=None)
+    @patch("tools.tirith_security._download_file")
+    @patch("tools.tirith_security._detect_target", return_value="x86_64-pc-windows-msvc")
+    def test_install_windows_uses_zip_and_installs_exe(self, mock_target, mock_dl,
+                                                       mock_which, mock_checksum,
+                                                       mock_move, mock_chmod):
+        """Windows auto-install downloads .zip and installs tirith.exe."""
+        from tools.tirith_security import _install_tirith
+
+        mock_zip = MagicMock()
+        mock_zip.__enter__ = MagicMock(return_value=mock_zip)
+        mock_zip.__exit__ = MagicMock(return_value=False)
+        mock_zip.namelist.return_value = ["nested/path/tirith.exe"]
+
+        with patch("zipfile.ZipFile", return_value=mock_zip), \
+             patch("tools.tirith_security._hermes_bin_dir", return_value="C:\\fake-bin"):
+            path, reason = _install_tirith()
+
+        assert reason == ""
+        assert path == os.path.join("C:\\fake-bin", "tirith.exe")
+        assert mock_dl.call_args_list[0].args[0].endswith(".zip")
+        moved_src, moved_dest = mock_move.call_args.args
+        assert os.path.normpath(moved_src).endswith(os.path.normpath(os.path.join("nested", "path", "tirith.exe")))
+        assert moved_dest == os.path.join("C:\\fake-bin", "tirith.exe")
+        mock_chmod.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Background install / non-blocking startup (P2)
@@ -690,6 +720,27 @@ class TestBackgroundInstall:
         result = _resolve_tirith_path("tirith")
         assert result == "/usr/local/bin/tirith"
 
+        _tirith_mod._resolved_path = None
+
+    def test_background_install_picks_up_windows_hermes_bin_exe(self):
+        """Background install re-check finds tirith.exe on Windows."""
+        from tools.tirith_security import _background_install
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        hermes_bin = os.path.join(tmpdir, "tirith.exe")
+        with open(hermes_bin, "w", encoding="utf-8") as f:
+            f.write("fake exe")
+
+        _tirith_mod._resolved_path = None
+        _tirith_mod._install_failure_reason = ""
+
+        with patch("tools.tirith_security.platform.system", return_value="Windows"), \
+             patch("tools.tirith_security.shutil.which", return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir", return_value=tmpdir):
+            _background_install(log_failures=False)
+
+        assert _tirith_mod._resolved_path == hermes_bin
         _tirith_mod._resolved_path = None
 
 
@@ -849,6 +900,29 @@ class TestDiskFailureMarker:
 
         _tirith_mod._resolved_path = None
 
+    def test_install_failed_recovers_from_windows_hermes_bin_exe(self):
+        """Windows installs under HERMES_HOME/bin/tirith.exe are picked up."""
+        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+        import tempfile
+
+        tmpdir = tempfile.mkdtemp()
+        hermes_bin = os.path.join(tmpdir, "tirith.exe")
+        with open(hermes_bin, "w", encoding="utf-8") as f:
+            f.write("fake exe")
+
+        _tirith_mod._resolved_path = _INSTALL_FAILED
+
+        with patch("tools.tirith_security.platform.system", return_value="Windows"), \
+             patch("tools.tirith_security.shutil.which", return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir", return_value=tmpdir), \
+             patch("tools.tirith_security._clear_install_failed") as mock_clear:
+            result = _resolve_tirith_path("tirith")
+            assert result == hermes_bin
+            assert _tirith_mod._resolved_path == hermes_bin
+            mock_clear.assert_called_once()
+
+        _tirith_mod._resolved_path = None
+
     def test_install_failed_skips_network_when_local_absent(self):
         """After _INSTALL_FAILED, if local checks fail, network is NOT retried."""
         from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
@@ -988,7 +1062,7 @@ class TestHermesHomeIsolation:
         from tools.tirith_security import _failure_marker_path
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/hermes"}):
             result = _failure_marker_path()
-        assert result == "/custom/hermes/.tirith-install-failed"
+        assert os.path.normpath(result) == os.path.normpath(os.path.join("/custom/hermes", ".tirith-install-failed"))
 
     def test_conftest_isolation_prevents_real_home_writes(self):
         """The conftest autouse fixture sets HERMES_HOME; verify it's active."""
@@ -999,8 +1073,9 @@ class TestHermesHomeIsolation:
     def test_get_hermes_home_fallback(self):
         """Without HERMES_HOME set, falls back to ~/.hermes."""
         from tools.tirith_security import _get_hermes_home
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("hermes_constants.Path.home", return_value=Path("C:/Users/tester")):
             # Remove HERMES_HOME entirely
             os.environ.pop("HERMES_HOME", None)
             result = _get_hermes_home()
-        assert result == os.path.join(os.path.expanduser("~"), ".hermes")
+        assert os.path.normpath(result) == os.path.normpath(os.path.join("C:/Users/tester", ".hermes"))

@@ -181,6 +181,26 @@ def _hermes_bin_dir() -> str:
     return d
 
 
+def _bundled_tirith_candidates() -> list[str]:
+    """Return candidate installed binary paths under $HERMES_HOME/bin."""
+    bin_dir = _hermes_bin_dir()
+    if platform.system() == "Windows":
+        return [
+            os.path.join(bin_dir, "tirith.exe"),
+            os.path.join(bin_dir, "tirith"),
+        ]
+    return [os.path.join(bin_dir, "tirith")]
+
+
+def _find_bundled_tirith() -> str | None:
+    """Return an installed tirith path from $HERMES_HOME/bin if present."""
+    is_windows = platform.system() == "Windows"
+    for candidate in _bundled_tirith_candidates():
+        if os.path.isfile(candidate) and (is_windows or os.access(candidate, os.X_OK)):
+            return candidate
+    return None
+
+
 def _detect_target() -> str | None:
     """Return the Rust target triple for the current platform, or None."""
     system = platform.system()
@@ -446,8 +466,8 @@ def _resolve_tirith_path(configured_path: str) -> str:
         _clear_install_failed()
         return found
 
-    hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+    hermes_bin = _find_bundled_tirith()
+    if hermes_bin:
         _resolved_path = hermes_bin
         _install_failure_reason = ""
         _clear_install_failed()
@@ -510,8 +530,8 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-        if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+        hermes_bin = _find_bundled_tirith()
+        if hermes_bin:
             _resolved_path = hermes_bin
             _install_failure_reason = ""
             return

@@ -108,6 +108,46 @@ def _detect_lang_from_voice(voice: str) -> str:
     return "en"
 
 
+def _get_tts_language(tts_config: dict) -> str:
+    """Get the language code for TTS text preprocessing.
+
+    Resolution order:
+    1. tts.language in config (explicit override, e.g. 'ru', 'de')
+    2. stt.local.language in config (STT language — same user intent)
+    3. Extracted from TTS voice name (e.g. 'ru-RU-SvetlanaNeural' → 'ru')
+    4. 'en' as fallback
+    """
+    # 1. Explicit tts.language override
+    explicit = tts_config.get("language", "")
+    if explicit:
+        return explicit.lower().split("-")[0]
+
+    # 2. Reuse STT language setting (user's spoken language)
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        stt_lang = config.get("stt", {}).get("local", {}).get("language", "")
+        if stt_lang:
+            return stt_lang.lower().split("-")[0]
+    except Exception:
+        pass
+
+    # 3. Extract from configured TTS voice
+    provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    if provider == "edge":
+        voice = tts_config.get("edge", {}).get("voice", DEFAULT_EDGE_VOICE)
+        return _detect_lang_from_voice(voice)
+    elif provider == "openai":
+        voice = tts_config.get("openai", {}).get("voice", DEFAULT_OPENAI_VOICE)
+        return _detect_lang_from_voice(voice)
+    elif provider == "elevenlabs":
+        # ElevenLabs voice_id is opaque — check stt.local.language
+        pass
+
+    # 4. Fallback
+    return "en"
+
+
 def _lookup_emoji_speech(emoji: str, lang: str) -> str:
     """Look up spoken text for an emoji in the given language.
 
@@ -138,7 +178,7 @@ def _lookup_emoji_speech(emoji: str, lang: str) -> str:
     return " "
 
 
-def _preprocess_tts_text(text: str, voice: str = "") -> str:
+def _preprocess_tts_text(text: str, lang: str = "en") -> str:
     """Normalize text for TTS so it sounds natural when read aloud.
 
     - Strips markdown formatting (code blocks, bold, italic, links)
@@ -148,14 +188,15 @@ def _preprocess_tts_text(text: str, voice: str = "") -> str:
     - Removes MEDIA: tags
     - Collapses whitespace
 
-    The ``voice`` parameter is used to detect the target language for
-    emoji speech substitution (e.g. 'ru-RU-SvetlanaNeural' → Russian).
-    If no voice is provided, falls back to English.
+    The ``lang`` parameter is an ISO 639-1 language code (e.g. 'ru', 'en', 'de')
+    used for localized emoji speech substitution.
+    Automatically detected from config (tts.language, stt.local.language,
+    or TTS voice name) when called via text_to_speech_tool().
 
     Controlled by ``tts.preprocess`` in config.yaml (default: true).
     Set ``tts.preprocess: false`` to disable.
     """
-    lang = _detect_lang_from_voice(voice)
+    lang = lang if lang else "en"  # default to English if empty
 
     # 1. Remove code block fences (```...```)
     text = re.sub(r"```\w*\n?", "", text)
@@ -701,14 +742,9 @@ def text_to_speech_tool(
     # Can be disabled via tts.preprocess: false in config
     tts_preprocess = tts_config.get("preprocess", True)
     if tts_preprocess:
-        # Detect language from the configured TTS voice for localized emoji speech
-        voice = ""
-        provider_hint = _get_provider(tts_config)
-        if provider_hint == "edge":
-            voice = tts_config.get("edge", {}).get("voice", DEFAULT_EDGE_VOICE)
-        elif provider_hint == "openai":
-            voice = tts_config.get("openai", {}).get("voice", DEFAULT_OPENAI_VOICE)
-        text = _preprocess_tts_text(text, voice=voice)
+        # Detect language: tts.language > stt.local.language > voice name > 'en'
+        lang = _get_tts_language(tts_config)
+        text = _preprocess_tts_text(text, lang=lang)
 
     # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:

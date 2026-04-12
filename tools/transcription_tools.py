@@ -86,7 +86,7 @@ GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-lar
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
-_local_model_name: Optional[str] = None
+_local_model_signature: Optional[tuple[str, str, str]] = None
 
 # ---------------------------------------------------------------------------
 # Config helpers
@@ -312,22 +312,28 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
 
 def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     """Transcribe using faster-whisper (local, free)."""
-    global _local_model, _local_model_name
+    global _local_model, _local_model_signature
 
     if not _HAS_FASTER_WHISPER:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
         from faster_whisper import WhisperModel
+        local_cfg = _load_stt_config().get("local", {})
+        if not isinstance(local_cfg, dict):
+            local_cfg = {}
+        device = str(local_cfg.get("device") or "auto").strip() or "auto"
+        compute_type = str(local_cfg.get("compute_type") or "auto").strip() or "auto"
+        model_signature = (model_name, device, compute_type)
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
-        if _local_model is None or _local_model_name != model_name:
+        if _local_model is None or _local_model_signature != model_signature:
             logger.info("Loading faster-whisper model '%s' (first load downloads the model)...", model_name)
-            _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
-            _local_model_name = model_name
+            _local_model = WhisperModel(model_name, device=device, compute_type=compute_type)
+            _local_model_signature = model_signature
 
         # Language: config.yaml (stt.local.language) > env var > auto-detect.
         _forced_lang = (
-            _load_stt_config().get("local", {}).get("language")
+            local_cfg.get("language")
             or os.getenv(LOCAL_STT_LANGUAGE_ENV)
             or None
         )

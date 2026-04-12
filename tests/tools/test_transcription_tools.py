@@ -8,7 +8,9 @@ end-to-end dispatch.  All external dependencies are mocked.
 import os
 import struct
 import subprocess
+import sys
 import wave
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -431,9 +433,9 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=mock_whisper_cls)}), \
              patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
+             patch("tools.transcription_tools._local_model_signature", None):
             from tools.transcription_tools import _transcribe_local
             _transcribe_local(str(audio), "base")
             _transcribe_local(str(audio), "base")
@@ -457,9 +459,9 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(return_value=mock_model)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=mock_whisper_cls)}), \
              patch("tools.transcription_tools._local_model", None), \
-             patch("tools.transcription_tools._local_model_name", None):
+             patch("tools.transcription_tools._local_model_signature", None):
             from tools.transcription_tools import _transcribe_local
             _transcribe_local(str(audio), "base")
             _transcribe_local(str(audio), "small")
@@ -473,7 +475,7 @@ class TestTranscribeLocalExtended:
         mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=mock_whisper_cls)}), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "large-v3")
@@ -497,13 +499,64 @@ class TestTranscribeLocalExtended:
         mock_model.transcribe.return_value = ([seg1, seg2], mock_info)
 
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("faster_whisper.WhisperModel", return_value=mock_model), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=MagicMock(return_value=mock_model))}), \
              patch("tools.transcription_tools._local_model", None):
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local(str(audio), "base")
 
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
+
+    def test_local_runtime_config_passed_to_whisper_model(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+        config = {"local": {"device": "cpu", "compute_type": "float32"}}
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=mock_whisper_cls)}), \
+             patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_signature", None):
+            from tools.transcription_tools import _transcribe_local
+            _transcribe_local(str(audio), "base")
+
+        mock_whisper_cls.assert_called_once_with("base", device="cpu", compute_type="float32")
+
+    def test_local_runtime_config_change_reloads_cached_model(self, tmp_path):
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_segment = MagicMock()
+        mock_segment.text = "hi"
+        mock_info = MagicMock()
+        mock_info.language = "en"
+        mock_info.duration = 1.0
+
+        mock_model = MagicMock()
+        mock_model.transcribe.return_value = ([mock_segment], mock_info)
+        mock_whisper_cls = MagicMock(return_value=mock_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch.dict(sys.modules, {"faster_whisper": SimpleNamespace(WhisperModel=mock_whisper_cls)}), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_signature", None):
+            from tools.transcription_tools import _transcribe_local
+            with patch("tools.transcription_tools._load_stt_config", return_value={"local": {"device": "auto", "compute_type": "auto"}}):
+                _transcribe_local(str(audio), "base")
+            with patch("tools.transcription_tools._load_stt_config", return_value={"local": {"device": "cpu", "compute_type": "float32"}}):
+                _transcribe_local(str(audio), "base")
+
+        assert mock_whisper_cls.call_count == 2
 
 
 # ============================================================================

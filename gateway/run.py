@@ -6668,8 +6668,12 @@ class GatewayRunner:
             if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
                 await _flush_buffer()
 
-            # Check for prompts
-            if prompt_path.exists() and session_key:
+            # Check for prompts — only forward if we haven't already sent
+            # one that's still awaiting a response.  Without this guard the
+            # watcher would re-read the same .update_prompt.json every poll
+            # cycle and spam the user with duplicate prompt messages.
+            if (prompt_path.exists() and session_key
+                    and not self._update_prompt_pending.get(session_key)):
                 try:
                     prompt_data = json.loads(prompt_path.read_text())
                     prompt_text = prompt_data.get("prompt", "")
@@ -6701,6 +6705,11 @@ class GatewayRunner:
                                 f"or type your answer directly."
                             )
                         self._update_prompt_pending[session_key] = True
+                        # Remove the prompt file so it isn't re-read on the
+                        # next poll cycle.  The update process only needs
+                        # .update_response to continue — it doesn't re-check
+                        # .update_prompt.json while waiting.
+                        prompt_path.unlink(missing_ok=True)
                         logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)

@@ -70,6 +70,7 @@ class GatewayStreamConsumer:
         chat_id: str,
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
+        reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
         self.chat_id = chat_id
@@ -78,6 +79,7 @@ class GatewayStreamConsumer:
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
+        self._initial_reply_to: Optional[str] = reply_to_id
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -311,17 +313,23 @@ class GatewayStreamConsumer:
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
+        For the very first chunk (reply_to_id is None), uses the original
+        user message ID so the bot's reply appears as a quote-reply.
+        Subsequent chunks thread to the bot's own previous message.
+
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
         if not text.strip():
             return reply_to_id
         try:
+            # First chunk: quote-reply to the user's original message
+            effective_reply_to = reply_to_id or self._initial_reply_to
             meta = dict(self.metadata) if self.metadata else {}
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                reply_to=reply_to_id,
+                reply_to=effective_reply_to,
                 metadata=meta,
             )
             if result.success and result.message_id:

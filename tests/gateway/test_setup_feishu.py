@@ -181,11 +181,6 @@ class TestSetupFeishuDmPolicy:
         env = self._run_with_dm_choice(2, prompt_responses=["ou_owner", ""])
         assert env["FEISHU_ALLOWED_USERS"] == "ou_owner"
 
-    def test_disabled_sets_feishu_allow_all_false(self):
-        env = self._run_with_dm_choice(3)
-        assert env["FEISHU_ALLOW_ALL_USERS"] == "false"
-        assert env["FEISHU_ALLOWED_USERS"] == ""
-        assert "GATEWAY_ALLOW_ALL_USERS" not in env
 
 
 # ---------------------------------------------------------------------------

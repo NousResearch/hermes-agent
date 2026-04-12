@@ -774,6 +774,11 @@ display:
   # Toggle at runtime with /verbose in the CLI
   tool_progress: all
 
+  # Gateway-only natural mid-turn assistant updates.
+  # When true, completed assistant status messages are sent as separate chat
+  # messages. This is independent of tool_progress and gateway streaming.
+  interim_assistant_messages: true
+
   # What Enter does when Hermes is already busy in the CLI.
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn
@@ -782,7 +787,7 @@ display:
 
   # Background process notifications (gateway/messaging only).
   # Controls how chatty the process watcher is when you use
-  # terminal(background=true, check_interval=...) from Telegram/Discord/etc.
+  # terminal(background=true, notify_on_complete=true) from Telegram/Discord/etc.
   #   off:     No watcher messages at all
   #   result:  Only the final completion message
   #   error:   Only the final message when exit code != 0

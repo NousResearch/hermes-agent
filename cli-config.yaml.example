@@ -366,6 +366,12 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Context compression summaries
+#   compression:
+#     provider: "auto"
+#     model: ""
+#     context_length: null   # Optional override when the compression endpoint cannot report model metadata
 
 # =============================================================================
 # Persistent Memory

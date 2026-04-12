@@ -13,3 +13,4 @@ def test_device_screen_mentions_linux_command_suite_and_terminal_usage():
     assert 'terminal/process' in device_screen
     assert 'Hermes now ships a local Linux command suite inside the Android app.' in device_screen
     assert 'Ask Hermes to use terminal for commands like' in device_screen
+    assert 'background runtime' in device_screen

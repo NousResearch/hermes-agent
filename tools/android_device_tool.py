@@ -9,6 +9,7 @@ import os
 from hermes_android.device_bridge import (
     list_shared_folder_entries,
     perform_accessibility_action,
+    perform_system_action,
     read_accessibility_snapshot,
     read_device_capabilities,
     read_shared_folder_file,
@@ -24,6 +25,11 @@ def check_requirements() -> bool:
 def android_device_status_tool(task_id: str | None = None) -> str:
     del task_id
     return json.dumps(read_device_capabilities(), ensure_ascii=False)
+
+
+def android_system_action_tool(action: str, task_id: str | None = None) -> str:
+    del task_id
+    return json.dumps(perform_system_action(action), ensure_ascii=False)
 
 
 def android_shared_folder_list_tool(
@@ -110,7 +116,8 @@ registry.register(
         "name": "android_device_status",
         "description": (
             "Inspect Hermes Android workspace and device capabilities. Returns Linux command-suite status, "
-            "shared-folder grant status, and accessibility-control availability."
+            "shared-folder grant status, accessibility-control availability, plus Wi-Fi/Bluetooth/USB/NFC, "
+            "overlay, notification, and background-runtime state."
         ),
         "parameters": {
             "type": "object",
@@ -120,8 +127,37 @@ registry.register(
     },
     handler=lambda args, **kwargs: android_device_status_tool(task_id=kwargs.get("task_id")),
     check_fn=check_requirements,
-    description="Inspect Hermes Android workspace and capability status",
+    description="Inspect Hermes Android workspace and expanded device capability status",
     emoji="📱",
+)
+
+registry.register(
+    name="android_system_action",
+    toolset="hermes-android-app",
+    schema={
+        "name": "android_system_action",
+        "description": (
+            "Run a high-level Android system action for Hermes app control surfaces. Supported actions: "
+            "open_wifi_panel, open_bluetooth_settings, open_connected_devices_settings, open_nfc_settings, "
+            "open_notification_settings, open_overlay_settings, open_accessibility_settings, "
+            "start_background_runtime, stop_background_runtime."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "Required Android system action name."},
+            },
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+    },
+    handler=lambda args, **kwargs: android_system_action_tool(
+        action=str(args.get("action", "")),
+        task_id=kwargs.get("task_id"),
+    ),
+    check_fn=check_requirements,
+    description="Open Android system panels or control Hermes background runtime",
+    emoji="🛰️",
 )
 
 registry.register(

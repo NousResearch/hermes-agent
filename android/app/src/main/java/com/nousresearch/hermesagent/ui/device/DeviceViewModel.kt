@@ -13,6 +13,7 @@ import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
 import com.nousresearch.hermesagent.device.HermesGlobalAction
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
+import com.nousresearch.hermesagent.device.HermesSystemControlBridge
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -41,6 +42,23 @@ data class DeviceUiState(
     val linuxPackageCount: Int = 0,
     val accessibilityEnabled: Boolean = false,
     val accessibilityConnected: Boolean = false,
+    val wifiEnabled: Boolean = false,
+    val activeNetworkLabel: String = "Offline",
+    val bluetoothSupported: Boolean = false,
+    val bluetoothEnabled: Boolean = false,
+    val bluetoothPermissionGranted: Boolean = false,
+    val pairedBluetoothDevices: List<String> = emptyList(),
+    val usbHostSupported: Boolean = false,
+    val usbDeviceCount: Int = 0,
+    val usbDevices: List<String> = emptyList(),
+    val nfcSupported: Boolean = false,
+    val nfcEnabled: Boolean = false,
+    val overlayPermissionGranted: Boolean = false,
+    val notificationPermissionGranted: Boolean = true,
+    val backgroundPersistenceEnabled: Boolean = false,
+    val runtimeServiceRunning: Boolean = false,
+    val resizableWindowSupport: Boolean = true,
+    val freeformWindowSupported: Boolean = false,
     val status: String = "",
 )
 
@@ -145,10 +163,21 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
         )
     }
 
+    fun performSystemAction(action: String) {
+        val context = getApplication<Application>()
+        val result = HermesSystemControlBridge.performAction(context, action)
+        refresh(result.message)
+    }
+
+    fun setBackgroundPersistence(enabled: Boolean) {
+        performSystemAction(if (enabled) "start_background_runtime" else "stop_background_runtime")
+    }
+
     private fun buildState(status: String = ""): DeviceUiState {
         val context = getApplication<Application>()
         val sharedFolder = capabilityStore.load()
         val linuxState = HermesLinuxSubsystemBridge.readState(context)
+        val systemStatus = HermesSystemControlBridge.readStatus(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -179,6 +208,23 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             linuxPackageCount = linuxState?.optJSONArray("packages")?.length() ?: 0,
             accessibilityEnabled = HermesAccessibilityController.isServiceEnabled(context),
             accessibilityConnected = HermesAccessibilityController.isServiceConnected(),
+            wifiEnabled = systemStatus.wifiEnabled,
+            activeNetworkLabel = systemStatus.activeNetworkLabel,
+            bluetoothSupported = systemStatus.bluetoothSupported,
+            bluetoothEnabled = systemStatus.bluetoothEnabled,
+            bluetoothPermissionGranted = systemStatus.bluetoothPermissionGranted,
+            pairedBluetoothDevices = systemStatus.pairedBluetoothDevices,
+            usbHostSupported = systemStatus.usbHostSupported,
+            usbDeviceCount = systemStatus.usbDeviceCount,
+            usbDevices = systemStatus.usbDevices,
+            nfcSupported = systemStatus.nfcSupported,
+            nfcEnabled = systemStatus.nfcEnabled,
+            overlayPermissionGranted = systemStatus.overlayPermissionGranted,
+            notificationPermissionGranted = systemStatus.notificationPermissionGranted,
+            backgroundPersistenceEnabled = systemStatus.backgroundPersistenceEnabled,
+            runtimeServiceRunning = systemStatus.runtimeServiceRunning,
+            resizableWindowSupport = systemStatus.resizableWindowSupport,
+            freeformWindowSupported = systemStatus.freeformWindowSupported,
             status = status,
         )
     }

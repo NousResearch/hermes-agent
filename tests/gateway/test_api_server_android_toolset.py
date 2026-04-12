@@ -15,6 +15,7 @@ class TestHermesAndroidAppToolset:
             "terminal",
             "process",
             "android_device_status",
+            "android_system_action",
             "android_shared_folder_list",
             "android_shared_folder_read",
             "android_shared_folder_write",

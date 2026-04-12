@@ -26,8 +26,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
@@ -69,10 +69,10 @@ fun AppShellScreen(
         }
     }
 
+    val pageBottomClearance = if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) 104.dp else 24.dp
+
     LaunchedEffect(currentSection) {
-        if (currentSection == AppSection.Settings) {
-            setActions(emptyList())
-        }
+        setActions(emptyList())
     }
 
     HermesTheme {
@@ -92,7 +92,7 @@ fun AppShellScreen(
                 )
             },
             floatingActionButton = {
-                if (currentActions.isNotEmpty()) {
+                if (currentActions.isNotEmpty() && currentSection != AppSection.Hermes) {
                     FloatingActionButton(onClick = { showActionSheet = true }) {
                         Icon(
                             painter = painterResource(id = R.drawable.ic_action_cog),
@@ -118,6 +118,7 @@ fun AppShellScreen(
                                 authViewModel = authViewModel,
                                 onNavigateToSection = { currentSection = it },
                                 onContextActionsChanged = ::setActions,
+                                onOpenContextActions = { if (currentActions.isNotEmpty()) showActionSheet = true },
                             )
                         } else {
                             HermesSetupScreen(
@@ -136,24 +137,28 @@ fun AppShellScreen(
                     AppSection.Accounts -> AuthScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = authViewModel,
+                        extraBottomSpacing = pageBottomClearance,
                         onContextActionsChanged = ::setActions,
                     )
 
                     AppSection.NousPortal -> NousPortalScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = portalViewModel,
+                        extraBottomSpacing = pageBottomClearance,
                         onContextActionsChanged = ::setActions,
                     )
 
                     AppSection.Device -> DeviceScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = deviceViewModel,
+                        extraBottomSpacing = pageBottomClearance,
                         onContextActionsChanged = ::setActions,
                     )
 
                     AppSection.Settings -> SettingsScreen(
                         modifier = Modifier.fillMaxSize(),
                         viewModel = settingsViewModel,
+                        extraBottomSpacing = pageBottomClearance,
                         onContextActionsChanged = ::setActions,
                     )
                 }

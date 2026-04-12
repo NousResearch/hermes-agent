@@ -4,7 +4,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -22,6 +25,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.data.ProviderPresets
@@ -32,10 +36,12 @@ import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 fun SettingsScreen(
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = viewModel(),
+    extraBottomSpacing: Dp = 0.dp,
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var expanded by remember { mutableStateOf(false) }
+    val scrollState = rememberScrollState()
     val selectedPreset = ProviderPresets.find(uiState.provider)
 
     SideEffect {
@@ -47,10 +53,12 @@ fun SettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(16.dp),
+                    .verticalScroll(scrollState)
+                    .imePadding()
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(bottom = extraBottomSpacing),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Settings", style = MaterialTheme.typography.headlineSmall)
                 SettingsHelpCard(providerLabel = selectedPreset?.label ?: uiState.provider)
 
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {

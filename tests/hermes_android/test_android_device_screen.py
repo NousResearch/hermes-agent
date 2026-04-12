@@ -12,3 +12,9 @@ def test_device_screen_guides_direct_shared_folder_and_accessibility_targeting()
     assert "android_shared_folder_list/read/write" in device_screen
     assert "android_ui_snapshot and target controls with android_ui_action" in device_screen
     assert "Hermes now ships a local Linux command suite inside the Android app." in device_screen
+    assert 'Wi-Fi + connectivity' in device_screen
+    assert 'Bluetooth' in device_screen
+    assert 'USB + NFC' in device_screen
+    assert 'Notifications + background runtime' in device_screen
+    assert 'Overlay permission' in device_screen
+    assert 'Resizable window support' in device_screen

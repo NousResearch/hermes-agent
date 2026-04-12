@@ -8,6 +8,17 @@ from typing import Any
 _DEVICE_STATE_FILE = "android-device-state.json"
 _WORKSPACE_LIMIT = 20
 _DEFAULT_GLOBAL_ACTIONS = ["home", "back", "recents", "notifications", "quicksettings"]
+_DEFAULT_SYSTEM_ACTIONS = [
+    "open_wifi_panel",
+    "open_bluetooth_settings",
+    "open_connected_devices_settings",
+    "open_nfc_settings",
+    "open_notification_settings",
+    "open_overlay_settings",
+    "open_accessibility_settings",
+    "start_background_runtime",
+    "stop_background_runtime",
+]
 _SHARED_FOLDER_TOOLS = [
     "android_shared_folder_list",
     "android_shared_folder_read",
@@ -17,8 +28,12 @@ _ACCESSIBILITY_TOOLS = [
     "android_ui_snapshot",
     "android_ui_action",
 ]
+_SYSTEM_ACTION_TOOLS = [
+    "android_system_action",
+]
 _SHARED_FOLDER_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesSharedFolderBridge"
 _ACCESSIBILITY_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesAccessibilityUiBridge"
+_SYSTEM_CONTROL_BRIDGE_CLASS = "com.nousresearch.hermesagent.device.HermesSystemControlBridge"
 
 
 def _hermes_home() -> Path:
@@ -88,6 +103,10 @@ def _call_accessibility_bridge(method_name: str, *args: Any) -> Any:
     return _call_android_bridge(_ACCESSIBILITY_BRIDGE_CLASS, method_name, *args)
 
 
+def _call_system_control_bridge(method_name: str, *args: Any) -> Any:
+    return _call_android_bridge(_SYSTEM_CONTROL_BRIDGE_CLASS, method_name, *args)
+
+
 def _bridge_json_result(caller, method_name: str, *args: Any) -> dict[str, Any]:
     try:
         return _load_json_payload(caller(method_name, *args))
@@ -134,6 +153,10 @@ def perform_accessibility_action(
     )
 
 
+def perform_system_action(action: str) -> dict[str, Any]:
+    return _bridge_json_result(_call_system_control_bridge, "performActionJson", action)
+
+
 def read_device_capabilities() -> dict[str, Any]:
     workspace = workspace_dir()
     payload: dict[str, Any] = {
@@ -143,8 +166,10 @@ def read_device_capabilities() -> dict[str, Any]:
         "accessibility_enabled": False,
         "accessibility_connected": False,
         "available_global_actions": list(_DEFAULT_GLOBAL_ACTIONS),
+        "available_system_actions": list(_DEFAULT_SYSTEM_ACTIONS),
         "shared_folder_tools": list(_SHARED_FOLDER_TOOLS),
         "ui_targeting_tools": list(_ACCESSIBILITY_TOOLS),
+        "system_action_tools": list(_SYSTEM_ACTION_TOOLS),
         "linux_enabled": False,
         "linux_android_abi": "",
         "linux_termux_arch": "",
@@ -153,6 +178,23 @@ def read_device_capabilities() -> dict[str, Any]:
         "linux_home_path": "",
         "linux_tmp_path": "",
         "linux_package_count": 0,
+        "wifi_enabled": False,
+        "active_network_label": "Offline",
+        "bluetooth_supported": False,
+        "bluetooth_enabled": False,
+        "bluetooth_permission_granted": False,
+        "paired_bluetooth_devices": [],
+        "usb_host_supported": False,
+        "usb_device_count": 0,
+        "usb_devices": [],
+        "nfc_supported": False,
+        "nfc_enabled": False,
+        "overlay_permission_granted": False,
+        "notification_permission_granted": False,
+        "background_persistence_enabled": False,
+        "runtime_service_running": False,
+        "resizable_window_support": True,
+        "freeform_window_supported": False,
     }
 
     state_path = _device_state_path()
@@ -169,6 +211,7 @@ def read_device_capabilities() -> dict[str, Any]:
                 "accessibility_enabled",
                 "accessibility_connected",
                 "available_global_actions",
+                "available_system_actions",
                 "linux_enabled",
                 "linux_android_abi",
                 "linux_termux_arch",
@@ -177,6 +220,23 @@ def read_device_capabilities() -> dict[str, Any]:
                 "linux_home_path",
                 "linux_tmp_path",
                 "linux_package_count",
+                "wifi_enabled",
+                "active_network_label",
+                "bluetooth_supported",
+                "bluetooth_enabled",
+                "bluetooth_permission_granted",
+                "paired_bluetooth_devices",
+                "usb_host_supported",
+                "usb_device_count",
+                "usb_devices",
+                "nfc_supported",
+                "nfc_enabled",
+                "overlay_permission_granted",
+                "notification_permission_granted",
+                "background_persistence_enabled",
+                "runtime_service_running",
+                "resizable_window_support",
+                "freeform_window_supported",
             ):
                 if key in loaded:
                     payload[key] = loaded[key]
@@ -197,6 +257,11 @@ def read_device_capabilities() -> dict[str, Any]:
     payload["accessibility_guide"] = (
         "Enable Hermes accessibility, inspect the visible UI with android_ui_snapshot, then trigger a "
         "targeted click/focus/set_text/scroll action with android_ui_action."
+    )
+    payload["system_guide"] = (
+        "Use android_system_action for high-level Android settings and background-runtime actions such as "
+        "Wi-Fi/internet controls, Bluetooth settings, NFC, overlay permission, notification settings, "
+        "and Hermes background persistence."
     )
     return payload
 

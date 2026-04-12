@@ -20,8 +20,11 @@ def test_android_brand_resources_exist_and_define_hermes_palette():
 
     assert 'name="hermes_primary"' in colors
     assert 'name="hermes_background"' in colors
+    assert 'name="hermes_surface_dark"' in colors
+    assert '#090B10' in colors
     assert 'Theme.HermesAgent' in themes
     assert '@color/hermes_background' in themes
+    assert '@color/hermes_surface_dark' in themes
     assert 'viewportWidth="108"' in icon
     assert '#5B2E8C' in icon
     assert '<string name="app_name">Hermes</string>' in strings
@@ -31,6 +34,7 @@ def test_app_shell_has_compact_brand_bar_bottom_nav_and_custom_icons():
     app_shell = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/AppShell.kt").read_text(encoding="utf-8")
     shell_models = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/shell/ShellModels.kt").read_text(encoding="utf-8")
     theme_file = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/theme/HermesTheme.kt").read_text(encoding="utf-8")
+    main_activity = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/MainActivity.kt").read_text(encoding="utf-8")
     drawable_files = sorted(path.name for path in (REPO_ROOT / "android/app/src/main/res/drawable").glob("ic_*.xml"))
 
     assert 'HermesTopBar(' in app_shell
@@ -41,8 +45,9 @@ def test_app_shell_has_compact_brand_bar_bottom_nav_and_custom_icons():
     assert 'R.drawable.ic_nav_portal' in shell_models
     assert 'R.drawable.ic_nav_device' in shell_models
     assert 'R.drawable.ic_nav_settings' in shell_models
-    assert 'lightColorScheme(' in theme_file
-    assert 'Color(0xFF4D2FA4)' in theme_file
+    assert 'darkColorScheme(' in theme_file
+    assert 'Color(0xFF090B10)' in theme_file
+    assert 'enableEdgeToEdge' in main_activity
     for name in [
         'ic_nav_hermes.xml',
         'ic_nav_accounts.xml',

@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import org.json.JSONObject
 
@@ -45,12 +46,14 @@ object HermesRuntimeManager {
                 modelName = status.optString("api_server_model_name").ifBlank { null },
                 probeResult = probeResult,
             )
+            DeviceStateWriter.write(context.applicationContext)
             currentState
         } catch (exc: Throwable) {
             currentState = RuntimeState(
                 started = false,
                 error = exc.message ?: exc.toString(),
             )
+            DeviceStateWriter.write(context.applicationContext)
             currentState
         }
     }
@@ -64,9 +67,11 @@ object HermesRuntimeManager {
                     .callAttr("stop_server")
             }
             currentState = RuntimeState(started = false)
+            DeviceStateWriter.write(com.nousresearch.hermesagent.HermesApplication.instance.applicationContext)
             currentState
         } catch (exc: Throwable) {
             currentState = RuntimeState(started = false, error = exc.message ?: exc.toString())
+            DeviceStateWriter.write(com.nousresearch.hermesagent.HermesApplication.instance.applicationContext)
             currentState
         }
     }

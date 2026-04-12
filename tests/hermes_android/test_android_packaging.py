@@ -55,6 +55,7 @@ def test_android_anthropic_stub_warns_at_runtime():
 def test_android_fal_client_stub_marks_image_generation_deferred():
     stub_init = (REPO_ROOT / "android/pip-stubs/fal-client-stub/fal_client/__init__.py").read_text(encoding="utf-8")
     toolset_file = (REPO_ROOT / "toolsets.py").read_text(encoding="utf-8")
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
 
     assert "__hermes_android_stub__ = True" in stub_init
     assert "Image generation is deferred" in stub_init
@@ -68,5 +69,13 @@ def test_android_fal_client_stub_marks_image_generation_deferred():
     assert '"android_shared_folder_write"' in android_toolset_block
     assert '"android_ui_snapshot"' in android_toolset_block
     assert '"android_ui_action"' in android_toolset_block
+    assert '"android_system_action"' in android_toolset_block
     assert '"read_file"' in android_toolset_block
     assert '"write_file"' in android_toolset_block
+    assert 'android.permission.POST_NOTIFICATIONS' in manifest
+    assert 'android.permission.ACCESS_WIFI_STATE' in manifest
+    assert 'android.permission.BLUETOOTH_CONNECT' in manifest
+    assert 'android.permission.NFC' in manifest
+    assert 'android.permission.SYSTEM_ALERT_WINDOW' in manifest
+    assert 'android.permission.FOREGROUND_SERVICE' in manifest
+    assert 'HermesRuntimeService' in manifest

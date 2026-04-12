@@ -23,47 +23,12 @@ import org.json.JSONObject
 
 private val DEFAULT_SYSTEM_ACTIONS = listOf(
     "open_wifi_panel",
-    "open_mobile_network_settings",
-    "open_data_usage_settings",
-    "open_hotspot_settings",
-    "open_device_info_settings",
-    "open_add_account_settings",
-    "open_all_settings",
-    "open_apn_settings",
-    "open_airplane_mode_settings",
-    "open_date_settings",
-    "open_internal_storage_settings",
-    "open_location_settings",
-    "open_input_method_settings",
-    "open_sync_settings",
-    "open_wifi_ip_settings",
-    "open_wireless_settings",
-    "open_app_settings",
     "open_bluetooth_settings",
     "open_connected_devices_settings",
-    "open_display_settings",
-    "open_locale_settings",
-    "open_manage_apps_settings",
-    "open_memory_card_settings",
     "open_nfc_settings",
-    "open_power_usage_settings",
-    "open_quick_launch_settings",
-    "open_security_settings",
-    "open_search_settings",
-    "open_sound_settings",
-    "open_dictionary_settings",
-    "open_privacy_settings",
-    "open_print_settings",
-    "open_system_notification_settings",
     "open_notification_settings",
-    "open_notification_listener_settings",
     "open_overlay_settings",
     "open_accessibility_settings",
-    "open_developer_options",
-    "open_wireless_debugging_settings",
-    "open_shizuku_app",
-    "open_shizuku_download",
-    "request_shizuku_permission",
     "start_background_runtime",
     "stop_background_runtime",
 )
@@ -71,9 +36,6 @@ private val DEFAULT_SYSTEM_ACTIONS = listOf(
 data class HermesSystemStatus(
     val wifiEnabled: Boolean = false,
     val activeNetworkLabel: String = "Offline",
-    val airplaneModeEnabled: Boolean = false,
-    val activeNetworkMetered: Boolean = false,
-    val dataSaverEnabled: Boolean = false,
     val bluetoothSupported: Boolean = false,
     val bluetoothEnabled: Boolean = false,
     val bluetoothPermissionGranted: Boolean = false,
@@ -85,13 +47,10 @@ data class HermesSystemStatus(
     val nfcEnabled: Boolean = false,
     val overlayPermissionGranted: Boolean = false,
     val notificationPermissionGranted: Boolean = true,
-    val notificationListenerEnabled: Boolean = false,
-    val notificationListenerConnected: Boolean = false,
     val backgroundPersistenceEnabled: Boolean = false,
     val runtimeServiceRunning: Boolean = false,
     val resizableWindowSupport: Boolean = true,
     val freeformWindowSupported: Boolean = false,
-    val privilegedAccess: HermesPrivilegedAccessStatus? = null,
     val availableSystemActions: List<String> = DEFAULT_SYSTEM_ACTIONS,
 )
 
@@ -142,19 +101,9 @@ object HermesSystemControlBridge {
         } else {
             true
         }
-        val airplaneModeEnabled = Settings.Global.getInt(appContext.contentResolver, Settings.Global.AIRPLANE_MODE_ON, 0) == 1
-        val activeNetworkMetered = connectivityManager?.isActiveNetworkMetered ?: false
-        val dataSaverEnabled = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            connectivityManager?.restrictBackgroundStatus == ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED
-        } else {
-            false
-        }
         return HermesSystemStatus(
             wifiEnabled = wifiManager?.isWifiEnabled == true,
             activeNetworkLabel = activeNetworkLabel(connectivityManager),
-            airplaneModeEnabled = airplaneModeEnabled,
-            activeNetworkMetered = activeNetworkMetered,
-            dataSaverEnabled = dataSaverEnabled,
             bluetoothSupported = bluetoothAdapter != null,
             bluetoothEnabled = bluetoothAdapter?.isEnabled == true,
             bluetoothPermissionGranted = bluetoothPermissionGranted,
@@ -166,13 +115,10 @@ object HermesSystemControlBridge {
             nfcEnabled = nfcAdapter?.isEnabled == true,
             overlayPermissionGranted = Settings.canDrawOverlays(appContext),
             notificationPermissionGranted = notificationPermissionGranted,
-            notificationListenerEnabled = HermesNotificationController.isListenerEnabled(appContext),
-            notificationListenerConnected = HermesNotificationController.isListenerConnected(),
             backgroundPersistenceEnabled = stored.backgroundPersistenceEnabled,
             runtimeServiceRunning = HermesRuntimeService.isRunning(),
             resizableWindowSupport = true,
             freeformWindowSupported = appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_FREEFORM_WINDOW_MANAGEMENT),
-            privilegedAccess = HermesPrivilegedAccessBridge.readStatus(appContext),
         )
     }
 
@@ -180,45 +126,10 @@ object HermesSystemControlBridge {
         val appContext = context.applicationContext
         return when (action) {
             "open_wifi_panel" -> launchIntent(appContext, action, wifiIntent(), "Opened Wi-Fi + internet controls")
-            "open_mobile_network_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NETWORK_OPERATOR_SETTINGS), "Opened mobile network settings")
-            "open_data_usage_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_DATA_USAGE_SETTINGS), "Opened data usage settings")
-            "open_hotspot_settings" -> launchIntent(appContext, action, Intent("android.settings.TETHER_SETTINGS"), "Opened hotspot and tethering settings")
-            "open_device_info_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DEVICE_INFO_SETTINGS"), "Opened device info settings")
-            "open_add_account_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.ADD_ACCOUNT_SETTINGS"), "Opened add-account settings")
-            "open_all_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SETTINGS"), "Opened Android settings")
-            "open_apn_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.APN_SETTINGS"), "Opened APN settings")
-            "open_airplane_mode_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_AIRPLANE_MODE_SETTINGS), "Opened airplane mode settings")
-            "open_date_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DATE_SETTINGS"), "Opened date and time settings")
-            "open_internal_storage_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.INTERNAL_STORAGE_SETTINGS"), "Opened internal storage settings")
-            "open_location_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.LOCATION_SOURCE_SETTINGS"), "Opened location settings")
-            "open_input_method_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.INPUT_METHOD_SETTINGS"), "Opened input method settings")
-            "open_sync_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SYNC_SETTINGS"), "Opened sync settings")
-            "open_wifi_ip_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.WIFI_IP_SETTINGS"), "Opened Wi-Fi IP settings")
-            "open_wireless_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.WIRELESS_SETTINGS"), "Opened wireless settings")
-            "open_app_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.APPLICATION_SETTINGS"), "Opened app settings")
             "open_bluetooth_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_BLUETOOTH_SETTINGS), "Opened Bluetooth settings")
             "open_connected_devices_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_WIRELESS_SETTINGS), "Opened connected-device settings")
-            "open_display_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.DISPLAY_SETTINGS"), "Opened display settings")
-            "open_locale_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.LOCALE_SETTINGS"), "Opened language and locale settings")
-            "open_manage_apps_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.MANAGE_APPLICATIONS_SETTINGS"), "Opened manage apps settings")
-            "open_memory_card_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.MEMORY_CARD_SETTINGS"), "Opened memory card settings")
             "open_nfc_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_NFC_SETTINGS), "Opened NFC settings")
-            "open_power_usage_settings" -> launchIntent(appContext, action, settingsIntent("android.intent.action.POWER_USAGE_SUMMARY"), "Opened power usage settings")
-            "open_quick_launch_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.QUICK_LAUNCH_SETTINGS"), "Opened quick launch settings")
-            "open_security_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SECURITY_SETTINGS"), "Opened security settings")
-            "open_search_settings" -> launchIntent(appContext, action, settingsIntent("android.search.action.SEARCH_SETTINGS"), "Opened search settings")
-            "open_sound_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.SOUND_SETTINGS"), "Opened sound settings")
-            "open_dictionary_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.USER_DICTIONARY_SETTINGS"), "Opened dictionary settings")
-            "open_privacy_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.PRIVACY_SETTINGS"), "Opened privacy settings")
-            "open_print_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.ACTION_PRINT_SETTINGS"), "Opened print settings")
-            "open_system_notification_settings" -> launchIntent(appContext, action, settingsIntent("android.settings.NOTIFICATION_SETTINGS"), "Opened system notification settings")
             "open_notification_settings" -> launchIntent(appContext, action, notificationSettingsIntent(appContext), "Opened Hermes notification settings")
-            "open_notification_listener_settings" -> launchIntent(
-                appContext,
-                action,
-                Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS),
-                "Opened notification access settings",
-            )
             "open_overlay_settings" -> launchIntent(
                 appContext,
                 action,
@@ -226,24 +137,6 @@ object HermesSystemControlBridge {
                 "Opened overlay permission settings",
             )
             "open_accessibility_settings" -> launchIntent(appContext, action, Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS), "Opened accessibility settings")
-            "open_developer_options",
-            "open_wireless_debugging_settings",
-            "open_shizuku_app",
-            "open_shizuku_download",
-            "request_shizuku_permission" -> HermesPrivilegedAccessBridge.actionToJson(
-                HermesPrivilegedAccessBridge.performAction(appContext, action)
-            ).let { json ->
-                HermesSystemActionResult(
-                    success = json.optBoolean("success"),
-                    action = json.optString("action", action),
-                    message = json.optString("message"),
-                )
-            }
-            "run_privileged_shell" -> HermesSystemActionResult(
-                success = false,
-                action = action,
-                message = "run_privileged_shell is available through android_system_tool with an explicit command argument.",
-            )
             "start_background_runtime" -> {
                 DeviceCapabilityStore(appContext).saveBackgroundPersistenceEnabled(true)
                 HermesRuntimeService.start(appContext)
@@ -259,8 +152,6 @@ object HermesSystemControlBridge {
             else -> HermesSystemActionResult(success = false, action = action, message = "Unsupported Android system action: $action")
         }
     }
-
-    private fun settingsIntent(action: String): Intent = Intent(action)
 
     @JvmStatic
     fun statusJson(): String {
@@ -319,9 +210,6 @@ object HermesSystemControlBridge {
         return JSONObject().apply {
             put("wifi_enabled", status.wifiEnabled)
             put("active_network_label", status.activeNetworkLabel)
-            put("airplane_mode_enabled", status.airplaneModeEnabled)
-            put("active_network_metered", status.activeNetworkMetered)
-            put("data_saver_enabled", status.dataSaverEnabled)
             put("bluetooth_supported", status.bluetoothSupported)
             put("bluetooth_enabled", status.bluetoothEnabled)
             put("bluetooth_permission_granted", status.bluetoothPermissionGranted)
@@ -333,16 +221,10 @@ object HermesSystemControlBridge {
             put("nfc_enabled", status.nfcEnabled)
             put("overlay_permission_granted", status.overlayPermissionGranted)
             put("notification_permission_granted", status.notificationPermissionGranted)
-            put("notification_listener_enabled", status.notificationListenerEnabled)
-            put("notification_listener_connected", status.notificationListenerConnected)
             put("background_persistence_enabled", status.backgroundPersistenceEnabled)
             put("runtime_service_running", status.runtimeServiceRunning)
             put("resizable_window_support", status.resizableWindowSupport)
             put("freeform_window_supported", status.freeformWindowSupported)
-            put(
-                "privileged_access",
-                status.privilegedAccess?.let { HermesPrivilegedAccessBridge.statusToJson(it) } ?: JSONObject(),
-            )
             put("available_system_actions", JSONArray(status.availableSystemActions))
         }
     }

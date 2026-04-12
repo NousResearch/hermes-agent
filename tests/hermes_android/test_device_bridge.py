@@ -31,6 +31,16 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
                 "accessibility_enabled": True,
                 "accessibility_connected": True,
                 "available_global_actions": ["home", "back"],
+                "wifi_enabled": True,
+                "bluetooth_enabled": True,
+                "paired_bluetooth_devices": ["Keyboard"],
+                "usb_device_count": 1,
+                "nfc_supported": True,
+                "overlay_permission_granted": True,
+                "notification_permission_granted": True,
+                "background_persistence_enabled": True,
+                "runtime_service_running": True,
+                "available_system_actions": ["open_wifi_panel", "start_background_runtime"],
             }
         ),
         encoding="utf-8",
@@ -44,6 +54,16 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
     assert payload["accessibility_enabled"] is True
     assert payload["accessibility_connected"] is True
     assert payload["available_global_actions"] == ["home", "back"]
+    assert payload["wifi_enabled"] is True
+    assert payload["bluetooth_enabled"] is True
+    assert payload["paired_bluetooth_devices"] == ["Keyboard"]
+    assert payload["usb_device_count"] == 1
+    assert payload["nfc_supported"] is True
+    assert payload["overlay_permission_granted"] is True
+    assert payload["notification_permission_granted"] is True
+    assert payload["background_persistence_enabled"] is True
+    assert payload["runtime_service_running"] is True
+    assert payload["available_system_actions"] == ["open_wifi_panel", "start_background_runtime"]
     assert payload["linux_enabled"] is False
     assert payload["workspace_file_count"] == 1
     assert payload["workspace_files"][0]["relative_path"] == "notes.txt"
@@ -110,3 +130,22 @@ def test_accessibility_bridge_wrappers_decode_json(monkeypatch):
         ("snapshotJson", (12,)),
         ("performActionJson", ("click", "submit", "", "", "com.example", "", 1)),
     ]
+
+
+
+def test_system_action_wrapper_decodes_json(monkeypatch):
+    calls = []
+
+    def fake_call(method_name, *args):
+        calls.append((method_name, args))
+        if method_name == "performActionJson":
+            return json.dumps({"success": True, "action": args[0], "message": "Opened Wi-Fi controls"})
+        raise AssertionError(method_name)
+
+    monkeypatch.setattr(device_bridge, "_call_system_control_bridge", fake_call)
+
+    result = device_bridge.perform_system_action("open_wifi_panel")
+
+    assert result["success"] is True
+    assert result["action"] == "open_wifi_panel"
+    assert calls == [("performActionJson", ("open_wifi_panel",))]

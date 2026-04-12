@@ -18,6 +18,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
@@ -27,6 +28,7 @@ import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 fun AuthScreen(
     modifier: Modifier = Modifier,
     viewModel: AuthViewModel = viewModel(),
+    extraBottomSpacing: Dp = 0.dp,
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -62,10 +64,10 @@ fun AuthScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(scrollState)
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(bottom = extraBottomSpacing),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Accounts", style = MaterialTheme.typography.headlineSmall)
                 Text(uiState.globalStatus, style = MaterialTheme.typography.bodyMedium)
                 Text(
                     "Corr3xt opens in your browser and returns to Hermes through a secure callback.",

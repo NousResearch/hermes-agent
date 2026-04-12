@@ -24,6 +24,7 @@ def test_auth_screen_lists_requested_sign_in_methods_and_pending_fallback_ui():
     assert 'Cancel pending sign-in' in auth_screen
     assert 'secure callback' in auth_screen
     assert 'Sign in' in auth_screen
+    assert 'extraBottomSpacing' in auth_screen
 
 
 def test_main_activity_and_manifest_handle_auth_callbacks():
@@ -36,6 +37,7 @@ def test_main_activity_and_manifest_handle_auth_callbacks():
     assert 'android:scheme="hermesagent"' in manifest
     assert 'android:host="auth"' in manifest
     assert 'android:pathPrefix="/callback"' in manifest
+    assert 'android:resizeableActivity="true"' in manifest
 
 
 def test_provider_presets_include_chatgpt_claude_and_gemini():

@@ -7,6 +7,7 @@ import android.text.format.DateFormat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -58,6 +59,7 @@ fun ChatScreen(
     authViewModel: AuthViewModel,
     onNavigateToSection: (AppSection) -> Unit,
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
+    onOpenContextActions: (() -> Unit)? = null,
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -234,6 +236,7 @@ fun ChatScreen(
                 ChatHeaderCard(
                     title = uiState.activeConversationTitle,
                     onOpenHistory = viewModel::showHistory,
+                    onOpenActions = onOpenContextActions,
                 )
                 if (uiState.status.isNotBlank()) {
                     StatusBanner(text = uiState.status)
@@ -248,6 +251,19 @@ fun ChatScreen(
                         onStartNew = viewModel::startNewConversation,
                         modifier = Modifier.weight(1f),
                     )
+                } else if (uiState.messages.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        EmptyChatHint(
+                            onNewChat = viewModel::startNewConversation,
+                            onOpenAccounts = { onNavigateToSection(AppSection.Accounts) },
+                            onOpenSettings = { onNavigateToSection(AppSection.Settings) },
+                        )
+                    }
                 } else {
                     LazyColumn(
                         state = listState,
@@ -257,15 +273,6 @@ fun ChatScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(bottom = 12.dp),
                     ) {
-                        if (uiState.messages.isEmpty()) {
-                            item {
-                                EmptyChatHint(
-                                    onNewChat = viewModel::startNewConversation,
-                                    onOpenAccounts = { onNavigateToSection(AppSection.Accounts) },
-                                    onOpenSettings = { onNavigateToSection(AppSection.Settings) },
-                                )
-                            }
-                        }
                         items(uiState.messages, key = { it.id }) { message ->
                             ChatBubble(
                                 message = message,
@@ -291,6 +298,7 @@ fun ChatScreen(
 private fun ChatHeaderCard(
     title: String,
     onOpenHistory: () -> Unit,
+    onOpenActions: (() -> Unit)? = null,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -314,12 +322,26 @@ private fun ChatHeaderCard(
                 Text("Hermes Chat", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(title, style = MaterialTheme.typography.bodySmall)
             }
-            IconButton(onClick = onOpenHistory) {
-                Icon(
-                    painter = painterResource(id = R.drawable.ic_action_history),
-                    contentDescription = "Open history",
-                    tint = MaterialTheme.colorScheme.primary,
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onOpenHistory) {
+                    Icon(
+                        painter = painterResource(id = R.drawable.ic_action_history),
+                        contentDescription = "Open history",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                if (onOpenActions != null) {
+                    IconButton(onClick = onOpenActions) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_action_cog),
+                            contentDescription = "Open page actions",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
             }
         }
     }

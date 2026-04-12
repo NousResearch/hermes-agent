@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -15,23 +14,13 @@ import androidx.core.content.ContextCompat
 import com.nousresearch.hermesagent.MainActivity
 import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.device.DeviceStateWriter
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 
 class HermesRuntimeService : Service() {
-    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        promoteToForeground(runtime = null)
         running = true
-        serviceScope.launch {
-            DeviceStateWriter.write(applicationContext)
-        }
+        DeviceStateWriter.write(applicationContext)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -44,40 +33,23 @@ class HermesRuntimeService : Service() {
     override fun onDestroy() {
         running = false
         DeviceStateWriter.write(applicationContext)
-        serviceScope.cancel()
         super.onDestroy()
     }
 
     private fun startOrRefreshForeground() {
-        promoteToForeground(runtime = null)
+        val runtime = HermesRuntimeManager.ensureStarted(applicationContext)
+        startForeground(NOTIFICATION_ID, buildNotification(runtime))
         running = true
-        serviceScope.launch {
-            DeviceStateWriter.write(applicationContext)
-            val runtime = HermesRuntimeManager.ensureStarted(applicationContext)
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.notify(NOTIFICATION_ID, buildNotification(runtime))
-            running = true
-            DeviceStateWriter.write(applicationContext)
-        }
+        DeviceStateWriter.write(applicationContext)
     }
 
-    private fun promoteToForeground(runtime: HermesRuntimeManager.RuntimeState?) {
-        val notification = buildNotification(runtime)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+    private fun buildNotification(runtime: HermesRuntimeManager.RuntimeState): Notification {
+        val contentTitle = if (runtime.started) {
+            "Hermes runtime active"
         } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
-    private fun buildNotification(runtime: HermesRuntimeManager.RuntimeState?): Notification {
-        val contentTitle = when {
-            runtime == null -> "Hermes runtime starting"
-            runtime.started -> "Hermes runtime active"
-            else -> "Hermes runtime waiting for attention"
+            "Hermes runtime waiting for attention"
         }
         val contentText = when {
-            runtime == null -> "Preparing the local Hermes backend"
             !runtime.error.isNullOrBlank() -> runtime.error
             !runtime.modelName.isNullOrBlank() -> "Serving ${runtime.modelName} locally"
             !runtime.baseUrl.isNullOrBlank() -> "Serving local Hermes backend"
@@ -130,11 +102,7 @@ class HermesRuntimeService : Service() {
 
         fun start(context: Context) {
             val intent = Intent(context, HermesRuntimeService::class.java)
-            runCatching {
-                context.startService(intent)
-            }.onFailure {
-                ContextCompat.startForegroundService(context, intent)
-            }
+            ContextCompat.startForegroundService(context, intent)
         }
 
         fun stop(context: Context) {

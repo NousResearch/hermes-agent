@@ -22,6 +22,8 @@ def test_settings_screen_includes_new_user_guidance():
     assert 'Use Accounts if you want Corr3xt-based sign-in flows' in settings
     assert 'Choose the provider you want Hermes to call directly.' in settings
     assert 'Paste the key for the selected provider, then tap Save' in settings
+    assert 'rememberScrollState()' in settings
+    assert 'verticalScroll(' in settings
 
 
 def test_portal_screen_auto_loads_and_uses_contextual_actions():
@@ -32,5 +34,6 @@ def test_portal_screen_auto_loads_and_uses_contextual_actions():
     assert 'label = "Open externally"' in portal
     assert 'loadUrl(uiState.portalUrl)' in portal
     assert 'The embedded portal now auto-loads on this page.' in portal
+    assert 'extraBottomSpacing' in portal
     assert 'Try embedded preview' not in portal
     assert 'Reload preview' not in portal

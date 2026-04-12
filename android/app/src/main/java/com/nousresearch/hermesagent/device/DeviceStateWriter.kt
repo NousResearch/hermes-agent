@@ -24,6 +24,7 @@ object DeviceStateWriter {
     fun write(context: Context) {
         val capabilities = DeviceCapabilityStore(context).load()
         val linuxState = HermesLinuxSubsystemBridge.readState(context)
+        val systemStatus = HermesSystemControlBridge.readStatus(context)
         val payload = JSONObject().apply {
             put("workspace_path", workspaceDir(context).absolutePath)
             put("shared_tree_uri", capabilities.sharedFolderUri)
@@ -42,6 +43,24 @@ object DeviceStateWriter {
             put("linux_home_path", linuxState?.optString("home_path").orEmpty())
             put("linux_tmp_path", linuxState?.optString("tmp_path").orEmpty())
             put("linux_package_count", linuxState?.optJSONArray("packages")?.length() ?: 0)
+            put("wifi_enabled", systemStatus.wifiEnabled)
+            put("active_network_label", systemStatus.activeNetworkLabel)
+            put("bluetooth_supported", systemStatus.bluetoothSupported)
+            put("bluetooth_enabled", systemStatus.bluetoothEnabled)
+            put("bluetooth_permission_granted", systemStatus.bluetoothPermissionGranted)
+            put("paired_bluetooth_devices", JSONArray(systemStatus.pairedBluetoothDevices))
+            put("usb_host_supported", systemStatus.usbHostSupported)
+            put("usb_device_count", systemStatus.usbDeviceCount)
+            put("usb_devices", JSONArray(systemStatus.usbDevices))
+            put("nfc_supported", systemStatus.nfcSupported)
+            put("nfc_enabled", systemStatus.nfcEnabled)
+            put("overlay_permission_granted", systemStatus.overlayPermissionGranted)
+            put("notification_permission_granted", systemStatus.notificationPermissionGranted)
+            put("background_persistence_enabled", systemStatus.backgroundPersistenceEnabled)
+            put("runtime_service_running", systemStatus.runtimeServiceRunning)
+            put("resizable_window_support", systemStatus.resizableWindowSupport)
+            put("freeform_window_supported", systemStatus.freeformWindowSupported)
+            put("available_system_actions", JSONArray(systemStatus.availableSystemActions))
         }
         stateFile(context).writeText(payload.toString(), Charsets.UTF_8)
     }

@@ -1,7 +1,9 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.nousresearch.hermesagent.ui.device
 
-import android.content.Intent
-import android.provider.Settings
+import android.Manifest
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -19,14 +21,14 @@ import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nousresearch.hermesagent.R
@@ -38,10 +40,10 @@ import com.nousresearch.hermesagent.ui.shell.ShellActionItem
 fun DeviceScreen(
     modifier: Modifier = Modifier,
     viewModel: DeviceViewModel = viewModel(),
+    extraBottomSpacing: Dp = 0.dp,
     onContextActionsChanged: (List<ShellActionItem>) -> Unit = {},
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val context = LocalContext.current
     var pendingExportFile by remember { mutableStateOf<String?>(null) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -61,13 +63,19 @@ fun DeviceScreen(
         }
         pendingExportFile = null
     }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.refresh(if (granted) "Notifications enabled for Hermes runtime alerts" else "Notification permission was denied")
+    }
+    val bluetoothPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.refresh(if (granted) "Bluetooth access granted" else "Bluetooth access was denied")
+    }
 
     SideEffect {
         onContextActionsChanged(
             listOf(
                 ShellActionItem(
                     label = "Refresh device state",
-                    description = "Reload shared-folder, Linux suite, and accessibility status.",
+                    description = "Reload shared-folder, Linux suite, and phone-control status.",
                     iconRes = R.drawable.ic_action_refresh,
                     onClick = viewModel::refresh,
                 ),
@@ -84,15 +92,29 @@ fun DeviceScreen(
                     onClick = { importLauncher.launch(arrayOf("*/*")) },
                 ),
                 ShellActionItem(
-                    label = "Accessibility settings",
-                    description = "Open Android accessibility settings for Hermes controls.",
+                    label = "Notification settings",
+                    description = "Open Hermes notification settings and background controls.",
                     iconRes = R.drawable.ic_nav_settings,
-                    onClick = {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    },
+                    onClick = { viewModel.performSystemAction("open_notification_settings") },
                 ),
             )
         )
+    }
+
+    fun handleBluetoothAction() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !uiState.bluetoothPermissionGranted) {
+            bluetoothPermissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            viewModel.performSystemAction("open_bluetooth_settings")
+        }
+    }
+
+    fun handleNotificationAction() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !uiState.notificationPermissionGranted) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            viewModel.performSystemAction("open_notification_settings")
+        }
     }
 
     MaterialTheme {
@@ -101,12 +123,29 @@ fun DeviceScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(bottom = extraBottomSpacing),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Device", style = MaterialTheme.typography.headlineSmall)
                 DeviceGuideCard(workspacePath = uiState.workspacePath)
                 LinuxSuiteCard(uiState = uiState)
+                ConnectivityCard(
+                    uiState = uiState,
+                    onOpenWifi = { viewModel.performSystemAction("open_wifi_panel") },
+                    onOpenBluetooth = ::handleBluetoothAction,
+                    onOpenConnectedDevices = { viewModel.performSystemAction("open_connected_devices_settings") },
+                )
+                InterfaceCard(
+                    uiState = uiState,
+                    onOpenNfc = { viewModel.performSystemAction("open_nfc_settings") },
+                    onOpenConnectedDevices = { viewModel.performSystemAction("open_connected_devices_settings") },
+                )
+                PermissionsAndRuntimeCard(
+                    uiState = uiState,
+                    onNotifications = ::handleNotificationAction,
+                    onOverlaySettings = { viewModel.performSystemAction("open_overlay_settings") },
+                    onToggleRuntime = { enabled -> viewModel.setBackgroundPersistence(enabled) },
+                )
                 WorkspaceAccessCard(
                     uiState = uiState,
                     onImportFile = { importLauncher.launch(arrayOf("*/*")) },
@@ -120,9 +159,7 @@ fun DeviceScreen(
                 )
                 AccessibilityCard(
                     uiState = uiState,
-                    onOpenSettings = {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-                    },
+                    onOpenSettings = { viewModel.performSystemAction("open_accessibility_settings") },
                     onAction = viewModel::performGlobalAction,
                 )
                 if (uiState.status.isNotBlank()) {
@@ -195,6 +232,163 @@ private fun LinuxSuiteCard(uiState: DeviceUiState) {
             )
             Text(
                 "Ask Hermes to use terminal for commands like 'git status', 'ls', 'curl', 'grep', or longer shell pipelines directly in this suite.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ConnectivityCard(
+    uiState: DeviceUiState,
+    onOpenWifi: () -> Unit,
+    onOpenBluetooth: () -> Unit,
+    onOpenConnectedDevices: () -> Unit,
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Wi-Fi + connectivity", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Network: ${uiState.activeNetworkLabel} · Wi-Fi is ${if (uiState.wifiEnabled) "on" else "off"}. Hermes uses Android-safe settings panels instead of unsupported direct radio toggles.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Bluetooth", style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                if (!uiState.bluetoothSupported) {
+                    "Bluetooth radio is not available on this device."
+                } else if (!uiState.bluetoothPermissionGranted) {
+                    "Grant Bluetooth access so Hermes can read bonded-device state before opening settings."
+                } else {
+                    "Bluetooth is ${if (uiState.bluetoothEnabled) "enabled" else "disabled"}. Bonded devices: ${uiState.pairedBluetoothDevices.joinToString().ifBlank { "none" }}"
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenWifi) {
+                    Text("Internet panel")
+                }
+                Button(onClick = onOpenBluetooth) {
+                    Text("Bluetooth")
+                }
+                Button(onClick = onOpenConnectedDevices) {
+                    Text("Connected devices")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun InterfaceCard(
+    uiState: DeviceUiState,
+    onOpenNfc: () -> Unit,
+    onOpenConnectedDevices: () -> Unit,
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("USB + NFC", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (uiState.usbHostSupported) {
+                    "USB host mode is available. Connected USB devices: ${uiState.usbDeviceCount}. ${uiState.usbDevices.joinToString().ifBlank { "No USB devices detected right now." }}"
+                } else {
+                    "USB host mode is not advertised on this device build."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                if (uiState.nfcSupported) {
+                    "NFC is ${if (uiState.nfcEnabled) "enabled" else "disabled"}. Hermes can surface NFC state and take you straight to system settings."
+                } else {
+                    "NFC hardware is not available on this device."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenConnectedDevices) {
+                    Text("USB / devices")
+                }
+                Button(onClick = onOpenNfc, enabled = uiState.nfcSupported) {
+                    Text("NFC settings")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PermissionsAndRuntimeCard(
+    uiState: DeviceUiState,
+    onNotifications: () -> Unit,
+    onOverlaySettings: () -> Unit,
+    onToggleRuntime: (Boolean) -> Unit,
+) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Notifications + background runtime", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Notification permission is ${if (uiState.notificationPermissionGranted) "granted" else "not granted"}. Hermes background runtime is ${if (uiState.runtimeServiceRunning) "active" else "inactive"}.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Overlay permission", style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                if (uiState.overlayPermissionGranted) {
+                    "Overlay permission is granted for future floating utilities."
+                } else {
+                    "Overlay permission is disabled. Open Android settings if you want future floating controls."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Resizable window support", style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                "Hermes declares resizable window support: ${if (uiState.resizableWindowSupport) "enabled" else "disabled"}. Freeform/multi-window feature available on this device: ${if (uiState.freeformWindowSupported) "yes" else "no"}.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onNotifications) {
+                    Text(if (uiState.notificationPermissionGranted) "Notification settings" else "Enable notifications")
+                }
+                Button(onClick = onOverlaySettings) {
+                    Text("Overlay settings")
+                }
+                Button(onClick = { onToggleRuntime(!uiState.backgroundPersistenceEnabled) }) {
+                    Text(if (uiState.backgroundPersistenceEnabled) "Stop background runtime" else "Start background runtime")
+                }
+            }
+            Text(
+                "Hermes background runtime keeps the local backend ready in the notification bar for longer sessions and later Android windowing modes.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }

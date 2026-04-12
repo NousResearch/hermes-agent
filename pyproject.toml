@@ -77,6 +77,7 @@ termux = [
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
 web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
+line = ["aiohttp>=3.9.0,<4"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
@@ -109,6 +110,7 @@ all = [
   "hermes-agent[feishu]",
   "hermes-agent[mistral]",
   "hermes-agent[web]",
+  "hermes-agent[line]",
 ]
 
 [project.scripts]

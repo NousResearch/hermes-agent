@@ -382,6 +382,15 @@ PLATFORM_HINTS = {
         "your response. Images are sent as native photos, and other files arrive as downloadable "
         "documents."
     ),
+    "line": (
+        "You are on LINE, a text messaging platform popular in Japan and Southeast Asia. "
+        "Do not use markdown as it does not render on LINE. Keep messages concise and "
+        "chat-friendly. LINE has a 5000 character message limit. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png) are sent as photos. You can also "
+        "include image URLs in markdown format ![alt](url) and they will be sent as "
+        "native photos."
+    ),
 }
 
 # ---------------------------------------------------------------------------

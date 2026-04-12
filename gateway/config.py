@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    LINE = "line"
 
 
 @dataclass
@@ -306,6 +307,9 @@ class GatewayConfig:
                 connected.append(platform)
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            # LINE uses token + channel_secret
+            elif platform == Platform.LINE and config.token and config.extra.get("channel_secret"):
                 connected.append(platform)
         return connected
     
@@ -1143,6 +1147,28 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # LINE
+    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    line_secret = os.getenv("LINE_CHANNEL_SECRET")
+    if line_token and line_secret:
+        if Platform.LINE not in config.platforms:
+            config.platforms[Platform.LINE] = PlatformConfig()
+        config.platforms[Platform.LINE].enabled = True
+        config.platforms[Platform.LINE].token = line_token
+        config.platforms[Platform.LINE].extra.update({
+            "channel_secret": line_secret,
+            "webhook_host": os.getenv("LINE_WEBHOOK_HOST", "0.0.0.0"),
+            "webhook_port": int(os.getenv("LINE_WEBHOOK_PORT", "8443")),
+            "webhook_path": os.getenv("LINE_WEBHOOK_PATH", "/line/webhook"),
+        })
+    line_home = os.getenv("LINE_HOME_CHANNEL")
+    if line_home and Platform.LINE in config.platforms:
+        config.platforms[Platform.LINE].home_channel = HomeChannel(
+            platform=Platform.LINE,
+            chat_id=line_home,
+            name=os.getenv("LINE_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

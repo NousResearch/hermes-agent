@@ -1936,6 +1936,35 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "line",
+        "label": "LINE",
+        "emoji": "💚",
+        "token_var": "LINE_CHANNEL_ACCESS_TOKEN",
+        "setup_instructions": [
+            "1. Go to https://developers.line.biz/console/ and create a new provider",
+            "2. Create a Messaging API channel under the provider",
+            "3. In the channel settings → Messaging API tab:",
+            "   - Issue a Channel access token (long-lived)",
+            "   - Note the Channel secret from the Basic settings tab",
+            "4. Set the Webhook URL to your server's public URL + /line/webhook",
+            "   (e.g. https://your-server.com:8443/line/webhook)",
+            "5. Enable 'Use webhook' toggle",
+            "6. Disable 'Auto-reply messages' and 'Greeting messages' in the LINE Official Account Manager",
+            "7. To find your user ID: add the bot as a friend and check the webhook logs",
+        ],
+        "vars": [
+            {"name": "LINE_CHANNEL_ACCESS_TOKEN", "prompt": "Channel access token", "password": True,
+             "help": "Long-lived channel access token from the Messaging API tab."},
+            {"name": "LINE_CHANNEL_SECRET", "prompt": "Channel secret", "password": True,
+             "help": "Channel secret from the Basic settings tab."},
+            {"name": "LINE_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or leave empty for DM pairing)", "password": False,
+             "is_allowlist": True,
+             "help": "LINE user IDs who can interact with the bot. Leave empty to use DM pairing."},
+            {"name": "LINE_HOME_CHANNEL", "prompt": "Home channel (user or group ID for cron/notifications, or empty)", "password": False,
+             "help": "User or group ID to deliver cron results and notifications to."},
+        ],
+    },
 ]
 
 

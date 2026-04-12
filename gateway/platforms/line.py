@@ -1,0 +1,629 @@
+"""LINE Messaging API platform adapter.
+
+Uses the LINE Messaging API directly via httpx for:
+- Receiving messages via webhook (HMAC-SHA256 signature verification)
+- Sending text messages (Reply API + Push API)
+- Media handling (images, video, audio, files)
+- Typing indicators (loading animation)
+- Group and 1:1 chat support
+
+No external LINE SDK dependency — all API calls are made directly via httpx.
+"""
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import time
+import uuid
+from typing import Any, Dict, Optional
+
+import httpx
+from aiohttp import web
+
+from gateway.config import Platform, PlatformConfig
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    SendResult,
+    cache_image_from_bytes,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+)
+from gateway.platforms.helpers import strip_markdown
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+LINE_API_BASE = "https://api.line.me/v2/bot"
+LINE_DATA_API_BASE = "https://api-data.line.me/v2/bot"
+LINE_LOADING_API = "https://api.line.me/v2/bot/chat/loading/start"
+MAX_MESSAGE_LENGTH = 5000
+DEFAULT_WEBHOOK_HOST = "0.0.0.0"
+DEFAULT_WEBHOOK_PORT = 8443
+DEFAULT_WEBHOOK_PATH = "/line/webhook"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def check_line_requirements() -> bool:
+    """Check if LINE dependencies are available."""
+    try:
+        import httpx as _httpx  # noqa: F401
+        import aiohttp as _aiohttp  # noqa: F401
+    except ImportError:
+        return False
+    channel_access_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+    channel_secret = os.getenv("LINE_CHANNEL_SECRET", "")
+    return bool(channel_access_token and channel_secret)
+
+
+def _verify_signature(body: bytes, signature: str, channel_secret: str) -> bool:
+    """Verify LINE webhook signature using HMAC-SHA256."""
+    expected = hmac.new(
+        channel_secret.encode("utf-8"),
+        body,
+        hashlib.sha256,
+    ).digest()
+    expected_b64 = base64.b64encode(expected).decode("utf-8")
+    return hmac.compare_digest(expected_b64, signature)
+
+
+def _extract_text_from_event(event: dict) -> str:
+    """Extract text content from a LINE message event."""
+    message = event.get("message", {})
+    msg_type = message.get("type", "")
+    if msg_type == "text":
+        return message.get("text", "")
+    if msg_type == "sticker":
+        keywords = message.get("keywords", [])
+        if keywords:
+            return f"[Sticker: {', '.join(keywords)}]"
+        return "[Sticker]"
+    if msg_type == "location":
+        title = message.get("title", "")
+        address = message.get("address", "")
+        lat = message.get("latitude", "")
+        lon = message.get("longitude", "")
+        parts = [p for p in [title, address, f"({lat}, {lon})"] if p]
+        return f"[Location: {' - '.join(parts)}]"
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Adapter
+# ---------------------------------------------------------------------------
+
+class LineAdapter(BasePlatformAdapter):
+    """LINE Messaging API adapter using webhooks for inbound messages."""
+
+    platform = Platform.LINE
+    MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+
+    def __init__(self, config: PlatformConfig):
+        super().__init__(config, Platform.LINE)
+        extra = config.extra or {}
+        self.channel_access_token: str = (
+            config.token
+            or extra.get("channel_access_token")
+            or os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "")
+        )
+        self.channel_secret: str = (
+            extra.get("channel_secret")
+            or os.getenv("LINE_CHANNEL_SECRET", "")
+        )
+        self.webhook_host: str = (
+            extra.get("webhook_host")
+            or os.getenv("LINE_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
+        )
+        self.webhook_port: int = int(
+            extra.get("webhook_port")
+            or os.getenv("LINE_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
+        )
+        self.webhook_path: str = (
+            extra.get("webhook_path")
+            or os.getenv("LINE_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
+        )
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._webhook_app: Optional[web.Application] = None
+        self._webhook_runner: Optional[web.AppRunner] = None
+        self._user_profile_cache: Dict[str, Dict[str, str]] = {}
+        self._last_loading_at: Dict[str, float] = {}
+        self._loading_interval_seconds: float = 18.0
+        self._loading_seconds: int = 20
+
+    # ------------------------------------------------------------------
+    # HTTP client helpers
+    # ------------------------------------------------------------------
+
+    def _auth_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.channel_access_token}",
+            "Content-Type": "application/json",
+        }
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._http_client is None or self._http_client.is_closed:
+            self._http_client = httpx.AsyncClient(timeout=30.0)
+        return self._http_client
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def connect(self) -> bool:
+        """Start the webhook server to receive LINE events."""
+        if not self.channel_access_token or not self.channel_secret:
+            self._set_fatal_error(
+                "missing_credentials",
+                "LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET are required",
+                retryable=False,
+            )
+            return False
+
+        # Prevent two profiles from running the same bot simultaneously
+        if not self._acquire_platform_lock(
+            "line-channel-token", self.channel_access_token, "LINE channel access token"
+        ):
+            return False
+
+        # Verify bot credentials by fetching bot info
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(
+                f"{LINE_API_BASE}/info",
+                headers=self._auth_headers(),
+            )
+            if resp.status_code != 200:
+                self._release_platform_lock()
+                self._set_fatal_error(
+                    "auth_failed",
+                    f"LINE bot info request failed (HTTP {resp.status_code}): {resp.text[:200]}",
+                    retryable=False,
+                )
+                return False
+            bot_info = resp.json()
+            bot_name = bot_info.get("displayName", "LINE Bot")
+            logger.info("[LINE] Connected as %s", bot_name)
+        except Exception as e:
+            self._release_platform_lock()
+            self._set_fatal_error(
+                "connection_error",
+                f"Failed to verify LINE bot credentials: {e}",
+                retryable=True,
+            )
+            return False
+
+        # Start webhook server
+        try:
+            self._webhook_app = web.Application()
+            self._webhook_app.router.add_post(self.webhook_path, self._handle_webhook)
+
+            self._webhook_runner = web.AppRunner(self._webhook_app)
+            await self._webhook_runner.setup()
+            site = web.TCPSite(
+                self._webhook_runner,
+                self.webhook_host,
+                self.webhook_port,
+            )
+            await site.start()
+            logger.info(
+                "[LINE] Webhook server listening on %s:%d%s",
+                self.webhook_host,
+                self.webhook_port,
+                self.webhook_path,
+            )
+        except Exception as e:
+            self._release_platform_lock()
+            self._set_fatal_error(
+                "webhook_error",
+                f"Failed to start LINE webhook server: {e}",
+                retryable=True,
+            )
+            return False
+
+        self._mark_connected()
+        return True
+
+    async def disconnect(self) -> None:
+        """Stop the webhook server and close HTTP client."""
+        if self._webhook_runner:
+            try:
+                await self._webhook_runner.cleanup()
+            except Exception:
+                pass
+            self._webhook_runner = None
+        if self._http_client and not self._http_client.is_closed:
+            await self._http_client.aclose()
+            self._http_client = None
+        self._release_platform_lock()
+        self._mark_disconnected()
+
+    # ------------------------------------------------------------------
+    # Webhook handler
+    # ------------------------------------------------------------------
+
+    async def _handle_webhook(self, request: web.Request) -> web.Response:
+        """Process incoming LINE webhook events."""
+        body = await request.read()
+
+        # Verify signature
+        signature = request.headers.get("X-Line-Signature", "")
+        if not signature or not _verify_signature(body, signature, self.channel_secret):
+            logger.warning("[LINE] Invalid webhook signature")
+            return web.Response(status=403, text="Invalid signature")
+
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            return web.Response(status=400, text="Invalid JSON")
+
+        events = payload.get("events", [])
+        logger.info("[LINE] webhook received: destination=%s events=%d", payload.get("destination", ""), len(events))
+        for event in events:
+            logger.info("[LINE] webhook event type=%s source_type=%s", event.get("type", ""), event.get("source", {}).get("type", ""))
+            asyncio.create_task(self._process_event(event))
+
+        return web.Response(status=200, text="OK")
+
+    async def _process_event(self, event: dict) -> None:
+        """Process a single LINE webhook event."""
+        event_type = event.get("type", "")
+        logger.info("[LINE] processing event type=%s", event_type)
+
+        if event_type == "message":
+            await self._handle_message_event(event)
+        elif event_type == "follow":
+            logger.info("[LINE] New follower: %s", event.get("source", {}).get("userId", "unknown"))
+        elif event_type == "unfollow":
+            logger.info("[LINE] Unfollowed by: %s", event.get("source", {}).get("userId", "unknown"))
+        elif event_type == "join":
+            logger.info("[LINE] Joined group: %s", event.get("source", {}).get("groupId", "unknown"))
+        elif event_type == "leave":
+            logger.info("[LINE] Left group: %s", event.get("source", {}).get("groupId", "unknown"))
+        elif event_type == "postback":
+            # Treat postback data as text message
+            data = event.get("postback", {}).get("data", "")
+            if data:
+                await self._handle_text_message(event, data)
+
+    async def _handle_message_event(self, event: dict) -> None:
+        """Handle a LINE message event."""
+        message = event.get("message", {})
+        msg_type = message.get("type", "")
+
+        if msg_type == "text":
+            text = message.get("text", "")
+            await self._handle_text_message(event, text)
+        elif msg_type in ("image", "video", "audio", "file"):
+            await self._handle_media_message(event, msg_type)
+        elif msg_type in ("sticker", "location"):
+            text = _extract_text_from_event(event)
+            if text:
+                await self._handle_text_message(event, text)
+        else:
+            logger.debug("[LINE] Unsupported message type: %s", msg_type)
+
+    async def _handle_text_message(self, event: dict, text: str) -> None:
+        """Process a text message and dispatch to the message handler."""
+        if not text.strip():
+            return
+
+        source = event.get("source", {})
+        user_id = source.get("userId", "")
+        chat_id = self._resolve_chat_id(source)
+        reply_token = event.get("replyToken", "")
+
+        # Build display name
+        display_name = await self._get_user_display_name(user_id, source)
+        source_obj = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type="group" if source.get("type") in ("group", "room") else "dm",
+            user_id=user_id,
+            user_name=display_name,
+        )
+        message_id = event.get("message", {}).get("id")
+        logger.info("[LINE] inbound text: user=%s chat=%s text=%r", display_name, chat_id, text[:200])
+        if str(chat_id).startswith("U"):
+            asyncio.create_task(self.send_typing(chat_id))
+
+        msg_event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source_obj,
+            raw_message=event,
+            message_id=str(message_id) if message_id else None,
+        )
+        if reply_token:
+            setattr(msg_event, "metadata", {"reply_token": reply_token})
+        await self.handle_message(msg_event)
+
+    async def _handle_media_message(self, event: dict, media_type: str) -> None:
+        """Download media content and dispatch as a message with attachment."""
+        message = event.get("message", {})
+        message_id = message.get("id", "")
+        source = event.get("source", {})
+        user_id = source.get("userId", "")
+        chat_id = self._resolve_chat_id(source)
+        reply_token = event.get("replyToken", "")
+        display_name = await self._get_user_display_name(user_id, source)
+
+        # Download media content
+        image_path = None
+        text = f"[{media_type.title()}]"
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(
+                f"{LINE_DATA_API_BASE}/message/{message_id}/content",
+                headers={"Authorization": f"Bearer {self.channel_access_token}"},
+            )
+            if resp.status_code == 200:
+                data = resp.content
+                if media_type == "image":
+                    content_type = resp.headers.get("content-type", "")
+                    ext = ".png" if "png" in content_type else ".jpg"
+                    image_path = cache_image_from_bytes(data, ext)
+                elif media_type == "audio":
+                    image_path = cache_audio_from_bytes(data, ".m4a")
+                elif media_type in ("video", "file"):
+                    file_name = message.get("fileName", f"file_{message_id}")
+                    image_path = cache_document_from_bytes(data, file_name)
+        except Exception as e:
+            logger.warning("[LINE] Failed to download %s %s: %s", media_type, message_id, e)
+
+        msg_type = MessageType.IMAGE if media_type == "image" else MessageType.TEXT
+        source_obj = self.build_source(
+            chat_id=chat_id,
+            chat_name=chat_id,
+            chat_type="group" if source.get("type") in ("group", "room") else "dm",
+            user_id=user_id,
+            user_name=display_name,
+        )
+        logger.info("[LINE] inbound media: type=%s user=%s chat=%s", media_type, display_name, chat_id)
+        if str(chat_id).startswith("U"):
+            asyncio.create_task(self.send_typing(chat_id))
+
+        msg_event = MessageEvent(
+            text=text,
+            message_type=msg_type,
+            source=source_obj,
+            raw_message=event,
+            message_id=str(message_id) if message_id else None,
+            media_urls=[image_path] if image_path else [],
+            media_types=[media_type] if image_path else [],
+        )
+        if reply_token:
+            setattr(msg_event, "metadata", {"reply_token": reply_token})
+        await self.handle_message(msg_event)
+
+    # ------------------------------------------------------------------
+    # Sending messages
+    # ------------------------------------------------------------------
+
+    async def send(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a text message via LINE Reply API when possible, else Push API."""
+        if not content.strip():
+            return SendResult(success=True)
+
+        # Strip markdown — LINE does not render it
+        text = strip_markdown(content)
+
+        messages = self._build_text_messages(text)
+        try:
+            client = await self._ensure_client()
+            reply_token = metadata.get("reply_token") if metadata else None
+            if reply_token:
+                logger.info("[LINE] replying to %s via reply API", chat_id)
+                resp = await client.post(
+                    f"{LINE_API_BASE}/message/reply",
+                    headers=self._auth_headers(),
+                    json={
+                        "replyToken": reply_token,
+                        "messages": messages,
+                    },
+                )
+            else:
+                logger.info("[LINE] sending push to %s", chat_id)
+                resp = await client.post(
+                    f"{LINE_API_BASE}/message/push",
+                    headers=self._auth_headers(),
+                    json={
+                        "to": chat_id,
+                        "messages": messages,
+                    },
+                )
+            if resp.status_code == 200:
+                logger.info("[LINE] send success to %s", chat_id)
+                return SendResult(success=True)
+            error_body = resp.text[:300]
+            logger.warning("[LINE] Send failed (HTTP %d): %s", resp.status_code, error_body)
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {error_body}")
+        except Exception as e:
+            logger.error("[LINE] Send error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def send_reply(
+        self,
+        reply_token: str,
+        text: str,
+    ) -> SendResult:
+        """Send a reply using the LINE Reply API (uses the one-time reply token)."""
+        if not text.strip():
+            return SendResult(success=True)
+
+        text = strip_markdown(text)
+        messages = self._build_text_messages(text)
+        try:
+            client = await self._ensure_client()
+            resp = await client.post(
+                f"{LINE_API_BASE}/message/reply",
+                headers=self._auth_headers(),
+                json={
+                    "replyToken": reply_token,
+                    "messages": messages,
+                },
+            )
+            if resp.status_code == 200:
+                return SendResult(success=True)
+            error_body = resp.text[:300]
+            logger.warning("[LINE] Reply failed (HTTP %d): %s", resp.status_code, error_body)
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {error_body}")
+        except Exception as e:
+            logger.error("[LINE] Reply error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Send LINE loading animation, throttled like OpenClaw's keepalive."""
+        # LINE loading animation is mainly for 1:1 chats; quietly skip groups/rooms.
+        if not str(chat_id).startswith("U"):
+            return
+
+        now = time.monotonic()
+        last = self._last_loading_at.get(chat_id, 0.0)
+        if now - last < self._loading_interval_seconds:
+            return
+
+        try:
+            client = await self._ensure_client()
+            resp = await client.post(
+                LINE_LOADING_API,
+                headers=self._auth_headers(),
+                json={"chatId": chat_id, "loadingSeconds": self._loading_seconds},
+            )
+            if resp.status_code in (200, 202):
+                self._last_loading_at[chat_id] = now
+                logger.info("[LINE] loading animation shown for %s (HTTP %d)", chat_id, resp.status_code)
+            else:
+                logger.info("[LINE] loading animation not accepted for %s (HTTP %d): %s", chat_id, resp.status_code, resp.text[:200])
+        except Exception as e:
+            logger.debug("[LINE] Failed to send typing indicator: %s", e)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image via LINE Push API."""
+        messages = []
+        if caption:
+            messages.append({"type": "text", "text": caption[:MAX_MESSAGE_LENGTH]})
+        messages.append({
+            "type": "image",
+            "originalContentUrl": image_url,
+            "previewImageUrl": image_url,
+        })
+        try:
+            client = await self._ensure_client()
+            resp = await client.post(
+                f"{LINE_API_BASE}/message/push",
+                headers=self._auth_headers(),
+                json={"to": chat_id, "messages": messages},
+            )
+            if resp.status_code == 200:
+                return SendResult(success=True)
+            return SendResult(success=False, error=f"HTTP {resp.status_code}")
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
+        """Return basic chat info for the given chat_id."""
+        # For groups, try to fetch group summary
+        if chat_id.startswith("C"):  # Group IDs start with C
+            try:
+                client = await self._ensure_client()
+                resp = await client.get(
+                    f"{LINE_API_BASE}/group/{chat_id}/summary",
+                    headers=self._auth_headers(),
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "name": data.get("groupName", chat_id),
+                        "type": "group",
+                        "chat_id": chat_id,
+                    }
+            except Exception:
+                pass
+        # For rooms
+        if chat_id.startswith("R"):
+            return {"name": chat_id, "type": "room", "chat_id": chat_id}
+        # DM — try user profile
+        profile = await self._get_user_profile(chat_id)
+        if profile:
+            return {
+                "name": profile.get("displayName", chat_id),
+                "type": "dm",
+                "chat_id": chat_id,
+            }
+        return {"name": chat_id, "type": "unknown", "chat_id": chat_id}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _resolve_chat_id(self, source: dict) -> str:
+        """Determine the chat_id from a LINE event source."""
+        source_type = source.get("type", "")
+        if source_type == "group":
+            return source.get("groupId", "")
+        if source_type == "room":
+            return source.get("roomId", "")
+        return source.get("userId", "")
+
+    async def _get_user_display_name(self, user_id: str, source: dict) -> str:
+        """Fetch the user's display name, with caching."""
+        if user_id in self._user_profile_cache:
+            return self._user_profile_cache[user_id].get("displayName", user_id)
+
+        profile = await self._get_user_profile(user_id)
+        if profile:
+            name = profile.get("displayName", user_id)
+            self._user_profile_cache[user_id] = profile
+            return name
+        return user_id
+
+    async def _get_user_profile(self, user_id: str) -> Optional[Dict[str, str]]:
+        """Fetch a LINE user's profile."""
+        try:
+            client = await self._ensure_client()
+            resp = await client.get(
+                f"{LINE_API_BASE}/profile/{user_id}",
+                headers=self._auth_headers(),
+            )
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception as e:
+            logger.debug("[LINE] Failed to fetch profile for %s: %s", user_id, e)
+        return None
+
+    def _build_text_messages(self, text: str) -> list:
+        """Split text into LINE message objects respecting the max length."""
+        if len(text) <= MAX_MESSAGE_LENGTH:
+            return [{"type": "text", "text": text}]
+        # Split into chunks
+        messages = []
+        while text:
+            chunk = text[:MAX_MESSAGE_LENGTH]
+            text = text[MAX_MESSAGE_LENGTH:]
+            messages.append({"type": "text", "text": chunk})
+            if len(messages) >= 5:  # LINE allows max 5 messages per request
+                break
+        return messages

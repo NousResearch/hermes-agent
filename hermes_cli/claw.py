@@ -249,7 +249,7 @@ def _scan_workspace_state(source_dir: Path) -> list[tuple[Path, str]]:
             state_path = child / state_name
             if state_path.exists():
                 kind = "directory" if state_path.is_dir() else "file"
-                rel = state_path.relative_to(source_dir)
+                rel = state_path.relative_to(source_dir).as_posix()
                 findings.append((state_path, f"Workspace {kind}: {rel}"))
 
     return findings

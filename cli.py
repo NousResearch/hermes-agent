@@ -5344,7 +5344,7 @@ class HermesCLI:
         elif canonical == "fast":
             self._handle_fast_command(cmd_original)
         elif canonical == "compress":
-            self._manual_compress()
+            self._manual_compress(cmd_original)
         elif canonical == "usage":
             self._show_usage()
         elif canonical == "insights":
@@ -6201,8 +6201,14 @@ class HermesCLI:
         self._reasoning_preview_buf = getattr(self, "_reasoning_preview_buf", "") + reasoning_text
         self._flush_reasoning_preview(force=False)
 
-    def _manual_compress(self):
-        """Manually trigger context compression on the current conversation."""
+    def _manual_compress(self, cmd_original: str = ""):
+        """Manually trigger context compression on the current conversation.
+
+        Accepts an optional focus topic: ``/compress <focus>`` guides the
+        summariser to preserve information related to *focus* while being
+        more aggressive about discarding everything else.  Inspired by
+        Claude Code's ``/compact <focus>`` feature.
+        """
         if not self.conversation_history or len(self.conversation_history) < 4:
             print("(._.) Not enough conversation to compress (need at least 4 messages).")
             return
@@ -6215,18 +6221,30 @@ class HermesCLI:
             print("(._.) Compression is disabled in config.")
             return
 
+        # Extract optional focus topic from the command (e.g. "/compress database schema")
+        focus_topic = ""
+        if cmd_original:
+            parts = cmd_original.strip().split(None, 1)
+            if len(parts) > 1:
+                focus_topic = parts[1].strip()
+
         original_count = len(self.conversation_history)
         try:
             from agent.model_metadata import estimate_messages_tokens_rough
             from agent.manual_compression_feedback import summarize_manual_compression
             original_history = list(self.conversation_history)
             approx_tokens = estimate_messages_tokens_rough(original_history)
-            print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
+            if focus_topic:
+                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
+                      f"focus: \"{focus_topic}\"...")
+            else:
+                print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
             compressed, _ = self.agent._compress_context(
                 original_history,
                 self.agent._cached_system_prompt or "",
                 approx_tokens=approx_tokens,
+                focus_topic=focus_topic or None,
             )
             self.conversation_history = compressed
             new_tokens = estimate_messages_tokens_rough(self.conversation_history)

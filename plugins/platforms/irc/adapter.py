@@ -151,6 +151,18 @@ class IRCAdapter(BasePlatformAdapter):
             )
             return False
 
+        # Prevent two profiles from using the same IRC identity
+        try:
+            from gateway.status import acquire_scoped_lock, release_scoped_lock
+            lock_key = f"{self.server}:{self.nickname}"
+            if not acquire_scoped_lock("irc", lock_key):
+                logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
+                self._set_fatal_error("lock_conflict", "IRC identity in use by another profile", retryable=False)
+                return False
+            self._lock_key = lock_key
+        except ImportError:
+            self._lock_key = None  # status module not available (e.g. tests)
+
         try:
             ssl_ctx = None
             if self.use_tls:
@@ -197,6 +209,13 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Quit and close the connection."""
+        # Release the scoped lock so another profile can use this identity
+        if getattr(self, "_lock_key", None):
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("irc", self._lock_key)
+            except Exception:
+                pass
         self._mark_disconnected()
         if self._writer and not self._writer.is_closing():
             try:
@@ -500,4 +519,12 @@ def register(ctx):
         # IRC doesn't have phone numbers to redact
         pii_safe=False,
         allow_update_command=True,
+        # LLM guidance
+        platform_hint=(
+            "You are chatting via IRC. IRC does not support markdown formatting "
+            "— use plain text only. Messages are limited to ~450 characters per "
+            "line (long messages are automatically split). In channels, users "
+            "address you by prefixing your nick. Keep responses concise and "
+            "conversational."
+        ),
     )

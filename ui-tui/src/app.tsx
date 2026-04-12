@@ -455,11 +455,16 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
   }, [])
 
-  const setTrail = (next: string[]) => { turnToolsRef.current = next; return next }
+  const setTrail = (next: string[]) => {
+    turnToolsRef.current = next
+
+    return next
+  }
 
   const pruneTransient = useCallback(() => {
     setTurnTrail(prev => {
       const next = prev.filter(l => !isTransientTrailLine(l))
+
       return next.length === prev.length ? prev : setTrail(next)
     })
   }, [])
@@ -480,7 +485,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const answerClarify = useCallback(
     (answer: string) => {
-      if (!clarify) return
+      if (!clarify) {
+        return
+      }
 
       const label = TOOL_VERBS.clarify ?? 'clarify'
 
@@ -491,7 +498,12 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       if (answer) {
         persistedToolLabelsRef.current.add(label)
-        appendMessage({ role: 'system', text: '', kind: 'trail', tools: [buildToolTrailLine('clarify', clarify.question)] })
+        appendMessage({
+          role: 'system',
+          text: '',
+          kind: 'trail',
+          tools: [buildToolTrailLine('clarify', clarify.question)]
+        })
         appendMessage({ role: 'user', text: answer })
       } else {
         sys('prompt cancelled')
@@ -1457,8 +1469,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           const wasInterrupted = interruptedRef.current
           const savedReasoning = reasoningRef.current.trim()
           const persisted = persistedToolLabelsRef.current
-          const savedTools = turnToolsRef.current
-            .filter(l => isToolTrailResultLine(l) && ![...persisted].some(p => sameToolTrailGroup(p, l)))
+
+          const savedTools = turnToolsRef.current.filter(
+            l => isToolTrailResultLine(l) && ![...persisted].some(p => sameToolTrailGroup(p, l))
+          )
+
           const finalText = (p?.rendered ?? p?.text ?? buf.current).trimStart()
 
           idle()

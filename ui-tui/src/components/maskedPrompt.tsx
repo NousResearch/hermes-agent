@@ -2,6 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'
+
 import { TextInput } from './textInput.js'
 
 export function MaskedPrompt({

@@ -128,9 +128,6 @@ class IMessageAdapter(BasePlatformAdapter):
         # Dedup: guid -> timestamp
         self._seen_messages: Dict[str, float] = {}
 
-        # Track own sends to filter echo-backs
-        self._recent_sent_ids: set = set()
-
         # Health tracking
         self._last_message_time: float = time.monotonic()
 
@@ -312,34 +309,33 @@ class IMessageAdapter(BasePlatformAdapter):
     # -----------------------------------------------------------------------
 
     async def _seed_last_rowid(self) -> None:
-        """Get the current highest message rowid so poll mode starts from now.
-
-        Uses the most recent chat's latest message as the high-water mark.
-        imsg history requires --chat-id, so we first find the most recent chat.
-        """
-        try:
-            # Find most recent chat
-            if not self._chat_cache:
-                return
-            # Pick the first chat (we don't know which is newest without sorting,
-            # but any chat gives us a reasonable high-water mark)
-            chat_id = next(iter(self._chat_cache))
-
-            proc = await asyncio.create_subprocess_exec(
-                "imsg", "history", "--json", "--limit", "1",
-                "--chat-id", str(chat_id),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-            if proc.returncode == 0:
-                line = stdout.decode("utf-8", errors="replace").strip().split("\n")[0]
-                if line:
-                    data = json.loads(line)
-                    self._last_rowid = data.get("id", 0)
-                    logger.debug("iMessage: seeded last_rowid=%d", self._last_rowid)
-        except Exception as e:
-            logger.debug("iMessage: could not seed last_rowid: %s", e)
+        """Get the current highest message rowid so poll mode starts from now."""
+        if not self._chat_cache:
+            return
+        max_rowid = 0
+        # Sample up to 10 chats to find the highest rowid
+        chat_ids = list(self._chat_cache.keys())[:10]
+        for chat_id in chat_ids:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "imsg", "history", "--json", "--limit", "1",
+                    "--chat-id", str(chat_id),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode == 0:
+                    line = stdout.decode("utf-8", errors="replace").strip().split("\n")[0]
+                    if line:
+                        data = json.loads(line)
+                        rowid = data.get("id", 0)
+                        if rowid > max_rowid:
+                            max_rowid = rowid
+            except Exception:
+                continue
+        if max_rowid > 0:
+            self._last_rowid = max_rowid
+            logger.debug("iMessage: seeded last_rowid=%d (sampled %d chats)", max_rowid, len(chat_ids))
 
     async def _poll_once(self) -> int:
         """Run a short-lived `imsg watch --since-rowid` to fetch new messages.
@@ -465,6 +461,10 @@ class IMessageAdapter(BasePlatformAdapter):
         if got_output:
             # FSEvents works — continue with the normal watch listener loop
             logger.info("iMessage: FSEvents working — staying in watch mode")
+            # NOTE: There is a brief gap between killing this probe process and
+            # starting the full watch listener where messages could be missed.
+            # This is an acceptable startup race — only affects the first few
+            # seconds after the auto-detection probe succeeds.
             # Kill this process and hand off to the full watch listener
             try:
                 self._watch_process.kill()

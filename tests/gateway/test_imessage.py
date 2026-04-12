@@ -443,3 +443,225 @@ def test_channel_directory_includes_imessage():
     with open(source, encoding="utf-8") as f:
         content = f.read()
     assert '"imessage"' in content
+
+
+# ---------------------------------------------------------------------------
+# Send methods
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_text_success():
+    """send() should call imsg send and return success."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
+    mock_proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+        result = await adapter.send("+15551234567", "Hello!")
+        assert result.success is True
+        mock_exec.assert_called_once()
+        cmd_args = mock_exec.call_args[0]
+        assert "imsg" in cmd_args
+        assert "send" in cmd_args
+        assert "--to" in cmd_args
+        assert "+15551234567" in cmd_args
+        assert "--text" in cmd_args
+        assert "Hello!" in cmd_args
+
+
+@pytest.mark.asyncio
+async def test_send_text_failure():
+    """send() should return failure on non-zero exit."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"", b"error occurred"))
+    mock_proc.returncode = 1
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        result = await adapter.send("+15551234567", "Hello!")
+        assert result.success is False
+        assert "error" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_text_timeout():
+    """send() should return failure on timeout."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    with patch("asyncio.create_subprocess_exec", side_effect=asyncio.TimeoutError()):
+        result = await adapter.send("+15551234567", "Hello!")
+        assert result.success is False
+        assert "timed out" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_empty_recipient():
+    """send() should fail when recipient cannot be resolved."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    result = await adapter.send("", "Hello!")
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_send_file_success():
+    """_send_file should call imsg send --file and return success."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    mock_proc = AsyncMock()
+    mock_proc.communicate = AsyncMock(return_value=(b"OK", b""))
+    mock_proc.returncode = 0
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc), \
+         patch("os.path.exists", return_value=True):
+        result = await adapter._send_file("+15551234567", "/tmp/test.png", caption="Look!")
+        assert result.success is True
+
+
+@pytest.mark.asyncio
+async def test_send_file_not_found():
+    """_send_file should fail if file doesn't exist."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    with patch("os.path.exists", return_value=False):
+        result = await adapter._send_file("+15551234567", "/nonexistent.png")
+        assert result.success is False
+        assert "not found" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_image_local_file():
+    """send_image should delegate to send_image_file for local paths."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    adapter.send_image_file = AsyncMock(return_value=MagicMock(success=True))
+
+    with patch("os.path.exists", return_value=True):
+        result = await adapter.send_image("+15551234567", "/tmp/photo.jpg", caption="pic")
+        adapter.send_image_file.assert_called_once_with("+15551234567", "/tmp/photo.jpg", caption="pic")
+
+
+@pytest.mark.asyncio
+async def test_send_image_url_unsupported():
+    """send_image should fail for non-local URLs."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+
+    with patch("os.path.exists", return_value=False):
+        result = await adapter.send_image("+15551234567", "https://example.com/img.jpg")
+        assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Poll mode
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_seed_last_rowid_uses_max():
+    """_seed_last_rowid should find the max rowid across sampled chats."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    adapter._chat_cache = {
+        1: {"identifier": "+1", "name": "A", "service": "iMessage"},
+        2: {"identifier": "+2", "name": "B", "service": "iMessage"},
+    }
+
+    call_count = 0
+    async def fake_exec(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        mock_proc = AsyncMock()
+        # Chat 1 has rowid 100, chat 2 has rowid 200
+        rowid = 100 if call_count == 1 else 200
+        mock_proc.communicate = AsyncMock(
+            return_value=(f'{{"id": {rowid}}}\n'.encode(), b"")
+        )
+        mock_proc.returncode = 0
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+        await adapter._seed_last_rowid()
+        assert adapter._last_rowid == 200
+
+
+@pytest.mark.asyncio
+async def test_seed_last_rowid_empty_cache():
+    """_seed_last_rowid should do nothing with empty cache."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    adapter._chat_cache = {}
+    await adapter._seed_last_rowid()
+    assert adapter._last_rowid == 0
+
+
+@pytest.mark.asyncio
+async def test_poll_once_processes_messages():
+    """_poll_once should process new messages and update last_rowid."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    adapter._last_rowid = 50
+    adapter.handle_message = AsyncMock()
+    adapter._refresh_chat_cache = AsyncMock()
+
+    lines = [
+        b'{"id": 51, "guid": "g1", "is_from_me": false, "text": "hi", "chat_id": 1, "sender": "+1"}\n',
+        b'{"id": 52, "guid": "g2", "is_from_me": false, "text": "hey", "chat_id": 1, "sender": "+1"}\n',
+    ]
+
+    mock_proc = AsyncMock()
+    line_iter = iter(lines + [b""])  # Empty bytes signals EOF
+    async def fake_readline():
+        return next(line_iter)
+    mock_proc.stdout = AsyncMock()
+    mock_proc.stdout.readline = fake_readline
+    mock_proc.kill = MagicMock()
+    mock_proc.wait = AsyncMock()
+
+    with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+        count = await adapter._poll_once()
+        assert count == 2
+        assert adapter._last_rowid == 52
+
+
+@pytest.mark.asyncio
+async def test_send_typing_is_noop():
+    """send_typing should be a no-op for iMessage."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    # Should not raise
+    await adapter.send_typing("+15551234567")
+
+
+# ---------------------------------------------------------------------------
+# Chat info
+# ---------------------------------------------------------------------------
+
+def test_get_chat_info_from_cache():
+    """get_chat_info should return metadata from cache."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    adapter._chat_cache = {
+        42: {"identifier": "+15559876543", "name": "Alice", "service": "iMessage"},
+    }
+    import asyncio
+    info = asyncio.get_event_loop().run_until_complete(adapter.get_chat_info("42"))
+    assert info["name"] == "Alice"
+    assert info["identifier"] == "+15559876543"
+
+
+def test_get_chat_info_unknown():
+    """get_chat_info should return basic info for unknown chat_id."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    import asyncio
+    info = asyncio.get_event_loop().run_until_complete(adapter.get_chat_info("unknown"))
+    assert info["name"] == "unknown"
+    assert info["chat_id"] == "unknown"

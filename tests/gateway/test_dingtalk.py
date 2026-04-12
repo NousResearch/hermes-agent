@@ -94,11 +94,30 @@ class TestExtractText:
         msg.rich_text = None
         assert DingTalkAdapter._extract_text(msg) == "plain text"
 
+    def test_extracts_text_content_object(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        text_obj = MagicMock()
+        text_obj.content = "  hello object  "
+        msg.text = text_obj
+        msg.rich_text = None
+        assert DingTalkAdapter._extract_text(msg) == "hello object"
+
     def test_falls_back_to_rich_text(self):
         from gateway.platforms.dingtalk import DingTalkAdapter
         msg = MagicMock()
         msg.text = ""
         msg.rich_text = [{"text": "part1"}, {"text": "part2"}, {"image": "url"}]
+        assert DingTalkAdapter._extract_text(msg) == "part1 part2"
+
+    def test_falls_back_to_rich_text_content_object(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        msg = MagicMock()
+        msg.text = ""
+        msg.rich_text = None
+        rich_obj = MagicMock()
+        rich_obj.rich_text_list = [{"text": "part1"}, {"text": "part2"}]
+        msg.rich_text_content = rich_obj
         assert DingTalkAdapter._extract_text(msg) == "part1 part2"
 
     def test_returns_empty_for_no_content(self):
@@ -262,6 +281,51 @@ class TestConnect:
         assert len(adapter._session_webhooks) == 0
         assert len(adapter._dedup._seen) == 0
         assert adapter._http_client is None
+
+    @pytest.mark.asyncio
+    async def test_run_stream_awaits_async_start(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._running = True
+        adapter._stream_client = MagicMock()
+        adapter._stream_client.start = AsyncMock(side_effect=asyncio.CancelledError)
+
+        await adapter._run_stream()
+
+        adapter._stream_client.start.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_incoming_handler_parses_callback_message(self):
+        from gateway.platforms.dingtalk import _IncomingHandler
+
+        adapter = MagicMock()
+        adapter._on_message = AsyncMock()
+        handler = _IncomingHandler(adapter)
+        callback_message = MagicMock()
+        callback_message.data = {
+            "msgtype": "text",
+            "text": {"content": "hello"},
+            "msgId": "msg-1",
+            "senderId": "user-1",
+            "conversationId": "conv-1",
+            "conversationType": "1",
+            "sessionWebhook": "https://api.dingtalk.com/test",
+        }
+
+        code, text = await handler.process(callback_message)
+
+        assert code == 200
+        assert text == "OK"
+        adapter._on_message.assert_awaited_once()
+
+
+class TestWebhookValidation:
+
+    def test_accepts_oapi_session_webhook(self):
+        from gateway.platforms.dingtalk import _DINGTALK_WEBHOOK_RE
+        assert _DINGTALK_WEBHOOK_RE.match(
+            "https://oapi.dingtalk.com/robot/sendBySession?session=test"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -781,7 +781,12 @@ def _get_platform_tools(
     toolset_names = platform_toolsets.get(platform)
 
     if toolset_names is None or not isinstance(toolset_names, list):
-        default_ts = PLATFORMS[platform]["default_toolset"]
+        plat_info = PLATFORMS.get(platform)
+        if plat_info:
+            default_ts = plat_info["default_toolset"]
+        else:
+            # Plugin platform — derive toolset name from platform key
+            default_ts = f"hermes-{platform}"
         toolset_names = [default_ts]
 
     # YAML may parse bare numeric names (e.g. ``12306:``) as int.

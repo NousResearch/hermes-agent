@@ -10,6 +10,7 @@ import logging
 import os
 import shlex
 import time
+from pathlib import Path
 from typing import Callable
 
 from tools.environments.base import _file_mtime_key
@@ -21,6 +22,7 @@ _FORCE_SYNC_ENV = "HERMES_FORCE_FILE_SYNC"
 
 # Transport callbacks provided by each backend
 UploadFn = Callable[[str, str], None]  # (host_path, remote_path) -> raises on failure
+BulkUploadFn = Callable[[list[tuple[str, str]]], None]  # [(host_path, remote_path), ...] -> raises on failure
 DeleteFn = Callable[[list[str]], None]  # (remote_paths) -> raises on failure
 GetFilesFn = Callable[[], list[tuple[str, str]]]  # () -> [(host_path, remote_path), ...]
 
@@ -59,6 +61,16 @@ def quoted_rm_command(remote_paths: list[str]) -> str:
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
 
 
+def quoted_mkdir_command(dirs: list[str]) -> str:
+    """Build a shell ``mkdir -p`` command for a batch of directories."""
+    return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
+
+
+def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
+    """Extract sorted unique parent directories from (host, remote) pairs."""
+    return sorted({str(Path(remote).parent) for _, remote in files})
+
+
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment.
 
@@ -76,9 +88,11 @@ class FileSyncManager:
         upload_fn: UploadFn,
         delete_fn: DeleteFn,
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
+        bulk_upload_fn: BulkUploadFn | None = None,
     ):
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
+        self._bulk_upload_fn = bulk_upload_fn
         self._delete_fn = delete_fn
         self._synced_files: dict[str, tuple[float, int]] = {}  # remote_path -> (mtime, size)
         self._last_sync_time: float = 0.0  # monotonic; 0 ensures first sync runs
@@ -129,9 +143,13 @@ class FileSyncManager:
             logger.debug("file_sync: deleting %d stale remote file(s)", len(to_delete))
 
         try:
-            for host_path, remote_path in to_upload:
-                self._upload_fn(host_path, remote_path)
-                logger.debug("file_sync: uploaded %s -> %s", host_path, remote_path)
+            if to_upload and self._bulk_upload_fn is not None:
+                self._bulk_upload_fn(to_upload)
+                logger.debug("file_sync: bulk-uploaded %d file(s)", len(to_upload))
+            else:
+                for host_path, remote_path in to_upload:
+                    self._upload_fn(host_path, remote_path)
+                    logger.debug("file_sync: uploaded %s -> %s", host_path, remote_path)
 
             if to_delete:
                 self._delete_fn(to_delete)

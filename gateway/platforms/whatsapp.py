@@ -300,14 +300,14 @@ class WhatsAppAdapter(BasePlatformAdapter):
             print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
             try:
                 install_result = subprocess.run(
-                    ["npm", "install", "--silent"],
+                    ["npm", "ci", "--silent"],
                     cwd=str(bridge_dir),
                     capture_output=True,
                     text=True,
                     timeout=60,
                 )
                 if install_result.returncode != 0:
-                    print(f"[{self.name}] npm install failed: {install_result.stderr}")
+                    print(f"[{self.name}] npm ci failed: {install_result.stderr}")
                     return False
                 print(f"[{self.name}] Dependencies installed")
             except Exception as e:

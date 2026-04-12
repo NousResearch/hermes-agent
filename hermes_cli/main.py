@@ -896,14 +896,14 @@ def cmd_whatsapp(args):
     if not (bridge_dir / "node_modules").exists():
         print("\n→ Installing WhatsApp bridge dependencies...")
         result = subprocess.run(
-            ["npm", "install"],
+            ["npm", "ci"],
             cwd=str(bridge_dir),
             capture_output=True,
             text=True,
             timeout=120,
         )
         if result.returncode != 0:
-            print(f"  ✗ npm install failed: {result.stderr}")
+            print(f"  ✗ npm ci failed: {result.stderr}")
             return
         print("  ✓ Dependencies installed")
     else:
@@ -3810,7 +3810,7 @@ def cmd_update(args):
             import shutil
             if shutil.which("npm"):
                 print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+                subprocess.run(["npm", "ci", "--silent"], cwd=PROJECT_ROOT, check=False)
         
         print()
         print("✓ Code updated!")

@@ -13,13 +13,12 @@ import json
 import logging
 import os
 import random
-import re
 import shutil
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -45,11 +44,6 @@ DEDUP_MAX_SIZE = 2000
 POLL_INTERVAL_DEFAULT = 3.0  # seconds between DB polls
 POLL_COLLECT_TIMEOUT = 2.0  # seconds to wait for imsg watch --since-rowid output
 AUTO_FALLBACK_THRESHOLD = 30.0  # seconds: switch from fsevents to poll if no output
-
-# Phone number pattern for redaction
-_PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
-# Apple ID (email) pattern for redaction
-_APPLEID_RE = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
 
 # ---------------------------------------------------------------------------

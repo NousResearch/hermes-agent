@@ -1,0 +1,14 @@
+name: blockrun
+version: 1.0.0
+description: "BlockRun / ClawRouter — 50+ LLM models via x402 micropayments (USDC on Base or Solana)"
+author: BlockRun
+license: MIT
+pip_dependencies:
+  - blockrun-llm
+tags:
+  - LLM
+  - Payments
+  - Crypto
+  - x402
+  - Base
+  - Solana

@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Ansi, Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 import { LONG_MSG, ROLE } from '../constants.js'
@@ -40,7 +40,7 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role !== 'user' && hasAnsi(msg.text)) {
-      return <Text wrap="wrap">{msg.text}</Text>
+      return <Ansi>{msg.text}</Ansi>
     }
 
     if (msg.role === 'assistant') {

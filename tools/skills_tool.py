@@ -104,6 +104,21 @@ _REMOTE_ENV_BACKENDS = frozenset({"docker", "singularity", "modal", "ssh", "dayt
 _secret_capture_callback = None
 
 
+def _iter_skill_files(scan_dir: Path, filename: str = "SKILL.md"):
+    """Yield skill files under *scan_dir*, following directory symlinks.
+
+    ``Path.rglob()`` skips recursion into symlinked directories, which causes
+    symlinked local skills under ``~/.hermes/skills`` to disappear from normal
+    discovery. Reuse ``iter_skill_index_files()`` so list/view/prompt indexing
+    all agree on traversal behavior.
+    """
+    from agent.skill_utils import iter_skill_index_files
+
+    if not scan_dir.exists():
+        return
+    yield from iter_skill_index_files(scan_dir, filename)
+
+
 def load_env() -> Dict[str, str]:
     """Load profile-scoped environment variables from HERMES_HOME/.env."""
     env_path = get_hermes_home() / ".env"
@@ -535,7 +550,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
-        for skill_md in scan_dir.rglob("SKILL.md"):
+        for skill_md in _iter_skill_files(scan_dir):
             if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                 continue
 
@@ -665,7 +680,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         category_dirs = {}
         category_counts: Dict[str, int] = {}
         for scan_dir in all_dirs:
-            for skill_md in scan_dir.rglob("SKILL.md"):
+            for skill_md in _iter_skill_files(scan_dir):
                 if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
                     continue
 
@@ -824,7 +839,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Search by directory name across all dirs
         if not skill_md:
             for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
+                for found_skill_md in _iter_skill_files(search_dir):
                     if found_skill_md.parent.name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md

@@ -269,6 +269,21 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    @pytest.mark.skipif(os.name == "nt", reason="Directory symlinks require privileges on Windows")
+    def test_finds_symlinked_skill_directories(self, tmp_path):
+        source_root = tmp_path / "skill-source"
+        source_skill = _make_skill(source_root, "linked-skill", category="social-media")
+        link_root = tmp_path / "skills"
+        (link_root / "social-media").mkdir(parents=True)
+        (link_root / "social-media" / "linked-skill").symlink_to(source_skill, target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", link_root):
+            skills = _find_all_skills()
+
+        matching = [skill for skill in skills if skill["name"] == "linked-skill"]
+        assert len(matching) == 1
+        assert matching[0]["category"] == "social-media"
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -355,6 +370,21 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["linked_files"] is not None
         assert "references" in result["linked_files"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="Directory symlinks require privileges on Windows")
+    def test_view_bare_name_for_symlinked_skill_directory(self, tmp_path):
+        source_root = tmp_path / "skill-source"
+        source_skill = _make_skill(source_root, "follow-builders", category="social-media")
+        skills_root = tmp_path / "skills"
+        (skills_root / "social-media").mkdir(parents=True)
+        (skills_root / "social-media" / "follow-builders").symlink_to(source_skill, target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            result = json.loads(skill_view("follow-builders"))
+
+        assert result["success"] is True
+        assert result["name"] == "follow-builders"
+        assert "Do the thing" in result["content"]
 
     def test_view_tags_from_metadata(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

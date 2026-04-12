@@ -4,7 +4,7 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-QQixyLmsn5+Y1daHifzDaNQbaoZjm+ezGrGoLXcc95U=";
+    hash = "sha256-+EhRRuvXi5hJupseHblF+MGxs84ijRMIH4qt5+2yYi8=";
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
@@ -28,6 +28,10 @@ pkgs.buildNpmPackage {
     # runtime node_modules
     cp -r node_modules $out/lib/hermes-tui/node_modules
 
+    # @hermes/ink is a file: dependency, we need to copy it in fr
+    rm -f $out/lib/hermes-tui/node_modules/@hermes/ink
+    cp -r packages/hermes-ink $out/lib/hermes-tui/node_modules/@hermes/ink
+
     # package.json needed for "type": "module" resolution
     cp package.json $out/lib/hermes-tui/
 
@@ -36,7 +40,7 @@ pkgs.buildNpmPackage {
 
   nativeBuildInputs = [
     (pkgs.writeShellScriptBin "update_tui_lockfile" ''
-      set -euo pipefail
+      set -euox pipefail
 
       # get root of repo
       REPO_ROOT=$(git rev-parse --show-toplevel)
@@ -45,7 +49,7 @@ pkgs.buildNpmPackage {
       cd "$REPO_ROOT/ui-tui"
       rm -rf node_modules/
       npm cache clean --force
-      npm install
+      CI=true npm install # ci env var to suppress annoying unicode install banner lag
       ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
 
       NIX_FILE="$REPO_ROOT/nix/tui.nix"
@@ -65,7 +69,7 @@ pkgs.buildNpmPackage {
     STAMP_VALUE="${npmLockHash}"
     if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
       echo "hermes-tui: installing npm dependencies..."
-      cd ui-tui && npm install --silent --no-fund --no-audit 2>/dev/null && cd ..
+      cd ui-tui && CI=true npm install --silent --no-fund --no-audit 2>/dev/null && cd ..
       mkdir -p .nix-stamps
       echo "$STAMP_VALUE" > "$STAMP"
     fi

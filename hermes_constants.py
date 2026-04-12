@@ -189,6 +189,33 @@ def is_wsl() -> bool:
     return _wsl_detected
 
 
+# ─── Well-Known Paths ─────────────────────────────────────────────────────────
+
+
+def get_config_path() -> Path:
+    """Return the path to ``config.yaml`` under HERMES_HOME.
+
+    Replaces the ``get_hermes_home() / "config.yaml"`` pattern repeated
+    in 7+ files (skill_utils.py, hermes_logging.py, hermes_time.py, etc.).
+    """
+    return get_hermes_home() / "config.yaml"
+
+
+def get_skills_dir() -> Path:
+    """Return the path to the skills directory under HERMES_HOME."""
+    return get_hermes_home() / "skills"
+
+
+def get_logs_dir() -> Path:
+    """Return the path to the logs directory under HERMES_HOME."""
+    return get_hermes_home() / "logs"
+
+
+def get_env_path() -> Path:
+    """Return the path to the ``.env`` file under HERMES_HOME."""
+    return get_hermes_home() / ".env"
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fmtK, isToolTrailResultLine, lastCotTrailIndex, sameToolTrailGroup } from '../lib/text.js'
+import { estimateRows, fmtK, isToolTrailResultLine, lastCotTrailIndex, sameToolTrailGroup } from '../lib/text.js'
 
 describe('isToolTrailResultLine', () => {
   it('detects completion markers', () => {
@@ -47,5 +47,19 @@ describe('fmtK', () => {
   it('formats millions and billions', () => {
     expect(fmtK(1_000_000)).toBe('1M')
     expect(fmtK(1_000_000_000)).toBe('1B')
+  })
+})
+
+describe('estimateRows', () => {
+  it('handles tilde code fences', () => {
+    const md = ['~~~markdown', '# heading', '~~~'].join('\n')
+
+    expect(estimateRows(md, 40)).toBeGreaterThanOrEqual(2)
+  })
+
+  it('handles checklist bullets as list rows', () => {
+    const md = ['- [x] done', '- [ ] todo'].join('\n')
+
+    expect(estimateRows(md, 40)).toBe(2)
   })
 })

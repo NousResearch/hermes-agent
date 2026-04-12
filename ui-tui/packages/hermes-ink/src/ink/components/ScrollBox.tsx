@@ -252,7 +252,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
   // commit, which is too late for the first frame.
   return (
     <ink-box
-      ref={el => {
+      ref={(el: DOMElement | null) => {
         domRef.current = el
 
         if (el) {

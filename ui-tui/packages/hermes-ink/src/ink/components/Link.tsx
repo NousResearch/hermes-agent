@@ -11,7 +11,7 @@ export type Props = {
   readonly fallback?: ReactNode
 }
 
-export default function Link(t0) {
+export default function Link(t0: Props) {
   const $ = _c(5)
 
   const { children, url, fallback } = t0

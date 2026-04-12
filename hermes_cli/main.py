@@ -606,18 +606,58 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
     )
 
 
-def _find_bundled_tui() -> Optional[Path]:
-    """Find a bundled copy of the TUI.
-    Does *not* read from the `npm run build` dist dir,
-    as this would be a footgun when developing
-    """
-    bundled_tui_dir = os.environ.get("HERMES_TUI_DIR")
-    if bundled_tui_dir and (Path(bundled_tui_dir) / "dist" / "entry.js").exists():
-        return Path(bundled_tui_dir)
+def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
+    """Directory whose dist/entry.js we should run: HERMES_TUI_DIR first, else repo ui-tui."""
+    env = os.environ.get("HERMES_TUI_DIR")
+    if env:
+        p = Path(env)
+        if (p / "dist" / "entry.js").exists():
+            return p
+    if (tui_dir / "dist" / "entry.js").exists():
+        return tui_dir
     return None
 
-def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
-    """Gets argv to run tui + the working directory. Will npm install deps in dev mode."""
+
+def _tui_build_needed(tui_dir: Path) -> bool:
+    entry = tui_dir / "dist" / "entry.js"
+    if not entry.exists():
+        return True
+    dist_m = entry.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_m:
+                    return True
+    for meta in ("package.json", "package-lock.json", "tsconfig.json", "tsconfig.build.json"):
+        mp = tui_dir / meta
+        if mp.exists() and mp.stat().st_mtime > dist_m:
+            return True
+    return False
+
+
+def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
+    ink_root = tui_dir / "packages" / "hermes-ink"
+    bundle = ink_root / "dist" / "ink-bundle.js"
+    if not bundle.exists():
+        return True
+    bm = bundle.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > bm:
+                    return True
+    mp = ink_root / "package.json"
+    if mp.exists() and mp.stat().st_mtime > bm:
+        return True
+    return False
+
+
+def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
+    """Ink TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
     def _node_bin(bin: str)-> str:
         path = shutil.which(bin)
         if not path:
@@ -625,17 +665,15 @@ def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
-    # use prebuilt TUI if it exists
-    bundled = _find_bundled_tui()
-    if bundled:
-        node = _node_bin("node")
-        return [node, str(bundled / "dist" / "entry.js")], bundled
+    # pre-built dist (nix / HERMES_TUI_DIR) needs no npm at all.
+    if not tui_dev:
+        bundled = _find_bundled_tui(tui_dir)
+        if bundled:
+            node = _node_bin("node")
+            return [node, str(bundled / "dist" / "entry.js")], bundled
 
-    # dev mode - run via tsx
-
-    # install deps if needed
+    npm = _node_bin("npm")
     if not (tui_dir / "node_modules").exists():
-        npm = _node_bin("npm")
         print("Installing TUI dependencies…")
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
@@ -652,23 +690,60 @@ def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
                 print(preview)
             sys.exit(1)
 
-    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
-    if tsx.exists():
-        return [str(tsx), "src/entry.tsx"], tui_dir
+    if tui_dev:
+        if _hermes_ink_bundle_stale(tui_dir):
+            result = subprocess.run(
+                [npm, "run", "build", "--prefix", "packages/hermes-ink"],
+                cwd=str(tui_dir),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+                preview = "\n".join(combined.splitlines()[-30:])
+                print("@hermes/ink build failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
+        tsx = tui_dir / "node_modules" / ".bin" / "tsx"
+        if tsx.exists():
+            return [str(tsx), "src/entry.tsx"], tui_dir
+        return [npm, "start"], tui_dir
 
-    npm = _node_bin("npm")
-    return [npm, "start"], tui_dir
+    if _tui_build_needed(tui_dir):
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(tui_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI build failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
 
-def _launch_tui(resume_session_id: Optional[str] = None):
+    root = _find_bundled_tui(tui_dir)
+    if not root:
+        print("TUI build did not produce dist/entry.js")
+        sys.exit(1)
+
+    node = _node_bin("node")
+    return [node, str(root / "dist" / "entry.js")], root
+
+def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     """Replace current process with the Ink TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     env = os.environ.copy()
-    env["HERMES_ROOT"] = os.environ.get("HERMES_ROOT", str(PROJECT_ROOT))
+    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get("HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT))
+    env.setdefault("HERMES_CWD", os.getcwd())
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir)
+    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     try:
         code = subprocess.call(argv, cwd=str(cwd), env=env)
     except KeyboardInterrupt:
@@ -718,9 +793,6 @@ def cmd_chat(args):
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
-    if use_tui:
-        _launch_tui(getattr(args, "resume", None))
-
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()
@@ -769,6 +841,13 @@ def cmd_chat(args):
     # --source: tag session source for filtering (e.g. 'tool' for third-party integrations)
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
+
+
+    if use_tui:
+        _launch_tui(
+            getattr(args, "resume", None),
+            tui_dev=getattr(args, "tui_dev", False),
+        )
 
     # Import and run the CLI
     from cli import main as cli_main
@@ -1069,6 +1148,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "xiaomi": "Xiaomi MiMo",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -1101,6 +1181,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1212,7 +1293,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2682,13 +2763,8 @@ def _model_flow_anthropic(config, current_model=""):
     from hermes_cli.models import _PROVIDER_MODELS
 
     # Check ALL credential sources
-    existing_key = (
-        get_env_value("ANTHROPIC_TOKEN")
-        or os.getenv("ANTHROPIC_TOKEN", "")
-        or get_env_value("ANTHROPIC_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY", "")
-        or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-    )
+    from hermes_cli.auth import get_anthropic_key
+    existing_key = get_anthropic_key()
     cc_available = False
     try:
         from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -3062,6 +3138,8 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
     
+    _update_node_dependencies()
+
     # Sync skills
     try:
         from tools.skills_sync import sync_skills
@@ -3581,9 +3659,42 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
 
+def _update_node_dependencies() -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        return
+
+    paths = (
+        ("repo root", PROJECT_ROOT),
+        ("ui-tui", PROJECT_ROOT / "ui-tui"),
+    )
+    if not any((path / "package.json").exists() for _, path in paths):
+        return
+
+    print("→ Updating Node.js dependencies...")
+    for label, path in paths:
+        if not (path / "package.json").exists():
+            continue
+
+        result = subprocess.run(
+            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ {label}")
+            continue
+
+        print(f"  ⚠ npm install failed in {label}")
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            print(f"    {stderr.splitlines()[-1]}")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
-    import shutil
     from hermes_cli.config import is_managed, managed_error
 
     if is_managed():
@@ -3802,13 +3913,8 @@ def cmd_update(args):
                 )
             _install_python_dependencies_with_optional_fallback(pip_cmd)
         
-        # Check for Node.js deps
-        if (PROJECT_ROOT / "package.json").exists():
-            import shutil
-            if shutil.which("npm"):
-                print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
-        
+        _update_node_dependencies()
+
         print()
         print("✓ Code updated!")
         
@@ -4014,7 +4120,7 @@ def cmd_update(args):
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
             service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(exclude_pids=service_pids)
+            manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
             for pid in manual_pids:
                 try:
                     os.kill(pid, _signal.SIGTERM)
@@ -4463,7 +4569,14 @@ For more help on a command:
         default=False,
         help="Launch the Ink-based terminal UI instead of the classic REPL"
     )
-    
+    parser.add_argument(
+        "--dev",
+        dest="tui_dev",
+        action="store_true",
+        default=False,
+        help="With --tui: run TypeScript sources via tsx (skip dist build)",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
     # =========================================================================
@@ -4498,7 +4611,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -4568,6 +4681,13 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Launch the Ink-based terminal UI instead of the classic REPL"
+    )
+    chat_parser.add_argument(
+        "--dev",
+        dest="tui_dev",
+        action="store_true",
+        default=False,
+        help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
     chat_parser.set_defaults(func=cmd_chat)
 
@@ -5558,7 +5678,8 @@ For more help on a command:
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
         help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
+                    "Always shows a preview before making changes."
     )
     claw_migrate.add_argument(
         "--source",
@@ -5567,7 +5688,7 @@ For more help on a command:
     claw_migrate.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview what would be migrated without making changes"
+        help="Preview only — stop after showing what would be migrated"
     )
     claw_migrate.add_argument(
         "--preset",

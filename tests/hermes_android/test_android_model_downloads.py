@@ -23,27 +23,35 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
 
     assert 'Saved Hugging Face token for gated model downloads' in downloads_view_model
     assert 'refreshDownloads()' in downloads_view_model
+    assert 'restartDownloadOnMobileData(' in downloads_view_model
+    assert 'ACTION_VIEW_DOWNLOADS' in downloads_view_model
     assert 'setPreferredDownload(' in downloads_view_model
     assert 'LocalModelDownloadRecord' in download_store
     assert 'preferred_download_id' in download_store
+    assert 'allowMetered' in download_store
+    assert 'allowRoaming' in download_store
     assert 'DownloadManager' in download_manager
-    assert 'setAllowedOverMetered(!dataSaverMode)' in download_manager
-    assert 'Paused until network connectivity returns' in download_manager
-    assert 'Paused until Wi‑Fi / unmetered connectivity is available' in download_manager
+    assert 'setAllowedOverMetered(allowMetered)' in download_manager
+    assert 'setAllowedOverRoaming(allowRoaming)' in download_manager
+    assert 'Restart on mobile data' in download_manager
+    assert 'Paused because Android treats the current connection as roaming' in download_manager
     assert 'larger than your phone RAM' in download_manager
     assert 'supportsResume' in download_store
 
 
-def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_pocketpal_reference():
+def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobile_restart_guidance():
     downloads_ui = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/settings/LocalModelDownloadsSection.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
     download_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/models/HermesModelDownloadManager.kt").read_text(encoding="utf-8")
 
-    assert 'Hugging Face local model downloads' in downloads_ui
-    assert 'Data saver mode' in downloads_ui
-    assert 'PocketPal AI' in downloads_ui
-    assert 'resume safely after network loss or a phone restart' in downloads_ui
-    assert 'Unexpected connection loss is handled safely by Android DownloadManager' in downloads_ui
-    assert 'Set preferred' in downloads_ui
+    assert 'strings.localDownloadsExampleGuidance()' in downloads_ui
+    assert 'strings.downloadManagerReliabilityDescription()' in downloads_ui
+    assert 'strings.localDownloadStatusLine(item.runtimeFlavor, item.statusLabel)' in downloads_ui
+    assert 'strings.restartOnMobileData()' in downloads_ui
+    assert 'strings.openSystemDownloads()' in downloads_ui
+    assert 'Qwen/Qwen2.5-1.5B-Instruct-GGUF' in strings
+    assert 'litert-community/Phi-4-mini-instruct' in strings
+    assert 'Google AI Edge Gallery currently relies on these curated LiteRT-LM repos' in strings
     assert 'Warning: this download is larger than your phone RAM' in download_manager
 
 

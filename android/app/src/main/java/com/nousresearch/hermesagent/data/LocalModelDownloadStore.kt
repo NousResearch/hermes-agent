@@ -22,6 +22,8 @@ data class LocalModelDownloadRecord(
     val statusMessage: String = "Queued",
     val ramWarning: String = "",
     val supportsResume: Boolean = true,
+    val allowMetered: Boolean = true,
+    val allowRoaming: Boolean = false,
     val updatedAtEpochMs: Long = System.currentTimeMillis(),
 )
 
@@ -99,6 +101,8 @@ class LocalModelDownloadStore(context: Context) {
             put("statusMessage", statusMessage)
             put("ramWarning", ramWarning)
             put("supportsResume", supportsResume)
+            put("allowMetered", allowMetered)
+            put("allowRoaming", allowRoaming)
             put("updatedAtEpochMs", updatedAtEpochMs)
         }
     }
@@ -121,6 +125,8 @@ class LocalModelDownloadStore(context: Context) {
             statusMessage = optString("statusMessage", "Queued"),
             ramWarning = optString("ramWarning", ""),
             supportsResume = optBoolean("supportsResume", true),
+            allowMetered = optBoolean("allowMetered", true),
+            allowRoaming = optBoolean("allowRoaming", false),
             updatedAtEpochMs = optLong("updatedAtEpochMs", System.currentTimeMillis()),
         )
     }

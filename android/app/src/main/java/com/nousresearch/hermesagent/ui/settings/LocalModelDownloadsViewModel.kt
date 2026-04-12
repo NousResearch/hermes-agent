@@ -1,6 +1,9 @@
 package com.nousresearch.hermesagent.ui.settings
 
 import android.app.Application
+import android.app.DownloadManager
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.text.format.Formatter
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -31,6 +34,8 @@ data class LocalModelDownloadItemUi(
     val ramWarning: String,
     val isPreferred: Boolean,
     val localPath: String,
+    val canRestartOnMobileData: Boolean,
+    val canOpenSystemDownloads: Boolean,
 )
 
 data class LocalModelDownloadsUiState(
@@ -257,6 +262,37 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
         refreshDownloads()
     }
 
+    fun restartDownloadOnMobileData(recordId: String) {
+        val restarted = HermesModelDownloadManager.restartDownloadOnMobileData(
+            context = getApplication(),
+            store = downloadStore,
+            recordId = recordId,
+            hfToken = _uiState.value.huggingFaceToken,
+        )
+        refreshDownloads()
+        _uiState.update {
+            it.copy(
+                inspectionStatus = if (restarted != null) {
+                    "Restarted ${restarted.title} with mobile data and roaming allowed"
+                } else {
+                    "Unable to restart this download on mobile data"
+                }
+            )
+        }
+    }
+
+    fun openSystemDownloads() {
+        val intent = Intent(DownloadManager.ACTION_VIEW_DOWNLOADS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            getApplication<Application>().startActivity(intent)
+            _uiState.update { it.copy(inspectionStatus = "Opened Android Downloads") }
+        } catch (_: ActivityNotFoundException) {
+            _uiState.update { it.copy(inspectionStatus = "Android Downloads is not available on this device") }
+        }
+    }
+
     fun setPreferredDownload(recordId: String) {
         HermesModelDownloadManager.setPreferredDownload(downloadStore, recordId)
         refreshDownloads()
@@ -301,6 +337,7 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
             } else {
                 Formatter.formatShortFileSize(context, downloadedBytes)
             }
+            val transientStatus = record.status in setOf("queued", "paused", "downloading")
             LocalModelDownloadItemUi(
                 id = record.id,
                 title = record.title,
@@ -312,6 +349,8 @@ class LocalModelDownloadsViewModel(application: Application) : AndroidViewModel(
                 ramWarning = record.ramWarning,
                 isPreferred = preferredId == record.id,
                 localPath = record.destinationPath,
+                canRestartOnMobileData = transientStatus && (!record.allowMetered || !record.allowRoaming),
+                canOpenSystemDownloads = transientStatus,
             )
         }
     }

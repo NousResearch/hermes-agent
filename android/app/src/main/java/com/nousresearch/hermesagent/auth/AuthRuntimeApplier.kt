@@ -33,6 +33,8 @@ object AuthRuntimeApplier {
             session.apiKey,
             session.accessToken,
             session.sessionToken,
+            session.refreshToken,
+            resolvedBaseUrl,
         )
         python.getModule("hermes_android.config_bridge").callAttr(
             "write_runtime_config",

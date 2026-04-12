@@ -103,6 +103,245 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
     return normalized
 
 
+_USER_TASK_SEPARATOR = "\n\n--- USER MESSAGE ---\n\n"
+_MESSAGE_SEPARATOR = "\n\n--- MESSAGE ---\n\n"
+_DELIVERY_TARGETS = (
+    "origin", "local", "telegram", "discord", "slack", "whatsapp", "signal",
+    "weixin", "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "wecom", "email", "sms", "bluebubbles",
+)
+_DELIVERY_FIELD_RE = re.compile(
+    rf"(?i)\b(?:deliver|delivery)\s*:\s*((?:{'|'.join(map(re.escape, _DELIVERY_TARGETS))})(?::[^\s,;]+)?)"
+)
+_DELIVERY_TOKEN_RE = re.compile(
+    rf"(?i)\b((?:{'|'.join(map(re.escape, _DELIVERY_TARGETS))})(?::[^\s,;]+)?)\b"
+)
+_SCHEDULE_FIELD_RE = re.compile(
+    r"(?i)\bschedule\s*:\s*([^\n]+?)(?=\s+-\s+[A-Za-z][A-Za-z ]*:|$)"
+)
+_EVERY_SCHEDULE_RE = re.compile(
+    r"(?i)\b(every\s+\d+\s*(?:m|min(?:ute)?s?|h|hr(?:s)?|hours?|d|days?|w|weeks?))\b"
+)
+_ROLE_PREFIX_RE = re.compile(r"^\[(user|assistant|tool)\]\s*", re.IGNORECASE)
+_JOB_ID_RE = r"[0-9a-f]{8,32}"
+_REMOVE_ID_RE = re.compile(rf"(?i)(?:删除(?:任务)?|remove(?:\s+task)?)\s*`?({_JOB_ID_RE})`?")
+_UPDATE_ID_RE = re.compile(rf"(?i)(?:更新(?:任务)?|update(?:\s+task)?)\s*`?({_JOB_ID_RE})`?")
+_THIS_TASK_UPDATE_RE = re.compile(r"(?i)(?:更新这个任务|update this task)")
+_NAME_FIELD_RE = re.compile(r"(?i)\b(?:name|名称)\s*[:：]\s*`?([^\n`]+)`?")
+_REPORT_ONLY_RE = re.compile(r"(?i)(?:report only|仅报告)\s*[:：]?\s*(.*)")
+_NO_ISSUES_RE = re.compile(r"(?i)(?:若无异常|如果一切正常|if nothing(?: is)? abnormal|if everything is normal)")
+
+
+def _split_user_task_messages(user_task: Optional[str]) -> List[str]:
+    if not user_task or not isinstance(user_task, str):
+        return []
+    if _MESSAGE_SEPARATOR in user_task:
+        return [part.strip() for part in user_task.split(_MESSAGE_SEPARATOR) if part.strip()]
+    if _USER_TASK_SEPARATOR in user_task:
+        return [part.strip() for part in user_task.split(_USER_TASK_SEPARATOR) if part.strip()]
+    stripped = user_task.strip()
+    return [stripped] if stripped else []
+
+
+def _strip_role_prefix(message: str) -> str:
+    return _ROLE_PREFIX_RE.sub("", str(message or "").strip())
+
+
+def _clean_inline_field(value: str) -> str:
+    cleaned = str(value or "").strip().strip("`'\"")
+    cleaned = re.split(r"\s+-\s+[A-Za-z][A-Za-z ]*:", cleaned, maxsplit=1)[0].strip()
+    return cleaned.rstrip(".,;")
+
+
+def _infer_schedule_from_messages(messages: List[str]) -> Optional[str]:
+    candidates: List[str] = []
+    for message in messages:
+        text = _strip_role_prefix(message)
+        schedule_match = _SCHEDULE_FIELD_RE.search(text)
+        if schedule_match:
+            candidates.append(schedule_match.group(1))
+        every_match = _EVERY_SCHEDULE_RE.search(text)
+        if every_match:
+            candidates.append(every_match.group(1))
+
+    for candidate in candidates:
+        cleaned = _clean_inline_field(candidate)
+        if not cleaned:
+            continue
+        try:
+            parse_schedule(cleaned)
+            return cleaned
+        except Exception:
+            continue
+    return None
+
+
+def _infer_delivery_from_messages(messages: List[str]) -> Optional[str]:
+    for message in reversed(messages):
+        text = _strip_role_prefix(message)
+        field_match = _DELIVERY_FIELD_RE.search(text)
+        if field_match:
+            return _clean_inline_field(field_match.group(1)).lower()
+        stripped = text.strip().lower()
+        token_match = _DELIVERY_TOKEN_RE.fullmatch(stripped)
+        if token_match:
+            return token_match.group(1).lower()
+    return None
+
+
+def _infer_prompt_from_messages(messages: List[str]) -> Optional[str]:
+    for message in messages:
+        stripped = _strip_role_prefix(message)
+        if not stripped:
+            continue
+        if _DELIVERY_TOKEN_RE.fullmatch(stripped.lower()):
+            continue
+        return stripped
+    return None
+
+
+def _infer_name_from_messages(messages: List[str]) -> Optional[str]:
+    for message in reversed(messages):
+        match = _NAME_FIELD_RE.search(_strip_role_prefix(message))
+        if match:
+            return _clean_inline_field(match.group(1))
+    return None
+
+
+def _extract_remove_ids(messages: List[str]) -> List[str]:
+    ids: List[str] = []
+    for message in messages:
+        for match in _REMOVE_ID_RE.findall(_strip_role_prefix(message)):
+            if match not in ids:
+                ids.append(match)
+    return ids
+
+
+def _extract_update_ids(messages: List[str]) -> List[str]:
+    ids: List[str] = []
+    for message in messages:
+        for match in _UPDATE_ID_RE.findall(_strip_role_prefix(message)):
+            if match not in ids:
+                ids.append(match)
+    return ids
+
+
+def _extract_recent_job_ids(messages: List[str]) -> List[str]:
+    ids: List[str] = []
+    for message in reversed(messages):
+        text = _strip_role_prefix(message)
+        for match in re.findall(_JOB_ID_RE, text, flags=re.IGNORECASE):
+            lowered = match.lower()
+            if lowered not in ids:
+                ids.append(lowered)
+    return ids
+
+
+def _synthesize_health_check_prompt(messages: List[str]) -> Optional[str]:
+    joined = "\n".join(_strip_role_prefix(message) for message in messages)
+    checks = []
+    for command in ("df -h", "free -h", "docker ps"):
+        if command in joined and command not in checks:
+            checks.append(command)
+
+    report_items = []
+    if "80%" in joined:
+        report_items.append("partitions with usage above 80%")
+    if re.search(r"(?i)restart|重启", joined):
+        report_items.append("containers showing restart activity")
+    if re.search(r"(?i)memory|内存", joined):
+        report_items.append("high memory usage")
+
+    if not checks and not report_items:
+        return None
+
+    prompt_lines = []
+    if checks:
+        prompt_lines.append(
+            f"Run {', '.join(f'`{command}`' for command in checks)}."
+        )
+    if report_items:
+        prompt_lines.append("Report only these issues:")
+        prompt_lines.extend(f"- {item}" for item in report_items)
+    if _NO_ISSUES_RE.search(joined):
+        prompt_lines.append("If nothing is abnormal, reply exactly: 无异常")
+    elif checks:
+        prompt_lines.append("If nothing is abnormal, reply: 无异常")
+
+    return "\n".join(prompt_lines) if prompt_lines else None
+
+
+def _recover_cron_args(args: Optional[Dict[str, Any]], user_task: Optional[str]) -> Dict[str, Any]:
+    recovered = dict(args or {})
+    requested_action = str(recovered.get("action") or "").strip().lower()
+    if requested_action:
+        return recovered
+
+    messages = _split_user_task_messages(user_task)
+    if not messages:
+        return recovered
+
+    remove_ids = _extract_remove_ids(messages)
+    update_ids = _extract_update_ids(messages)
+    recent_ids = _extract_recent_job_ids(messages)
+
+    if remove_ids and update_ids:
+        recovered["_recovered_actions"] = [
+            {"action": "remove", "job_id": remove_ids[0]},
+            {
+                "action": "update",
+                "job_id": update_ids[0],
+                "name": _infer_name_from_messages(messages),
+                "schedule": _infer_schedule_from_messages(messages),
+                "deliver": _infer_delivery_from_messages(messages),
+                "prompt": _synthesize_health_check_prompt(messages) or _infer_prompt_from_messages(messages),
+            },
+        ]
+        return recovered
+
+    if remove_ids:
+        recovered["action"] = "remove"
+        recovered["job_id"] = remove_ids[0]
+        return recovered
+
+    if update_ids:
+        recovered["action"] = "update"
+        recovered["job_id"] = update_ids[0]
+        recovered["name"] = recovered.get("name") or _infer_name_from_messages(messages)
+        recovered["schedule"] = recovered.get("schedule") or _infer_schedule_from_messages(messages)
+        recovered["deliver"] = recovered.get("deliver") or _infer_delivery_from_messages(messages)
+        recovered["prompt"] = recovered.get("prompt") or _synthesize_health_check_prompt(messages) or _infer_prompt_from_messages(messages)
+        return recovered
+
+    latest_message = _strip_role_prefix(messages[-1]).lower()
+    if _THIS_TASK_UPDATE_RE.search(latest_message) and recent_ids:
+        recovered["action"] = "update"
+        recovered["job_id"] = recent_ids[0]
+        recovered["name"] = recovered.get("name") or _infer_name_from_messages(messages)
+        recovered["schedule"] = recovered.get("schedule") or _infer_schedule_from_messages(messages)
+        recovered["deliver"] = recovered.get("deliver") or _infer_delivery_from_messages(messages)
+        recovered["prompt"] = recovered.get("prompt") or _synthesize_health_check_prompt(messages) or _infer_prompt_from_messages(messages)
+        return recovered
+
+    schedule = recovered.get("schedule") or _infer_schedule_from_messages(messages)
+    prompt = recovered.get("prompt") or _synthesize_health_check_prompt(messages) or _infer_prompt_from_messages(messages)
+    if not schedule or not prompt:
+        return recovered
+
+    recovered["action"] = "create"
+    recovered["schedule"] = schedule
+    recovered["prompt"] = prompt
+
+    deliver = recovered.get("deliver") or _infer_delivery_from_messages(messages)
+    if deliver:
+        recovered["deliver"] = deliver
+    name = recovered.get("name") or _infer_name_from_messages(messages)
+    if name:
+        recovered["name"] = name
+
+    return recovered
+
+
 
 
 def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
@@ -410,6 +649,57 @@ def remove_cronjob(job_id: str, task_id: str = None) -> str:
     return cronjob(action="remove", job_id=job_id, task_id=task_id)
 
 
+def _dispatch_cronjob(args: Dict[str, Any], **kw) -> str:
+    recovered_args = _recover_cron_args(args, kw.get("user_task"))
+    recovered_actions = recovered_args.get("_recovered_actions")
+    if isinstance(recovered_actions, list) and recovered_actions:
+        results = []
+        for action_args in recovered_actions:
+            merged_args = {k: v for k, v in action_args.items() if v is not None}
+            result = json.loads(_dispatch_cronjob(merged_args, **kw))
+            if not result.get("success"):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": "Recovered multi-step cron action failed.",
+                        "results": results + [result],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            results.append(result)
+
+        return json.dumps(
+            {
+                "success": True,
+                "results": results,
+                "message": "Recovered and executed multiple cron actions.",
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    provider_override, model_override = _resolve_model_override(recovered_args.get("model"))
+    return cronjob(
+        action=recovered_args.get("action", ""),
+        job_id=recovered_args.get("job_id"),
+        prompt=recovered_args.get("prompt"),
+        schedule=recovered_args.get("schedule"),
+        name=recovered_args.get("name"),
+        repeat=recovered_args.get("repeat"),
+        deliver=recovered_args.get("deliver"),
+        include_disabled=recovered_args.get("include_disabled", True),
+        skill=recovered_args.get("skill"),
+        skills=recovered_args.get("skills"),
+        model=model_override,
+        provider=provider_override or recovered_args.get("provider"),
+        base_url=recovered_args.get("base_url"),
+        reason=recovered_args.get("reason"),
+        script=recovered_args.get("script"),
+        task_id=kw.get("task_id"),
+    )
+
+
 CRONJOB_SCHEMA = {
     "name": "cronjob",
     "description": """Manage scheduled cron jobs with a single compressed tool.
@@ -510,24 +800,7 @@ registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
-        action=args.get("action", ""),
-        job_id=args.get("job_id"),
-        prompt=args.get("prompt"),
-        schedule=args.get("schedule"),
-        name=args.get("name"),
-        repeat=args.get("repeat"),
-        deliver=args.get("deliver"),
-        include_disabled=args.get("include_disabled", True),
-        skill=args.get("skill"),
-        skills=args.get("skills"),
-        model=_mo[1],
-        provider=_mo[0] or args.get("provider"),
-        base_url=args.get("base_url"),
-        reason=args.get("reason"),
-        script=args.get("script"),
-        task_id=kw.get("task_id"),
-    ))(),
+    handler=_dispatch_cronjob,
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )

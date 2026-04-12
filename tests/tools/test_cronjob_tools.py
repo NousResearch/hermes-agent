@@ -12,6 +12,7 @@ from tools.cronjob_tools import (
     list_cronjobs,
     remove_cronjob,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -204,6 +205,90 @@ class TestScheduleCronjob:
         job_id = created["job_id"]
         job = _jobs.get_job(job_id)
         assert job["origin"].get("thread_id") is None
+
+    def test_registry_recovers_empty_args_from_user_task(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        result = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {},
+                user_task=(
+                    "Every 6 hours, check disk usage with 'df -h', memory with 'free -h', "
+                    "and Docker container status with 'docker ps'. Report anything unusual — "
+                    "partitions above 80%, containers that have restarted, or high memory usage."
+                ),
+            )
+        )
+
+        assert result["success"] is True
+        assert "6" in result["schedule"]
+        assert result["deliver"] == "origin"
+        assert "df -h" in result["job"]["prompt_preview"]
+
+    def test_registry_recovers_update_this_task_from_conversation_context(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        created = json.loads(schedule_cronjob(prompt="Old prompt", schedule="every 1h", name="Old Name", deliver="origin"))
+        job_id = created["job_id"]
+
+        result = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {},
+                user_task=(
+                    f"[assistant] 已创建定时任务。Job ID: `{job_id}`\n\n--- MESSAGE ---\n\n"
+                    "[assistant] 目标内容：\n"
+                    "- 名称：`system-health-check`\n"
+                    "- 周期：`every 6h`\n"
+                    "- 投递：`origin`\n"
+                    "- 任务逻辑：\n"
+                    "  - 运行 `df -h`、`free -h`、`docker ps`\n"
+                    "  - 仅报告：使用率超过 `80%` 的磁盘分区、有重启迹象的容器、内存使用过高\n"
+                    "  - 若无异常，回复：`无异常`\n\n--- MESSAGE ---\n\n"
+                    "[user] 更新这个任务"
+                ),
+            )
+        )
+
+        assert result["success"] is True
+        listing = json.loads(list_cronjobs())
+        job = next(item for item in listing["jobs"] if item["job_id"] == job_id)
+        assert job["name"] == "system-health-check"
+        assert "360" in job["schedule"]
+        assert job["deliver"] == "origin"
+
+    def test_registry_recovers_remove_and_update_from_conversation_context(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        original = json.loads(schedule_cronjob(prompt="Old prompt", schedule="every 1h", name="Old Name", deliver="origin"))
+        stray = json.loads(schedule_cronjob(prompt="Wrong prompt", schedule="every 1h", name="Wrong Name", deliver="origin"))
+
+        result = json.loads(
+            registry.dispatch(
+                "cronjob",
+                {},
+                user_task=(
+                    "[assistant] 最终目标：\n"
+                    "- 名称：`system-health-check`\n"
+                    "- 周期：`every 6h`\n"
+                    "- 投递：`origin`\n"
+                    "- 任务逻辑：\n"
+                    "  - 运行 `df -h`、`free -h`、`docker ps`\n"
+                    "  - 仅报告：分区使用率 `> 80%`、容器有重启迹象、内存使用过高\n"
+                    "  - 若无异常，回复：`无异常`\n\n--- MESSAGE ---\n\n"
+                    f"[user] 删除 {stray['job_id']}，并更新 {original['job_id']}"
+                ),
+            )
+        )
+
+        assert result["success"] is True
+        listing = json.loads(list_cronjobs())
+        job_ids = {item["job_id"] for item in listing["jobs"]}
+        assert stray["job_id"] not in job_ids
+        assert original["job_id"] in job_ids
+        updated = next(item for item in listing["jobs"] if item["job_id"] == original["job_id"])
+        assert updated["name"] == "system-health-check"
 
 
 # =========================================================================

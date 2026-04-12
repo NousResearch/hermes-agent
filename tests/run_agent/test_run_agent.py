@@ -1069,6 +1069,20 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_single_tool_passes_recent_user_context(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = [
+            {"role": "user", "content": "Every 6 hours, check disk usage."},
+            {"role": "assistant", "content": "Sure."},
+            {"role": "user", "content": "origin"},
+        ]
+        with patch("run_agent.handle_function_call", return_value="search result") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+            user_task = mock_hfc.call_args.kwargs["user_task"]
+            assert "Every 6 hours, check disk usage." in user_task
+            assert user_task.endswith("origin")
+
     def test_interrupt_skips_remaining(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
@@ -1429,6 +1443,7 @@ class TestConcurrentToolExecution:
                 "web_search", {"q": "test"}, "task-1",
                 tool_call_id=None,
                 session_id=agent.session_id,
+                user_task=None,
                 enabled_tools=list(agent.valid_tool_names),
 
             )

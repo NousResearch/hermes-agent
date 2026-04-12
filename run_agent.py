@@ -6685,8 +6685,67 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    @staticmethod
+    def _build_recent_user_context(messages: list, max_messages: int = 2, max_chars: int = 1000) -> Optional[str]:
+        """Return the most recent user messages as compact tool context.
+
+        Tools like browser snapshots and cron creation benefit from the latest
+        user wording, including short follow-ups such as a delivery target.
+        """
+        user_parts = []
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict) or msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            stripped = content.strip()
+            if not stripped:
+                continue
+            user_parts.append(stripped)
+            if len(user_parts) >= max_messages:
+                break
+
+        if not user_parts:
+            return None
+
+        combined = "\n\n--- USER MESSAGE ---\n\n".join(reversed(user_parts))
+        return combined[:max_chars]
+
+    @staticmethod
+    def _build_recent_conversation_context(
+        messages: list,
+        max_messages: int = 8,
+        max_chars: int = 3000,
+    ) -> Optional[str]:
+        """Return a compact, role-tagged slice of the recent conversation."""
+        parts = []
+        for msg in reversed(messages or []):
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role")
+            if role not in {"user", "assistant", "tool"}:
+                continue
+            content = msg.get("content")
+            if not isinstance(content, str):
+                continue
+            stripped = content.strip()
+            if not stripped:
+                continue
+            if role == "tool" and len(stripped) > 600:
+                stripped = stripped[:600]
+            parts.append(f"[{role}] {stripped}")
+            if len(parts) >= max_messages:
+                break
+
+        if not parts:
+            return None
+
+        combined = "\n\n--- MESSAGE ---\n\n".join(reversed(parts))
+        return combined[:max_chars]
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None) -> str:
+                     tool_call_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -6756,6 +6815,7 @@ class AIAgent:
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
+                user_task=user_task,
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
 
@@ -6767,6 +6827,8 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
         num_tools = len(tool_calls)
+        user_task = self._build_recent_user_context(messages)
+        conversation_context = self._build_recent_conversation_context(messages)
 
         # ── Pre-flight: interrupt check ──────────────────────────────────
         if self._interrupt_requested:
@@ -6857,7 +6919,13 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                result = self._invoke_tool(
+                    function_name,
+                    function_args,
+                    effective_task_id,
+                    tool_call.id,
+                    user_task=conversation_context if function_name == "cronjob" else user_task,
+                )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -6967,6 +7035,8 @@ class AIAgent:
 
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+        user_task = self._build_recent_user_context(messages)
+        conversation_context = self._build_recent_conversation_context(messages)
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             # SAFETY: check interrupt BEFORE starting each tool.
             # If the user sent "stop" during a previous tool's execution,
@@ -7203,6 +7273,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
+                        user_task=conversation_context if function_name == "cronjob" else user_task,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                     )
                     _spinner_result = function_result
@@ -7222,6 +7293,7 @@ class AIAgent:
                         function_name, function_args, effective_task_id,
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
+                        user_task=conversation_context if function_name == "cronjob" else user_task,
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
                     )
                 except Exception as tool_error:

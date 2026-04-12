@@ -10,7 +10,7 @@ Supports both chains:
   Base   — BLOCKRUN_WALLET_KEY=0x...        (default)
   Solana — SOLANA_WALLET_KEY=<base58-key>
 
-LLM calls go through the blockrun provider (hermes_cli/blockrun_provider.py),
+LLM calls go through the blockrun provider (plugins/providers/blockrun/provider.py),
 which attaches an x402-aware httpx transport to the OpenAI client so that
 402 Payment Required responses are handled transparently — no agent involvement.
 """
@@ -531,7 +531,7 @@ def _handle_prediction_markets(args: dict[str, Any], **_) -> str:
 
     try:
         import httpx
-        from hermes_cli.blockrun_provider import BlockRunX402Transport, _load_signer
+        from plugins.providers.blockrun.provider import BlockRunX402Transport, _load_signer
 
         signer    = _load_signer(key, "base")
         transport = BlockRunX402Transport(private_key=key, chain="base")

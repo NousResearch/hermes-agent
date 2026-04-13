@@ -271,13 +271,16 @@ class TestRunDebugShare:
         args.local = False
 
         call_count = [0]
+        uploaded_content = []
         def _mock_upload(content, expiry_days=7):
             call_count[0] += 1
+            uploaded_content.append(content)
             return f"https://paste.rs/paste{call_count[0]}"
 
-        with patch("hermes_cli.dump.run_dump"), \
+        with patch("hermes_cli.dump.run_dump") as mock_dump, \
              patch("hermes_cli.debug.upload_to_pastebin",
                     side_effect=_mock_upload):
+            mock_dump.side_effect = lambda a: print("--- hermes dump ---\nversion: test\n--- end dump ---")
             run_debug_share(args)
 
         out = capsys.readouterr().out
@@ -289,6 +292,14 @@ class TestRunDebugShare:
         assert "Report" in out
         assert "agent.log" in out
         assert "gateway.log" in out
+
+        # Each log paste should start with the dump header
+        agent_paste = uploaded_content[1]
+        assert "--- hermes dump ---" in agent_paste
+        assert "--- full agent.log ---" in agent_paste
+        gateway_paste = uploaded_content[2]
+        assert "--- hermes dump ---" in gateway_paste
+        assert "--- full gateway.log ---" in gateway_paste
 
     def test_share_skips_missing_logs(self, tmp_path, monkeypatch, capsys):
         """Only uploads logs that exist."""

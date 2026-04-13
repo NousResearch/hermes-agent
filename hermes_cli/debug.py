@@ -170,14 +170,8 @@ def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[s
 # Debug report collection
 # ---------------------------------------------------------------------------
 
-def collect_debug_report(*, log_lines: int = 200) -> str:
-    """Build the summary debug report: system dump + log tails.
-
-    Returns the report as a plain-text string ready for upload.
-    """
-    buf = io.StringIO()
-
-    # ── System dump ──────────────────────────────────────────────────────
+def _capture_dump() -> str:
+    """Run ``hermes dump`` and return its stdout as a string."""
     from hermes_cli.dump import run_dump
 
     class _FakeArgs:
@@ -192,7 +186,27 @@ def collect_debug_report(*, log_lines: int = 200) -> str:
     finally:
         sys.stdout = old_stdout
 
-    buf.write(capture.getvalue())
+    return capture.getvalue()
+
+
+def collect_debug_report(*, log_lines: int = 200, dump_text: str = "") -> str:
+    """Build the summary debug report: system dump + log tails.
+
+    Parameters
+    ----------
+    log_lines
+        Number of recent lines to include per log file.
+    dump_text
+        Pre-captured dump output.  If empty, ``hermes dump`` is run
+        internally.
+
+    Returns the report as a plain-text string ready for upload.
+    """
+    buf = io.StringIO()
+
+    if not dump_text:
+        dump_text = _capture_dump()
+    buf.write(dump_text)
 
     # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
@@ -223,9 +237,19 @@ def run_debug_share(args):
     local_only = getattr(args, "local", False)
 
     print("Collecting debug report...")
-    report = collect_debug_report(log_lines=log_lines)
+
+    # Capture dump once — prepended to every paste for context.
+    dump_text = _capture_dump()
+
+    report = collect_debug_report(log_lines=log_lines, dump_text=dump_text)
     agent_log = _read_full_log("agent")
     gateway_log = _read_full_log("gateway")
+
+    # Prepend dump header to each full log so every paste is self-contained.
+    if agent_log:
+        agent_log = dump_text + "\n\n--- full agent.log ---\n" + agent_log
+    if gateway_log:
+        gateway_log = dump_text + "\n\n--- full gateway.log ---\n" + gateway_log
 
     if local_only:
         print(report)

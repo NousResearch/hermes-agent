@@ -294,11 +294,6 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
         "hermes_cli.nous_subscription.get_nous_auth_status",
         lambda: {"logged_in": True},
     )
-    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: True)
-    monkeypatch.setattr(
-        "hermes_cli.nous_subscription.is_managed_tool_gateway_ready",
-        lambda vendor: vendor == "browser-use",
-    )
 
     providers = _visible_providers(TOOL_CATEGORIES["browser"], config)
 

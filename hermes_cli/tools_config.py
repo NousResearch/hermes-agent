@@ -790,13 +790,8 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     features = get_nous_subscription_features(config)
     visible = []
     for provider in cat.get("providers", []):
-        managed_feature = provider.get("managed_nous_feature")
-        if managed_feature:
-            if not managed_nous_tools_enabled():
-                continue
-            feature = features.features.get(managed_feature)
-            if feature is None or not (feature.available or feature.managed_by_nous):
-                continue
+        if provider.get("managed_nous_feature") and not managed_nous_tools_enabled():
+            continue
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)

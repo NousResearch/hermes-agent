@@ -1460,8 +1460,44 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
+
+        # Extract MEDIA: tags and bare local file paths before text delivery.
+        media_files, cleaned_content = self.extract_media(content)
+        _, image_cleaned = self.extract_images(cleaned_content)
+        local_files, final_content = self.extract_local_files(image_cleaned)
+
+        _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
+        _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
+        _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+        async def _deliver_media(path: str, is_voice: bool = False) -> None:
+            ext = Path(path).suffix.lower()
+            if is_voice or ext in _AUDIO_EXTS:
+                await self.send_voice(chat_id=chat_id, audio_path=path, metadata=metadata)
+            elif ext in _VIDEO_EXTS:
+                await self.send_video(chat_id=chat_id, video_path=path, metadata=metadata)
+            elif ext in _IMAGE_EXTS:
+                await self.send_image_file(chat_id=chat_id, image_path=path, metadata=metadata)
+            else:
+                await self.send_document(chat_id=chat_id, file_path=path, metadata=metadata)
+
         try:
-            chunks = [c for c in self._split_text(self.format_message(content)) if c and c.strip()]
+            # Deliver extracted MEDIA: attachments first.
+            for media_path, is_voice in media_files:
+                try:
+                    await _deliver_media(media_path, is_voice)
+                except Exception as exc:
+                    logger.warning("[%s] media delivery failed for %s: %s", self.name, media_path, exc)
+
+            # Deliver bare local file paths.
+            for file_path in local_files:
+                try:
+                    await _deliver_media(file_path, is_voice=False)
+                except Exception as exc:
+                    logger.warning("[%s] local file delivery failed for %s: %s", self.name, file_path, exc)
+
+            # Deliver text content.
+            chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(

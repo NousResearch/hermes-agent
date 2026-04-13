@@ -1450,10 +1450,14 @@ def init_agent(
     agent.compression_enabled = compression_enabled
 
     # Reject models whose context window is below the minimum required
-    # for reliable tool-calling workflows (64K tokens).
+    # for reliable tool-calling workflows (64K tokens). Skip the check when
+    # the user explicitly set model.context_length in config.yaml — they
+    # accept the reduced window and the error message itself tells them to
+    # do this.
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
     _ctx = getattr(agent.context_compressor, "context_length", 0)
-    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
+    _config_ctx_override = getattr(agent, "_config_context_length", None)
+    if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH and _config_ctx_override is None:
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "

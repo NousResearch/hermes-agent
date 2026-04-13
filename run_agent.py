@@ -324,6 +324,27 @@ class _StreamErrorEvent(Exception):
         }
 
 
+def validate_minimum_context(
+    model_name: str, context_length: int, config_context_length: int | None
+) -> None:
+    """Raise ValueError if the model context is below 64K and no config override is set.
+
+    Skip the check when the user explicitly set model.context_length in
+    config.yaml — they accept the reduced window and the error message
+    itself tells them to do this.
+    """
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+    if context_length and context_length < MINIMUM_CONTEXT_LENGTH and config_context_length is None:
+        raise ValueError(
+            f"Model {model_name} has a context window of {context_length:,} tokens, "
+            f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+            f"by Hermes Agent.  Choose a model with at least "
+            f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
+            f"model.context_length in config.yaml to override."
+        )
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.dreaming import DreamingEngine
 from hermes_constants import get_hermes_home
 from tools.memory_tool import MemoryStore, get_memory_dir
 
@@ -62,6 +63,7 @@ class ObsidianPaths:
     active_projects: Path
     decisions_log: Path
     current_focus: Path
+    dream_review: Path
 
 
 class ObsidianMemoryProvider(MemoryProvider):
@@ -78,6 +80,8 @@ class ObsidianMemoryProvider(MemoryProvider):
         self._first_prefetch_done = False
         self._recent_user_messages: list[str] = []
         self._recent_assistant_messages: list[str] = []
+        self._dreaming_enabled = False
+        self._dreaming_auto_promote = False
 
     @property
     def name(self) -> str:
@@ -115,6 +119,8 @@ class ObsidianMemoryProvider(MemoryProvider):
         workspace = str(cfg.get("workspace") or _DEFAULT_WORKSPACE).strip() or _DEFAULT_WORKSPACE
 
         workspace_root = vault_path / workspace
+        self._dreaming_enabled = bool(cfg.get("dreaming_enabled", False))
+        self._dreaming_auto_promote = bool(cfg.get("dreaming_auto_promote", False))
         self._paths = ObsidianPaths(
             vault_root=vault_path,
             workspace_root=workspace_root,
@@ -122,6 +128,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             active_projects=workspace_root / "active-projects.md",
             decisions_log=workspace_root / "decisions-log.md",
             current_focus=workspace_root / "current-focus.md",
+            dream_review=workspace_root / "dream-review.md",
         )
         self._ensure_workspace()
         self._sync_structured_notes_from_builtin_memory()
@@ -206,6 +213,8 @@ class ObsidianMemoryProvider(MemoryProvider):
         if self._focus_dirty:
             self._write_current_focus(messages)
             self._focus_dirty = False
+        if self._dreaming_enabled:
+            self._write_dream_review(messages)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return []
@@ -221,7 +230,11 @@ class ObsidianMemoryProvider(MemoryProvider):
             return {}
         memory_cfg = cfg.get("memory", {}) if isinstance(cfg, dict) else {}
         provider_cfg = memory_cfg.get("obsidian", {}) if isinstance(memory_cfg, dict) else {}
-        return provider_cfg if isinstance(provider_cfg, dict) else {}
+        if not isinstance(provider_cfg, dict):
+            provider_cfg = {}
+        provider_cfg.setdefault("dreaming_enabled", memory_cfg.get("dreaming_enabled", False))
+        provider_cfg.setdefault("dreaming_auto_promote", memory_cfg.get("dreaming_auto_promote", False))
+        return provider_cfg
 
     def _ensure_workspace(self) -> None:
         assert self._paths is not None
@@ -269,6 +282,15 @@ class ObsidianMemoryProvider(MemoryProvider):
                     ),
                 ),
             )
+        if not self._paths.dream_review.exists():
+            self._write_note(
+                self._paths.dream_review,
+                self._render_note(
+                    title="Dream Review",
+                    purpose="Bounded local synthesis of recent Hermes activity. Overwritten, not appended.",
+                    body="## Stable candidates\n\n- No dream review generated yet.\n",
+                ),
+            )
 
     def _render_note(self, *, title: str, purpose: str, body: str) -> str:
         return (
@@ -293,6 +315,7 @@ class ObsidianMemoryProvider(MemoryProvider):
             "active-projects": self._paths.active_projects,
             "decisions-log": self._paths.decisions_log,
             "current-focus": self._paths.current_focus,
+            "dream-review": self._paths.dream_review,
         }
         results: Dict[str, str] = {}
         for name, path in note_paths.items():
@@ -388,6 +411,22 @@ class ObsidianMemoryProvider(MemoryProvider):
                 body=body,
             ),
         )
+
+    def _write_dream_review(self, messages: List[Dict[str, Any]]) -> None:
+        assert self._paths is not None
+        engine = DreamingEngine(
+            hermes_home=self._hermes_home,
+            memory_store=MemoryStore(),
+            session_db=None,
+            auto_promote=self._dreaming_auto_promote,
+        )
+        artifact = engine.run(
+            messages,
+            session_id=self._session_id,
+            platform=self._platform,
+            workspace=self._current_workspace,
+        )
+        engine.write_obsidian_review(self._paths.dream_review, artifact)
 
 
 def register(ctx):

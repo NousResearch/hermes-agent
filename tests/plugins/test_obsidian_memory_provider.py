@@ -26,6 +26,7 @@ def test_obsidian_provider_bootstraps_workspace_and_mirrors_builtin_memory(monke
     assert (workspace / "active-projects.md").exists()
     assert (workspace / "decisions-log.md").exists()
     assert (workspace / "current-focus.md").exists()
+    assert (workspace / "dream-review.md").exists()
 
     user_text = (workspace / "user-profile.md").read_text(encoding="utf-8")
     decisions_text = (workspace / "decisions-log.md").read_text(encoding="utf-8")
@@ -104,3 +105,35 @@ def test_obsidian_provider_current_focus_uses_rolling_buffer_when_session_end_me
     assert "Use a structured Obsidian layer owned by Hermes." in focus_text
     assert "No recent user messages captured." not in focus_text
     assert "No recent assistant output captured." not in focus_text
+
+
+def test_obsidian_provider_writes_dream_review_when_enabled(monkeypatch, tmp_path):
+    _seed_memory(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    def _fake_config():
+        return {
+            "memory": {
+                "dreaming_enabled": True,
+                "dreaming_auto_promote": False,
+            }
+        }
+
+    monkeypatch.setattr("hermes_cli.config.load_config", _fake_config)
+
+    provider = ObsidianMemoryProvider()
+    provider.initialize(session_id="dream-s1", hermes_home=str(tmp_path / "hermes-home"), platform="telegram")
+    provider.sync_turn("Fix login auth and build dreaming MVP", "I will add a bounded dream review note.")
+    provider.on_session_end(
+        [
+            {"role": "user", "content": "Fix login auth and build dreaming MVP"},
+            {"role": "assistant", "content": "I will add a bounded dream review note."},
+        ]
+    )
+
+    dream_text = (vault / "Hermes" / "dream-review.md").read_text(encoding="utf-8")
+    assert "# Dream Review" in dream_text
+    assert "## Open loops" in dream_text
+    assert "Fix login auth and build dreaming MVP" in dream_text
+    assert "Open Terminal" not in dream_text

@@ -2413,7 +2413,7 @@ def load_env() -> Dict[str, str]:
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before writing.
+    """Fix corrupted .env lines before reading or writing.
 
     Handles two known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between

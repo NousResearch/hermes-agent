@@ -1,11 +1,8 @@
 """Tests for .env sanitization during load to prevent token duplication (#8908)."""
 
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 
 def test_load_env_sanitizes_concatenated_lines():

@@ -293,6 +293,38 @@ class TestStreamingCallbacks:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_chat_stream_refreshes_activity_on_every_chunk(self, mock_close, mock_create):
+        """Each streamed chat chunk should refresh the activity timestamp."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="a"),
+            _make_stream_chunk(content="b"),
+            _make_stream_chunk(finish_reason="stop"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        touch_calls = []
+        agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        agent._interruptible_streaming_api_call({})
+
+        assert touch_calls.count("receiving stream response") == len(chunks)
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_tool_only_does_not_fire_callback(self, mock_close, mock_create):
         """Tool-call-only stream does not fire the delta callback."""
         from run_agent import AIAgent
@@ -374,13 +406,19 @@ class TestStreamingCallbacks:
 
 
 class TestStreamingFallback:
-    """Verify fallback to non-streaming on ANY streaming error."""
+    """Verify streaming errors propagate to the main retry loop.
 
-    @patch("run_agent.AIAgent._interruptible_api_call")
+    Previously, streaming errors triggered an inline fallback to
+    non-streaming.  Now they propagate so the main retry loop can apply
+    richer recovery (credential rotation, provider fallback, backoff).
+    The only special case: 'stream not supported' sets _disable_streaming
+    so the *next* main-loop retry uses non-streaming automatically.
+    """
+
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
-        """'not supported' error triggers fallback to non-streaming."""
+    def test_stream_not_supported_sets_flag_and_raises(self, mock_close, mock_create):
+        """'not supported' error sets _disable_streaming and propagates."""
         from run_agent import AIAgent
 
         mock_client = MagicMock()
@@ -389,23 +427,6 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        fallback_response = SimpleNamespace(
-            id="fallback",
-            model="test",
-            choices=[SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content="fallback response",
-                    tool_calls=None,
-                    reasoning_content=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        mock_non_stream.return_value = fallback_response
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -415,16 +436,16 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        response = agent._interruptible_streaming_api_call({})
+        with pytest.raises(Exception, match="Streaming is not supported"):
+            agent._interruptible_streaming_api_call({})
 
-        assert response.choices[0].message.content == "fallback response"
-        mock_non_stream.assert_called_once()
+        # The flag should be set so the main retry loop switches to non-streaming
+        assert agent._disable_streaming is True
 
-    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_any_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
-        """ANY streaming error triggers fallback — not just specific messages."""
+    def test_non_transport_error_propagates(self, mock_close, mock_create):
+        """Non-transport streaming errors propagate to the main retry loop."""
         from run_agent import AIAgent
 
         mock_client = MagicMock()
@@ -433,23 +454,6 @@ class TestStreamingFallback:
         )
         mock_create.return_value = mock_client
 
-        fallback_response = SimpleNamespace(
-            id="fallback",
-            model="test",
-            choices=[SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content="fallback after connection error",
-                    tool_calls=None,
-                    reasoning_content=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        mock_non_stream.return_value = fallback_response
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -459,24 +463,19 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        response = agent._interruptible_streaming_api_call({})
+        with pytest.raises(Exception, match="Connection reset by peer"):
+            agent._interruptible_streaming_api_call({})
 
-        assert response.choices[0].message.content == "fallback after connection error"
-        mock_non_stream.assert_called_once()
-
-    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_fallback_error_propagates(self, mock_close, mock_create, mock_non_stream):
-        """When both streaming AND fallback fail, the fallback error propagates."""
+    def test_stream_error_propagates_original(self, mock_close, mock_create):
+        """The original streaming error propagates (not a fallback error)."""
         from run_agent import AIAgent
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = Exception("stream broke")
         mock_create.return_value = mock_client
 
-        mock_non_stream.side_effect = Exception("Rate limit exceeded")
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -486,14 +485,13 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        with pytest.raises(Exception, match="Rate limit exceeded"):
+        with pytest.raises(Exception, match="stream broke"):
             agent._interruptible_streaming_api_call({})
 
-    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_exhausted_transient_stream_error_falls_back(self, mock_close, mock_create, mock_non_stream):
-        """Transient stream errors retry first, then fall back after retries are exhausted."""
+    def test_exhausted_transient_stream_error_propagates(self, mock_close, mock_create):
+        """Transient stream errors retry first, then propagate after retries exhausted."""
         from run_agent import AIAgent
         import httpx
 
@@ -501,23 +499,6 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = httpx.ConnectError("socket closed")
         mock_create.return_value = mock_client
 
-        fallback_response = SimpleNamespace(
-            id="fallback",
-            model="test",
-            choices=[SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content="fallback after retries exhausted",
-                    tool_calls=None,
-                    reasoning_content=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        mock_non_stream.return_value = fallback_response
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -527,23 +508,22 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        response = agent._interruptible_streaming_api_call({})
+        with pytest.raises(httpx.ConnectError, match="socket closed"):
+            agent._interruptible_streaming_api_call({})
 
-        assert response.choices[0].message.content == "fallback after retries exhausted"
+        # Should have retried 3 times (default HERMES_STREAM_RETRIES=2 → 3 attempts)
         assert mock_client.chat.completions.create.call_count == 3
-        mock_non_stream.assert_called_once()
         assert mock_close.call_count >= 1
 
-    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create, mock_non_stream):
+    def test_sse_connection_lost_retried_as_transient(self, mock_close, mock_create):
         """SSE 'Network connection lost' (APIError w/ no status_code) retries like httpx errors.
 
         OpenRouter sends {"error":{"message":"Network connection lost."}} as an SSE
         event when the upstream stream drops.  The OpenAI SDK raises APIError from
         this.  It should be retried at the streaming level, same as httpx connection
-        errors, before falling back to non-streaming.
+        errors, then propagate to the main retry loop after exhaustion.
         """
         from run_agent import AIAgent
         import httpx
@@ -561,23 +541,6 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        fallback_response = SimpleNamespace(
-            id="fallback",
-            model="test",
-            choices=[SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content="fallback after SSE retries",
-                    tool_calls=None,
-                    reasoning_content=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        mock_non_stream.return_value = fallback_response
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -587,21 +550,18 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        response = agent._interruptible_streaming_api_call({})
+        with pytest.raises(OAIAPIError):
+            agent._interruptible_streaming_api_call({})
 
-        assert response.choices[0].message.content == "fallback after SSE retries"
         # Should retry 3 times (default HERMES_STREAM_RETRIES=2 → 3 attempts)
-        # before falling back to non-streaming
         assert mock_client.chat.completions.create.call_count == 3
-        mock_non_stream.assert_called_once()
         # Connection cleanup should happen for each failed retry
         assert mock_close.call_count >= 2
 
-    @patch("run_agent.AIAgent._interruptible_api_call")
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
-    def test_sse_non_connection_error_falls_back_immediately(self, mock_close, mock_create, mock_non_stream):
-        """SSE errors that aren't connection-related still fall back immediately (no stream retry)."""
+    def test_sse_non_connection_error_propagates_immediately(self, mock_close, mock_create):
+        """SSE errors that aren't connection-related propagate immediately (no stream retry)."""
         from run_agent import AIAgent
         import httpx
 
@@ -616,23 +576,6 @@ class TestStreamingFallback:
         mock_client.chat.completions.create.side_effect = sse_error
         mock_create.return_value = mock_client
 
-        fallback_response = SimpleNamespace(
-            id="fallback",
-            model="test",
-            choices=[SimpleNamespace(
-                index=0,
-                message=SimpleNamespace(
-                    role="assistant",
-                    content="fallback no retry",
-                    tool_calls=None,
-                    reasoning_content=None,
-                ),
-                finish_reason="stop",
-            )],
-            usage=None,
-        )
-        mock_non_stream.return_value = fallback_response
-
         agent = AIAgent(
             model="test/model",
             quiet_mode=True,
@@ -642,12 +585,11 @@ class TestStreamingFallback:
         agent.api_mode = "chat_completions"
         agent._interrupt_requested = False
 
-        response = agent._interruptible_streaming_api_call({})
+        with pytest.raises(OAIAPIError):
+            agent._interruptible_streaming_api_call({})
 
-        assert response.choices[0].message.content == "fallback no retry"
-        # Should NOT retry — goes straight to non-streaming fallback
+        # Should NOT retry — propagates immediately
         assert mock_client.chat.completions.create.call_count == 1
-        mock_non_stream.assert_called_once()
 
 
 # ── Test: Reasoning Streaming ────────────────────────────────────────────
@@ -783,6 +725,55 @@ class TestCodexStreamCallbacks:
         response = agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
+    def test_codex_stream_refreshes_activity_on_every_event(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        touch_calls = []
+        agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        mock_event_text_1 = SimpleNamespace(
+            type="response.output_text.delta",
+            delta="Hello",
+        )
+        mock_event_text_2 = SimpleNamespace(
+            type="response.output_text.delta",
+            delta=" world",
+        )
+        mock_event_done = SimpleNamespace(
+            type="response.completed",
+            delta="",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(
+            return_value=iter([mock_event_text_1, mock_event_text_2, mock_event_done])
+        )
+        mock_stream.get_final_response.return_value = SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Hello world")],
+            )],
+            status="completed",
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        agent._run_codex_stream({}, client=mock_client)
+
+        assert touch_calls.count("receiving stream response") == 3
+
     def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
         from run_agent import AIAgent
         import httpx
@@ -814,3 +805,102 @@ class TestCodexStreamCallbacks:
 
         assert response is fallback_response
         mock_fallback.assert_called_once_with({}, client=mock_client)
+
+    def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+
+        touch_calls = []
+        agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="Hello"),
+            SimpleNamespace(type="response.output_item.done", item=SimpleNamespace(type="message")),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[SimpleNamespace(
+                        type="message",
+                        content=[SimpleNamespace(type="output_text", text="Hello")],
+                    )]
+                ),
+            ),
+        ]
+
+        class _FakeCreateStream:
+            def __iter__(self_inner):
+                return iter(events)
+
+            def close(self_inner):
+                return None
+
+        mock_stream = _FakeCreateStream()
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = mock_stream
+
+        agent._run_codex_create_stream_fallback(
+            {"model": "test/model", "instructions": "hi", "input": []},
+            client=mock_client,
+        )
+
+        assert touch_calls.count("receiving stream response") == len(events)
+
+
+class TestAnthropicStreamCallbacks:
+    """Verify Anthropic streaming refreshes activity on every event."""
+
+    def test_anthropic_stream_refreshes_activity_on_every_event(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        touch_calls = []
+        agent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        events = [
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="text_delta", text="Hello"),
+            ),
+            SimpleNamespace(
+                type="content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="thinking"),
+            ),
+            SimpleNamespace(
+                type="content_block_start",
+                content_block=SimpleNamespace(type="tool_use", name="terminal"),
+            ),
+        ]
+
+        final_message = SimpleNamespace(
+            content=[],
+            stop_reason="end_turn",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter(events))
+        mock_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+
+        agent._interruptible_streaming_api_call({})
+
+        assert touch_calls.count("receiving stream response") == len(events)

@@ -70,6 +70,44 @@ class TestQueryLocalContextLengthOllama:
 
         assert result == 32768
 
+    def test_ollama_num_ctx_wins_over_model_info(self):
+        """When both num_ctx (Modelfile) and model_info (GGUF) are present,
+        num_ctx wins because it's the *runtime* context Ollama actually
+        allocates KV cache for. The GGUF model_info.context_length is the
+        training max — using it would let Hermes grow conversations past
+        the runtime limit and Ollama would silently truncate.
+
+        Concrete example: hermes-brain:qwen3-14b-ctx32k is a Modelfile
+        derived from qwen3:14b with `num_ctx 32768`, but the underlying
+        GGUF reports `qwen3.context_length: 40960` (training max). If
+        Hermes used 40960 it would let the conversation grow past 32768
+        before compressing, and Ollama would truncate the prefix.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        show_resp = self._make_resp(200, {
+            "model_info": {"qwen3.context_length": 40960},
+            "parameters": "num_ctx                        32768\ntemperature                    0.6\n",
+        })
+        models_resp = self._make_resp(404, {})
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = show_resp
+        client_mock.get.return_value = models_resp
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="ollama"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "hermes-brain:qwen3-14b-ctx32k", "http://100.77.243.5:11434/v1"
+            )
+
+        assert result == 32768, (
+            f"Expected num_ctx (32768) to win over model_info (40960), got {result}. "
+            "If Hermes uses the GGUF training max, conversations will silently truncate."
+        )
+
     def test_ollama_show_404_falls_through(self):
         """When /api/show returns 404, falls through to /v1/models/{model}."""
         from agent.model_metadata import _query_local_context_length

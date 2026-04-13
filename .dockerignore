@@ -5,6 +5,7 @@
 
 # Dependencies
 node_modules
+.venv
 
 # CI/CD
 .github

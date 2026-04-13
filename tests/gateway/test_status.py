@@ -209,6 +209,33 @@ class TestScopedLocks:
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
 
+    def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
+        """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "slack-app-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("")  # simulate crash between O_CREAT and json.dump
+
+        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "slack"
+
+    def test_acquire_scoped_lock_recovers_corrupt_lock_file(self, tmp_path, monkeypatch):
+        """Lock file with invalid JSON should be treated as stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "slack-app-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("{truncated")  # simulate partial write
+
+        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+
     def test_release_scoped_lock_only_removes_current_owner(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
 

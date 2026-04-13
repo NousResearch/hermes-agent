@@ -1213,7 +1213,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
-    from hermes_cli.config import load_config, get_env_value
+    from hermes_cli.config import get_compatible_custom_providers, load_config, get_env_value
 
     config = load_config()
     current_model = config.get("model")
@@ -1248,28 +1248,9 @@ def select_provider_and_model(args=None):
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
-    provider_labels = {
-        "openrouter": "OpenRouter",
-        "nous": "Nous Portal",
-        "openai-codex": "OpenAI Codex",
-        "qwen-oauth": "Qwen OAuth",
-        "copilot-acp": "GitHub Copilot ACP",
-        "copilot": "GitHub Copilot",
-        "anthropic": "Anthropic",
-        "gemini": "Google AI Studio",
-        "zai": "Z.AI / GLM",
-        "kimi-coding": "Kimi / Moonshot",
-        "minimax": "MiniMax",
-        "minimax-cn": "MiniMax (China)",
-        "opencode-zen": "OpenCode Zen",
-        "opencode-go": "OpenCode Go",
-        "ai-gateway": "AI Gateway",
-        "kilocode": "Kilo Code",
-        "alibaba": "Alibaba Cloud (DashScope)",
-        "huggingface": "Hugging Face",
-        "xiaomi": "Xiaomi MiMo",
-        "custom": "Custom endpoint",
-    }
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+
+    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
     active_label = provider_labels.get(active, active) if active else "none"
 
     print()
@@ -1278,37 +1259,13 @@ def select_provider_and_model(args=None):
     print()
 
     # Step 1: Provider selection — top providers shown first, rest behind "More..."
-    top_providers = [
-        ("nous", "Nous Portal (Nous Research subscription)"),
-        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
-        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
-        ("openai-codex", "OpenAI Codex"),
-        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
-        ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
-    ]
-
-    extended_providers = [
-        ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-        ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
-        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
-        ("minimax", "MiniMax (global direct API)"),
-        ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("kilocode", "Kilo Code (Kilo Gateway API)"),
-        ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-        ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
-        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-        ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
-    ]
+    # Derived from CANONICAL_PROVIDERS (single source of truth)
+    top_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS if p.tier == "top"]
+    extended_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS if p.tier == "extended"]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
-        custom_providers_cfg = cfg.get("custom_providers") or []
         custom_provider_map = {}
-        if not isinstance(custom_providers_cfg, list):
-            return custom_provider_map
-        for entry in custom_providers_cfg:
+        for entry in get_compatible_custom_providers(cfg):
             if not isinstance(entry, dict):
                 continue
             name = (entry.get("name") or "").strip()
@@ -1316,12 +1273,20 @@ def select_provider_and_model(args=None):
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
+            provider_key = (entry.get("provider_key") or "").strip()
+            if provider_key:
+                try:
+                    resolve_provider(provider_key)
+                except AuthError:
+                    key = provider_key
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
+                "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
                 "api_mode": entry.get("api_mode", ""),
+                "provider_key": provider_key,
             }
         return custom_provider_map
 
@@ -1371,7 +1336,8 @@ def select_provider_and_model(args=None):
     if selected_provider == "more":
         ext_ordered = list(extended_providers)
         ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
-        if _custom_provider_map:
+        _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(config.get("custom_providers"))
+        if _has_saved_custom_list:
             ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
         ext_ordered.append(("cancel", "Cancel"))
 
@@ -1398,7 +1364,7 @@ def select_provider_and_model(args=None):
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
-    elif selected_provider.startswith("custom:"):
+    elif selected_provider.startswith("custom:") or selected_provider in _custom_provider_map:
         provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
         if provider_info is None:
             print(
@@ -1413,7 +1379,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2083,7 +2049,9 @@ def _model_flow_named_custom(config, provider_info):
     name = provider_info["name"]
     base_url = provider_info["base_url"]
     api_key = provider_info.get("api_key", "")
+    key_env = provider_info.get("key_env", "")
     saved_model = provider_info.get("model", "")
+    provider_key = (provider_info.get("provider_key") or "").strip()
 
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
@@ -2166,10 +2134,15 @@ def _model_flow_named_custom(config, provider_info):
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
         cfg["model"] = model
-    model["provider"] = "custom"
-    model["base_url"] = base_url
-    if api_key:
-        model["api_key"] = api_key
+    if provider_key:
+        model["provider"] = provider_key
+        model.pop("base_url", None)
+        model.pop("api_key", None)
+    else:
+        model["provider"] = "custom"
+        model["base_url"] = base_url
+        if api_key:
+            model["api_key"] = api_key
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
@@ -2179,8 +2152,23 @@ def _model_flow_named_custom(config, provider_info):
     save_config(cfg)
     deactivate_provider()
 
-    # Save model name to the custom_providers entry for next time
-    _save_custom_provider(base_url, api_key, model_name)
+    # Persist the selected model back to whichever schema owns this endpoint.
+    if provider_key:
+        cfg = load_config()
+        providers_cfg = cfg.get("providers")
+        if isinstance(providers_cfg, dict):
+            provider_entry = providers_cfg.get(provider_key)
+            if isinstance(provider_entry, dict):
+                provider_entry["default_model"] = model_name
+                if api_key and not str(provider_entry.get("api_key", "") or "").strip():
+                    provider_entry["api_key"] = api_key
+                if key_env and not str(provider_entry.get("key_env", "") or "").strip():
+                    provider_entry["key_env"] = key_env
+                cfg["providers"] = providers_cfg
+                save_config(cfg)
+    else:
+        # Save model name to the custom_providers entry for next time
+        _save_custom_provider(base_url, api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
@@ -3048,6 +3036,12 @@ def cmd_dump(args):
     run_dump(args)
 
 
+def cmd_debug(args):
+    """Debug tools (share report, etc.)."""
+    from hermes_cli.debug import run_debug
+    run_debug(args)
+
+
 def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
@@ -3056,8 +3050,12 @@ def cmd_config(args):
 
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
-    from hermes_cli.backup import run_backup
-    run_backup(args)
+    if getattr(args, "quick", False):
+        from hermes_cli.backup import run_quick_backup
+        run_quick_backup(args)
+    else:
+        from hermes_cli.backup import run_backup
+        run_backup(args)
 
 
 def cmd_import(args):
@@ -3184,6 +3182,44 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
+def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
+    """Build the web UI frontend if npm is available.
+
+    Args:
+        web_dir: Path to the ``web/`` source directory.
+        fatal: If True, print error guidance and return False on failure
+               instead of a soft warning (used by ``hermes web``).
+
+    Returns True if the build succeeded or was skipped (no package.json).
+    """
+    if not (web_dir / "package.json").exists():
+        return True
+    import shutil
+    npm = shutil.which("npm")
+    if not npm:
+        if fatal:
+            print("Web UI frontend not built and npm is not available.")
+            print("Install Node.js, then run:  cd web && npm install && npm run build")
+        return not fatal
+    print("→ Building web UI...")
+    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
+    if r1.returncode != 0:
+        print(f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
+              + ("" if fatal else " (hermes web will not be available)"))
+        if fatal:
+            print("  Run manually:  cd web && npm install && npm run build")
+        return False
+    r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
+    if r2.returncode != 0:
+        print(f"  {'✗' if fatal else '⚠'} Web UI build failed"
+              + ("" if fatal else " (hermes web will not be available)"))
+        if fatal:
+            print("  Run manually:  cd web && npm install && npm run build")
+        return False
+    print("  ✓ Web UI built")
+    return True
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
     
@@ -3278,8 +3314,9 @@ def _update_via_zip(args):
                 check=True,
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
-    
+
     _update_node_dependencies()
+    _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
     try:
@@ -4055,6 +4092,7 @@ def cmd_update(args):
             _install_python_dependencies_with_optional_fallback(pip_cmd)
         
         _update_node_dependencies()
+        _build_web_ui(PROJECT_ROOT / "web")
 
         print()
         print("✓ Code updated!")
@@ -4337,7 +4375,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "chat", "model", "gateway", "setup", "whatsapp", "login", "logout", "auth",
         "status", "cron", "doctor", "config", "pairing", "skills", "tools",
         "mcp", "sessions", "insights", "version", "update", "uninstall",
-        "profile",
+        "profile", "dashboard",
     }
     _SESSION_FLAGS = {"-c", "--continue", "-r", "--resume"}
 
@@ -4487,18 +4525,24 @@ def cmd_profile(args):
                             print(f'  Add to your shell config (~/.bashrc or ~/.zshrc):')
                             print(f'    export PATH="$HOME/.local/bin:$PATH"')
 
+            # Profile dir for display
+            try:
+                profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
+            except ValueError:
+                profile_dir_display = str(profile_dir)
+
             # Next steps
             print(f"\nNext steps:")
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
             if clone or clone_all:
-                try:
-                    profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
-                except ValueError:
-                    profile_dir_display = str(profile_dir)
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
+            else:
+                print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
+                print(f"    or it will inherit keys from your shell environment.")
+                print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
             print()
 
         except (ValueError, FileExistsError, FileNotFoundError) as e:
@@ -4609,6 +4653,27 @@ def cmd_profile(args):
             sys.exit(1)
 
 
+def cmd_dashboard(args):
+    """Start the web UI server."""
+    try:
+        import fastapi  # noqa: F401
+        import uvicorn  # noqa: F401
+    except ImportError:
+        print("Web UI dependencies not installed.")
+        print("Install them with:  pip install hermes-agent[web]")
+        sys.exit(1)
+
+    if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
+        sys.exit(1)
+
+    from hermes_cli.web_server import start_server
+    start_server(
+        host=args.host,
+        port=args.port,
+        open_browser=not args.no_open,
+    )
+
+
 def cmd_completion(args):
     """Print shell completion script."""
     from hermes_cli.profiles import generate_bash_completion, generate_zsh_completion
@@ -4674,6 +4739,7 @@ Examples:
     hermes logs -f                Follow agent.log in real time
     hermes logs errors            View errors.log
     hermes logs --since 1h        Lines from the last hour
+    hermes debug share             Upload debug report for support
     hermes update                 Update to latest version
 
 For more help on a command:
@@ -4773,7 +4839,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -5230,17 +5296,64 @@ For more help on a command:
     dump_parser.set_defaults(func=cmd_dump)
 
     # =========================================================================
+    # debug command
+    # =========================================================================
+    debug_parser = subparsers.add_parser(
+        "debug",
+        help="Debug tools — upload logs and system info for support",
+        description="Debug utilities for Hermes Agent. Use 'hermes debug share' to "
+                    "upload a debug report (system info + recent logs) to a paste "
+                    "service and get a shareable URL.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Examples:
+    hermes debug share              Upload debug report and print URL
+    hermes debug share --lines 500  Include more log lines
+    hermes debug share --expire 30  Keep paste for 30 days
+    hermes debug share --local      Print report locally (no upload)
+""",
+    )
+    debug_sub = debug_parser.add_subparsers(dest="debug_command")
+    share_parser = debug_sub.add_parser(
+        "share",
+        help="Upload debug report to a paste service and print a shareable URL",
+    )
+    share_parser.add_argument(
+        "--lines", type=int, default=200,
+        help="Number of log lines to include per log file (default: 200)",
+    )
+    share_parser.add_argument(
+        "--expire", type=int, default=7,
+        help="Paste expiry in days (default: 7)",
+    )
+    share_parser.add_argument(
+        "--local", action="store_true",
+        help="Print the report locally instead of uploading",
+    )
+    debug_parser.set_defaults(func=cmd_debug)
+
+    # =========================================================================
     # backup command
     # =========================================================================
     backup_parser = subparsers.add_parser(
         "backup",
         help="Back up Hermes home directory to a zip file",
         description="Create a zip archive of your entire Hermes configuration, "
-                    "skills, sessions, and data (excludes the hermes-agent codebase)"
+                    "skills, sessions, and data (excludes the hermes-agent codebase). "
+                    "Use --quick for a fast snapshot of just critical state files."
     )
     backup_parser.add_argument(
         "-o", "--output",
         help="Output path for the zip file (default: ~/hermes-backup-<timestamp>.zip)"
+    )
+    backup_parser.add_argument(
+        "-q", "--quick",
+        action="store_true",
+        help="Quick snapshot: only critical state files (config, state.db, .env, auth, cron)"
+    )
+    backup_parser.add_argument(
+        "-l", "--label",
+        help="Label for the snapshot (only used with --quick)"
     )
     backup_parser.set_defaults(func=cmd_backup)
 
@@ -6081,6 +6194,19 @@ For more help on a command:
         help="Shell type (default: bash)",
     )
     completion_parser.set_defaults(func=cmd_completion)
+
+    # =========================================================================
+    # dashboard command
+    # =========================================================================
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Start the web UI dashboard",
+        description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
+    )
+    dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
+    dashboard_parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
+    dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================
     # logs command

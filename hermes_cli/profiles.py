@@ -26,6 +26,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
@@ -842,12 +843,31 @@ def _normalize_profile_archive_parts(member_name: str) -> List[str]:
 
 def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
     """Extract a profile archive without allowing path escapes or links."""
-    import tarfile
 
     with tarfile.open(archive, "r:gz") as tf:
+        dest_resolved = destination.resolve()
         for member in tf.getmembers():
             parts = _normalize_profile_archive_parts(member.name)
             target = destination.joinpath(*parts)
+
+            # Guard against path traversal: resolve and verify target stays within destination
+            # RuntimeError covers circular symlinks; ValueError covers strict-mode resolve on some platforms
+            try:
+                target_resolved = target.resolve()
+            except (OSError, RuntimeError, ValueError):
+                raise ValueError(f"Cannot resolve archive member path: {member.name}")
+            if not target_resolved.is_relative_to(dest_resolved):
+                raise ValueError(
+                    "Archive member escapes destination: " + repr(member.name)
+                    + " resolved to " + repr(target_resolved)
+                    + ", outside " + repr(dest_resolved)
+                )
+
+            # Guard against symlink / hardlink attacks: reject links before extraction
+            if member.issym() or member.islnk():
+                raise ValueError(
+                    f"Archive member is a link (symlink/hardlink not allowed): {member.name}"
+                )
 
             if member.isdir():
                 target.mkdir(parents=True, exist_ok=True)
@@ -878,7 +898,6 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     If *name* is not given, infers it from the archive's top-level directory.
     Returns the imported profile directory.
     """
-    import tarfile
 
     archive = Path(archive_path)
     if not archive.exists():

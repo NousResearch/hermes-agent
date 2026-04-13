@@ -32,6 +32,7 @@ from hermes_cli.profiles import (
     generate_zsh_completion,
     _get_profiles_root,
     _get_default_hermes_home,
+    _safe_extract_profile_archive,
 )
 
 
@@ -869,3 +870,96 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+
+
+class TestSafeExtractProfileArchive:
+    """Regression tests for path traversal protection in archive extraction."""
+
+    def _make_archive(self, members: dict, tmp_path: Path) -> Path:
+        """Helper: create a tar.gz with given {member_name: content} dict."""
+        archive = tmp_path / "test.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            for name, data in members.items():
+                buf = data.encode()
+                info = tarfile.TarInfo(name=name)
+                info.size = len(buf)
+                tf.addfile(info, io.BytesIO(buf))
+        return archive
+
+    def test_normal_extraction_succeeds(self, tmp_path):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = self._make_archive({"SOUL.md": "# soul"}, tmp_path)
+        _safe_extract_profile_archive(archive, dest)
+        assert (dest / "SOUL.md").read_text() == "# soul"
+
+    def test_nested_normal_path_ok(self, tmp_path):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = self._make_archive({"subdir/file.md": "ok"}, tmp_path)
+        _safe_extract_profile_archive(archive, dest)
+        assert (dest / "subdir" / "file.md").read_text() == "ok"
+
+    def test_path_traversal_dot_dot_rejected(self, tmp_path):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = self._make_archive({"../../evil.txt": "pwned"}, tmp_path)
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            _safe_extract_profile_archive(archive, dest)
+
+    def test_path_traversal_absolute_rejected(self, tmp_path):
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = self._make_archive({"/etc/passwd": "pwned"}, tmp_path)
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            _safe_extract_profile_archive(archive, dest)
+
+    def test_symlink_rejected(self, tmp_path):
+        """Symlinks are rejected outright."""
+        archive = tmp_path / "symlink_test.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo(name="link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = str(tmp_path / "outside")
+            tf.addfile(info)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with pytest.raises(ValueError, match="Archive member is a link"):
+            _safe_extract_profile_archive(archive, dest)
+
+    def test_hardlink_rejected(self, tmp_path):
+        """Hardlinks are also rejected outright."""
+        archive = tmp_path / "hardlink_test.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo(name="link")
+            info.type = tarfile.LNKTYPE
+            info.linkname = str(tmp_path / "outside")
+            tf.addfile(info)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with pytest.raises(ValueError, match="Archive member is a link"):
+            _safe_extract_profile_archive(archive, dest)
+
+    def test_block_device_rejected(self, tmp_path):
+        """Block/char device members are also rejected."""
+        archive = tmp_path / "block_test.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            info = tarfile.TarInfo(name="blockdev")
+            info.type = tarfile.BLKTYPE
+            tf.addfile(info)
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        with pytest.raises(ValueError, match="Unsupported archive member type"):
+            _safe_extract_profile_archive(archive, dest)
+
+    def test_windows_absolute_path_rejected(self, tmp_path):
+        """Windows drive-letter absolute paths are also rejected."""
+        dest = tmp_path / "dest"
+        dest.mkdir()
+        archive = self._make_archive({"C:\\evil.txt": "pwned"}, tmp_path)
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            _safe_extract_profile_archive(archive, dest)
+
+

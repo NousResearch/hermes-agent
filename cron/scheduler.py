@@ -622,10 +622,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if delivery_target.get("thread_id") is not None:
                 os.environ["HERMES_CRON_AUTO_DELIVER_THREAD_ID"] = str(delivery_target["thread_id"])
 
-        # Normalize model name for provider (e.g., add vendor prefix, handle aliases)
-        from hermes_cli.model_normalize import normalize_model_for_provider
-        model = normalize_model_for_provider(model, runtime.get("provider"))
-
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
         try:
@@ -696,6 +692,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        # Normalize model name for provider (e.g., add vendor prefix, handle aliases)
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        model = normalize_model_for_provider(model, runtime.get("provider"))
 
         from agent.smart_model_routing import resolve_turn_route
         turn_route = resolve_turn_route(

@@ -26,6 +26,7 @@ try:
     HAS_CRONITER = True
 except ImportError:
     HAS_CRONITER = False
+_PROCESS_START_TIME = _hermes_now()
 
 # =============================================================================
 # Configuration
@@ -702,29 +703,32 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             kind = schedule.get("kind")
 
             # For recurring jobs, check if the scheduled time is stale
-            # (gateway was down and missed the window). Fast-forward to
-            # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
-                if new_next:
-                    logger.info(
-                        "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
-                        job.get("name", job["id"]),
-                        next_run,
-                        grace,
-                        new_next,
+                # Distinguish between gateway downtime and scheduler blocking.
+                # If the job was scheduled AFTER the process started, we were alive
+                # but blocked by other long-running jobs. In that case, we MUST
+                # run it late to prevent silent data loss.
+                if next_run_dt >= _PROCESS_START_TIME:
+                    logger.warning(
+                        "Job '%s' is running %ds late (%s) because the scheduler was blocked. Executing now.",
+                        job.get("name", job["id"]), (now - next_run_dt).total_seconds(), next_run
                     )
-                    # Update the job in storage
-                    for rj in raw_jobs:
-                        if rj["id"] == job["id"]:
-                            rj["next_run_at"] = new_next
-                            needs_save = True
-                            break
-                    continue  # Skip this run
+                else:
+                    # Gateway was actually down. Fast-forward to prevent burst execution.
+                    new_next = compute_next_run(schedule, now.isoformat())
+                    if new_next:
+                        logger.warning(
+                            "Job '%s' missed its scheduled time while gateway was offline (%s). "
+                            "Fast-forwarding to next run: %s",
+                            job.get("name", job["id"]), next_run, new_next
+                        )
+                        for rj in raw_jobs:
+                            if rj["id"] == job["id"]:
+                                rj["next_run_at"] = new_next
+                                needs_save = True
+                                break
+                        continue  # Skip this run
 
             due.append(job)
 

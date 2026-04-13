@@ -5391,13 +5391,22 @@ class AIAgent:
                 # a new API call, creating a duplicate message.  Return a
                 # partial "stop" response instead so the outer loop treats this
                 # turn as complete (no retry, no fallback).
+                # Recover whatever content was already streamed to the user.
+                # _current_streamed_assistant_text accumulates text fired
+                # through _fire_stream_delta, so it has exactly what the
+                # user saw before the connection died.
+                _partial_text = (
+                    getattr(self, "_current_streamed_assistant_text", "") or ""
+                ).strip() or None
                 logger.warning(
                     "Partial stream delivered before error; returning stub "
-                    "response to prevent duplicate messages: %s",
+                    "response with %s chars of recovered content to prevent "
+                    "duplicate messages: %s",
+                    len(_partial_text or ""),
                     result["error"],
                 )
                 _stub_msg = SimpleNamespace(
-                    role="assistant", content=None, tool_calls=None,
+                    role="assistant", content=_partial_text, tool_calls=None,
                     reasoning_content=None,
                 )
                 return SimpleNamespace(
@@ -9889,6 +9898,30 @@ class AIAgent:
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
+                        # ── Partial stream recovery ─────────────────────
+                        # If content was already streamed to the user before
+                        # the connection died, use it as the final response
+                        # instead of falling through to prior-turn fallback
+                        # or wasting API calls on retries.
+                        _partial_streamed = (
+                            getattr(self, "_current_streamed_assistant_text", "") or ""
+                        )
+                        if self._has_content_after_think_block(_partial_streamed):
+                            _turn_exit_reason = "partial_stream_recovery"
+                            _recovered = self._strip_think_blocks(_partial_streamed).strip()
+                            logger.info(
+                                "Partial stream content delivered (%d chars) "
+                                "— using as final response",
+                                len(_recovered),
+                            )
+                            self._emit_status(
+                                "↻ Stream interrupted — using delivered content "
+                                "as final response"
+                            )
+                            final_response = _recovered
+                            self._response_was_previewed = True
+                            break
+
                         # If the previous turn already delivered real content alongside
                         # tool calls (e.g. "You're welcome!" + memory save), the model
                         # has nothing more to say. Use the earlier content immediately

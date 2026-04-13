@@ -291,6 +291,24 @@ def cron_command(args):
     if subcmd in {"remove", "rm", "delete"}:
         return _job_action("remove", args.job_id, "Removed")
 
+    if subcmd == "gc":
+        return cron_gc(dry_run=getattr(args, "dry_run", False))
+
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick|gc]")
     sys.exit(1)
+
+
+def cron_gc(*, dry_run: bool = False) -> int:
+    """F-008: rotate per-job output directories.
+
+    Deletes files older than 30 days OR oldest-first until each job dir is
+    under 1 GB. Safe to run anytime; idempotent. `--dry-run` reports what
+    would be deleted without touching the filesystem.
+    """
+    from cron.output_retention import rotate_all
+    deleted, reclaimed = rotate_all(dry_run=dry_run)
+    prefix = "(dry run) " if dry_run else ""
+    mb = reclaimed / (1024 * 1024)
+    print(f"{prefix}cron gc: deleted {deleted} file(s), reclaimed {mb:.2f} MB")
+    return 0

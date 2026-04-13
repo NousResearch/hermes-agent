@@ -910,6 +910,14 @@ def tick(verbose: bool = True) -> int:
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
 
+                # F-008: opportunistic rotation of this job's output dir.
+                # Damped to at most once per hour per job; never raises.
+                try:
+                    from cron.output_retention import maybe_rotate_after_run
+                    maybe_rotate_after_run(job["id"])
+                except Exception as _ret_exc:  # pragma: no cover
+                    logger.debug("opportunistic retention failed: %s", _ret_exc)
+
                 # Collect stats and check for anomalies (non-blocking)
                 collect_output_stats_and_check_anomalies(
                     job_id=job["id"],

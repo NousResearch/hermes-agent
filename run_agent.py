@@ -7694,7 +7694,6 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
-                    or queuing follow-up prefetch work.
 
         Returns:
             Dict: Complete conversation result with final response and message history

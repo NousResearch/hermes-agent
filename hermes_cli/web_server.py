@@ -301,7 +301,7 @@ def _load_webui_session_snapshot(session_id: str) -> Optional[Dict[str, Any]]:
             return json.loads(session_path.read_text(encoding="utf-8"))
         except Exception:
             _log.warning("Failed to load WebUI session snapshot: %s", session_path, exc_info=True)
-            return None
+            continue
     return None
 
 
@@ -356,7 +356,7 @@ def _normalize_webui_messages(messages: Any) -> List[Dict[str, Any]]:
                 "tool_calls": tool_calls,
                 "tool_name": raw.get("tool_name"),
                 "tool_call_id": raw.get("tool_call_id"),
-                "timestamp": raw.get("timestamp") or raw.get("_ts"),
+                "timestamp": _coerce_session_timestamp(raw.get("timestamp") or raw.get("_ts")),
             }
         )
     return normalized
@@ -430,7 +430,7 @@ def _normalize_cron_job(job: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         **job,
-        "schedule": schedule_text,
+        "schedule_display": job.get("schedule_display") or schedule_text,
         "status": status,
         "error": job.get("last_error") or job.get("error"),
     }

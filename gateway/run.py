@@ -3559,6 +3559,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                persist_user_message_immediately=not bool(history),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -7396,6 +7397,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        persist_user_message_immediately: bool = False,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -8087,6 +8089,7 @@ class GatewayRunner:
                     message,
                     conversation_history=agent_history,
                     task_id=session_id,
+                    persist_user_message_immediately=persist_user_message_immediately,
                 )
             finally:
                 unregister_gateway_notify(_approval_session_key)

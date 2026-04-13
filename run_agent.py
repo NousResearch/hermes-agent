@@ -7679,6 +7679,7 @@ class AIAgent:
         task_id: str = None,
         stream_callback: Optional[callable] = None,
         persist_user_message: Optional[str] = None,
+        persist_user_message_immediately: bool = False,
     ) -> Dict[str, Any]:
         """
         Run a complete conversation with tool calling until completion.
@@ -7694,6 +7695,11 @@ class AIAgent:
             persist_user_message: Optional clean user message to store in
                 transcripts/history when user_message contains API-only
                 synthetic prefixes.
+            persist_user_message_immediately: When True, flush the just-added
+                user turn to the SQLite session DB immediately after it is
+                appended to the in-memory message list. Intended for fresh
+                gateway sessions so dashboards can show the first inbound
+                message before the assistant reply completes.
 
         Returns:
             Dict: Complete conversation result with final response and message history
@@ -7810,6 +7816,8 @@ class AIAgent:
         messages.append(user_msg)
         current_turn_user_idx = len(messages) - 1
         self._persist_user_message_idx = current_turn_user_idx
+        if persist_user_message_immediately and self.persist_session and self._session_db:
+            self._flush_messages_to_session_db(messages, conversation_history)
         
         if not self.quiet_mode:
             self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")

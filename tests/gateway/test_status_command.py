@@ -112,6 +112,94 @@ async def test_status_command_includes_session_title_when_present():
 
 
 @pytest.mark.asyncio
+async def test_handle_message_marks_first_turn_for_immediate_user_persistence(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = []
+
+    captured = {}
+
+    async def _fake_run_agent(**kwargs):
+        captured.update(kwargs)
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "model": "openai/test-model",
+        }
+
+    runner._run_agent = _fake_run_agent
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello"))
+
+    assert result == "ok"
+    assert captured["persist_user_message_immediately"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_message_does_not_mark_continuations_for_immediate_user_persistence(monkeypatch):
+    import gateway.run as gateway_run
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner = _make_runner(session_entry)
+    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
+
+    captured = {}
+
+    async def _fake_run_agent(**kwargs):
+        captured.update(kwargs)
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 1,
+            "last_prompt_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "model": "openai/test-model",
+        }
+
+    runner._run_agent = _fake_run_agent
+
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 100000,
+    )
+
+    result = await runner._handle_message(_make_event("hello again"))
+
+    assert result == "ok"
+    assert captured["persist_user_message_immediately"] is False
+
+
+@pytest.mark.asyncio
 async def test_handle_message_persists_agent_token_counts(monkeypatch):
     import gateway.run as gateway_run
 

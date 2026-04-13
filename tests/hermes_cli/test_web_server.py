@@ -609,7 +609,8 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs")
         assert resp.status_code == 200
         data = resp.json()
-        assert data[0]["schedule"] == "0 9 * * *"
+        assert data[0]["schedule"]["expr"] == "0 9 * * *"
+        assert data[0]["schedule_display"] == "0 9 * * *"
         assert data[0]["status"] == "paused"
         assert data[0]["deliver"] == "discord"
 

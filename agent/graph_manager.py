@@ -292,6 +292,11 @@ class GraphManager:
                 "invalid_at": edge.invalid_at.isoformat() if edge.invalid_at else None,
             })
 
+        # Feature 2: Reinforce derived knowledge edges
+        if edges:
+            edge_uuids = [e["uuid"] for e in edges]
+            await self.reinforce_edges(edge_uuids)
+
         return {
             "episode_uuid": result.episode.uuid if result.episode else None,
             "entities_extracted": len(entities),
@@ -300,15 +305,143 @@ class GraphManager:
             "edges": edges,
         }
 
+    async def add_academic_episode(
+        self,
+        content: str,
+        name: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        group_id: str = "research",
+    ) -> Dict[str, Any]:
+        """Ingest a research episode, verifying citations via Federated Router before Graphiti ingestion.
+        
+        Parses the text for a 'References' or 'Bibliography' section, verifies each citation against
+        arXiv or OpenAlex, and reconstructs the text with only factually grounded citations before
+        passing it to the LLM Knowledge Graph constructor to prevent hallucination caching.
+        """
+        import re
+        from .research_utils import CitationVerifier
+        
+        verifier = CitationVerifier()
+        
+        # 1. Parse content for references section
+        ref_split = re.split(r'\n(?:#+\s+)?(?:References|Bibliography|Citations)\s*\n', content, flags=re.IGNORECASE)
+        sanitized_content = ref_split[0]
+        
+        verified_refs = []
+        if len(ref_split) > 1:
+            raw_refs = ref_split[1].strip().split('\n')
+            for ref in raw_refs:
+                ref = ref.strip()
+                if not ref: continue
+                # Remove leading bullets or numberings
+                clean_ref = re.sub(r'^(\d+\.|\[\d+\]|-|\*)\s*', '', ref)
+                if not clean_ref: continue
+                
+                # 2. Verify against Federated Router
+                v = verifier.verify(clean_ref, context=name)
+                if v:
+                    authors = ", ".join(v['authors'])
+                    verified_refs.append(f"[{v['source'].upper()}] {v['title']} by {authors} ({v['year']}). URL: {v['url']}")
+                else:
+                    logger.debug("Filtered out hallucinated or unverifiable citation: %s", clean_ref)
+        
+        # 3. Reconstruct text with only grounded facts
+        if verified_refs:
+            sanitized_content += "\n\n## Verified References\n" + "\n".join(f"- {r}" for r in verified_refs)
+            
+        # 4. Standard Graphiti pipeline
+        return await self.add_episode(
+            content=sanitized_content,
+            source_type="text",
+            name=name,
+            metadata=metadata,
+            group_id=group_id
+        )
+
+    async def add_academic_pdf(
+        self,
+        pdf_path: str,
+        name: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        group_id: str = "research",
+    ) -> Dict[str, Any]:
+        """Ingest a raw PDF academic paper.
+
+        Uses opendataloader-pdf to extract highly accurate, multi-column resolved Markdown,
+        then passes it to add_academic_episode for citation verification and graph ingestion.
+        """
+        import tempfile
+        try:
+            import opendataloader_pdf
+        except ImportError as e:
+            raise RuntimeError("opendataloader-pdf is required for PDF ingestion. Install with: pip install opendataloader-pdf") from e
+
+        # Use a temporary directory so we don't clutter the workspace with markdown/json sidecars
+        # since the GraphManager primarily cares about extracting relations into the DB.
+        pdf_file = Path(pdf_path)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                # Runs the fast, standalone deterministic extraction (0.015s/page)
+                opendataloader_pdf.convert(
+                    input_path=[str(pdf_file)],
+                    output_dir=tmpdir,
+                    format="markdown"
+                )
+                
+                # The output file is named <original_stem>.md
+                md_path = Path(tmpdir) / f"{pdf_file.stem}.md"
+                if not md_path.exists():
+                    raise FileNotFoundError(f"opendataloader_pdf failed to generate markdown for {pdf_file.name}")
+                
+                extracted_content = md_path.read_text(encoding="utf-8")
+                
+            except Exception as e:
+                logger.error("Failed to extract PDF %s: %s", pdf_file.name, e)
+                raise
+        
+        # Determine a name if none was provided
+        episode_name = name or pdf_file.stem
+        
+        # Inject source info into metadata for provenance tracking
+        meta = metadata or {}
+        meta["source_description"] = f"academic_pdf_ingestion:{pdf_file.name}"
+        meta["original_pdf_path"] = str(pdf_path)
+
+        # Pass the cleanly extracted Markdown to the federated academic pipeline
+        return await self.add_academic_episode(
+            content=extracted_content,
+            name=episode_name,
+            metadata=meta,
+            group_id=group_id,
+        )
+
+    def reciprocal_rank_fusion(self, list_of_rankings: List[List[Any]], k: int = 60) -> List[Any]:
+        """Reciprocal Rank Fusion (RRF) for Hybrid Search.
+        Fuses multiple ranked lists into a single relevance-sorted list.
+        """
+        rrf_scores = {}
+        items_by_id = {}
+        
+        for ranking in list_of_rankings:
+            for rank, item in enumerate(ranking, 1):
+                item_id = item.uuid
+                if item_id not in rrf_scores:
+                    rrf_scores[item_id] = 0.0
+                    items_by_id[item_id] = item
+                rrf_scores[item_id] += 1.0 / (k + rank)
+                
+        # Sort items mathematically by their fused rank
+        fused_ids = sorted(rrf_scores.keys(), key=lambda i: rrf_scores[i], reverse=True)
+        return [items_by_id[i] for i in fused_ids]
+
     async def search(
         self,
         query: str,
         limit: int = 10,
         group_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Search the graph. Returns matching edges (facts with temporal validity).
-
-        Pure graph traversal + vector similarity — no LLM calls, ~300ms.
+        """Hybrid Search. Returns matching edges fusing Vector Similarity & Graph Traversal (via Graphiti) 
+        and Keyword Match (via Kuzu) using Reciprocal Rank Fusion (RRF).
 
         Args:
             query: Natural language search query
@@ -316,34 +449,92 @@ class GraphManager:
             group_ids: Filter by namespace(s)
 
         Returns:
-            Dict with matching edges and their connected entities
+            Dict with fused edges and their connected entities
         """
         await self._ensure_initialized()
+        driver = self._graphiti.driver
 
-        edges = await self._graphiti.search(
-            query=query,
-            num_results=limit,
-            group_ids=group_ids or ["personal"],
-        )
+        # Stream 1: Graphiti Native Search (Vector Embedding + Graph Traversal)
+        try:
+            vector_graph_edges = await self._graphiti.search(
+                query=query,
+                num_results=limit,
+                group_ids=group_ids or ["personal"],
+            )
+        except Exception:
+            vector_graph_edges = []
+
+        # Stream 2: Keyword / BM25 Naive Surrogate via Kuzu wildcard matching
+        keyword_edges = []
+        try:
+            tables_res = await driver.execute_query("CALL show_tables() RETURN name, type")
+            edge_tables = [t["name"] for t in tables_res if t["type"] == "REL"]
+            terms = [t for t in query.lower().split() if len(t) > 3]
+            
+            # Fetch matching edges manually and mock a Graphiti edge object
+            class MockEdge:
+                def __init__(self, e):
+                    self.uuid = e.get("uuid")
+                    self.name = e.get("name")
+                    self.fact = e.get("fact")
+                    self.source_node_uuid = e.get("source_node_uuid")
+                    self.target_node_uuid = e.get("target_node_uuid")
+                    from datetime import datetime, timezone
+                    now_str = datetime.now(timezone.utc).isoformat()
+                    # Safely handle Kuzu TIMESTAMP parsing, fallback None
+                    self.valid_at = self._parse_tsz(e.get("valid_at"))
+                    self.invalid_at = self._parse_tsz(e.get("invalid_at"))
+                    self.expired_at = self._parse_tsz(e.get("expired_at"))
+                    self.episodes = []
+                
+                def _parse_tsz(self, val):
+                    if not val: return None
+                    from datetime import datetime
+                    if isinstance(val, str):
+                        try:
+                            return datetime.fromisoformat(val)
+                        except (ValueError, TypeError) as exc:
+                            logger.debug("graph timestamp parse failed for %r: %s", val, exc)
+                    return None
+
+            for table in edge_tables:
+                for term in terms[:3]: # limit query explosion
+                    # Kuzu string functions: contains
+                    res = await driver.execute_query(
+                        f"MATCH ()-[e:{table}]->() WHERE lower(e.fact) CONTAINS $term "
+                        "RETURN e.uuid as uuid, e.name as name, e.fact as fact, "
+                        "e.valid_at as valid_at, e.invalid_at as invalid_at, "
+                        "e.expired_at as expired_at LIMIT 10",
+                        term=term
+                    )
+                    for r in res:
+                        keyword_edges.append(MockEdge(r))
+        except Exception as e:
+            logger.debug("Keyword search stream failed: %s", e)
+
+        # Mathematical RRF Fusion
+        fused_edges = self.reciprocal_rank_fusion([vector_graph_edges, keyword_edges])
+        fused_edges = fused_edges[:limit]
 
         results = []
-        for edge in edges:
+        for edge in fused_edges:
             results.append({
                 "uuid": edge.uuid,
-                "name": edge.name,
-                "fact": edge.fact,
-                "source_node": edge.source_node_uuid,
-                "target_node": edge.target_node_uuid,
-                "valid_at": edge.valid_at.isoformat() if edge.valid_at else None,
-                "invalid_at": edge.invalid_at.isoformat() if edge.invalid_at else None,
+                "name": getattr(edge, "name", ""),
+                "fact": getattr(edge, "fact", ""),
+                "source_node": getattr(edge, "source_node_uuid", ""),
+                "target_node": getattr(edge, "target_node_uuid", ""),
+                "valid_at": edge.valid_at.isoformat() if getattr(edge, "valid_at", None) else None,
+                "invalid_at": edge.invalid_at.isoformat() if getattr(edge, "invalid_at", None) else None,
                 "expired_at": edge.expired_at.isoformat() if getattr(edge, "expired_at", None) else None,
-                "episodes": edge.episodes if edge.episodes else [],
+                "episodes": getattr(edge, "episodes", []),
             })
 
         return {
             "query": query,
             "count": len(results),
             "results": results,
+            "fusion_method": "RRF (Vector + Graph + Keyword)",
         }
 
     async def get_episodes(
@@ -411,6 +602,117 @@ class GraphManager:
                 for e in edges
             ],
         }
+
+    # ------------------------------------------------------------------
+    # Feature 2: Memory Lifecycle (Ebbinghaus Decay)
+    # ------------------------------------------------------------------
+
+    async def _setup_confidence_schema(self, table_name: str):
+        """Idempotently add confidence metadata schema to a Kuzu relationship table."""
+        driver = self._graphiti.driver
+        if not hasattr(driver, "execute_query"):
+            return
+        try:
+            await driver.execute_query(f"ALTER TABLE {table_name} ADD confidence_score DOUBLE DEFAULT 1.0")
+        except Exception:
+            pass
+        try:
+            await driver.execute_query(f"ALTER TABLE {table_name} ADD last_reinforced_at STRING DEFAULT ''")
+        except Exception:
+            pass
+
+    async def reinforce_edges(self, edge_uuids: List[str]):
+        """Reinforce the given edges (reset their decay timer and maximize confidence)."""
+        if not edge_uuids:
+            return
+        driver = self._graphiti.driver
+        if not hasattr(driver, "execute_query"):
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        
+        try:
+            tables_res = await driver.execute_query("CALL show_tables() RETURN name, type")
+            edge_tables = [t["name"] for t in tables_res if t["type"] == "REL"]
+            for table in edge_tables:
+                await self._setup_confidence_schema(table)
+        except Exception as e:
+            logger.debug("Failed to fetch tables for reinforcement schema: %s", e)
+            return
+
+        for u in edge_uuids:
+            try:
+                # Kuzu does not support dynamic table names in standard MATCH without knowing the table,
+                # but we can query across known edge tables if we don't know the exact one.
+                # A safer approach is to check all edge tables.
+                for table in edge_tables:
+                    await driver.execute_query(
+                        f"MATCH ()-[e:{table}]->() WHERE e.uuid = $uuid "
+                        "SET e.confidence_score = 1.0, e.last_reinforced_at = $now",
+                        uuid=u, now=now
+                    )
+            except Exception as e:
+                logger.debug("Failed to reinforce edge %s: %s", u, e)
+
+    async def decay_knowledge_graph(self, half_life_days: int = 365, threshold: float = 0.2) -> int:
+        """Active memory decay and forgetting curve for the context graph.
+        Decays edge confidence. If confidence drops below threshold, tombstone it.
+        """
+        await self._ensure_initialized()
+        driver = self._graphiti.driver
+        if not hasattr(driver, "execute_query"):
+            return 0
+            
+        import math
+        k = math.log(2) / half_life_days
+        now = datetime.now(timezone.utc)
+        archived = 0
+
+        try:
+            tables_res = await driver.execute_query("CALL show_tables() RETURN name, type")
+            edge_tables = [t["name"] for t in tables_res if t["type"] == "REL"]
+        except Exception:
+            return 0
+        
+        for table in edge_tables:
+            await self._setup_confidence_schema(table)
+            
+            try:
+                edges = await driver.execute_query(f"MATCH ()-[e:{table}]->() RETURN e.uuid, e.confidence_score, e.last_reinforced_at")
+                for record in edges:
+                    u = record.get("e.uuid")
+                    conf = record.get("e.confidence_score")
+                    last_t = record.get("e.last_reinforced_at")
+                    
+                    if conf is None: conf = 1.0
+                    
+                    try:
+                        last_time = datetime.fromisoformat(last_t) if (last_t and last_t.strip()) else now
+                        if last_time.tzinfo is None:
+                            last_time = last_time.replace(tzinfo=timezone.utc)
+                    except (ValueError, TypeError, AttributeError) as exc:
+                        logger.debug("last_t parse failed for %r, using now: %s", last_t, exc)
+                        last_time = now
+                    
+                    delta_days = (now - last_time).days
+                    if delta_days > 0:
+                        new_conf = conf * math.exp(-k * delta_days)
+                        if new_conf < threshold:
+                            # Archive/Tombstone the edge
+                            await driver.execute_query(
+                                f"MATCH ()-[e:{table}]->() WHERE e.uuid=$u SET e.expired_at = $now",
+                                u=u, now=now.isoformat()
+                            )
+                            archived += 1
+                        else:
+                            await driver.execute_query(
+                                f"MATCH ()-[e:{table}]->() WHERE e.uuid=$u SET e.confidence_score = $c",
+                                u=u, c=new_conf
+                            )
+            except Exception as e:
+                logger.debug("Decay pass failed on table %s: %s", table, e)
+
+        logger.info("Decayed memory graph. Archived %s stale facts.", archived)
+        return archived
 
     async def export_json(self) -> str:
         """Export the full graph as JSON for backup purposes.

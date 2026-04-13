@@ -84,7 +84,13 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-  summary_model: null        # Override model for summaries (default: uses auxiliary)
+
+# Summarization model/provider configured under auxiliary:
+auxiliary:
+  compression:
+    model: null              # Override model for summaries (default: auto-detect)
+    provider: auto           # Provider: "auto", "openrouter", "nous", "main", etc.
+    base_url: null           # Custom OpenAI-compatible endpoint
 ```
 
 ### Parameter Details

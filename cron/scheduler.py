@@ -912,7 +912,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        # Get model from job config first, then normalize for provider
+        model = job.get("model") or ""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        if model:
+            model = normalize_model_for_provider(model, job.get("provider"))
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}

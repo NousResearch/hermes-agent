@@ -20,7 +20,6 @@ Usage::
 import sys
 
 from hermes_cli.colors import Colors, color
-from hermes_cli.migrate_core import MigrationReport
 from hermes_cli.migrate_export import export_bundle
 
 # Lazy imports — stub modules raise NotImplementedError until their PR lands
@@ -67,45 +66,3 @@ def run_migrate(args):
     except Exception as e:
         print(color(f"\n\nError: {e}", Colors.RED))
         sys.exit(1)
-
-
-def main():
-    """Parse sys.argv and dispatch (standalone invocation only)."""
-    import argparse
-    epilog = """
-Examples:
-  hermes migrate export                       Export to hermes-migration-{timestamp}.tar.gz
-  hermes migrate export --preset full         Include secrets (.env, auth.json)
-  hermes migrate export -o /tmp/backup.tar.gz Custom output path
-  hermes migrate import -i backup.tar.gz      Import from bundle
-  hermes migrate verify -i backup.tar.gz      Verify bundle
-  hermes migrate doctor                       Check environment health
-"""
-    parser = argparse.ArgumentParser(
-        "hermes migrate",
-        description="Unified migration command for Hermes Agent",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=epilog,
-    )
-    subparsers = parser.add_subparsers(dest="action", help="Migration action")
-
-    exp = subparsers.add_parser("export", help="Export Hermes to a migration bundle")
-    exp.add_argument("--preset", "-p", choices=["safe", "full"], default="safe")
-    exp.add_argument("--output", "-o")
-
-    imp = subparsers.add_parser("import", help="Import from a migration bundle")
-    imp.add_argument("--input", "-i", required=True)
-    imp.add_argument("--dry-run", action="store_true")
-    imp.add_argument("--interactive", action="store_true")
-
-    ver = subparsers.add_parser("verify", help="Verify a bundle")
-    ver.add_argument("--input", "-i")
-
-    subparsers.add_parser("doctor", help="Check environment health")
-
-    args = parser.parse_args()
-    run_migrate(args)
-
-
-if __name__ == "__main__":
-    main()

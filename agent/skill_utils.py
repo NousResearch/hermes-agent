@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir
 
@@ -441,3 +441,45 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
+
+
+# ── Namespace parsing helpers ──────────────────────────────────────────────
+
+import re as _re
+
+_NAMESPACE_PATTERN = _re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
+    """将 'namespace:skill-name' 拆分为 (namespace, bare_name)。
+
+    仅在第一个 ':' 处拆分 — 含多个冒号的名称将剩余部分保留在 bare_name 中。
+    验证由 is_valid_namespace() 单独完成。
+
+    不含 ':' 时返回 (None, name)。
+    """
+    if ":" not in name:
+        return None, name
+    namespace, bare = name.split(":", 1)
+    return namespace, bare
+
+
+def build_qualified_name(namespace: Optional[str], bare: str) -> str:
+    """parse_qualified_name 的逆操作 — 拼接 'namespace:bare'。
+
+    当 namespace 为 None 或空字符串时，直接返回 bare 名称。
+    """
+    if not namespace:
+        return bare
+    return f"{namespace}:{bare}"
+
+
+def is_valid_namespace(candidate: Optional[str]) -> bool:
+    """检查命名空间是否合法。
+
+    合法的命名空间匹配 [a-zA-Z0-9_-]+。设计上严格限制 —
+    该集合之外的任何字符都会与 ':' 分隔符冲突或在限定名称解析中造成歧义。
+    """
+    if not candidate:
+        return False
+    return bool(_NAMESPACE_PATTERN.match(candidate))

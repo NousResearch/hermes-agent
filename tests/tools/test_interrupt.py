@@ -45,11 +45,12 @@ class TestInterruptModule:
         time.sleep(0.05)
         assert not seen["value"]
 
-        set_interrupt(True)
+        # The interrupt module is per-thread — signal the checker's thread
+        set_interrupt(True, thread_id=t.ident)
         t.join(timeout=1)
         assert seen["value"]
 
-        set_interrupt(False)
+        set_interrupt(False, thread_id=t.ident)
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +190,11 @@ class TestSIGKILLEscalation:
         t.start()
 
         time.sleep(0.5)
-        set_interrupt(True)
+        # The interrupt module is per-thread — signal the worker thread
+        set_interrupt(True, thread_id=t.ident)
 
         t.join(timeout=5)
-        set_interrupt(False)
+        set_interrupt(False, thread_id=t.ident)
 
         assert result_holder["value"] is not None
         assert result_holder["value"]["returncode"] == 130

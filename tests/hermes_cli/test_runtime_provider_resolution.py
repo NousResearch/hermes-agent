@@ -120,6 +120,7 @@ def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
 
 def test_resolve_runtime_provider_codex(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: type("_EmptyPool", (), {"has_credentials": lambda self: False})())
     monkeypatch.setattr(
         rp,
         "resolve_codex_runtime_credentials",

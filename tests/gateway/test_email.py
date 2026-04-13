@@ -336,8 +336,15 @@ class TestChannelDirectory(unittest.TestCase):
     def test_email_in_session_discovery(self):
         import gateway.channel_directory
         import inspect
+        from gateway.config import Platform
         source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        # The function now uses a generic Platform enum iteration that covers
+        # all platforms including email, rather than hard-coding each one.
+        # Verify it iterates over Platform and uses session-based discovery.
+        self.assertIn('Platform', source)
+        self.assertIn('_build_from_sessions', source)
+        # Also verify EMAIL is actually in the Platform enum
+        self.assertEqual(Platform.EMAIL.value, "email")
 
 
 class TestGatewaySetup(unittest.TestCase):

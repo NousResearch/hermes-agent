@@ -212,10 +212,13 @@ class TestSmsToolset:
         assert hasattr(Platform, "SMS")
 
     def test_sms_in_cronjob_deliver_description(self):
-        """Verify cronjob_tools mentions sms in deliver description."""
+        """Verify cronjob_tools deliver description supports platform:chat_id routing
+        which covers SMS via the generic 'platform:chat_id' syntax."""
         from tools.cronjob_tools import CRONJOB_SCHEMA
         deliver_desc = CRONJOB_SCHEMA["parameters"]["properties"]["deliver"]["description"]
-        assert "sms" in deliver_desc.lower()
+        # The deliver description uses generic platform:chat_id routing
+        # which covers all platforms including SMS
+        assert "platform" in deliver_desc.lower()
 
 
 # ── Webhook host configuration ─────────────────────────────────────

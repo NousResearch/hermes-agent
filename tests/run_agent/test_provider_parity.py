@@ -247,6 +247,7 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
 
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
+        monkeypatch.setattr("agent.model_metadata.MINIMUM_CONTEXT_LENGTH", 0)
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -255,6 +256,7 @@ class TestBuildApiKwargsAIGateway:
         assert kwargs["messages"][-1]["content"] == "hi"
 
     def test_no_responses_api_fields(self, monkeypatch):
+        monkeypatch.setattr("agent.model_metadata.MINIMUM_CONTEXT_LENGTH", 0)
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -263,6 +265,7 @@ class TestBuildApiKwargsAIGateway:
         assert "store" not in kwargs
 
     def test_includes_reasoning_in_extra_body(self, monkeypatch):
+        monkeypatch.setattr("agent.model_metadata.MINIMUM_CONTEXT_LENGTH", 0)
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -271,6 +274,7 @@ class TestBuildApiKwargsAIGateway:
         assert extra["reasoning"]["enabled"] is True
 
     def test_includes_tools(self, monkeypatch):
+        monkeypatch.setattr("agent.model_metadata.MINIMUM_CONTEXT_LENGTH", 0)
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)

@@ -10146,6 +10146,22 @@ class AIAgent:
                             or getattr(assistant_message, "reasoning_content", None)
                             or getattr(assistant_message, "reasoning_details", None)
                         )
+                        # Inline <think> blocks are reasoning-only responses.
+                        # Accept them immediately with "(empty)" — no prefill
+                        # or retry needed since the model deliberately chose to
+                        # respond with only reasoning and no visible text.
+                        _has_inline_think = bool(
+                            final_response and re.search(
+                                r'<think>(.+?)</think>', final_response, flags=re.DOTALL
+                            )
+                        )
+                        if _has_inline_think and not _has_structured:
+                            _turn_exit_reason = "inline_think_reasoning_only"
+                            assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
+                            assistant_msg["content"] = "(empty)"
+                            messages.append(assistant_msg)
+                            final_response = "(empty)"
+                            break
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1
                             logger.info(

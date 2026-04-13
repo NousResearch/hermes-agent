@@ -25,6 +25,11 @@ def _make_compressor():
     compressor._previous_summary = None
     compressor._summary_failure_cooldown_until = 0.0
     compressor.summary_model = None
+    compressor.model = "test-model"
+    compressor.provider = "openrouter"
+    compressor.base_url = "https://openrouter.ai/api/v1"
+    compressor.api_key = "test-key"
+    compressor.api_mode = "chat_completions"
     return compressor
 
 

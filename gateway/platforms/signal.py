@@ -365,7 +365,8 @@ class SignalAdapter(BasePlatformAdapter):
         envelope_data = envelope.get("envelope", envelope)
 
         # Handle syncMessage: extract "Note to Self" messages (sent to own account)
-        # while still filtering other sync events (read receipts, typing, etc.)
+        # and group messages sent from another device, while filtering other sync
+        # events (read receipts, typing, etc.)
         is_note_to_self = False
         if "syncMessage" in envelope_data:
             sync_msg = envelope_data.get("syncMessage")
@@ -380,6 +381,14 @@ class SignalAdapter(BasePlatformAdapter):
                             self._recent_sent_timestamps.discard(sent_ts)
                             return
                         # Genuine user Note to Self — promote to dataMessage
+                        is_note_to_self = True
+                        envelope_data = {**envelope_data, "dataMessage": sent_msg}
+                    elif sent_msg.get("groupInfo"):
+                        # Group message sent from another device — promote to dataMessage
+                        # and treat like Note to Self to bypass the self-loop filter below
+                        if sent_ts and sent_ts in self._recent_sent_timestamps:
+                            self._recent_sent_timestamps.discard(sent_ts)
+                            return
                         is_note_to_self = True
                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
             if not is_note_to_self:

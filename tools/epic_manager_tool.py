@@ -23,8 +23,9 @@ class CycleError(Exception):
 
 
 class EpicManager:
-    def __init__(self, verbose: bool = True):
+    def __init__(self, verbose: bool = True, parent_agent=None):
         self.verbose = verbose
+        self.parent_agent = parent_agent
 
     def log(self, message: str, level: str = "INFO"):
         """레벨 기반 콘솔 출력 로깅"""
@@ -75,7 +76,8 @@ class EpicManager:
         
         try:
             # Hermes 내부 하위 에이전트 위임 도구를 사용하여 프롬프트 전송
-            result_json = delegate_task(goal=prompt, skip_enforcement=True)
+            result_json = delegate_task(goal=prompt, parent_agent=self.parent_agent)
+            print(f"DEBUG: delegate_task returned: {result_json}")
             parsed = json.loads(result_json)
             
             if isinstance(parsed, dict) and "results" in parsed:
@@ -328,7 +330,7 @@ class EpicManager:
             
             # TEAM 모드로 `staged_delegate` 핵심 실행 엔진 호출 (Plan → Exec → Verify → Fix)
             # 순차 실행이므로 한 놈이 끝날 때까지 대기
-            result_str = staged_delegate(goal=task_instruction, mode="team", context=context_dict)
+            result_str = staged_delegate(goal=task_instruction, mode="team", context=context_dict, parent_agent=self.parent_agent)
             
             try:
                 result = json.loads(result_str)
@@ -398,7 +400,7 @@ class EpicManager:
         }
 
 
-def epic_delegate(goal: str, mode: str = "plan_only") -> str:
+def epic_delegate(goal: str, mode: str = "plan_only", parent_agent=None) -> str:
     """
     Epic Delegate Tool - Main Entry Point
     
@@ -410,7 +412,7 @@ def epic_delegate(goal: str, mode: str = "plan_only") -> str:
         JSON 결과 문자열
     """
     import os
-    manager = EpicManager(verbose=True)
+    manager = EpicManager(verbose=True, parent_agent=parent_agent)
     plan_file = os.path.join(os.getcwd(), "epic_plan.json")
     
     if mode == "plan_only":
@@ -516,7 +518,8 @@ try:
         },
         handler=lambda args, **kw: epic_delegate(
             goal=args.get("goal"),
-            mode=args.get("mode", "plan_only")
+            mode=args.get("mode", "plan_only"),
+            parent_agent=kw.get("parent_agent")
         ),
         check_fn=_check_epic_delegate,
         description="Epic Level Large-Scale Orchestration Strategy using Task DAGs",

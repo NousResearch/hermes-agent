@@ -242,6 +242,109 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestLocalFallbackSummary:
+    def test_compress_builds_structured_local_fallback_when_summary_model_fails(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "user",
+                "content": (
+                    "Need to fix context continuity in agent/context_compressor.py and "
+                    "tests/agent/test_context_compressor.py."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_search",
+                        "type": "function",
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern":"context continuity","path":"tests/agent/test_context_compressor.py"}',
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_search",
+                "content": (
+                    "Traceback: Summary generation was unavailable\n"
+                    "pytest tests/agent/test_context_compressor.py -q\n"
+                    "See /tmp/context-fallback.log"
+                ),
+            },
+            {"role": "assistant", "content": "正在补回归测试"},
+            {"role": "user", "content": "别再把真正上下文丢掉了"},
+            {"role": "assistant", "content": "继续检查边界对齐逻辑"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail assistant"},
+            {"role": "user", "content": "tail user 2"},
+        ]
+
+        with patch.object(c, "_generate_summary", return_value=None):
+            result = c.compress(messages)
+
+        summary_messages = [
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        ]
+        assert len(summary_messages) == 1
+
+        summary = summary_messages[0]["content"]
+        assert "## Goal" in summary
+        assert "## Critical Context" in summary
+        assert "agent/context_compressor.py" in summary
+        assert "tests/agent/test_context_compressor.py" in summary
+        assert "Traceback: Summary generation was unavailable" in summary
+        assert "/tmp/context-fallback.log" in summary
+        assert "search_files" in summary
+        assert "Local heuristic fallback reconstructed context" in summary
+        assert c._previous_summary.startswith("## Goal")
+
+    def test_local_fallback_carries_forward_previous_summary_excerpt(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        c._previous_summary = (
+            "## Goal\nKeep earlier debugging context available across compaction failures.\n\n"
+            "## Relevant Files\n- agent/context_compressor.py"
+        )
+
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Keep preserving the old debugging context."},
+            {"role": "assistant", "content": "Inspecting the fallback path."},
+            {"role": "tool", "content": "warning: previous summary model request failed"},
+            {"role": "assistant", "content": "Writing a safer fallback."},
+            {"role": "user", "content": "继续"},
+            {"role": "assistant", "content": "好的"},
+        ]
+
+        with patch.object(c, "_generate_summary", return_value=None):
+            result = c.compress(messages)
+
+        summary = next(
+            m["content"] for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        )
+        assert "Keep earlier debugging context available across compaction failures." in summary
+        assert "Previously preserved summary excerpt" in summary
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")

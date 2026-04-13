@@ -17,7 +17,9 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -443,17 +445,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             call_kwargs = {
                 "task": "compression",
                 "main_runtime": {
-                    "model": self.model,
-                    "provider": self.provider,
-                    "base_url": self.base_url,
-                    "api_key": self.api_key,
-                    "api_mode": self.api_mode,
+                    "model": getattr(self, "model", ""),
+                    "provider": getattr(self, "provider", None),
+                    "base_url": getattr(self, "base_url", None),
+                    "api_key": getattr(self, "api_key", None),
+                    "api_mode": getattr(self, "api_mode", None),
                 },
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": summary_budget * 2,
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
-            if self.summary_model:
+            if getattr(self, "summary_model", None):
                 call_kwargs["model"] = self.summary_model
             response = call_llm(**call_kwargs)
             content = response.choices[0].message.content
@@ -481,6 +483,282 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 _SUMMARY_FAILURE_COOLDOWN_SECONDS,
             )
             return None
+
+    @staticmethod
+    def _coerce_content_to_text(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if content is None:
+            return ""
+        if isinstance(content, (dict, list, tuple)):
+            try:
+                return json.dumps(content, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                return str(content)
+        return str(content)
+
+    @staticmethod
+    def _strip_compaction_prefix(content: str) -> Optional[str]:
+        text = (content or "").strip()
+        for prefix in (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX):
+            if text.startswith(prefix):
+                return text[len(prefix):].lstrip()
+        return None
+
+    @classmethod
+    def _normalize_excerpt(cls, text: Any, max_chars: int = 280) -> str:
+        normalized = re.sub(r"\s+", " ", cls._coerce_content_to_text(text)).strip()
+        if len(normalized) <= max_chars:
+            return normalized
+        return normalized[: max_chars - 3].rstrip() + "..."
+
+    @classmethod
+    def _append_unique(
+        cls,
+        items: List[str],
+        value: Any,
+        *,
+        max_items: int = 6,
+        max_chars: int = 280,
+    ) -> None:
+        if len(items) >= max_items:
+            return
+        excerpt = cls._normalize_excerpt(value, max_chars=max_chars)
+        if excerpt and excerpt not in items:
+            items.append(excerpt)
+
+    @classmethod
+    def _extract_tool_names(cls, msg: Dict[str, Any]) -> List[str]:
+        names: List[str] = []
+        for tc in msg.get("tool_calls") or []:
+            if isinstance(tc, dict):
+                function = tc.get("function", {}) or {}
+                name = function.get("name", "")
+            else:
+                function = getattr(tc, "function", None)
+                name = getattr(function, "name", "") if function else ""
+            if name and name not in names:
+                names.append(name)
+        return names
+
+    @classmethod
+    def _extract_path_candidates(cls, text: Any) -> List[str]:
+        candidates: List[str] = []
+        content = cls._coerce_content_to_text(text)
+        if not content:
+            return candidates
+        for raw in re.findall(r"[^\s]+", content):
+            token = raw.strip("`'\"()[]{}<>,:;")
+            if not token or "://" in token or token.startswith("@"):
+                continue
+            if (
+                "/" not in token
+                and "\\" not in token
+                and not re.search(
+                    r"\.(py|md|json|ya?ml|toml|ini|txt|sh|bash|js|ts|tsx|jsx|css|html|sql|log|out|err)$",
+                    token,
+                    re.IGNORECASE,
+                )
+            ):
+                continue
+            if len(token) < 3 or token in candidates:
+                continue
+            candidates.append(token)
+        return candidates
+
+    @classmethod
+    def _extract_error_lines(cls, text: Any) -> List[str]:
+        errors: List[str] = []
+        for line in cls._coerce_content_to_text(text).splitlines():
+            stripped = line.strip()
+            if stripped and re.search(r"\b(error|exception|traceback|failed|failure|warning|bug)\b", stripped, re.IGNORECASE):
+                cls._append_unique(errors, stripped, max_items=6, max_chars=240)
+        return errors
+
+    @classmethod
+    def _extract_command_lines(cls, text: Any) -> List[str]:
+        commands: List[str] = []
+        prefixes = (
+            "git ",
+            "python ",
+            "python3 ",
+            "pytest ",
+            "pip ",
+            "uv ",
+            "poetry ",
+            "npm ",
+            "pnpm ",
+            "yarn ",
+            "make ",
+            "docker ",
+            "docker-compose ",
+            "hermes ",
+            "tmux ",
+            "curl ",
+            "bash ",
+            "sh ",
+        )
+        for line in cls._coerce_content_to_text(text).splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            normalized = stripped[2:] if stripped.startswith("$ ") else stripped
+            if normalized.startswith(prefixes):
+                cls._append_unique(commands, normalized, max_items=6, max_chars=220)
+        return commands
+
+    @classmethod
+    def _extract_task_lines(cls, text: Any) -> List[str]:
+        task_lines: List[str] = []
+        for line in cls._coerce_content_to_text(text).splitlines():
+            stripped = line.strip()
+            if re.match(r"^-\s*\[[ x>]\]\s+", stripped):
+                cls._append_unique(task_lines, stripped, max_items=6, max_chars=220)
+        return task_lines
+
+    @classmethod
+    def _format_bullet_section(cls, items: List[str], default: str) -> List[str]:
+        if not items:
+            return [f"- {default}"]
+        return [f"- {item}" for item in items]
+
+    def _build_local_fallback_summary(self, turns_to_summarize: List[Dict[str, Any]]) -> str:
+        user_turns: List[str] = []
+        constraints: List[str] = []
+        done: List[str] = []
+        in_progress: List[str] = []
+        blocked: List[str] = []
+        decisions: List[str] = []
+        pending: List[str] = []
+        files: List[str] = []
+        critical: List[str] = []
+        tools: List[str] = []
+        prior_summaries: List[str] = []
+
+        if self._previous_summary:
+            self._append_unique(prior_summaries, self._previous_summary, max_items=2, max_chars=1000)
+
+        for msg in turns_to_summarize:
+            role = msg.get("role", "unknown")
+            content = self._coerce_content_to_text(msg.get("content"))
+            prior_summary = self._strip_compaction_prefix(content)
+            if prior_summary:
+                self._append_unique(prior_summaries, prior_summary, max_items=2, max_chars=1000)
+                continue
+
+            tool_names = self._extract_tool_names(msg)
+            if tool_names:
+                self._append_unique(
+                    tools,
+                    f"Assistant called tools: {', '.join(tool_names)}",
+                    max_items=6,
+                    max_chars=220,
+                )
+
+            if role == "user" and content:
+                self._append_unique(user_turns, content, max_items=6)
+            elif role == "assistant" and content:
+                self._append_unique(done, content, max_items=6)
+            elif role == "tool" and content and content != _PRUNED_TOOL_PLACEHOLDER:
+                self._append_unique(critical, content, max_items=6, max_chars=320)
+
+            lower_content = content.lower()
+            if content and any(keyword in lower_content for keyword in ("prefer", "preferred", "用中文", "不要", "别", "must", "must not", "hard rule")):
+                self._append_unique(constraints, content, max_items=4, max_chars=220)
+            if content and any(keyword in lower_content for keyword in ("decide", "decision", "switch", "adopt", "use ", "改成", "切换", "采用", "决定")):
+                self._append_unique(decisions, content, max_items=5, max_chars=220)
+
+            for extracted in self._extract_error_lines(content):
+                self._append_unique(blocked, extracted, max_items=6, max_chars=240)
+            for extracted in self._extract_task_lines(content):
+                self._append_unique(in_progress, extracted, max_items=6, max_chars=220)
+            for extracted in self._extract_path_candidates(content):
+                self._append_unique(files, extracted, max_items=8, max_chars=220)
+            for extracted in self._extract_command_lines(content):
+                self._append_unique(tools, f"Command/output detail: {extracted}", max_items=6, max_chars=220)
+
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    function = tc.get("function", {}) or {}
+                    tool_args = function.get("arguments", "")
+                else:
+                    function = getattr(tc, "function", None)
+                    tool_args = getattr(function, "arguments", "") if function else ""
+                for extracted in self._extract_path_candidates(tool_args):
+                    self._append_unique(files, extracted, max_items=8, max_chars=220)
+                for extracted in self._extract_command_lines(tool_args):
+                    self._append_unique(tools, f"Command/output detail: {extracted}", max_items=6, max_chars=220)
+
+        goal = user_turns[-1] if user_turns else (
+            "Continue from the previously preserved context and the surviving recent turns; summary-model generation failed during compaction."
+        )
+
+        done.insert(
+            0,
+            f"Local heuristic fallback reconstructed context from {len(turns_to_summarize)} compacted turn(s) after LLM summary generation failed.",
+        )
+
+        if prior_summaries:
+            self._append_unique(
+                critical,
+                f"Previously preserved summary excerpt: {prior_summaries[0]}",
+                max_items=6,
+                max_chars=1200,
+            )
+
+        if not pending and user_turns:
+            pending.extend(user_turns[-3:])
+        if not in_progress and pending:
+            in_progress.append("Recent compacted user asks may still matter; verify against the surviving recent turns before acting.")
+
+        remaining_work = [
+            "Review the surviving recent turns after this summary before acting so already-resolved asks are not repeated.",
+        ]
+        if pending:
+            remaining_work.extend(f"Recent user context before compaction: {item}" for item in pending[:2])
+
+        body_lines = [
+            "## Goal",
+            goal,
+            "",
+            "## Constraints & Preferences",
+            *self._format_bullet_section(constraints, "No explicit preference was confidently extracted from the compacted turns."),
+            "",
+            "## Progress",
+            "### Done",
+            *self._format_bullet_section(done, "No concrete completed work was confidently extracted from the compacted turns."),
+            "### In Progress",
+            *self._format_bullet_section(in_progress, "No explicit in-progress item was confidently extracted from the compacted turns."),
+            "### Blocked",
+            *self._format_bullet_section(blocked, "No explicit blocker line was extracted from the compacted turns."),
+            "",
+            "## Key Decisions",
+            *self._format_bullet_section(decisions, "No explicit decision was confidently extracted from the compacted turns."),
+            "",
+            "## Resolved Questions",
+            "- Unknown from fallback reconstruction. Check the surviving recent turns before re-answering earlier questions.",
+            "",
+            "## Pending User Asks",
+            *self._format_bullet_section(pending, "None confidently identified from the compacted turns."),
+            "",
+            "## Relevant Files",
+            *self._format_bullet_section(files, "No file path was confidently extracted from the compacted turns."),
+            "",
+            "## Remaining Work",
+            *self._format_bullet_section(remaining_work, "Continue from the surviving recent turns and current workspace state."),
+            "",
+            "## Critical Context",
+            *self._format_bullet_section(
+                critical,
+                "Local fallback was generated because summary generation failed; extracted details may be partial but are more informative than dropping the turns entirely.",
+            ),
+            "",
+            "## Tools & Patterns",
+            *self._format_bullet_section(tools, "No tool usage pattern was confidently extracted from the compacted turns."),
+        ]
+        summary = "\n".join(body_lines).strip()
+        self._previous_summary = summary
+        return self._with_summary_prefix(summary)
 
     @staticmethod
     def _with_summary_prefix(summary: str) -> str:
@@ -751,19 +1029,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, build a structured local fallback instead of
+        # dropping the compacted turns behind a generic marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
-            n_dropped = compress_end - compress_start
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation turns were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"turns contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
-            )
+                logger.warning("Summary generation failed — building local structured fallback summary")
+            summary = self._build_local_fallback_summary(turns_to_summarize)
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

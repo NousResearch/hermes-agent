@@ -5872,10 +5872,11 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  hermes migrate export -o backup.tar.gz  Export to migration bundle
-  hermes migrate import -i backup.tar.gz  Import from migration bundle
-  hermes migrate verify -i backup.tar.gz  Verify a bundle
-  hermes migrate doctor                   Check migration readiness
+  hermes migrate export -o backup.tar.gz            Export to migration bundle
+  hermes migrate import -i backup.tar.gz --dry-run  Preview import (no changes)
+  hermes migrate import -i backup.tar.gz --interactive  Guided import
+  hermes migrate verify -i backup.tar.gz            Verify a bundle
+  hermes migrate doctor                             Check migration readiness
 """,
     )
     migrate_subparsers = migrate_parser.add_subparsers(dest="action", help="Migration action")

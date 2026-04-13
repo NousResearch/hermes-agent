@@ -133,9 +133,9 @@ def _make_tool_defs(*names):
 def agent():
     """Minimal AIAgent with mocked internals."""
     with (
-        patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("agent.core.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+        patch("agent.core.check_toolset_requirements", return_value={}),
+        patch("agent.core.OpenAI"),
     ):
         a = AIAgent(
             api_key="test-key-1234567890",

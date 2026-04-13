@@ -9,7 +9,7 @@ import re
 
 import pytest
 
-from run_agent import (
+from agent.tool_handler import (
     _save_oversized_tool_result,
     _LARGE_RESULT_CHARS,
     _LARGE_RESULT_PREVIEW_CHARS,

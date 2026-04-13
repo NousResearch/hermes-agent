@@ -26,7 +26,8 @@ log = logging.getLogger("interrupt_test")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
-from run_agent import AIAgent, IterationBudget
+from run_agent import AIAgent
+from agent.budget import IterationBudget
 from tools.interrupt import set_interrupt, is_interrupted
 
 def make_slow_response(delay=2.0):

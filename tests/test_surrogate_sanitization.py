@@ -8,7 +8,7 @@ import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from run_agent import (
+from agent.prompt_utils import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
     _SURROGATE_RE,

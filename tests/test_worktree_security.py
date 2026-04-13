@@ -39,7 +39,7 @@ def _force_remove_worktree(info: dict | None) -> None:
 
 class TestWorktreeIncludeSecurity:
     def test_rejects_parent_directory_file_traversal(self, git_repo):
-        import cli as cli_mod
+        import hermes_cli.worktree as wt_mod
 
         outside_file = git_repo.parent / "sensitive.txt"
         outside_file.write_text("SENSITIVE DATA")
@@ -47,7 +47,7 @@ class TestWorktreeIncludeSecurity:
 
         info = None
         try:
-            info = cli_mod._setup_worktree(str(git_repo))
+            info = wt_mod.setup_worktree(str(git_repo))
             assert info is not None
 
             wt_path = Path(info["path"])
@@ -57,7 +57,7 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_rejects_parent_directory_directory_traversal(self, git_repo):
-        import cli as cli_mod
+        import hermes_cli.worktree as wt_mod
 
         outside_dir = git_repo.parent / "outside-dir"
         outside_dir.mkdir()
@@ -66,7 +66,7 @@ class TestWorktreeIncludeSecurity:
 
         info = None
         try:
-            info = cli_mod._setup_worktree(str(git_repo))
+            info = wt_mod.setup_worktree(str(git_repo))
             assert info is not None
 
             wt_path = Path(info["path"])
@@ -77,7 +77,7 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_rejects_symlink_that_resolves_outside_repo(self, git_repo):
-        import cli as cli_mod
+        import hermes_cli.worktree as wt_mod
 
         outside_file = git_repo.parent / "linked-secret.txt"
         outside_file.write_text("LINKED SECRET")
@@ -86,7 +86,7 @@ class TestWorktreeIncludeSecurity:
 
         info = None
         try:
-            info = cli_mod._setup_worktree(str(git_repo))
+            info = wt_mod.setup_worktree(str(git_repo))
             assert info is not None
 
             assert not (Path(info["path"]) / "leak.txt").exists()
@@ -94,14 +94,14 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_allows_valid_file_include(self, git_repo):
-        import cli as cli_mod
+        import hermes_cli.worktree as wt_mod
 
         (git_repo / ".env").write_text("SECRET=***\n")
         (git_repo / ".worktreeinclude").write_text(".env\n")
 
         info = None
         try:
-            info = cli_mod._setup_worktree(str(git_repo))
+            info = wt_mod.setup_worktree(str(git_repo))
             assert info is not None
 
             copied = Path(info["path"]) / ".env"
@@ -111,7 +111,7 @@ class TestWorktreeIncludeSecurity:
             _force_remove_worktree(info)
 
     def test_allows_valid_directory_include(self, git_repo):
-        import cli as cli_mod
+        import hermes_cli.worktree as wt_mod
 
         assets_dir = git_repo / ".venv" / "lib"
         assets_dir.mkdir(parents=True)
@@ -120,7 +120,7 @@ class TestWorktreeIncludeSecurity:
 
         info = None
         try:
-            info = cli_mod._setup_worktree(str(git_repo))
+            info = wt_mod.setup_worktree(str(git_repo))
             assert info is not None
 
             linked_dir = Path(info["path"]) / ".venv"

@@ -442,6 +442,32 @@ class TestMaskApiKey:
         assert "..." in result
 
 
+class TestApiRequestDebugDump:
+    def test_request_dump_omits_authorization_header(self, agent, tmp_path):
+        secret = "sk-proj-secret-abcdefghijklmnopqrstuvwxyz"
+        agent.logs_dir = tmp_path
+        agent.session_id = "debug-dump-test"
+        agent.base_url = "https://api.example.test/v1"
+        agent.api_mode = "chat_completions"
+        agent.client.api_key = secret
+
+        dump_path = agent._dump_api_request_debug(
+            {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+            reason="unit-test",
+        )
+
+        assert dump_path is not None
+        payload = json.loads(dump_path.read_text(encoding="utf-8"))
+        headers = payload["request"]["headers"]
+        assert headers == {"Content-Type": "application/json"}
+
+        serialized = json.dumps(payload)
+        assert "Authorization" not in serialized
+        assert secret not in serialized
+        assert secret[:8] not in serialized
+        assert secret[-4:] not in serialized
+
+
 # ===================================================================
 # Group 2: State / Structure Methods
 # ===================================================================

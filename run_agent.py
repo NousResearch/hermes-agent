@@ -2691,12 +2691,6 @@ class AIAgent:
             body.pop("timeout", None)
             body = {k: v for k, v in body.items() if v is not None}
 
-            api_key = None
-            try:
-                api_key = getattr(self.client, "api_key", None)
-            except Exception as e:
-                logger.debug("Could not extract API key for debug dump: %s", e)
-
             dump_payload: Dict[str, Any] = {
                 "timestamp": datetime.now().isoformat(),
                 "session_id": self.session_id,
@@ -2705,7 +2699,6 @@ class AIAgent:
                     "method": "POST",
                     "url": f"{self.base_url.rstrip('/')}{'/responses' if self.api_mode == 'codex_responses' else '/chat/completions'}",
                     "headers": {
-                        "Authorization": f"Bearer {self._mask_api_key_for_logs(api_key)}",
                         "Content-Type": "application/json",
                     },
                     "body": body,

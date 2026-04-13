@@ -2280,21 +2280,24 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._client.user not in message.mentions:
                     return
 
-            if self._client.user and self._client.user in message.mentions:
+            was_mentioned = self._client.user and self._client.user in message.mentions
+            if was_mentioned:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
 
-        # Auto-thread: when enabled, automatically create a thread for every
-        # @mention in a text channel so each conversation is isolated (like Slack).
+        # Auto-thread: when enabled, automatically create a thread for @mentions
+        # in text channels so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        # Only creates a thread when the bot was actually @mentioned, so that
+        # with require_mention=false, non-mentioned messages stay in-channel.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
             skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread and not skip_thread:
+            if auto_thread and not skip_thread and was_mentioned:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True

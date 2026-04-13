@@ -265,7 +265,12 @@ async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
     fake_thread = FakeThread(channel_id=999, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
-    message = make_message(channel=FakeTextChannel(channel_id=123), content="hello")
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content=f"<@{bot_user.id}> hello",
+        mentions=[bot_user],
+    )
 
     await adapter._handle_message(message)
 
@@ -340,7 +345,12 @@ async def test_discord_auto_thread_tracks_participation(adapter, monkeypatch):
     fake_thread = FakeThread(channel_id=555, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
-    message = make_message(channel=FakeTextChannel(channel_id=123), content="start a thread")
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content=f"<@{bot_user.id}> start a thread",
+        mentions=[bot_user],
+    )
 
     await adapter._handle_message(message)
 

@@ -225,7 +225,7 @@ async def test_no_thread_channel_skips_auto_thread(adapter, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
-    """Channels NOT in no_thread_channels still get auto-threading."""
+    """Channels NOT in no_thread_channels still get auto-threading when @mentioned."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "800")
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
@@ -235,7 +235,12 @@ async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
     fake_thread = FakeThread(channel_id=999, name="auto-thread")
     adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
 
-    message = make_message(channel=FakeTextChannel(channel_id=900), content="hello")
+    bot_user = adapter._client.user
+    message = make_message(
+        channel=FakeTextChannel(channel_id=900),
+        content=f"<@{bot_user.id}> hello",
+        mentions=[bot_user],
+    )
     await adapter._handle_message(message)
 
     adapter._auto_create_thread.assert_awaited_once()

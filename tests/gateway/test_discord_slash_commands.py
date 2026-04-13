@@ -358,13 +358,13 @@ class _FakeThreadChannel(_discord_mod.Thread):
         self.parent = SimpleNamespace(id=parent_id, name="general", guild=SimpleNamespace(name=guild_name, id=1))
 
 
-def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza"):
+def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza", mentions=None):
     return SimpleNamespace(
         author=SimpleNamespace(id=author_id, display_name=display_name, bot=False),
         content=content,
         channel=channel,
         attachments=[],
-        mentions=[],
+        mentions=list(mentions or []),
         reference=None,
         created_at=None,
         id=12345,
@@ -373,7 +373,7 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
 
 @pytest.mark.asyncio
 async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
-    """When DISCORD_AUTO_THREAD=true, a new thread is created and the event routes there."""
+    """When DISCORD_AUTO_THREAD=true and bot is @mentioned, a new thread is created."""
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
 
@@ -387,7 +387,12 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
 
     adapter.handle_message = capture_handle
 
-    msg = _fake_message(_FakeTextChannel(), content="Hello world")
+    bot_user = adapter._client.user
+    msg = _fake_message(
+        _FakeTextChannel(),
+        content=f"<@{bot_user.id}> Hello world",
+        mentions=[bot_user],
+    )
 
     await adapter._handle_message(msg)
 
@@ -401,7 +406,7 @@ async def test_auto_thread_creates_thread_and_redirects(adapter, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatch):
-    """Without DISCORD_AUTO_THREAD env var, auto-threading is enabled (default: true)."""
+    """Without DISCORD_AUTO_THREAD env var, auto-threading is enabled on @mention (default: true)."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
 
@@ -415,7 +420,8 @@ async def test_auto_thread_enabled_by_default_slash_commands(adapter, monkeypatc
 
     adapter.handle_message = capture_handle
 
-    msg = _fake_message(_FakeTextChannel())
+    bot_user = adapter._client.user
+    msg = _fake_message(_FakeTextChannel(), mentions=[bot_user], content=f"<@{bot_user.id}> Hello")
 
     await adapter._handle_message(msg)
 

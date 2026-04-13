@@ -43,6 +43,7 @@ export interface SessionInfo {
   tools: Record<string, string[]>
   update_behind?: number | null
   update_command?: string
+  usage?: Usage
   version?: string
 }
 

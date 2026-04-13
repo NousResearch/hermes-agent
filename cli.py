@@ -1194,6 +1194,10 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
         return None
 
     expanded = os.path.expandvars(os.path.expanduser(token))
+    if os.name != "nt":
+        normalized = expanded.replace("\\", "/")
+        if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
+            expanded = f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
     path = Path(expanded)
     if not path.is_absolute():
         base_dir = Path(os.getenv("TERMINAL_CWD", os.getcwd()))
@@ -1276,10 +1280,12 @@ def _detect_file_drop(user_input: str) -> "dict | None":
         or stripped.startswith("~")
         or stripped.startswith("./")
         or stripped.startswith("../")
+        or (len(stripped) >= 3 and stripped[1] == ":" and stripped[2] in ("\\", "/") and stripped[0].isalpha())
         or stripped.startswith('"/')
         or stripped.startswith('"~')
         or stripped.startswith("'/")
         or stripped.startswith("'~")
+        or (len(stripped) >= 4 and stripped[0] in ("'", '"') and stripped[2] == ":" and stripped[3] in ("\\", "/") and stripped[1].isalpha())
     )
     if not starts_like_path:
         return None

@@ -73,7 +73,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[focus topic]"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
-    CommandDef("stop", "Kill all running background processes", "Session"),
+    CommandDef("stop", "Kill all running registered subprocesses", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",
@@ -96,7 +96,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
+    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
 
@@ -152,7 +152,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("gateway",)),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
-    CommandDef("paste", "Check clipboard for an image and attach it", "Info",
+    CommandDef("paste", "Attach clipboard image or manage text paste shelf", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),

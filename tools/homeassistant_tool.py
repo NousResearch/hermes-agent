@@ -458,10 +458,10 @@ HA_CALL_SERVICE_SCHEMA = {
             "data": {
                 "type": "string",
                 "description": (
-                    "Additional service data provided as a valid JSON string. Examples: "
-                    '\'{"brightness": 255, "color_name": "blue"}\' for lights, '
-                    '\'{"temperature": 22, "hvac_mode": "heat"}\' for climate, '
-                    '\'{"volume_level": 0.5}\' for media players.'
+                    "Additional service data as a JSON string. Examples: "
+                    '{"brightness": 255, "color_name": "blue"} for lights, '
+                    '{"temperature": 22, "hvac_mode": "heat"} for climate, '
+                    '{"volume_level": 0.5} for media players.'
                 ),
             },
         },

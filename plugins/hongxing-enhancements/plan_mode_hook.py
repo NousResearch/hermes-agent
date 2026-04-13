@@ -33,10 +33,31 @@ def _is_allowed_in_plan_mode(tool_name: str) -> bool:
             metadata = registry.get_metadata(tool_name) or {}
         except Exception:
             metadata = {}
+
         allowed_in_plan_mode = metadata.get("allowed_in_plan_mode_default")
+
         if allowed_in_plan_mode is True:
+            if any(metadata.get(key) for key in (
+                "mutates_local_fs",
+                "mutates_agent_state",
+                "mutates_browser_session",
+                "mutates_external_world",
+            )):
+                return False
+            if metadata.get("risk_level") in ("medium", "high", "critical"):
+                return False
             return True
         if allowed_in_plan_mode is False:
+            return False
+
+        if any(metadata.get(key) for key in (
+            "mutates_local_fs",
+            "mutates_agent_state",
+            "mutates_browser_session",
+            "mutates_external_world",
+        )):
+            return False
+        if metadata.get("risk_level") in ("medium", "high", "critical"):
             return False
 
     return tool_name in _PLAN_ALLOW

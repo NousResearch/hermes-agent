@@ -148,6 +148,15 @@ class TestPlanModeDeniesWrites:
         assert result is not None
         assert result["action"] == "deny"
 
+    def test_todo_denied(self):
+        import tools.todo_tool  # noqa: F401
+
+        mod = _load_plan_mode_hook()
+        mod.enter_plan_mode()
+        result = mod.pre_tool_call("todo", {"todos": []})
+        assert result is not None
+        assert result["action"] == "deny"
+
     def test_memory_read_allowed_write_denied(self):
         mod = _load_plan_mode_hook()
         mod.enter_plan_mode()

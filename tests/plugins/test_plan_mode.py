@@ -96,6 +96,12 @@ class TestSessionIsolation:
         assert pre_tool_call("write_file", {"path": "/tmp/x"})["action"] == "deny"
         assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="default")["action"] == "deny"
 
+    def test_session_isolation_still_works(self):
+        enter_plan_mode("session-a")
+
+        assert pre_tool_call("terminal", {"command": "ls"}, session_id="session-a")["action"] == "deny"
+        assert pre_tool_call("terminal", {"command": "ls"}, session_id="session-b") is None
+
 
 # ── Allowed tools in plan mode ─────────────────────────────────────────
 
@@ -154,6 +160,73 @@ class TestRegistryMetadataInPlanMode:
 
         assert pre_tool_call("plan_mode", {"action": "status"}) is None
 
+    def test_mutates_agent_state_denied(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {
+                "stateful_tool": {
+                    "allowed_in_plan_mode_default": True,
+                    "mutates_agent_state": True,
+                }
+            }
+        )
+
+        result = pre_tool_call("stateful_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
+    def test_mutates_local_fs_denied(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {
+                "file_mutation_tool": {
+                    "mutates_local_fs": True,
+                }
+            }
+        )
+
+        result = pre_tool_call("file_mutation_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
+    def test_high_risk_denied(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {
+                "high_risk_tool": {
+                    "allowed_in_plan_mode_default": True,
+                    "risk_level": "high",
+                }
+            }
+        )
+
+        result = pre_tool_call("high_risk_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
+    def test_metadata_missing_non_allowlist_denied(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata({})
+
+        result = pre_tool_call("unknown_non_allowlisted_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
+    def test_metadata_conflict_conservative(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {
+                "conflicted_tool": {
+                    "allowed_in_plan_mode_default": True,
+                    "mutates_external_world": True,
+                }
+            }
+        )
+
+        result = pre_tool_call("conflicted_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
 
 # ── Denied tools in plan mode ──────────────────────────────────────────
 
@@ -186,7 +259,9 @@ class TestDeniedInPlanMode:
         assert result is not None
         assert result["action"] == "deny"
 
-    def test_todo_denied(self):
+    def test_todo_denied_in_plan_mode(self):
+        import tools.todo_tool  # noqa: F401
+
         enter_plan_mode()
         result = pre_tool_call("todo", {"todos": []})
         assert result is not None

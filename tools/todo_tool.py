@@ -266,5 +266,5 @@ registry.register(
     check_fn=check_todo_requirements,
     emoji="📋",
     mutates_agent_state=True,
-    allowed_in_plan_mode_default=True,
+    allowed_in_plan_mode_default=False,
 )

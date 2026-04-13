@@ -94,6 +94,26 @@ class TestReadFileHandler:
         assert "workspace_root" in result["error"]
         mock_ops.read_file.assert_not_called()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_workspace_root_not_applied_for_non_local_backend(self, mock_get, monkeypatch, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_ops = _make_mock_ops("/root")
+        result_obj = MagicMock()
+        result_obj.content = "ok"
+        result_obj.to_dict.return_value = {"content": "ok", "total_lines": 1}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("../secret.txt"))
+
+        assert result["content"] == "ok"
+        mock_ops.read_file.assert_called_once_with("../secret.txt", 1, 500)
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")

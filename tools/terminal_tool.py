@@ -634,7 +634,9 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
-    workspace_root = get_workspace_root()
+    # workspace_root is a host-path constraint. Apply it only to the local
+    # backend until non-local backends have an explicit path-mapping contract.
+    workspace_root = get_workspace_root() if env_type == "local" else None
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
 

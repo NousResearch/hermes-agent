@@ -208,7 +208,6 @@ if _config_path.exists():
             _workspace_root = str(_security_cfg.get("workspace_root", "") or "").strip()
             if _workspace_root:
                 os.environ["HERMES_WORKSPACE_ROOT"] = _workspace_root
-                os.environ["HERMES_WRITE_SAFE_ROOT"] = _workspace_root
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

@@ -59,7 +59,6 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
         workspace_root = str(security_cfg.get("workspace_root", "") or "").strip()
         if workspace_root:
             env["HERMES_WORKSPACE_ROOT"] = workspace_root
-            env["HERMES_WRITE_SAFE_ROOT"] = workspace_root
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
@@ -159,10 +158,8 @@ class TestTopLevelCwdAlias:
         cfg = {"security": {"workspace_root": "/srv/agents/agent-a"}}
         result = _simulate_config_bridge(cfg)
         assert result["HERMES_WORKSPACE_ROOT"] == "/srv/agents/agent-a"
-        assert result["HERMES_WRITE_SAFE_ROOT"] == "/srv/agents/agent-a"
 
     def test_empty_workspace_root_not_bridged(self):
         cfg = {"security": {"workspace_root": "  "}}
         result = _simulate_config_bridge(cfg)
         assert "HERMES_WORKSPACE_ROOT" not in result
-        assert "HERMES_WRITE_SAFE_ROOT" not in result

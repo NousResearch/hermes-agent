@@ -519,8 +519,6 @@ def load_cli_config() -> Dict[str, Any]:
         workspace_root = str(security_config.get("workspace_root", "") or "").strip()
         if workspace_root:
             os.environ["HERMES_WORKSPACE_ROOT"] = workspace_root
-            # Keep the legacy write-only guard aligned with the new workspace root.
-            os.environ["HERMES_WRITE_SAFE_ROOT"] = workspace_root
 
     return defaults
 
@@ -7613,7 +7611,7 @@ class HermesCLI:
                 from agent.model_metadata import get_model_context_length
                 _ctx_len = get_model_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "")
-                _ctx_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+                _ctx_cwd = os.getcwd()
                 _ctx_allowed_root = os.getenv("HERMES_WORKSPACE_ROOT") or _ctx_cwd
                 _ctx_result = preprocess_context_references(
                     message,

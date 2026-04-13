@@ -2304,8 +2304,9 @@ _SECURITY_COMMENT = """
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
-# workspace_root optionally constrains file tools, terminal cwd/workdir,
-# and @file/@folder references to a single workspace tree.
+# workspace_root optionally constrains host-side @file/@folder references
+# plus local built-in file tools and terminal cwd/workdir to one workspace.
+# Non-local terminal backends keep their existing path semantics.
 #
 # security:
 #   redact_secrets: false
@@ -2356,6 +2357,8 @@ _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
 # API keys, tokens, and passwords are redacted from tool output by default.
 # Set to false to see full values (useful for debugging auth issues).
+# workspace_root constrains host-side @file/@folder refs plus local built-in
+# file tools and terminal cwd/workdir to one workspace when configured.
 #
 # security:
 #   redact_secrets: false

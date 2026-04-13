@@ -129,6 +129,13 @@ def _resolve_tool_path(path: str, file_ops: ShellFileOperations) -> Path:
     return resolve_user_path(expanded, base_dir=file_ops.cwd, expand_user=False)
 
 
+def _get_file_tool_workspace_root() -> Path | None:
+    """Return the workspace root for local file-tool backends only."""
+    if os.getenv("TERMINAL_ENV", "local") != "local":
+        return None
+    return get_workspace_root()
+
+
 def _check_workspace_path(
     path: str,
     file_ops: ShellFileOperations,
@@ -137,7 +144,7 @@ def _check_workspace_path(
 ) -> tuple[Path, str | None]:
     """Resolve *path* and enforce the optional workspace-root boundary."""
     resolved = _resolve_tool_path(path, file_ops)
-    workspace_root = get_workspace_root()
+    workspace_root = _get_file_tool_workspace_root()
     if workspace_root is None:
         return resolved, None
 

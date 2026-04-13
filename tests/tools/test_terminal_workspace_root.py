@@ -19,6 +19,21 @@ def test_get_env_config_defaults_local_cwd_to_workspace_root(monkeypatch, tmp_pa
     assert config["workspace_root"] == str(workspace)
 
 
+def test_get_env_config_ignores_workspace_root_for_docker(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+    from tools.terminal_tool import _get_env_config
+
+    config = _get_env_config()
+    assert config["cwd"] == "/root"
+    assert config["workspace_root"] == ""
+
+
 def test_terminal_tool_blocks_workdir_outside_workspace_root(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -258,7 +258,7 @@ terminal:
 # Docs: https://github.com/sheeki03/tirith
 #
 # security:
-#   workspace_root: "/absolute/path/to/workspace"  # Optional: constrain file tools, terminal cwd/workdir, and @file/@folder refs to one workspace
+#   workspace_root: "/absolute/path/to/workspace"  # Optional: constrain host-side @file/@folder refs plus local file tools and terminal cwd/workdir
 #   tirith_enabled: true        # Enable/disable tirith scanning
 #   tirith_path: "tirith"       # Path to tirith binary (supports ~ expansion)
 #   tirith_timeout: 5           # Scan timeout in seconds

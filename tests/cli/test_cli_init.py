@@ -343,7 +343,6 @@ class TestWorkspaceRootBridge:
         workspace.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.delenv("HERMES_WORKSPACE_ROOT", raising=False)
-        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
 
         config_path = hermes_home / "config.yaml"
         config_path.write_text(yaml.safe_dump({
@@ -358,7 +357,6 @@ class TestWorkspaceRootBridge:
         cli.load_cli_config()
 
         assert os.environ["HERMES_WORKSPACE_ROOT"] == str(workspace)
-        assert os.environ["HERMES_WRITE_SAFE_ROOT"] == str(workspace)
 
 
 class TestProviderResolution:

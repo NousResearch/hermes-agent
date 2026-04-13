@@ -339,19 +339,20 @@ async def get_status():
 
 
 @app.get("/api/sessions")
-async def get_sessions():
+async def get_sessions(limit: int = 20, offset: int = 0):
     try:
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=20)
+            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            total = db.session_count()
             now = time.time()
             for s in sessions:
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
-            return sessions
+            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
     except Exception as e:

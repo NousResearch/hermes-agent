@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   MessageSquare,
   Search,
@@ -27,13 +28,13 @@ const ROLE_STYLES: Record<string, { bg: string; text: string; label: string }> =
   tool: { bg: "bg-warning/10", text: "text-warning", label: "Tool" },
 };
 
-const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = {
-  cli: { icon: Terminal, color: "text-primary" },
-  telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
-  discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
-  slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]" },
-  whatsapp: { icon: Globe, color: "text-success" },
-  cron: { icon: Clock, color: "text-warning" },
+const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string; dotColor: string }> = {
+  cli: { icon: Terminal, color: "text-primary", dotColor: "bg-emerald-400" },
+  telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]", dotColor: "bg-blue-400" },
+  discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]", dotColor: "bg-purple-400" },
+  slack: { icon: MessageSquare, color: "text-[oklch(0.7_0.15_155)]", dotColor: "bg-[oklch(0.7_0.15_155)]" },
+  whatsapp: { icon: Globe, color: "text-success", dotColor: "bg-success" },
+  cron: { icon: Clock, color: "text-warning", dotColor: "bg-orange-400" },
 };
 
 /** Render an FTS5 snippet with highlighted matches.
@@ -195,7 +196,7 @@ function SessionRow({
     }
   }, [isExpanded, session.id, messages, loading]);
 
-  const sourceInfo = (session.source ? SOURCE_CONFIG[session.source] : null) ?? { icon: Globe, color: "text-muted-foreground" };
+  const sourceInfo = (session.source ? SOURCE_CONFIG[session.source] : null) ?? { icon: Globe, color: "text-muted-foreground", dotColor: "bg-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
 
@@ -206,7 +207,7 @@ function SessionRow({
         : "border-border"
     }`}>
       <div
-        className="flex items-center justify-between p-3 cursor-pointer hover:bg-secondary/30 transition-colors"
+        className="flex items-center justify-between p-2 cursor-pointer hover:bg-secondary/30 transition-colors"
         onClick={onToggle}
       >
         <div className="flex items-center gap-3 min-w-0 flex-1">
@@ -226,9 +227,10 @@ function SessionRow({
               )}
             </div>
             <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="truncate max-w-[180px]">{(session.model ?? "unknown").split("/").pop()}</span>
+              <span className={`inline-block h-2 w-2 rounded-full shrink-0 ${sourceInfo.dotColor}`} />
+              <span className="truncate max-w-[180px] font-medium text-foreground/80">{(session.model ?? "unknown").split("/").pop()}</span>
               <span className="text-border">&#183;</span>
-              <span>{session.message_count} msgs</span>
+              <span className="text-foreground/70 font-medium">{session.message_count} msgs</span>
               {session.tool_call_count > 0 && (
                 <>
                   <span className="text-border">&#183;</span>
@@ -287,6 +289,9 @@ function SessionRow({
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -294,17 +299,21 @@ export default function SessionsPage() {
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
-  const loadSessions = useCallback(() => {
+  const loadSessions = useCallback((p: number) => {
+    setLoading(true);
     api
-      .getSessions()
-      .then(setSessions)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .then((resp) => {
+        setSessions(resp.sessions);
+        setTotal(resp.total);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+    loadSessions(page);
+  }, [loadSessions, page]);
 
   // Debounced FTS search
   useEffect(() => {
@@ -334,6 +343,7 @@ export default function SessionsPage() {
     try {
       await api.deleteSession(id);
       setSessions((prev) => prev.filter((s) => s.id !== id));
+      setTotal((prev) => prev - 1);
       if (expandedId === id) setExpandedId(null);
     } catch {
       // ignore
@@ -370,7 +380,7 @@ export default function SessionsPage() {
           <MessageSquare className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-base font-semibold">Sessions</h1>
           <Badge variant="secondary" className="text-xs">
-            {sessions.length}
+            {total}
           </Badge>
         </div>
         <div className="relative w-64">
@@ -408,6 +418,7 @@ export default function SessionsPage() {
           )}
         </div>
       ) : (
+        <>
         <div className="flex flex-col gap-1.5">
           {filtered.map((s) => (
             <SessionRow
@@ -423,6 +434,41 @@ export default function SessionsPage() {
             />
           ))}
         </div>
+
+        {/* Pagination — hidden during search (search has its own result set) */}
+        {!searchResults && total > PAGE_SIZE && (
+          <div className="flex items-center justify-between pt-2">
+            <span className="text-xs text-muted-foreground">
+              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+            </span>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 w-7 p-0"
+                disabled={page === 0}
+                onClick={() => setPage((p) => p - 1)}
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-xs text-muted-foreground px-2">
+                Page {page + 1} of {Math.ceil(total / PAGE_SIZE)}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 w-7 p-0"
+                disabled={(page + 1) * PAGE_SIZE >= total}
+                onClick={() => setPage((p) => p + 1)}
+                aria-label="Next page"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   );

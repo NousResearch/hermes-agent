@@ -75,8 +75,8 @@ export default function App() {
                 onClick={() => setPage(id)}
                 className={`group relative inline-flex items-center gap-1.5 border-r border-border px-4 py-2 font-display text-[0.8rem] tracking-[0.12em] uppercase whitespace-nowrap transition-colors cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${
                   page === id
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
+                    ? "text-foreground font-semibold"
+                    : "text-muted-foreground font-normal hover:text-foreground"
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />

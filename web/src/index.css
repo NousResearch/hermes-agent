@@ -27,7 +27,7 @@
   --color-secondary: #0a2e2e;
   --color-secondary-foreground: #ffe6cb;
   --color-muted: #083030;
-  --color-muted-foreground: #8aaa9a;
+  --color-muted-foreground: #a8c4b4;
   --color-accent: #0c3838;
   --color-accent-foreground: #ffe6cb;
   --color-destructive: #fb2c36;
@@ -181,7 +181,7 @@ code {
   inset: 0;
   z-index: 99;
   mix-blend-mode: lighten;
-  opacity: 0.22;
+  opacity: 0.12;
   background: radial-gradient(ellipse at 0% 0%, rgba(255,189,56,0.35) 0%, rgba(255,189,56,0) 60%);
 }
 

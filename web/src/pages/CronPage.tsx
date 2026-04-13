@@ -120,7 +120,7 @@ export default function CronPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-6 max-w-4xl">
       <Toast toast={toast} />
 
       {/* Create new job form */}
@@ -132,7 +132,7 @@ export default function CronPage() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4">
+          <div className="grid gap-3">
             <div className="grid gap-2">
               <Label htmlFor="cron-name">Name (optional)</Label>
               <Input
@@ -193,14 +193,14 @@ export default function CronPage() {
 
       {/* Jobs list */}
       <div className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
           <Clock className="h-4 w-4" />
           Scheduled Jobs ({jobs.length})
         </h2>
 
         {jobs.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            <CardContent className="py-5 text-center text-sm text-muted-foreground">
               No cron jobs configured. Create one above.
             </CardContent>
           </Card>
@@ -208,7 +208,7 @@ export default function CronPage() {
 
         {jobs.map((job) => (
           <Card key={job.id}>
-            <CardContent className="flex items-center gap-4 py-4">
+            <CardContent className="flex items-center gap-4 py-2.5">
               {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">

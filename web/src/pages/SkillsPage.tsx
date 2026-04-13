@@ -366,7 +366,7 @@ export default function SkillsPage() {
 
       {/* ═══════════════ Toolsets ═══════════════ */}
       <section className="flex flex-col gap-4">
-        <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-2">
           <Wrench className="h-4 w-4" />
           Toolsets ({filteredToolsets.length})
         </h2>

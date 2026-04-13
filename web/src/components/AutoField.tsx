@@ -3,16 +3,19 @@ import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 
-function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
+function FieldHint({ schema, schemaKey, label }: { schema: Record<string, unknown>; schemaKey: string; label?: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
   const description = schema.description ? String(schema.description) : "";
 
-  if (!keyPath && !description) return null;
+  // Skip description if it's essentially the same as the label (case-insensitive)
+  const isRedundant = label && description && label.toLowerCase().replace(/[\s_-]/g, "") === description.toLowerCase().replace(/[\s_-]/g, "");
+
+  if (!keyPath && (!description || isRedundant)) return null;
 
   return (
     <div className="flex flex-col gap-0.5">
       {keyPath && <span className="text-[10px] font-mono text-muted-foreground/50">{keyPath}</span>}
-      {description && <span className="text-xs text-muted-foreground/70">{description}</span>}
+      {description && !isRedundant && <span className="text-xs text-muted-foreground/70">{description}</span>}
     </div>
   );
 }
@@ -31,7 +34,7 @@ export function AutoField({
       <div className="flex items-center justify-between gap-4">
         <div className="flex flex-col gap-0.5">
           <Label className="text-sm">{label}</Label>
-          <FieldHint schema={schema} schemaKey={schemaKey} />
+          <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         </div>
         <Switch checked={!!value} onCheckedChange={onChange} />
       </div>
@@ -43,7 +46,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         <Select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)}>
           {options.map((opt) => (
             <option key={opt} value={opt}>
@@ -59,7 +62,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         <Input
           type="number"
           value={value === undefined || value === null ? "" : String(value)}
@@ -83,7 +86,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         <textarea
           className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           value={String(value ?? "")}
@@ -97,7 +100,7 @@ export function AutoField({
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         <Input
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
           onChange={(e) =>
@@ -119,7 +122,7 @@ export function AutoField({
     return (
       <div className="grid gap-3 rounded-lg border border-border p-3">
         <Label className="text-xs font-medium">{label}</Label>
-        <FieldHint schema={schema} schemaKey={schemaKey} />
+        <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
         {Object.entries(obj).map(([subKey, subVal]) => (
           <div key={subKey} className="grid gap-1">
             <Label className="text-xs text-muted-foreground">{subKey}</Label>
@@ -137,7 +140,7 @@ export function AutoField({
   return (
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
-      <FieldHint schema={schema} schemaKey={schemaKey} />
+      <FieldHint schema={schema} schemaKey={schemaKey} label={label} />
       <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
     </div>
   );

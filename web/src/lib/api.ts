@@ -22,7 +22,8 @@ async function getSessionToken(): Promise<string> {
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: () => fetchJSON<SessionInfo[]>("/api/sessions"),
+  getSessions: (limit = 20, offset = 0) =>
+    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   deleteSession: (id: string) =>
@@ -206,6 +207,13 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+}
+
+export interface PaginatedSessions {
+  sessions: SessionInfo[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface EnvVarInfo {

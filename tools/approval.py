@@ -214,6 +214,8 @@ def _hardline_block_result(description: str) -> dict:
 _SAFER_ALTERNATIVES: dict[str, str] = {
     "pipe remote content to shell":
         "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+    "pipe remote content to interpreter":
+        "Save curl output to a file first, then process it separately. Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
     "execute remote script via process substitution":
         "Save to a file first, inspect it, then execute. Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
     "script execution via -e/-c flag":
@@ -239,8 +241,23 @@ _SAFER_ALTERNATIVES: dict[str, str] = {
 }
 
 
+_TIRITH_HINT_OVERRIDES: dict[str, str] = {
+    "pipe_to_interpreter":
+        "Save curl output to a file first, then process it separately. "
+        "Example: curl -o /tmp/data.json URL && python3 -c \"import json; data=json.load(open('/tmp/data.json')); print(data)\"",
+    "pipe_to_shell":
+        "Save to a file first, inspect it, then execute. "
+        "Example: curl -o /tmp/script.sh URL && less /tmp/script.sh && bash /tmp/script.sh",
+}
+
+
 def _get_safer_hint(pattern_key: str) -> str | None:
     """Return a safer-alternative hint for a dangerous pattern key, if available."""
+    # Tirith keys are prefixed with "tirith:" — check overrides first
+    if pattern_key.startswith("tirith:"):
+        rule_id = pattern_key.split(":", 1)[1]
+        if rule_id in _TIRITH_HINT_OVERRIDES:
+            return _TIRITH_HINT_OVERRIDES[rule_id]
     return _SAFER_ALTERNATIVES.get(pattern_key)
 
 
@@ -271,6 +288,8 @@ DANGEROUS_PATTERNS = [
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
+    (r'\b(curl|wget)\b.*\|\s*python[23]?\b', "pipe remote content to interpreter"),
+    (r'\b(curl|wget)\b.*\|\s*(perl|ruby|node)\b', "pipe remote content to interpreter"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),
     (rf'>>?\s*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via redirection"),
@@ -1209,13 +1228,12 @@ def check_all_command_guards(command: str, env_type: str,
                     f"BLOCKED: Command {reason}. Do NOT retry this command. "
                     "Try a safer alternative instead."
                 )
-                # Append hints for the first dangerous-pattern warning
+                # Append hints for the first warning with a safer alternative
                 first_hint = None
                 for key, desc, is_t in warnings:
-                    if not is_t:
-                        first_hint = _get_safer_hint(key)
-                        if first_hint:
-                            deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
+                    first_hint = _get_safer_hint(key)
+                    if first_hint:
+                        deny_msg += f"\n\n💡 SAFER ALTERNATIVE: {first_hint}"
                         break
                 return {
                     "approved": False,
@@ -1253,14 +1271,13 @@ def check_all_command_guards(command: str, env_type: str,
         )
         first_hint = None
         for key, desc, is_t in warnings:
-            if not is_t:
-                first_hint = _get_safer_hint(key)
-                if first_hint:
-                    self_correct_msg += (
-                        f"💡 SAFER ALTERNATIVE: {first_hint}\n\n"
-                        "Try a safer approach first. Only request user approval if no safe "
-                        "alternative exists for your goal.\n\n"
-                    )
+            first_hint = _get_safer_hint(key)
+            if first_hint:
+                self_correct_msg += (
+                    f"💡 SAFER ALTERNATIVE: {first_hint}\n\n"
+                    "Try a safer approach first. Only request user approval if no safe "
+                    "alternative exists for your goal.\n\n"
+                )
                 break
         self_correct_msg += (
             f"**Command:**\n```\n{command}\n```\n\n"

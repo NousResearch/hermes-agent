@@ -816,6 +816,23 @@ class TestSendTelegramHtmlDetection:
         second_call = bot.send_message.await_args_list[1].kwargs
         assert second_call["parse_mode"] is None
 
+    def test_transient_bad_gateway_retries_text_send(self, monkeypatch):
+        bot = self._make_bot()
+        bot.send_message = AsyncMock(
+            side_effect=[
+                Exception("502 Bad Gateway"),
+                SimpleNamespace(message_id=2),
+            ]
+        )
+        _install_telegram_mock(monkeypatch, bot)
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = asyncio.run(_send_telegram("tok", "123", "hello"))
+
+        assert result["success"] is True
+        assert bot.send_message.await_count == 2
+        sleep_mock.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # Tests for Discord thread_id support

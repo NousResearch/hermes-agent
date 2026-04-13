@@ -222,7 +222,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return bool(value)
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
-        if not self._disable_link_previews:
+        if not getattr(self, "_disable_link_previews", False):
             return {}
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}

@@ -84,7 +84,7 @@ def _make_adapter():
 
 @pytest.mark.asyncio
 async def test_send_retries_without_thread_on_thread_not_found():
-    """When message_thread_id causes 'thread not found', retry without it."""
+    """When message_thread_id causes 'thread not found', soft sends retry without it."""
     adapter = _make_adapter()
 
     call_log = []
@@ -101,7 +101,7 @@ async def test_send_retries_without_thread_on_thread_not_found():
     result = await adapter.send(
         chat_id="123",
         content="test message",
-        metadata={"thread_id": "99999"},
+        metadata={"thread_id": "99999", "topic_boundary": "soft"},
     )
 
     assert result.success is True
@@ -110,6 +110,36 @@ async def test_send_retries_without_thread_on_thread_not_found():
     assert len(call_log) == 2
     assert call_log[0]["message_thread_id"] == 99999
     assert call_log[1]["message_thread_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_strict_topic_does_not_fallback_to_general_on_thread_not_found():
+    """Strict topic-bound sends must fail closed instead of retrying in general."""
+    adapter = _make_adapter()
+
+    call_log = []
+
+    async def mock_send_message(**kwargs):
+        call_log.append(dict(kwargs))
+        raise FakeBadRequest("Message thread not found")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="topic-only message",
+        metadata={
+            "thread_id": "99999",
+            "topic_boundary": "strict",
+            "topic_name": "舆情监测",
+        },
+    )
+
+    assert result.success is False
+    assert "thread not found" in result.error.lower()
+    assert len(call_log) == 1
+    assert call_log[0]["message_thread_id"] == 99999
+    assert result.retryable is False
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,7 @@ class SessionContext:
     source: SessionSource
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
+    related_topics: List[str] = field(default_factory=list)
     
     # Session metadata
     session_key: str = ""
@@ -166,6 +167,7 @@ class SessionContext:
             "home_channels": {
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
+            "related_topics": list(self.related_topics),
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -238,6 +240,23 @@ def build_session_context_prompt(
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
+        if context.source.platform == Platform.TELEGRAM and context.source.thread_id:
+            lines.append(
+                "**Topic routing:** This conversation is bound to the current Telegram topic. "
+                "Do not treat the parent group or other topics as the same context."
+            )
+    elif (
+        context.source.platform == Platform.TELEGRAM
+        and context.source.chat_type == "group"
+        and not context.source.thread_id
+        and context.related_topics
+    ):
+        joined_topics = ", ".join(context.related_topics[:8])
+        lines.append(f"**Known Topics:** {joined_topics}")
+        lines.append(
+            "**General routing:** This is the parent Telegram group (general). "
+            "If the user refers to a known project/topic, keep the reply here concise and prefer continuing detailed work in that specific topic instead of expanding fully in general."
+        )
 
     # User identity.
     # In shared thread sessions (non-DM with thread_id), multiple users
@@ -680,6 +699,40 @@ class SessionStore:
             self._ensure_loaded_locked()
             return len(self._entries) > 1
 
+    def list_related_topics(self, source: SessionSource) -> List[str]:
+        """Return known sibling topic names for the same Telegram group.
+
+        Used to make the parent Telegram group act as a light control plane:
+        the model can see which project topics exist and keep detailed work in
+        the appropriate topic instead of expanding everything in general.
+        """
+        if (
+            source.platform != Platform.TELEGRAM
+            or source.chat_type != "group"
+            or source.thread_id
+            or not source.chat_id
+        ):
+            return []
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            topics: set[str] = set()
+            for entry in self._entries.values():
+                origin = entry.origin
+                if not origin:
+                    continue
+                if origin.platform != Platform.TELEGRAM:
+                    continue
+                if origin.chat_type != "group":
+                    continue
+                if str(origin.chat_id or "") != str(source.chat_id):
+                    continue
+                if not origin.thread_id:
+                    continue
+                if origin.chat_topic:
+                    topics.add(origin.chat_topic)
+            return sorted(topics)
+
     def get_or_create_session(
         self,
         source: SessionSource,
@@ -1057,7 +1110,8 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    related_topics: Optional[List[str]] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -1076,6 +1130,7 @@ def build_session_context(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
+        related_topics=list(related_topics or []),
     )
     
     if session_entry:

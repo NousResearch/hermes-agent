@@ -251,6 +251,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
 )
+from gateway.topic_routing import route_from_session_source
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -694,6 +695,33 @@ class GatewayRunner:
         disabled_chats.update(
             chat_id for chat_id, mode in self._voice_mode.items() if mode == "off"
         )
+
+    def _build_reply_metadata(
+        self,
+        source: Optional[SessionSource] = None,
+        *,
+        platform: Optional[Platform] = None,
+        chat_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        topic_name: Optional[str] = None,
+        chat_type: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Build outbound routing metadata, preserving strict Telegram topic boundaries."""
+        if source is None:
+            if platform is None or not chat_id:
+                return None
+            normalized_chat_type = chat_type or ("group" if platform == Platform.TELEGRAM else "group")
+            source = SessionSource(
+                platform=platform,
+                chat_id=str(chat_id),
+                chat_type=normalized_chat_type,
+                thread_id=str(thread_id) if thread_id else None,
+                chat_topic=topic_name,
+            )
+        route = route_from_session_source(source)
+        if not route or (not route.thread_id and not route.topic_name):
+            return None
+        return route.to_metadata()
 
     # -----------------------------------------------------------------
 
@@ -1336,7 +1364,7 @@ class GatewayRunner:
         if not adapter:
             return True
 
-        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        thread_meta = self._build_reply_metadata(event.source)
         if self._queue_during_drain_enabled():
             self._queue_or_replace_pending_event(session_key, event)
             message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
@@ -3121,7 +3149,8 @@ class GatewayRunner:
             })
         
         # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        related_topics = self.session_store.list_related_topics(source)
+        context = build_session_context(source, self.config, session_entry, related_topics=related_topics)
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -3410,7 +3439,7 @@ class GatewayRunner:
                         f"{_compress_token_threshold:,}",
                     )
 
-                    _hyg_meta = {"thread_id": source.thread_id} if source.thread_id else None
+                    _hyg_meta = self._build_reply_metadata(source)
 
                     try:
                         from run_agent import AIAgent
@@ -3544,6 +3573,135 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+
+        if _is_shared_thread and source.user_name:
+            message_text = f"[{source.user_name}] {message_text}"
+
+        if event.media_urls:
+            image_paths = []
+            for i, path in enumerate(event.media_urls):
+                # Check media_types if available; otherwise infer from message type
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_image = (
+                    mtype.startswith("image/")
+                    or event.message_type == MessageType.PHOTO
+                )
+                if is_image:
+                    image_paths.append(path)
+            if image_paths:
+                message_text = await self._enrich_message_with_vision(
+                    message_text, image_paths
+                )
+
+        # -----------------------------------------------------------------
+        # Auto-transcribe voice/audio messages sent by the user
+        # -----------------------------------------------------------------
+        if event.media_urls:
+            audio_paths = []
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                is_audio = (
+                    mtype.startswith("audio/")
+                    or event.message_type in (MessageType.VOICE, MessageType.AUDIO)
+                )
+                if is_audio:
+                    audio_paths.append(path)
+            if audio_paths:
+                message_text = await self._enrich_message_with_transcription(
+                    message_text, audio_paths
+                )
+                # If STT failed, send a direct message to the user so they
+                # know voice isn't configured — don't rely on the agent to
+                # relay the error clearly.
+                _stt_fail_markers = (
+                    "No STT provider",
+                    "STT is disabled",
+                    "can't listen",
+                    "VOICE_TOOLS_OPENAI_KEY",
+                )
+                if any(m in message_text for m in _stt_fail_markers):
+                    _stt_adapter = self.adapters.get(source.platform)
+                    _stt_meta = self._build_reply_metadata(source)
+                    if _stt_adapter:
+                        try:
+                            _stt_msg = (
+                                "🎤 I received your voice message but can't transcribe it — "
+                                "no speech-to-text provider is configured.\n\n"
+                                "To enable voice: install faster-whisper "
+                                "(`pip install faster-whisper` in the Hermes venv) "
+                                "and set `stt.enabled: true` in config.yaml, "
+                                "then /restart the gateway."
+                            )
+                            # Point to setup skill if it's installed
+                            if self._has_setup_skill():
+                                _stt_msg += "\n\nFor full setup instructions, type: `/skill hermes-agent-setup`"
+                            await _stt_adapter.send(
+                                source.chat_id, _stt_msg,
+                                metadata=_stt_meta,
+                            )
+                        except Exception:
+                            pass
+
+        # -----------------------------------------------------------------
+        # Enrich document messages with context notes for the agent
+        # -----------------------------------------------------------------
+        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            import mimetypes as _mimetypes
+            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                # Fall back to extension-based detection when MIME type is unreliable.
+                if mtype in ("", "application/octet-stream"):
+                    import os as _os2
+                    _ext = _os2.path.splitext(path)[1].lower()
+                    if _ext in _TEXT_EXTENSIONS:
+                        mtype = "text/plain"
+                    else:
+                        guessed, _ = _mimetypes.guess_type(path)
+                        if guessed:
+                            mtype = guessed
+                if not mtype.startswith(("application/", "text/")):
+                    continue
+                # Extract display filename by stripping the doc_{uuid12}_ prefix
+                import os as _os
+                basename = _os.path.basename(path)
+                # Format: doc_<12hex>_<original_filename>
+                parts = basename.split("_", 2)
+                display_name = parts[2] if len(parts) >= 3 else basename
+                # Sanitize to prevent prompt injection via filenames
+                import re as _re
+                display_name = _re.sub(r'[^\w.\- ]', '_', display_name)
+
+                if mtype.startswith("text/"):
+                    context_note = (
+                        f"[The user sent a text document: '{display_name}'. "
+                        f"Its content has been included below. "
+                        f"The file is also saved at: {path}]"
+                    )
+                else:
+                    context_note = (
+                        f"[The user sent a document: '{display_name}'. "
+                        f"The file is saved at: {path}. "
+                        f"Ask the user what they'd like you to do with it.]"
+                    )
+                message_text = f"{context_note}\n\n{message_text}"
+
+        # -----------------------------------------------------------------
+        # Inject reply context when user replies to a message not in history.
+        # Telegram (and other platforms) let users reply to specific messages,
+        # but if the quoted message is from a previous session, cron delivery,
+        # or background task, the agent has no context about what's being
+        # referenced. Prepend the quoted text so the agent understands. (#1594)
+        # -----------------------------------------------------------------
+        if getattr(event, 'reply_to_text', None) and event.reply_to_message_id:
+            reply_snippet = event.reply_to_text[:500]
+            found_in_history = any(
+                reply_snippet[:200] in (msg.get("content") or "")
+                for msg in history
+                if msg.get("role") in ("assistant", "user", "tool")
+            )
+            if not found_in_history:
+                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         try:
             # Emit agent:start hook
@@ -4423,7 +4581,7 @@ class GatewayRunner:
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
-                    metadata = {"thread_id": source.thread_id} if source.thread_id else None
+                    metadata = self._build_reply_metadata(source)
                     result = await adapter.send_model_picker(
                         chat_id=source.chat_id,
                         providers=providers,
@@ -5142,7 +5300,7 @@ class GatewayRunner:
                     "reply_to": event.message_id,
                 }
                 if event.source.thread_id:
-                    send_kwargs["metadata"] = {"thread_id": event.source.thread_id}
+                    send_kwargs["metadata"] = self._build_reply_metadata(event.source)
                 await adapter.send_voice(**send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
@@ -5172,7 +5330,7 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            _thread_meta = self._build_reply_metadata(event.source)
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -5328,7 +5486,7 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in background task %s", source.platform, task_id)
             return
 
-        _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_metadata = self._build_reply_metadata(source)
 
         try:
             user_config = _load_gateway_config()
@@ -5420,6 +5578,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             image_url=image_url,
                             caption=alt_text,
+                            metadata=_thread_metadata,
                         )
                     except Exception:
                         pass
@@ -5430,6 +5589,7 @@ class GatewayRunner:
                         await adapter.send_document(
                             chat_id=source.chat_id,
                             file_path=media_path,
+                            metadata=_thread_metadata,
                         )
                     except Exception:
                         pass
@@ -5500,7 +5660,7 @@ class GatewayRunner:
             logger.warning("No adapter for platform %s in /btw task %s", source.platform, task_id)
             return
 
-        _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
+        _thread_meta = self._build_reply_metadata(source)
 
         try:
             user_config = _load_gateway_config()
@@ -5597,13 +5757,22 @@ class GatewayRunner:
 
             for image_url, alt_text in (images or []):
                 try:
-                    await adapter.send_image(chat_id=source.chat_id, image_url=image_url, caption=alt_text)
+                    await adapter.send_image(
+                        chat_id=source.chat_id,
+                        image_url=image_url,
+                        caption=alt_text,
+                        metadata=_thread_meta,
+                    )
                 except Exception:
                     pass
 
             for media_path in (media_files or []):
                 try:
-                    await adapter.send_file(chat_id=source.chat_id, file_path=media_path)
+                    await adapter.send_file(
+                        chat_id=source.chat_id,
+                        file_path=media_path,
+                        metadata=_thread_meta,
+                    )
                 except Exception:
                     pass
 
@@ -7296,7 +7465,7 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
-                            send_meta = {"thread_id": thread_id} if thread_id else None
+                            send_meta = self._build_reply_metadata(platform=_platform_enum, chat_id=chat_id, thread_id=thread_id)
                             await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
                             logger.error("Watcher delivery error: %s", e)
@@ -7317,7 +7486,7 @@ class GatewayRunner:
                         break
                 if adapter and chat_id:
                     try:
-                        send_meta = {"thread_id": thread_id} if thread_id else None
+                        send_meta = self._build_reply_metadata(platform=_platform_enum, chat_id=chat_id, thread_id=thread_id)
                         await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
                         logger.error("Watcher delivery error: %s", e)
@@ -7553,7 +7722,13 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = self._build_reply_metadata(
+            platform=source.platform,
+            chat_id=source.chat_id,
+            thread_id=_progress_thread_id,
+            topic_name=source.chat_topic,
+            chat_type=source.chat_type,
+        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -7714,7 +7889,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = _progress_metadata
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -7832,7 +8007,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=_progress_metadata,
                         )
                         if _want_stream_deltas:
                             _stream_delta_cb = _stream_consumer.on_delta

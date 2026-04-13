@@ -124,6 +124,7 @@ class TestBasePlatformTopicSessions:
         adapter._keep_typing = hold_typing
 
         event = _make_event("-1001", "17585")
+        event.source.chat_topic = "舆情监测"
         await adapter._process_message_background(event, build_session_key(event.source))
 
         assert adapter.sent == [
@@ -131,13 +132,21 @@ class TestBasePlatformTopicSessions:
                 "chat_id": "-1001",
                 "content": "ack",
                 "reply_to": "1",
-                "metadata": {"thread_id": "17585"},
+                "metadata": {
+                    "thread_id": "17585",
+                    "topic_name": "舆情监测",
+                    "topic_boundary": "strict",
+                },
             }
         ]
         assert typing_calls == [
             {
                 "chat_id": "-1001",
-                "metadata": {"thread_id": "17585"},
+                "metadata": {
+                    "thread_id": "17585",
+                    "topic_name": "舆情监测",
+                    "topic_boundary": "strict",
+                },
             }
         ]
         assert adapter.processing_hooks == [

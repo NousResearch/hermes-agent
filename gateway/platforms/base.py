@@ -241,6 +241,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
+from gateway.topic_routing import route_from_session_source
 from hermes_constants import get_hermes_dir
 
 
@@ -988,7 +989,7 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
-    async def send_typing(self, chat_id: str, metadata=None) -> None:
+    async def send_typing(self, chat_id: str, metadata: Optional[dict] = None) -> None:
         """
         Send a typing indicator.
         
@@ -996,6 +997,13 @@ class BasePlatformAdapter(ABC):
         metadata: optional dict with platform-specific context (e.g. thread_id for Slack).
         """
         pass
+
+    def _build_reply_metadata(self, source: Optional[SessionSource]) -> Optional[dict]:
+        """Build outbound routing metadata from the inbound session source."""
+        route = route_from_session_source(source)
+        if not route or (not route.thread_id and not route.topic_name):
+            return None
+        return route.to_metadata()
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop a persistent typing indicator (if the platform uses one).
@@ -1022,7 +1030,7 @@ class BasePlatformAdapter(ABC):
         """
         # Fallback: send URL as text (subclasses override for native images)
         text = f"{caption}\n{image_url}" if caption else image_url
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
     
     async def send_animation(
         self,
@@ -1113,7 +1121,7 @@ class BasePlatformAdapter(ABC):
         text = f"🔊 Audio: {audio_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=kwargs.get("metadata"))
 
     async def play_tts(
         self,
@@ -1146,7 +1154,7 @@ class BasePlatformAdapter(ABC):
         text = f"🎬 Video: {video_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=kwargs.get("metadata"))
 
     async def send_document(
         self,
@@ -1166,7 +1174,7 @@ class BasePlatformAdapter(ABC):
         text = f"📎 File: {file_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=kwargs.get("metadata"))
 
     async def send_image_file(
         self,
@@ -1186,7 +1194,7 @@ class BasePlatformAdapter(ABC):
         text = f"🖼️ Image: {image_path}"
         if caption:
             text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=kwargs.get("metadata"))
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
@@ -1515,7 +1523,7 @@ class BasePlatformAdapter(ABC):
                     self.name, cmd, session_key,
                 )
                 try:
-                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    _thread_meta = self._build_reply_metadata(event.source)
                     response = await self._message_handler(event)
                     if response:
                         await self._send_with_retry(
@@ -1611,7 +1619,7 @@ class BasePlatformAdapter(ABC):
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
-        _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        _thread_metadata = self._build_reply_metadata(event.source)
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
@@ -1832,7 +1840,7 @@ class BasePlatformAdapter(ABC):
             try:
                 error_type = type(e).__name__
                 error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                _thread_metadata = self._build_reply_metadata(event.source)
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(

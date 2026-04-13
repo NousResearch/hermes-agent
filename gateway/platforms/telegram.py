@@ -815,6 +815,9 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None
+            topic_boundary = metadata.get("topic_boundary") if metadata else None
+            topic_name = metadata.get("topic_name") if metadata else None
+            strict_topic = bool(thread_id and topic_boundary == "strict")
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -871,6 +874,14 @@ class TelegramAdapter(BasePlatformAdapter):
                         if _BadReq and isinstance(send_err, _BadReq):
                             err_lower = str(send_err).lower()
                             if "thread not found" in err_lower and effective_thread_id is not None:
+                                if strict_topic:
+                                    logger.error(
+                                        "[%s] Strict topic delivery failed for thread %s (%s); refusing fallback to parent chat",
+                                        self.name,
+                                        effective_thread_id,
+                                        topic_name or "unknown topic",
+                                    )
+                                    raise
                                 # Thread doesn't exist — retry without
                                 # message_thread_id so the message still
                                 # reaches the chat.
@@ -934,7 +945,14 @@ class TelegramAdapter(BasePlatformAdapter):
             _to = locals().get("_TimedOut")
             err_str = str(e).lower()
             is_timeout = (_to and isinstance(e, _to)) or "timed out" in err_str
-            return SendResult(success=False, error=str(e), retryable=not is_timeout)
+            error_text = str(e)
+            strict_thread_missing = strict_topic and thread_id and "thread not found" in err_str
+            if strict_topic and thread_id:
+                error_text = (
+                    f"Topic-bound delivery failed for thread {thread_id} "
+                    f"({topic_name or 'unknown topic'}): {e}"
+                )
+            return SendResult(success=False, error=error_text, retryable=not (is_timeout or strict_thread_missing))
 
     async def edit_message(
         self,
@@ -1561,7 +1579,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_voice(chat_id, audio_path, caption, reply_to)
+            return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
     
     async def send_image_file(
         self,
@@ -1598,7 +1616,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 e,
                 exc_info=True,
             )
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
     async def send_document(
         self,
@@ -1633,7 +1651,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send document: {e}")
-            return await super().send_document(chat_id, file_path, caption, file_name, reply_to)
+            return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
         self,
@@ -1664,7 +1682,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")
-            return await super().send_video(chat_id, video_path, caption, reply_to)
+            return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     async def send_image(
         self,
@@ -1713,11 +1731,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     resp.raise_for_status()
                     image_data = resp.content
                 
+                _upload_thread = metadata.get("thread_id") if metadata else None
                 msg = await self._bot.send_photo(
                     chat_id=int(chat_id),
                     photo=image_data,
                     caption=caption[:1024] if caption else None,
                     reply_to_message_id=int(reply_to) if reply_to else None,
+                    message_thread_id=int(_upload_thread) if _upload_thread else None,
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
@@ -1727,8 +1747,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     e2,
                     exc_info=True,
                 )
-                # Final fallback: send URL as text
-                return await super().send_image(chat_id, image_url, caption, reply_to)
+                # Final fallback: send URL as text while preserving routing metadata.
+                return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
     
     async def send_animation(
         self,
@@ -1760,7 +1780,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             # Fallback: try as a regular photo
-            return await self.send_image(chat_id, animation_url, caption, reply_to)
+            return await self.send_image(chat_id, animation_url, caption, reply_to, metadata=metadata)
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""

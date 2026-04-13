@@ -249,6 +249,50 @@ class TestBuildSessionContextPrompt:
         assert "Discord" in prompt
         assert "**Channel Topic:** Planning and coordination for Project X" in prompt
 
+    def test_telegram_topic_prompt_declares_strict_topic_boundary(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="hermes",
+            chat_type="group",
+            thread_id="413",
+            chat_topic="舆情监测",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "舆情监测" in prompt
+        assert "**Topic routing:**" in prompt
+        assert "Do not treat the parent group or other topics as the same context." in prompt
+
+    def test_telegram_general_prompt_lists_known_topics(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_name="hermes",
+            chat_type="group",
+        )
+        ctx = build_session_context(
+            source,
+            config,
+            related_topics=["舆情监测", "每日代办事项"],
+        )
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**Known Topics:** 舆情监测, 每日代办事项" in prompt
+        assert "**General routing:**" in prompt
+        assert "prefer continuing detailed work in that specific topic" in prompt
+
     def test_prompt_omits_channel_topic_when_none(self):
         """Channel Topic line should NOT appear when chat_topic is None."""
         config = GatewayConfig(
@@ -362,6 +406,60 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+
+
+class TestSessionStoreRelatedTopics:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_list_related_topics_returns_sibling_telegram_topics(self, store):
+        general_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+        )
+        topic_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="413",
+            chat_topic="舆情监测",
+        )
+        other_topic_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="120",
+            chat_topic="每日代办事项",
+        )
+        foreign_topic = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-2002",
+            chat_type="group",
+            thread_id="1",
+            chat_topic="别的群话题",
+        )
+
+        for origin in (topic_source, other_topic_source, foreign_topic):
+            store.get_or_create_session(origin)
+
+        assert store.list_related_topics(general_source) == ["每日代办事项", "舆情监测"]
+
+    def test_list_related_topics_empty_for_topic_message(self, store):
+        topic_source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001",
+            chat_type="group",
+            thread_id="413",
+            chat_topic="舆情监测",
+        )
+        assert store.list_related_topics(topic_source) == []
 
 
 class TestSessionStoreRewriteTranscript:

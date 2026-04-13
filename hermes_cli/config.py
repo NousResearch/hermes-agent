@@ -414,9 +414,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "summary_model": "",          # empty = use main configured model
-        "summary_provider": "auto",
-        "summary_base_url": None,
+
     },
     "smart_model_routing": {
         "enabled": False,
@@ -702,7 +700,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -1975,6 +1973,43 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
 
+    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
+    if current_ver < 17:
+        config = read_raw_config()
+        comp = config.get("compression", {})
+        if isinstance(comp, dict):
+            s_model = comp.pop("summary_model", None)
+            s_provider = comp.pop("summary_provider", None)
+            s_base_url = comp.pop("summary_base_url", None)
+            migrated_keys = []
+            # Migrate non-empty, non-default values to auxiliary.compression
+            if s_model and str(s_model).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("model"):
+                    aux_comp["model"] = str(s_model).strip()
+                    migrated_keys.append(f"model={s_model}")
+            if s_provider and str(s_provider).strip() not in ("", "auto"):
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
+                    aux_comp["provider"] = str(s_provider).strip()
+                    migrated_keys.append(f"provider={s_provider}")
+            if s_base_url and str(s_base_url).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("base_url"):
+                    aux_comp["base_url"] = str(s_base_url).strip()
+                    migrated_keys.append(f"base_url={s_base_url}")
+            if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
+                config["compression"] = comp
+                save_config(config)
+                if not quiet:
+                    if migrated_keys:
+                        print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
+                    else:
+                        print("  ✓ Removed unused compression.summary_* keys")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -2790,10 +2825,11 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        _sm = compression.get('summary_model', '') or '(main model)'
+        _aux_comp = config.get('auxiliary', {}).get('compression', {})
+        _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
-        comp_provider = compression.get('summary_provider', 'auto')
-        if comp_provider != 'auto':
+        comp_provider = _aux_comp.get('provider', 'auto')
+        if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
     
     # Auxiliary models

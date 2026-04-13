@@ -3114,6 +3114,8 @@ class HermesCLI:
 
         # Collect displayable entries (skip system, tool-result messages)
         entries = []  # list of (role, display_text)
+        _last_asst_idx = None       # index of last assistant entry
+        _last_asst_full = None      # un-truncated display text for last assistant
         for msg in self.conversation_history:
             role = msg.get("role", "")
             content = msg.get("content")
@@ -3143,7 +3145,9 @@ class HermesCLI:
                 text = "" if content is None else str(content)
                 text = _strip_reasoning(text)
                 parts = []
+                full_parts = []  # un-truncated version
                 if text:
+                    full_parts.append(text)
                     lines = text.splitlines()
                     if len(lines) > MAX_ASST_LINES:
                         text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
@@ -3163,11 +3167,15 @@ class HermesCLI:
                     if len(names) > 4:
                         names_str += ", ..."
                     noun = "call" if tc_count == 1 else "calls"
-                    parts.append(f"[{tc_count} tool {noun}: {names_str}]")
+                    tc_summary = f"[{tc_count} tool {noun}: {names_str}]"
+                    parts.append(tc_summary)
+                    full_parts.append(tc_summary)
                 if not parts:
                     # Skip pure-reasoning messages that have no visible output
                     continue
                 entries.append(("assistant", " ".join(parts)))
+                _last_asst_idx = len(entries) - 1
+                _last_asst_full = " ".join(full_parts)
 
         if not entries:
             return
@@ -3177,6 +3185,13 @@ class HermesCLI:
         if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
             skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
             entries = entries[skipped:]
+
+        # Replace last assistant entry with full (un-truncated) text
+        # so the user can see where they left off without wasting tokens.
+        if _last_asst_idx is not None and _last_asst_full:
+            adj_idx = _last_asst_idx - skipped
+            if 0 <= adj_idx < len(entries):
+                entries[adj_idx] = ("assistant_last", _last_asst_full)
 
         # Build the display using Rich
         from rich.panel import Panel
@@ -3210,6 +3225,13 @@ class HermesCLI:
                 lines.append(msg_lines[0] + "\n", style="dim")
                 for ml in msg_lines[1:]:
                     lines.append(f"         {ml}\n", style="dim")
+            elif role == "assistant_last":
+                # Last assistant response shown in full, non-dim
+                lines.append("  ◆ Hermes: ", style=f"bold {_assistant_label_c}")
+                msg_lines = text.splitlines()
+                lines.append(msg_lines[0] + "\n", style="")
+                for ml in msg_lines[1:]:
+                    lines.append(f"            {ml}\n", style="")
             else:
                 lines.append("  ◆ Hermes: ", style=f"dim bold {_assistant_label_c}")
                 msg_lines = text.splitlines()

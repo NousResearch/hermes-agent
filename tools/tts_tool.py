@@ -181,7 +181,8 @@ def _lookup_emoji_speech(emoji: str, lang: str) -> str:
 def _preprocess_tts_text(text: str, lang: str = "en") -> str:
     """Normalize text for TTS so it sounds natural when read aloud.
 
-    - Strips markdown formatting (code blocks, bold, italic, links)
+    - Strips markdown formatting via _strip_markdown_for_tts (code blocks,
+      bold, italic, links, headings, HR, list markers)
     - Replaces common emojis with spoken equivalents in the detected language
     - Strips remaining emojis and special symbols
     - Converts pseudo-graphics (box-drawing chars, table pipes) to pauses
@@ -198,24 +199,12 @@ def _preprocess_tts_text(text: str, lang: str = "en") -> str:
     """
     lang = lang if lang else "en"  # default to English if empty
 
-    # 1. Remove code block fences (```...```)
-    text = re.sub(r"```\w*\n?", "", text)
-    # 2. Remove inline code marks
-    text = re.sub(r"`([^`]+)`", r"\1", text)
-    # 3. Remove bold/italic markdown
-    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"\1", text)  # bold+italic
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)  # bold
-    text = re.sub(r"\*(.+?)\*", r"\1", text)  # italic
-    # 4. Convert markdown links [text](url) → text
-    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-    # 5. Remove heading markers
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-    # 6. Remove horizontal rules
-    text = re.sub(r"^---+$", "", text, flags=re.MULTILINE)
-    # 7. Replace known emojis with localized spoken text
+    # 1. Strip markdown formatting using the shared function
+    text = _strip_markdown_for_tts(text)
+    # 2. Replace known emojis with localized spoken text
     for emoji in _EMOJI_SPEECH_MAP:
         text = text.replace(emoji, _lookup_emoji_speech(emoji, lang))
-    # 8. Remove remaining emojis (Unicode emoji ranges)
+    # 3. Remove remaining emojis (Unicode emoji ranges)
     text = re.sub(
         r"[\U0001F600-\U0001F64F"  # Emoticons
         r"\U0001F300-\U0001F5FF"     # Symbols & Pictographs
@@ -229,17 +218,17 @@ def _preprocess_tts_text(text: str, lang: str = "en") -> str:
         r"\U0001FA70-\U0001FAFF"     # Symbols Extended-A
         r"\U0000200D]"               # ZWJ
         , " ", text)
-    # 9. Box-drawing chars and table pipes → comma/pause
+    # 4. Box-drawing chars and table pipes → comma/pause
     text = re.sub(r"[┊┆│┃╎╏║┌┐└┘├┤┬┴┼─━┅┄]", ", ", text)
     text = re.sub(r"^\|.*\|$", lambda m: m.group(0).replace("|", " "), text, flags=re.MULTILINE)
-    # 10. Replace media tags like MEDIA:/path → remove
+    # 5. Replace media tags like MEDIA:/path → remove
     text = re.sub(r"MEDIA:\S+", "", text)
-    # 11. Collapse multiple spaces/newlines
+    # 6. Collapse multiple spaces/newlines
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"\n\n+", ". ", text)
     text = text.strip()
-    # 12. Remove leading/trailing punctuation noise
+    # 7. Remove leading/trailing punctuation noise
     text = re.sub(r"^\s*[,;:]\s*", "", text)
     return text
 import tempfile

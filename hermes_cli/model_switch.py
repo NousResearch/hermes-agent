@@ -454,6 +454,7 @@ def switch_model(
     """
     from hermes_cli.models import (
         detect_provider_for_model,
+        parse_model_input,
         validate_requested_model,
         opencode_model_api_mode,
     )
@@ -612,7 +613,18 @@ def switch_model(
             "localhost" in _base or "127.0.0.1" in _base
         )
 
-        if (
+        # Always attempt to parse ``custom:<name>:<model>`` triple syntax
+        # even when currently on a custom provider, so users can switch
+        # between named custom providers (e.g. custom:cch_anthropic:glm-5-turbo).
+        # ``parse_model_input`` handles this; ``detect_provider_for_model``
+        # only matches against known provider catalogs and misses custom slugs.
+        if new_model.startswith("custom:") and ":" in new_model[len("custom:"):]:
+            parsed_provider, parsed_model = parse_model_input(new_model, current_provider)
+            if parsed_provider != current_provider or parsed_model != new_model:
+                target_provider = parsed_provider
+                new_model = parsed_model
+                is_custom = False  # provider changed, re-evaluate
+        elif (
             target_provider == current_provider
             and not is_custom
             and not resolved_alias

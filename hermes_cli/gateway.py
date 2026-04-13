@@ -1634,7 +1634,7 @@ _PLATFORMS = [
             "   Create an App-Level Token with scope: connections:write → copy xapp-... token",
             "3. Add Bot Token Scopes: Features → OAuth & Permissions → Scopes",
             "   Required: chat:write, app_mentions:read, channels:history, channels:read,",
-            "   groups:history, im:history, im:read, im:write, users:read, files:write",
+            "   groups:history, im:history, im:read, im:write, users:read, files:read, files:write",
             "4. Subscribe to Events: Features → Event Subscriptions → Enable",
             "   Required events: message.im, message.channels, app_mention",
             "   Optional: message.groups (for private channels)",

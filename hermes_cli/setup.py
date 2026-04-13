@@ -1781,7 +1781,7 @@ def _setup_slack():
     print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
     print_info("      Required scopes: chat:write, app_mentions:read,")
     print_info("      channels:history, channels:read, im:history,")
-    print_info("      im:read, im:write, users:read, files:write")
+    print_info("      im:read, im:write, users:read, files:read, files:write")
     print_info("      Optional for private channels: groups:history")
     print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
     print_info("      Required events: message.im, message.channels, app_mention")

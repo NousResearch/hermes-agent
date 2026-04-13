@@ -1406,6 +1406,21 @@ class AIAgent:
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
+            # Read ssl_verify once at init for custom provider endpoints.
+            # Stored on self so _create_openai_client can use it without
+            # re-reading config on every API call.
+            self._ssl_verify = True
+            _burl = (client_kwargs.get("base_url") or "").rstrip("/")
+            if _burl:
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers as _gcp_ssl
+                    for _cp in _gcp_ssl():
+                        if ((_cp.get("base_url") or "").rstrip("/") == _burl):
+                            self._ssl_verify = bool(_cp.get("ssl_verify", True))
+                            break
+                except Exception:
+                    pass
+
             # Enable fine-grained tool streaming for Claude on OpenRouter.
             # Without this, Anthropic buffers the entire tool call and goes
             # silent for minutes while thinking — OpenRouter's upstream proxy
@@ -5027,6 +5042,10 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
+        if not getattr(self, "_ssl_verify", True) and "http_client" not in client_kwargs:
+            import httpx as _httpx_ssl
+            client_kwargs["http_client"] = _httpx_ssl.Client(verify=False)
+            logger.warning("SSL verification disabled for %s", client_kwargs.get("base_url", ""))
         if "http_client" not in client_kwargs:
             keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:

@@ -328,13 +328,14 @@ class TestCompressWithClient:
         mock_client.chat.completions.create.return_value = mock_response
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
 
-        # Last head message (index 1) is "assistant" → summary should be "user".
-        # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # head_last=assistant, tail_first=assistant → summary_role="user", no collision.
-        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
+        # System message is required so HEAD protection activates (protect_first_n=3).
+        # HEAD = [system, user, assistant] → last head = "assistant" → summary_role="user".
+        # With min_tail=3, tail = last 3 messages.
+        # Need 9 messages: min_for_compress = 3+3+1 = 7, must have > 7.
         msgs = [
+            {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "msg 1"},
             {"role": "user", "content": "msg 2"},
@@ -508,12 +509,14 @@ class TestCompressWithClient:
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=2)
 
-        # Head=assistant, Tail=assistant → summary_role="user", no collision.
-        # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
+        # System message is required so HEAD protection activates (protect_first_n=3).
+        # HEAD = [system, user, assistant] → last head = "assistant" → summary_role="user".
+        # With min_tail=3, tail = last 3 messages.
+        # Need 9 messages: min_for_compress = 3+3+1 = 7, must have > 7.
         msgs = [
+            {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "msg 1"},
             {"role": "user", "content": "msg 2"},
@@ -781,3 +784,151 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+
+class TestHotfixRegressions:
+    """Regression tests for the two production bugs fixed in PR#9199.
+
+    Bug 1 (Hotfix 1): last user message landing in MIDDLE when the transcript
+    ends with many small tool results, causing ghost responses after compression.
+
+    Bug 2 (Hotfix 2 / HEAD fossilization): a session that starts with a plain
+    user message (no system prompt) fossilizes that message as the HEAD and
+    re-injects it into every child session born from compression.
+    """
+
+    @pytest.fixture()
+    def fresh_compressor(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,
+                protect_first_n=3,
+                protect_last_n=5,
+                summary_target_ratio=0.20,
+                quiet_mode=True,
+            )
+            return c
+
+    # ------------------------------------------------------------------
+    # Hotfix 1: last user message always in TAIL
+    # ------------------------------------------------------------------
+
+    def test_last_user_msg_stays_in_tail_with_many_small_tool_results(self, fresh_compressor):
+        """When the transcript ends with many small tool results, the token-budget
+        walk must not push the cut past the last user message.
+
+        Regression: before the fix, cut_idx would land at fallback_cut (head_end+3)
+        which was > last_user_idx, leaving the user's question in MIDDLE and causing
+        ghost responses after compression.
+
+        Concrete setup (protect_first_n=3):
+          head_end = 3
+          last_user_idx = 5  (one past the head, followed only by small tool results)
+          fallback_cut = 6   (head_end + min(3, n-head_end))
+          Without HOTFIX: cut=6 > last_user_idx=5 → last user IN MIDDLE (ghost)
+          With    HOTFIX: cut clamped to 5 = last_user_idx → last user in TAIL
+        """
+        c = fresh_compressor  # protect_first_n=3
+        # Large budget so all messages above head_end fit — this triggers the fallback
+        # path where cut_idx is forced to fallback_cut (head_end+3=6), past last_user.
+        c.tail_token_budget = 50_000
+
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},  # 0 HEAD
+            {"role": "user", "content": "Hello."},                           # 1 HEAD
+            {"role": "assistant", "content": "Hi there."},                   # 2 HEAD
+            # head_end = 3 — protection stops here
+            {"role": "user", "content": "Let's work on the project."},      # 3
+            {"role": "assistant", "content": "Starting now."},               # 4
+            # This is the LAST user message — must end up in TAIL, not MIDDLE.
+            {"role": "user", "content": "What is the build status?"},        # 5 = last_user_idx
+        ]
+        # Append 20 pairs of tiny assistant/tool messages after the last user msg.
+        # Each is ~5 tokens; 40 * 5 = 200 tokens << 50K budget, so the backward
+        # walk never hits the budget ceiling and cut_idx lands at head_end.
+        for i in range(20):
+            msgs.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{"id": f"c{i}", "type": "function",
+                                 "function": {"name": "check", "arguments": "{}"}}],
+            })
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": f"ok {i}"})
+
+        head_end = c._compute_compress_start(msgs)  # = 3 (system present)
+        cut = c._find_tail_cut_by_tokens(msgs, head_end)
+        last_user_idx = max(i for i, m in enumerate(msgs) if m.get("role") == "user")  # = 5
+
+        assert cut <= last_user_idx, (
+            f"cut_idx={cut} is AFTER last_user_idx={last_user_idx} — "
+            "last user message would be summarized (ghost response bug)"
+        )
+
+    # ------------------------------------------------------------------
+    # Hotfix 2: no HEAD fossilization without a system message
+    # ------------------------------------------------------------------
+
+    def test_compress_start_is_zero_when_no_system_message(self, fresh_compressor):
+        """_compute_compress_start must return 0 for cold-start sessions (no system message).
+
+        Regression: before the fix, compress_start was always protect_first_n,
+        which fossilized a random user message as HEAD and re-injected it into
+        every child session.
+        """
+        c = fresh_compressor
+        msgs = [
+            {"role": "user", "content": "The lunch table formatting is terrible."},
+            {"role": "assistant", "content": "I will fix it."},
+            {"role": "user", "content": "Great, thanks."},
+        ]
+        start = c._compute_compress_start(msgs)
+        assert start == 0, (
+            f"compress_start={start} for a cold-start session — "
+            "first user message would be fossilized as HEAD"
+        )
+
+    def test_compress_start_respects_protect_first_n_when_system_present(self, fresh_compressor):
+        """_compute_compress_start must still return protect_first_n when a
+        system message is present — the happy path must not regress."""
+        c = fresh_compressor
+        msgs = [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello."},
+            {"role": "assistant", "content": "Hi there!"},
+            {"role": "user", "content": "Do something."},
+        ]
+        start = c._compute_compress_start(msgs)
+        assert start == c.protect_first_n, (
+            f"compress_start={start} but expected {c.protect_first_n} "
+            "for a session that starts with a system message"
+        )
+
+    def test_first_user_message_not_in_compressed_output(self, fresh_compressor):
+        """After compression, the first user message of a cold-start session
+        must NOT appear verbatim in the compressed output.
+
+        Regression: HEAD fossilization caused it to be copied into every child
+        session, where the model would act on it again.
+        """
+        c = fresh_compressor
+        fossilized_content = "The lunch table formatting is terrible."
+        msgs = [{"role": "user", "content": fossilized_content}]
+        # Build a long enough conversation to trigger compression
+        for i in range(20):
+            msgs.append({"role": "assistant", "content": f"Working on step {i}."})
+            msgs.append({"role": "user", "content": f"Continue with step {i}."})
+
+        mock_response = __import__('unittest.mock', fromlist=['MagicMock']).MagicMock()
+        mock_response.choices = [mock_response]
+        mock_response.choices[0].message.content = "Summary of work done."
+
+        with __import__('unittest.mock', fromlist=['patch']).patch(
+            "agent.context_compressor.call_llm", return_value=mock_response
+        ):
+            result = c.compress(msgs, current_tokens=150_000)
+
+        first_messages = [m for m in result if fossilized_content in (m.get("content") or "")]
+        assert len(first_messages) == 0, (
+            "The original first user message survived compression verbatim — "
+            "HEAD fossilization bug is present"
+        )

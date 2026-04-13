@@ -597,6 +597,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             idx = check
         return idx
 
+    def _compute_compress_start(self, messages):
+        """Return the first message index eligible for compression (HEAD boundary).
+
+        The HEAD is only meaningful when the session begins with a system
+        prompt.  If the first message is not a system message the session
+        started cold -- there is no privileged opening exchange to protect,
+        so compress_start is 0.  Centralising this logic here prevents the
+        compress() path and any preview paths (e.g. gateway /compress) from
+        drifting independently.
+        """
+        raw = self.protect_first_n if (messages and messages[0].get("role") == "system") else 0
+        return self._align_boundary_forward(messages, raw)
+
     # ------------------------------------------------------------------
     # Tail protection by token budget
     # ------------------------------------------------------------------
@@ -700,8 +713,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
         n_messages = len(messages)
-        # Only need head + 3 tail messages minimum (token budget decides the real tail size)
-        _min_for_compress = self.protect_first_n + 3 + 1
+        # Use the actual effective head size (0 when no system message) so the
+        # minimum-messages guard is not too conservative for cold-start sessions.
+        _effective_head = self.protect_first_n if (messages and messages[0].get("role") == "system") else 0
+        _min_for_compress = _effective_head + 3 + 1
         if n_messages <= _min_for_compress:
             if not self.quiet_mode:
                 logger.warning(
@@ -721,20 +736,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        # ------------------------------------------------------------------
-        # HOTFIX 2: Only fossilize HEAD when the session starts with a system
-        # message.  The intent of protect_first_n is to preserve the system
-        # prompt + first exchange.  If the session has NO system message it
-        # starts cold with a plain user message; copying that into every child
-        # session after compression causes the model to re-process it on every
-        # compaction cycle ("HEAD fossilization" bug).
-        # Fix: set compress_start = 0 when messages[0] is not a system message.
-        # ------------------------------------------------------------------
-        if messages and messages[0].get("role") == "system":
-            compress_start = self.protect_first_n
-        else:
-            compress_start = 0
-        compress_start = self._align_boundary_forward(messages, compress_start)
+        compress_start = self._compute_compress_start(messages)
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)

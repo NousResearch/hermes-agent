@@ -1333,3 +1333,52 @@ class TestPluginSkillBannerInjection:
         assert "Bundle context" in content
         assert "only-skill body." in content
         assert "Sibling skills:" not in content
+
+
+class TestSkillViewPluginNotFoundErrors:
+    def test_plugin_exists_but_skill_missing_gives_precise_error(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        plugin_dir = tmp_path / "plugins" / "myplugin"
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir(parents=True)
+
+        foo_dir = skills_dir / "foo"
+        foo_dir.mkdir()
+        foo_md = foo_dir / "SKILL.md"
+        foo_md.write_text("---\nname: foo\n---\n\nBody.\n")
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty")
+        (tmp_path / "empty").mkdir()
+
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+
+        pm = plugins_mod.get_plugin_manager()
+        pm._register_plugin_skill("myplugin", "foo", foo_md, "")
+
+        raw = skill_view("myplugin:nonexistent")
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert "myplugin" in result["error"]
+        assert "nonexistent" in result["error"]
+        assert "available_skills" in result
+        assert "myplugin:foo" in result["available_skills"]
+
+    def test_plugin_not_found_falls_through_to_flat_not_found(self, tmp_path, monkeypatch):
+        from tools.skills_tool import skill_view
+
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty")
+        (tmp_path / "empty").mkdir()
+
+        from hermes_cli.plugins import PluginManager
+        import hermes_cli.plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
+
+        raw = skill_view("nonexistent-plugin:some-skill")
+        result = json.loads(raw)
+
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()

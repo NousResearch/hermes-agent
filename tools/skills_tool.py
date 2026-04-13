@@ -954,7 +954,25 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 return _serve_plugin_skill(
                     plugin_skill_md, namespace, bare, file_path
                 )
-            # 穿透到平铺扫描以获取 "not found" 错误及建议
+
+            # 插件注册表未命中 — 检查插件本身是否存在但技能缺失
+            available = pm.list_plugin_skills(namespace)
+            if available:
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            f"Skill '{bare}' not found in plugin '{namespace}'."
+                        ),
+                        "available_skills": [f"{namespace}:{s}" for s in available],
+                        "hint": (
+                            f"The '{namespace}' plugin provides "
+                            f"{len(available)} skill(s)."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            # 插件本身不存在 — 穿透到平铺扫描以获取 "not found" 错误
 
         from agent.skill_utils import get_external_skills_dirs
 

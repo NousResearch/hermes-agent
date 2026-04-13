@@ -62,6 +62,23 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_memory_provider_only_plugins_do_not_fail_general_discovery(self, tmp_path, monkeypatch):
+        """Memory-provider plugins in the user plugin root are tolerated by PluginManager."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "memory_only_plugin",
+            register_body='ctx.register_memory_provider(object())',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "memory_only_plugin" in mgr._plugins
+        assert mgr._plugins["memory_only_plugin"].enabled
+        assert mgr._plugins["memory_only_plugin"].error is None
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

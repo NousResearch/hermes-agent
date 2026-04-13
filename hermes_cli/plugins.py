@@ -244,6 +244,23 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
+    # -- memory provider registration ---------------------------------------
+
+    def register_memory_provider(self, provider) -> None:
+        """Ignore memory-provider registration in the general plugin manager.
+
+        Memory providers have their own discovery and activation flow under
+        ``plugins.memory``. User-installed provider plugins may still live
+        under ``$HERMES_HOME/plugins``, so the general plugin loader should
+        tolerate ``register_memory_provider()`` instead of marking them as
+        broken regular plugins.
+        """
+        logger.debug(
+            "Plugin %s registered a memory provider via the general plugin manager; "
+            "ignoring because memory providers are handled separately",
+            self.manifest.name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:

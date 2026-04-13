@@ -59,9 +59,9 @@ def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in a memory provider manifest."""
     import subprocess
 
-    from plugins.memory import _find_provider_dir
+    from plugins.memory import find_provider_dir
 
-    plugin_dir = _find_provider_dir(provider_name)
+    plugin_dir = find_provider_dir(provider_name)
     if plugin_dir is None:
         return
 

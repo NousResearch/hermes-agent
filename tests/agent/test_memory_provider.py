@@ -441,6 +441,32 @@ class TestPluginMemoryDiscovery:
         finally:
             sys.modules.pop(f"plugins.memory.{plugin_name}", None)
 
+    def test_user_installed_provider_with_missing_deps_is_listed_unavailable(self):
+        """Installed providers remain discoverable when imports fail due to missing deps."""
+        plugin_name = "brainctl_missing_dep"
+        plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / plugin_name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "import definitely_missing_dependency\n"
+            "\n"
+            "def register(ctx):\n"
+            "    ctx.register_memory_provider(object())\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {plugin_name}\n"
+            "description: Missing dependency provider\n"
+        )
+
+        from plugins.memory import discover_memory_providers
+
+        try:
+            providers = {
+                name: available for name, _desc, available in discover_memory_providers()
+            }
+            assert providers[plugin_name] is False
+        finally:
+            sys.modules.pop(f"plugins.memory.{plugin_name}", None)
+
     def test_loads_user_installed_provider_from_hermes_home_plugins(self):
         """load_memory_provider supports providers installed under HERMES_HOME/plugins."""
         plugin_name = "brainctl_load_provider"

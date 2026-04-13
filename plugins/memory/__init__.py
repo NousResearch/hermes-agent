@@ -58,12 +58,32 @@ def _iter_provider_dirs() -> Iterator[tuple[Path, bool]]:
             yield child, is_bundled
 
 
-def _find_provider_dir(name: str) -> Optional[Path]:
+def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider directory by name, preferring bundled plugins."""
     for provider_dir, _is_bundled in _iter_provider_dirs():
         if provider_dir.name == name:
             return provider_dir
     return None
+
+
+def _looks_like_memory_provider(provider_dir: Path) -> bool:
+    """Return True when a directory appears to define a memory provider.
+
+    This lightweight check keeps unrelated general plugins under
+    ``$HERMES_HOME/plugins`` out of the memory provider list while still
+    surfacing installed providers whose imports currently fail because
+    dependencies are missing.
+    """
+    init_file = provider_dir / "__init__.py"
+    try:
+        contents = init_file.read_text()
+    except OSError:
+        return False
+    return "register_memory_provider" in contents
+
+
+# Backward-compatible alias for internal callers updated incrementally.
+_find_provider_dir = find_provider_dir
 
 
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
@@ -101,7 +121,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
         except Exception:
             available = False
 
-        if provider is None and not is_bundled:
+        if provider is None and not is_bundled and not _looks_like_memory_provider(child):
             continue
 
         results.append((child.name, desc, available))
@@ -115,7 +135,7 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
     Returns None if the provider is not found or fails to load.
     Bundled providers take precedence over user-installed providers.
     """
-    provider_dir = _find_provider_dir(name)
+    provider_dir = find_provider_dir(name)
     if provider_dir is None:
         logger.debug("Memory provider '%s' not found in bundled or user plugin dirs", name)
         return None
@@ -290,7 +310,7 @@ def discover_plugin_cli_commands() -> List[dict]:
         return results
 
     # Only look at the active provider's directory
-    plugin_dir = _find_provider_dir(active_provider)
+    plugin_dir = find_provider_dir(active_provider)
     if plugin_dir is None:
         return results
 

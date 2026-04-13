@@ -393,6 +393,7 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `session_search` | Search past conversations |
 | `delegation` | Subagent task delegation |
 | `cronjob` | Scheduled task management |
+| `clarify` | Ask user clarifying questions |
 | `messaging` | Cross-platform message sending |
 | `search` | Web search only (subset of `web`) |
 | `todo` | In-session task planning and tracking |

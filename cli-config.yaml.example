@@ -568,6 +568,18 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
 
+# =============================================================================
+# Gateway Platform Settings
+# =============================================================================
+# Optional per-platform messaging settings.
+# Platform-specific knobs live under `extra`.
+#
+# platforms:
+#   telegram:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
 #

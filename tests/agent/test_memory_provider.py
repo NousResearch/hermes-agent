@@ -1,6 +1,7 @@
 """Tests for the memory provider interface, manager, and builtin provider."""
 
 import json
+import logging
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -75,6 +76,34 @@ class FakeMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action, target, content):
         self.memory_writes.append((action, target, content))
+
+
+class DelayedToolProvider(FakeMemoryProvider):
+    """Provider whose tools are only available after initialize()."""
+
+    def __init__(self, name="delayed"):
+        super().__init__(name=name, tools=[])
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self._tools = [
+            {"name": "delayed_recall", "description": "Delayed recall", "parameters": {}}
+        ]
+
+
+class ReplacingToolProvider(FakeMemoryProvider):
+    """Provider that replaces its provisional tools during initialize()."""
+
+    def __init__(self, name="replacing"):
+        super().__init__(name=name, tools=[
+            {"name": "pre_init_tool", "description": "Temporary", "parameters": {}}
+        ])
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self._tools = [
+            {"name": "post_init_tool", "description": "Ready", "parameters": {}}
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +373,48 @@ class TestMemoryManager:
         assert p2.initialized
         assert p1._init_kwargs["session_id"] == "test-123"
         assert p1._init_kwargs["platform"] == "cli"
+
+    def test_initialize_all_indexes_tools_exposed_after_initialize(self):
+        """Providers may expose tools only after connecting during initialize()."""
+        mgr = MemoryManager()
+        provider = DelayedToolProvider()
+        mgr.add_provider(provider)
+
+        assert not mgr.has_tool("delayed_recall")
+
+        mgr.initialize_all(session_id="test-123", platform="cli")
+
+        assert mgr.has_tool("delayed_recall")
+        result = json.loads(mgr.handle_tool_call("delayed_recall", {"query": "hello"}))
+        assert result["handled"] == "delayed_recall"
+
+    def test_initialize_all_removes_stale_preinitialize_tools(self):
+        """Tool routing should match current schemas after initialize()."""
+        mgr = MemoryManager()
+        provider = ReplacingToolProvider()
+        mgr.add_provider(provider)
+
+        assert mgr.has_tool("pre_init_tool")
+        assert not mgr.has_tool("post_init_tool")
+
+        mgr.initialize_all(session_id="test-123", platform="cli")
+
+        assert not mgr.has_tool("pre_init_tool")
+        assert mgr.has_tool("post_init_tool")
+        assert mgr.get_all_tool_names() == {"post_init_tool"}
+
+    def test_initialize_all_logs_tool_routing_deltas(self, caplog):
+        """Refresh logging should show whether initialize changed routing."""
+        mgr = MemoryManager()
+        provider = DelayedToolProvider()
+        mgr.add_provider(provider)
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="agent.memory_manager"):
+            mgr.initialize_all(session_id="test-123", platform="cli")
+
+        assert "Memory provider tool routing refreshed after initializing delayed" in caplog.text
+        assert "delayed_recall" in caplog.text
 
     # -- Error resilience ---------------------------------------------------
 

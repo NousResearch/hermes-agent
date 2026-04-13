@@ -83,6 +83,79 @@ class MemoryManager:
 
     # -- Registration --------------------------------------------------------
 
+    def _rebuild_tool_index(self, reason: str = "") -> None:
+        """Rebuild tool-name routing from providers' current schemas.
+
+        Providers are allowed to change their exposed tools during initialize()
+        after they connect to a backend or discover capabilities. Rebuilding,
+        rather than appending, keeps dispatch routing consistent with
+        get_all_tool_schemas() and prevents stale pre-initialize tools from
+        remaining callable.
+        """
+        previous = {
+            name: provider.name
+            for name, provider in self._tool_to_provider.items()
+        }
+        rebuilt: Dict[str, MemoryProvider] = {}
+
+        for provider in self._providers:
+            try:
+                schemas = provider.get_tool_schemas()
+            except Exception as e:
+                logger.warning(
+                    "Memory provider '%s' get_tool_schemas() failed while "
+                    "rebuilding tool routing: %s",
+                    provider.name,
+                    e,
+                )
+                continue
+
+            for schema in schemas:
+                tool_name = schema.get("name", "")
+                if not tool_name:
+                    continue
+                existing = rebuilt.get(tool_name)
+                if existing is not None:
+                    logger.warning(
+                        "Memory tool name conflict: '%s' already registered by %s, "
+                        "ignoring from %s",
+                        tool_name,
+                        existing.name,
+                        provider.name,
+                    )
+                    continue
+                rebuilt[tool_name] = provider
+
+        self._tool_to_provider = rebuilt
+
+        current = {
+            name: provider.name
+            for name, provider in self._tool_to_provider.items()
+        }
+        added = sorted(name for name in current if name not in previous)
+        removed = sorted(name for name in previous if name not in current)
+        moved = sorted(
+            name for name in current
+            if name in previous and current[name] != previous[name]
+        )
+        label = f" after {reason}" if reason else ""
+        if added or removed or moved:
+            logger.info(
+                "Memory provider tool routing refreshed%s: added=%s removed=%s "
+                "moved=%s active=%s",
+                label,
+                added,
+                removed,
+                moved,
+                sorted(current),
+            )
+        else:
+            logger.debug(
+                "Memory provider tool routing refreshed%s: unchanged (%d tools)",
+                label,
+                len(current),
+            )
+
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a memory provider.
 
@@ -110,18 +183,7 @@ class MemoryManager:
         self._providers.append(provider)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
-            tool_name = schema.get("name", "")
-            if tool_name and tool_name not in self._tool_to_provider:
-                self._tool_to_provider[tool_name] = provider
-            elif tool_name in self._tool_to_provider:
-                logger.warning(
-                    "Memory tool name conflict: '%s' already registered by %s, "
-                    "ignoring from %s",
-                    tool_name,
-                    self._tool_to_provider[tool_name].name,
-                    provider.name,
-                )
+        self._rebuild_tool_index(reason=f"registering {provider.name}")
 
         logger.info(
             "Memory provider '%s' registered (%d tools)",
@@ -355,6 +417,7 @@ class MemoryManager:
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)
+                self._rebuild_tool_index(reason=f"initializing {provider.name}")
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' initialize failed: %s",

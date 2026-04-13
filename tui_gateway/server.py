@@ -134,6 +134,32 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     _emit("status.update", sid, {"kind": kind if text is not None else "status", "text": body})
 
 
+def _estimate_image_tokens(width: int, height: int) -> int:
+    """Very rough UI estimate for image prompt cost.
+
+    Uses 512px tiles at ~85 tokens/tile as a lightweight cross-provider hint.
+    This is intentionally approximate and only used for attachment display.
+    """
+    if width <= 0 or height <= 0:
+        return 0
+    return max(1, (width + 511) // 512) * max(1, (height + 511) // 512) * 85
+
+
+def _image_meta(path: Path) -> dict:
+    meta = {"name": path.name}
+    try:
+        from PIL import Image
+
+        with Image.open(path) as img:
+            width, height = img.size
+        meta["width"] = int(width)
+        meta["height"] = int(height)
+        meta["token_estimate"] = _estimate_image_tokens(int(width), int(height))
+    except Exception:
+        pass
+    return meta
+
+
 def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
@@ -391,6 +417,18 @@ def _get_usage(agent) -> dict:
     except Exception:
         pass
     return usage
+
+
+def _probe_credentials(agent) -> str:
+    """Light credential check at session creation — returns warning or ''."""
+    try:
+        key = getattr(agent, "api_key", "") or ""
+        provider = getattr(agent, "provider", "") or ""
+        if not key or key == "no-key-required":
+            return f"No API key configured for provider '{provider}'. First message will fail."
+    except Exception:
+        pass
+    return ""
 
 
 def _session_info(agent) -> dict:
@@ -712,7 +750,11 @@ def _(rid, params: dict) -> dict:
         _init_session(sid, key, agent, [], cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"agent init failed: {e}")
-    return _ok(rid, {"session_id": sid, "info": _session_info(agent)})
+    info = _session_info(agent)
+    warn = _probe_credentials(agent)
+    if warn:
+        info["credential_warning"] = warn
+    return _ok(rid, {"session_id": sid, "info": info})
 
 
 @method("session.list")
@@ -1049,7 +1091,15 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"attached": False, "message": msg})
 
     session.setdefault("attached_images", []).append(str(img_path))
-    return _ok(rid, {"attached": True, "path": str(img_path), "count": len(session["attached_images"])})
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": str(img_path),
+            "count": len(session["attached_images"]),
+            **_image_meta(img_path),
+        },
+    )
 
 
 @method("image.attach")
@@ -1075,10 +1125,10 @@ def _(rid, params: dict) -> dict:
             {
                 "attached": True,
                 "path": str(image_path),
-                "name": image_path.name,
                 "count": len(session["attached_images"]),
                 "remainder": remainder,
                 "text": remainder or f"[User attached image: {image_path.name}]",
+                **_image_meta(image_path),
             },
         )
     except Exception as e:
@@ -1109,9 +1159,9 @@ def _(rid, params: dict) -> dict:
                     "matched": True,
                     "is_image": True,
                     "path": str(drop_path),
-                    "name": drop_path.name,
                     "count": len(session["attached_images"]),
                     "text": text,
+                    **_image_meta(drop_path),
                 },
             )
 

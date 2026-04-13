@@ -1,10 +1,10 @@
 import { Box, Text } from '@hermes/ink'
 
-import { compactPreview } from '../lib/text.js'
+import { compactPreview, fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PendingPaste } from '../types.js'
 
-const TOKEN_RE = /\[\[paste:(\d+)\]\]/g
+const TOKEN_RE = /\[\[paste:(\d+)(?:[^\n]*?)\]\]/g
 
 const modeLabel = {
   attach: 'attach',
@@ -28,7 +28,8 @@ export function PasteShelf({ draft, pastes, t }: { draft: string; pastes: Pendin
       <Text color={t.color.amber}>Paste shelf ({pastes.length})</Text>
       {pastes.slice(-4).map(paste => (
         <Text color={t.color.dim} key={paste.id}>
-          #{paste.id} {modeLabel[paste.mode]} · {paste.lineCount}L · {paste.kind}
+          #{paste.id} {modeLabel[paste.mode]} · {paste.lineCount}L · {fmtK(paste.tokenCount)} tok ·{' '}
+          {fmtK(paste.charCount)} chars · {paste.kind}
           {inDraft.has(paste.id) ? <Text color={t.color.label}> · in draft</Text> : ''}
           {' · '}
           <Text color={t.color.cornsilk}>{compactPreview(paste.text, 44) || '(empty)'}</Text>

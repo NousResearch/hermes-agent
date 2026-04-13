@@ -782,10 +782,26 @@ def _serve_plugin_skill(
     bare: str,
     file_path: Optional[str],
 ) -> str:
-    """读取插件 skill，执行检查，返回 JSON 响应。
+    """读取插件 skill，执行平台/禁用/注入检查，返回 JSON 响应。
 
-    最小版本 — 平台/禁用检查、banner 注入、链接文件支持在后续 Task 中添加。
+    Banner 注入在后续 Task 中添加。
     """
+    from hermes_cli.plugins import _get_disabled_plugins
+
+    # 检查：插件是否已被禁用（最优先，无需 I/O）
+    if namespace in _get_disabled_plugins():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Plugin '{namespace}' is disabled in config.yaml. "
+                    f"Re-enable with: hermes plugins enable {namespace}"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    # 读取文件内容
     try:
         content = skill_md.read_text(encoding="utf-8")
     except Exception as e:
@@ -797,11 +813,44 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
+    # 解析 frontmatter
     parsed_frontmatter: Dict[str, Any] = {}
     try:
         parsed_frontmatter, _ = _parse_frontmatter(content)
     except Exception:
         parsed_frontmatter = {}
+
+    # 平台检查
+    if not skill_matches_platform(parsed_frontmatter):
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"Skill '{namespace}:{bare}' is not supported on this platform."
+                ),
+                "readiness_status": SkillReadinessStatus.UNSUPPORTED.value,
+            },
+            ensure_ascii=False,
+        )
+
+    # 注入模式扫描 — 记录警告但仍提供 skill（与现有行为保持一致）
+    _INJECTION_PATTERNS = [
+        "ignore previous instructions",
+        "ignore all previous",
+        "you are now",
+        "disregard your",
+        "forget your instructions",
+        "new instructions:",
+        "system prompt:",
+        "<system>",
+        "]]>",
+    ]
+    content_lower = content.lower()
+    if any(p in content_lower for p in _INJECTION_PATTERNS):
+        logger.warning(
+            "Plugin skill '%s:%s' contains patterns that may indicate prompt injection",
+            namespace, bare,
+        )
 
     description = str(parsed_frontmatter.get("description", ""))
     if len(description) > MAX_DESCRIPTION_LENGTH:

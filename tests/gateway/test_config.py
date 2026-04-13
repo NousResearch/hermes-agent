@@ -193,6 +193,27 @@ class TestLoadGatewayConfig:
 
         assert config.thread_sessions_per_user is False
 
+    def test_bridges_discord_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  channel_prompts:\n"
+            "    \"123\": Research mode\n"
+            "    456: Therapist mode\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["channel_prompts"] == {
+            "123": "Research mode",
+            "456": "Therapist mode",
+        }
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

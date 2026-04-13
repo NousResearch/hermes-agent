@@ -782,7 +782,7 @@ class MatrixAdapter(BasePlatformAdapter):
             # Try aiohttp first (always available), fall back to httpx
             try:
                 import aiohttp as _aiohttp
-                async with _aiohttp.ClientSession() as http:
+                async with _aiohttp.ClientSession(trust_env=True) as http:
                     async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
@@ -1135,7 +1135,10 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id = relates_to.get("event_id")
 
         formatted_body = source_content.get("formatted_body")
-        is_mentioned = self._is_bot_mentioned(body, formatted_body)
+        # m.mentions.user_ids (MSC3952 / Matrix v1.7) — authoritative mention signal.
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
         # Require-mention gating.
         if not is_dm:
@@ -1822,8 +1825,24 @@ class MatrixAdapter(BasePlatformAdapter):
     # Mention detection helpers
     # ------------------------------------------------------------------
 
-    def _is_bot_mentioned(self, body: str, formatted_body: Optional[str] = None) -> bool:
-        """Return True if the bot is mentioned in the message."""
+    def _is_bot_mentioned(
+        self,
+        body: str,
+        formatted_body: Optional[str] = None,
+        mention_user_ids: Optional[list] = None,
+    ) -> bool:
+        """Return True if the bot is mentioned in the message.
+
+        Per MSC3952, ``m.mentions.user_ids`` is the authoritative mention
+        signal in the Matrix spec.  When the sender's client populates that
+        field with the bot's user-id, we trust it — even when the visible
+        body text does not contain an explicit ``@bot`` string (some clients
+        only render mention "pills" in ``formatted_body`` or use display
+        names).
+        """
+        # m.mentions.user_ids — authoritative per MSC3952 / Matrix v1.7.
+        if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
+            return True
         if not body and not formatted_body:
             return False
         if self._user_id and self._user_id in body:

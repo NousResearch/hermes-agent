@@ -396,6 +396,27 @@ class QueuedCommentaryAgent:
         }
 
 
+class VerboseAgent:
+    """Agent that emits a tool call with args whose JSON exceeds 200 chars."""
+    LONG_CODE = "x" * 300
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "execute_code", None,
+            {"code": self.LONG_CODE},
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -575,3 +596,45 @@ async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monke
     assert result["final_response"] == "final response 2"
     assert "I'll inspect the repo first." in sent_texts
     assert "final response 1" in sent_texts
+
+
+@pytest.mark.asyncio
+async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_path):
+    """Verbose mode with default tool_preview_length (0) should NOT truncate args.
+
+    Previously, verbose mode capped args at 200 chars when tool_preview_length
+    was 0 (default).  The user explicitly opted into verbose — show full detail.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseAgent,
+        session_id="sess-verbose-no-truncate",
+        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 0}},
+    )
+
+    assert result["final_response"] == "done"
+    # The full 300-char 'x' string should be present, not truncated to 200
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert VerboseAgent.LONG_CODE in all_content
+
+
+@pytest.mark.asyncio
+async def test_verbose_mode_respects_explicit_tool_preview_length(monkeypatch, tmp_path):
+    """When tool_preview_length is set to a positive value, verbose truncates to that."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        VerboseAgent,
+        session_id="sess-verbose-explicit-cap",
+        config_data={"display": {"tool_progress": "verbose", "tool_preview_length": 50}},
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    # Should be truncated — full 300-char string NOT present
+    assert VerboseAgent.LONG_CODE not in all_content
+    # But should still contain the truncated portion with "..."
+    assert "..." in all_content

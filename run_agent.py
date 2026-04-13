@@ -460,6 +460,40 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
     return found
 
 
+def _sanitize_tools_non_ascii(tools: list) -> bool:
+    """Strip non-ASCII characters from tool payloads in-place."""
+    return _sanitize_structure_non_ascii(tools)
+
+
+def _sanitize_structure_non_ascii(payload: Any) -> bool:
+    """Strip non-ASCII characters from nested dict/list payloads in-place."""
+    found = False
+
+    def _walk(node):
+        nonlocal found
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[key] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[idx] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+
+    _walk(payload)
+    return found
+
+
 
 
 
@@ -675,9 +709,17 @@ class AIAgent:
         # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
         # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
         # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
-            self._is_direct_openai_url()
-            or self._model_requires_responses_api(self.model)
+        # ACP runtimes are excluded: CopilotACPClient handles its own
+        # routing and does not implement the Responses API surface.
+        if (
+            self.api_mode == "chat_completions"
+            and self.provider != "copilot-acp"
+            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and (
+                self._is_direct_openai_url()
+                or self._model_requires_responses_api(self.model)
+            )
         ):
             self.api_mode = "codex_responses"
 
@@ -737,6 +779,7 @@ class AIAgent:
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+        self._force_ascii_payload = False
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
@@ -1212,7 +1255,6 @@ class AIAgent:
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
-        compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
@@ -1233,24 +1275,29 @@ class AIAgent:
 
         # Check custom_providers per-model context_length
         if _config_context_length is None:
-            _custom_providers = _agent_cfg.get("custom_providers")
-            if isinstance(_custom_providers, list):
-                for _cp_entry in _custom_providers:
-                    if not isinstance(_cp_entry, dict):
-                        continue
-                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                    if _cp_url and _cp_url == self.base_url.rstrip("/"):
-                        _cp_models = _cp_entry.get("models", {})
-                        if isinstance(_cp_models, dict):
-                            _cp_model_cfg = _cp_models.get(self.model, {})
-                            if isinstance(_cp_model_cfg, dict):
-                                _cp_ctx = _cp_model_cfg.get("context_length")
-                                if _cp_ctx is not None:
-                                    try:
-                                        _config_context_length = int(_cp_ctx)
-                                    except (TypeError, ValueError):
-                                        pass
-                        break
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                _custom_providers = get_compatible_custom_providers(_agent_cfg)
+            except Exception:
+                _custom_providers = _agent_cfg.get("custom_providers")
+                if not isinstance(_custom_providers, list):
+                    _custom_providers = []
+            for _cp_entry in _custom_providers:
+                if not isinstance(_cp_entry, dict):
+                    continue
+                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                if _cp_url and _cp_url == self.base_url.rstrip("/"):
+                    _cp_models = _cp_entry.get("models", {})
+                    if isinstance(_cp_models, dict):
+                        _cp_model_cfg = _cp_models.get(self.model, {})
+                        if isinstance(_cp_model_cfg, dict):
+                            _cp_ctx = _cp_model_cfg.get("context_length")
+                            if _cp_ctx is not None:
+                                try:
+                                    _config_context_length = int(_cp_ctx)
+                                except (TypeError, ValueError):
+                                    pass
+                    break
         
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
@@ -1292,6 +1339,22 @@ class AIAgent:
 
         if _selected_engine is not None:
             self.context_compressor = _selected_engine
+            # Resolve context_length for plugin engines — mirrors switch_model() path
+            from agent.model_metadata import get_model_context_length
+            _plugin_ctx_len = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                config_context_length=_config_context_length,
+                provider=self.provider,
+            )
+            self.context_compressor.update_model(
+                model=self.model,
+                context_length=_plugin_ctx_len,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
+            )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
         else:
@@ -1301,7 +1364,7 @@ class AIAgent:
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
-                summary_model_override=compression_summary_model,
+                summary_model_override=None,
                 quiet_mode=self.quiet_mode,
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),
@@ -1748,10 +1811,25 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+
+            # Read user-configured context_length for the compression model.
+            # Custom endpoints often don't support /models API queries so
+            # get_model_context_length() falls through to the 128K default,
+            # ignoring the explicit config value.  Pass it as the highest-
+            # priority hint so the configured value is always respected.
+            _aux_cfg = (self.config or {}).get("auxiliary", {}).get("compression", {})
+            _aux_context_config = _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
+            if _aux_context_config is not None:
+                try:
+                    _aux_context_config = int(_aux_context_config)
+                except (TypeError, ValueError):
+                    _aux_context_config = None
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=_aux_context_config,
             )
 
             threshold = self.context_compressor.threshold_tokens
@@ -1872,12 +1950,13 @@ class AIAgent:
         if not content:
             return ""
         # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>
+        # <reasoning>, <REASONING_SCRATCHPAD>, <thought> (Gemma 4)
         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
-        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
     def _looks_like_codex_intermediate_ack(
@@ -2002,6 +2081,7 @@ class AIAgent:
             inline_patterns = (
                 r"<think>(.*?)</think>",
                 r"<thinking>(.*?)</thinking>",
+                r"<thought>(.*?)</thought>",
                 r"<reasoning>(.*?)</reasoning>",
                 r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
             )
@@ -4262,6 +4342,7 @@ class AIAgent:
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
+                        self._touch_activity("receiving stream response")
                         if self._interrupt_requested:
                             break
                         event_type = getattr(event, "type", "")
@@ -4386,6 +4467,7 @@ class AIAgent:
         collected_text_deltas: list = []
         try:
             for event in stream_or_response:
+                self._touch_activity("receiving stream response")
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
@@ -4688,6 +4770,11 @@ class AIAgent:
         Each worker thread gets its own OpenAI client instance. Interrupts only
         close that worker-local client, so retries and other requests never
         inherit a closed transport.
+
+        Includes a stale-call detector: if no response arrives within the
+        configured timeout, the connection is killed and an error raised so
+        the main retry loop can try again with backoff / credential rotation /
+        provider fallback.
         """
         result = {"response": None, "error": None}
         request_client_holder = {"client": None}
@@ -4713,10 +4800,86 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="request_complete")
 
+        # ── Stale-call timeout (mirrors streaming stale detector) ────────
+        # Non-streaming calls return nothing until the full response is
+        # ready.  Without this, a hung provider can block for the full
+        # httpx timeout (default 1800s) with zero feedback.  The stale
+        # detector kills the connection early so the main retry loop can
+        # apply richer recovery (credential rotation, provider fallback).
+        _stale_base = float(os.getenv("HERMES_API_CALL_STALE_TIMEOUT", 300.0))
+        _base_url = getattr(self, "_base_url", None) or ""
+        if _stale_base == 300.0 and _base_url and is_local_endpoint(_base_url):
+            _stale_timeout = float("inf")
+        else:
+            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            if _est_tokens > 100_000:
+                _stale_timeout = max(_stale_base, 600.0)
+            elif _est_tokens > 50_000:
+                _stale_timeout = max(_stale_base, 450.0)
+            else:
+                _stale_timeout = _stale_base
+
+        _call_start = time.time()
+        self._touch_activity("waiting for non-streaming API response")
+
         t = threading.Thread(target=_call, daemon=True)
         t.start()
+        _poll_count = 0
         while t.is_alive():
             t.join(timeout=0.3)
+            _poll_count += 1
+
+            # Touch activity every ~30s so the gateway's inactivity
+            # monitor knows we're alive while waiting for the response.
+            if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
+                _elapsed = time.time() - _call_start
+                self._touch_activity(
+                    f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+                )
+
+            # Stale-call detector: kill the connection if no response
+            # arrives within the configured timeout.
+            _elapsed = time.time() - _call_start
+            if _elapsed > _stale_timeout:
+                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                logger.warning(
+                    "Non-streaming API call stale for %.0fs (threshold %.0fs). "
+                    "model=%s context=~%s tokens. Killing connection.",
+                    _elapsed, _stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                self._emit_status(
+                    f"⚠️ No response from provider for {int(_elapsed)}s "
+                    f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
+                    f"Aborting call."
+                )
+                try:
+                    if self.api_mode == "anthropic_messages":
+                        from agent.anthropic_adapter import build_anthropic_client
+
+                        self._anthropic_client.close()
+                        self._anthropic_client = build_anthropic_client(
+                            self._anthropic_api_key,
+                            getattr(self, "_anthropic_base_url", None),
+                        )
+                    else:
+                        rc = request_client_holder.get("client")
+                        if rc is not None:
+                            self._close_request_openai_client(rc, reason="stale_call_kill")
+                except Exception:
+                    pass
+                self._touch_activity(
+                    f"stale non-streaming call killed after {int(_elapsed)}s"
+                )
+                # Wait briefly for the thread to notice the closed connection.
+                t.join(timeout=2.0)
+                if result["error"] is None and result["response"] is None:
+                    result["error"] = TimeoutError(
+                        f"Non-streaming API call timed out after {int(_elapsed)}s "
+                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                    )
+                break
+
             if self._interrupt_requested:
                 # Force-close the in-flight worker-local HTTP connection to stop
                 # token generation without poisoning the shared client used to
@@ -4937,12 +5100,9 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
-            _first_chunk_seen = False
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
-                if not _first_chunk_seen:
-                    _first_chunk_seen = True
-                    self._touch_activity("receiving stream response")
+                self._touch_activity("receiving stream response")
 
                 if self._interrupt_requested:
                     break
@@ -5118,6 +5278,7 @@ class AIAgent:
                     # actively arriving (the chat_completions path
                     # already does this at the top of its chunk loop).
                     last_chunk_time["t"] = time.time()
+                    self._touch_activity("receiving stream response")
 
                     if self._interrupt_requested:
                         break
@@ -5231,6 +5392,10 @@ class AIAgent:
                                     f"({type(e).__name__}). Reconnecting… "
                                     f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
                                 )
+                                self._touch_activity(
+                                    f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
+                                    f"after {type(e).__name__}"
+                                )
                                 # Close the stale request client before retry
                                 stale = request_client_holder.get("client")
                                 if stale is not None:
@@ -5255,8 +5420,7 @@ class AIAgent:
                                 "try again in a moment."
                             )
                             logger.warning(
-                                "Streaming exhausted %s retries on transient error, "
-                                "falling back to non-streaming: %s",
+                                "Streaming exhausted %s retries on transient error: %s",
                                 _max_stream_retries + 1,
                                 e,
                             )
@@ -5267,25 +5431,24 @@ class AIAgent:
                                 and "not supported" in _err_lower
                             )
                             if _is_stream_unsupported:
+                                self._disable_streaming = True
                                 self._safe_print(
                                     "\n⚠  Streaming is not supported for this "
-                                    "model/provider. Falling back to non-streaming.\n"
+                                    "model/provider. Switching to non-streaming.\n"
                                     "   To avoid this delay, set display.streaming: false "
                                     "in config.yaml\n"
                                 )
                             logger.info(
-                                "Streaming failed before delivery, falling back to non-streaming: %s",
+                                "Streaming failed before delivery: %s",
                                 e,
                             )
 
-                        try:
-                            # Reset stale timer — the non-streaming fallback
-                            # uses its own client; prevent the stale detector
-                            # from firing on stale timestamps from failed streams.
-                            last_chunk_time["t"] = time.time()
-                            result["response"] = self._interruptible_api_call(api_kwargs)
-                        except Exception as fallback_err:
-                            result["error"] = fallback_err
+                        # Propagate the error to the main retry loop instead of
+                        # falling back to non-streaming inline.  The main loop has
+                        # richer recovery: credential rotation, provider fallback,
+                        # backoff, and — for "stream not supported" — will switch
+                        # to non-streaming on the next attempt via _disable_streaming.
+                        result["error"] = e
                         return
             finally:
                 request_client = request_client_holder.get("client")
@@ -5351,6 +5514,9 @@ class AIAgent:
                 # Reset the timer so we don't kill repeatedly while
                 # the inner thread processes the closure.
                 last_chunk_time["t"] = time.time()
+                self._touch_activity(
+                    f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
+                )
 
             if self._interrupt_requested:
                 try:
@@ -5376,13 +5542,22 @@ class AIAgent:
                 # a new API call, creating a duplicate message.  Return a
                 # partial "stop" response instead so the outer loop treats this
                 # turn as complete (no retry, no fallback).
+                # Recover whatever content was already streamed to the user.
+                # _current_streamed_assistant_text accumulates text fired
+                # through _fire_stream_delta, so it has exactly what the
+                # user saw before the connection died.
+                _partial_text = (
+                    getattr(self, "_current_streamed_assistant_text", "") or ""
+                ).strip() or None
                 logger.warning(
                     "Partial stream delivered before error; returning stub "
-                    "response to prevent duplicate messages: %s",
+                    "response with %s chars of recovered content to prevent "
+                    "duplicate messages: %s",
+                    len(_partial_text or ""),
                     result["error"],
                 )
                 _stub_msg = SimpleNamespace(
-                    role="assistant", content=None, tool_calls=None,
+                    role="assistant", content=_partial_text, tool_calls=None,
                     reasoning_content=None,
                 )
                 return SimpleNamespace(
@@ -5841,11 +6016,12 @@ class AIAgent:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
         Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
         MiniMax keeps dots (e.g. MiniMax-M2.7).
-        OpenCode Go keeps dots (e.g. minimax-m2.7)."""
-        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go"}:
+        OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
+        ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1)."""
+        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go", "opencode-zen", "zai"}:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
-        return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/go" in base
+        return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/" in base or "bigmodel.cn" in base
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
@@ -8078,6 +8254,8 @@ class AIAgent:
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
+                    if self._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
@@ -8125,7 +8303,12 @@ class AIAgent:
                             self.thinking_callback("")
 
                     _use_streaming = True
-                    if not self._has_stream_consumers():
+                    # Provider signaled "stream not supported" on a previous
+                    # attempt — switch to non-streaming for the rest of this
+                    # session instead of re-failing every retry.
+                    if getattr(self, "_disable_streaming", False):
+                        _use_streaming = False
+                    elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for
                         # health checking, but skip for Mock clients in tests
                         # (mocks return SimpleNamespace, not stream iterators).
@@ -8225,7 +8408,8 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
                         
-                        # This is often rate limiting or provider returning malformed response
+                        # Invalid response — could be rate limiting, provider timeout,
+                        # upstream server error, or malformed response.
                         retry_count += 1
                         
                         # Eager fallback: empty/malformed responses are a common
@@ -8261,11 +8445,44 @@ class AIAgent:
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
+                        # Extract error code from response for contextual diagnostics
+                        _resp_error_code = None
+                        if response and hasattr(response, 'error') and response.error:
+                            _code_raw = getattr(response.error, 'code', None)
+                            if _code_raw is None and isinstance(response.error, dict):
+                                _code_raw = response.error.get('code')
+                            if _code_raw is not None:
+                                try:
+                                    _resp_error_code = int(_code_raw)
+                                except (TypeError, ValueError):
+                                    pass
+
+                        # Build a human-readable failure hint from the error code
+                        # and response time, instead of always assuming rate limiting.
+                        if _resp_error_code == 524:
+                            _failure_hint = f"upstream provider timed out (Cloudflare 524, {api_duration:.0f}s)"
+                        elif _resp_error_code == 504:
+                            _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
+                        elif _resp_error_code == 429:
+                            _failure_hint = f"rate limited by upstream provider (429)"
+                        elif _resp_error_code in (500, 502):
+                            _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
+                        elif _resp_error_code in (503, 529):
+                            _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
+                        elif _resp_error_code is not None:
+                            _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
+                        elif api_duration < 10:
+                            _failure_hint = f"fast response ({api_duration:.1f}s) — likely rate limited"
+                        elif api_duration > 60:
+                            _failure_hint = f"slow response ({api_duration:.0f}s) — likely upstream timeout"
+                        else:
+                            _failure_hint = f"response time {api_duration:.1f}s"
+
                         self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
                         self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
                         cleaned_provider_error = self._clean_error_message(error_msg)
                         self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
-                        self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
+                        self._vprint(f"{self.log_prefix}   ⏱️  {_failure_hint}", force=True)
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
@@ -8282,31 +8499,39 @@ class AIAgent:
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
+                                "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        # Jittered exponential: 5s base, 120s cap + random jitter
+                        # Backoff before retry — jittered exponential: 5s base, 120s cap
                         wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s (extended backoff)...", force=True)
+                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
                         sleep_end = time.time() + wait_time
+                        _backoff_touch_counter = 0
                         while time.time() < sleep_end:
                             if self._interrupt_requested:
                                 self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
+                                    "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
                                     "interrupted": True,
                                 }
                             time.sleep(0.2)
+                            # Touch activity every ~30s so the gateway's inactivity
+                            # monitor knows we're alive during backoff waits.
+                            _backoff_touch_counter += 1
+                            if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
+                                self._touch_activity(
+                                    f"retry backoff ({retry_count}/{max_retries}), "
+                                    f"{int(sleep_end - time.time())}s remaining"
+                                )
                         continue  # Retry the API call
 
                     # Check finish_reason before proceeding
@@ -8661,18 +8886,56 @@ class AIAgent:
                             )
                             continue
                         if _is_ascii_codec:
+                            self._force_ascii_payload = True
                             # ASCII codec: the system encoding can't handle
                             # non-ASCII characters at all. Sanitize all
-                            # non-ASCII content from messages and retry.
-                            if _sanitize_messages_non_ascii(messages):
+                            # non-ASCII content from messages/tool schemas and retry.
+                            _messages_sanitized = _sanitize_messages_non_ascii(messages)
+                            _prefill_sanitized = False
+                            if isinstance(getattr(self, "prefill_messages", None), list):
+                                _prefill_sanitized = _sanitize_messages_non_ascii(self.prefill_messages)
+
+                            _tools_sanitized = False
+                            if isinstance(getattr(self, "tools", None), list):
+                                _tools_sanitized = _sanitize_tools_non_ascii(self.tools)
+
+                            _system_sanitized = False
+                            if isinstance(active_system_prompt, str):
+                                _sanitized_system = _strip_non_ascii(active_system_prompt)
+                                if _sanitized_system != active_system_prompt:
+                                    active_system_prompt = _sanitized_system
+                                    self._cached_system_prompt = _sanitized_system
+                                    _system_sanitized = True
+                            if isinstance(getattr(self, "ephemeral_system_prompt", None), str):
+                                _sanitized_ephemeral = _strip_non_ascii(self.ephemeral_system_prompt)
+                                if _sanitized_ephemeral != self.ephemeral_system_prompt:
+                                    self.ephemeral_system_prompt = _sanitized_ephemeral
+                                    _system_sanitized = True
+
+                            _headers_sanitized = False
+                            _default_headers = (
+                                self._client_kwargs.get("default_headers")
+                                if isinstance(getattr(self, "_client_kwargs", None), dict)
+                                else None
+                            )
+                            if isinstance(_default_headers, dict):
+                                _headers_sanitized = _sanitize_structure_non_ascii(_default_headers)
+
+                            if (
+                                _messages_sanitized
+                                or _prefill_sanitized
+                                or _tools_sanitized
+                                or _system_sanitized
+                                or _headers_sanitized
+                            ):
                                 self._unicode_sanitization_passes += 1
                                 self._vprint(
-                                    f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from messages. Retrying...",
+                                    f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying...",
                                     force=True,
                                 )
                                 continue
-                        # Nothing to sanitize in messages — might be in system
-                        # prompt or prefill. Fall through to normal error path.
+                        # Nothing to sanitize in any payload component.
+                        # Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
@@ -8779,6 +9042,9 @@ class AIAgent:
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
+                    self._touch_activity(
+                        f"API error recovery (attempt {retry_count}/{max_retries})"
+                    )
                     
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
@@ -9305,6 +9571,7 @@ class AIAgent:
                     # Sleep in small increments so we can respond to interrupts quickly
                     # instead of blocking the entire wait_time in one sleep() call
                     sleep_end = time.time() + wait_time
+                    _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if self._interrupt_requested:
                             self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
@@ -9318,6 +9585,14 @@ class AIAgent:
                                 "interrupted": True,
                             }
                         time.sleep(0.2)  # Check interrupt every 200ms
+                        # Touch activity every ~30s so the gateway's inactivity
+                        # monitor knows we're alive during backoff waits.
+                        _backoff_touch_counter += 1
+                        if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
+                            self._touch_activity(
+                                f"error retry backoff ({retry_count}/{max_retries}), "
+                                f"{int(sleep_end - time.time())}s remaining"
+                            )
             
             # If the API call was interrupted, skip response processing
             if interrupted:
@@ -9703,12 +9978,25 @@ class AIAgent:
                     
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).
+                    _had_prefill = False
                     while (
                         messages
                         and isinstance(messages[-1], dict)
                         and messages[-1].get("_thinking_prefill")
                     ):
                         messages.pop()
+                        _had_prefill = True
+
+                    # Reset prefill counter when tool calls follow a prefill
+                    # recovery.  Without this, the counter accumulates across
+                    # the whole conversation — a model that intermittently
+                    # empties (empty → prefill → tools → empty → prefill →
+                    # tools) burns both prefill attempts and the third empty
+                    # gets zero recovery.  Resetting here treats each tool-
+                    # call success as a fresh start.
+                    if _had_prefill:
+                        self._thinking_prefill_retries = 0
+                        self._empty_content_retries = 0
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
@@ -9827,6 +10115,30 @@ class AIAgent:
                     
                     # Check if response only has think block with no actual content after it
                     if not self._has_content_after_think_block(final_response):
+                        # ── Partial stream recovery ─────────────────────
+                        # If content was already streamed to the user before
+                        # the connection died, use it as the final response
+                        # instead of falling through to prior-turn fallback
+                        # or wasting API calls on retries.
+                        _partial_streamed = (
+                            getattr(self, "_current_streamed_assistant_text", "") or ""
+                        )
+                        if self._has_content_after_think_block(_partial_streamed):
+                            _turn_exit_reason = "partial_stream_recovery"
+                            _recovered = self._strip_think_blocks(_partial_streamed).strip()
+                            logger.info(
+                                "Partial stream content delivered (%d chars) "
+                                "— using as final response",
+                                len(_recovered),
+                            )
+                            self._emit_status(
+                                "↻ Stream interrupted — using delivered content "
+                                "as final response"
+                            )
+                            final_response = _recovered
+                            self._response_was_previewed = True
+                            break
+
                         # If the previous turn already delivered real content alongside
                         # tool calls (e.g. "You're welcome!" + memory save), the model
                         # has nothing more to say. Use the earlier content immediately
@@ -9884,16 +10196,23 @@ class AIAgent:
                             self._save_session_log(messages)
                             continue
 
-                        # ── Empty response retry (no reasoning) ──────
-                        # Model returned nothing — no content, no
-                        # structured reasoning, no tool calls.  Common
-                        # with open models (transient provider issues,
-                        # rate limits, sampling flukes).  Retry up to 3
-                        # times before attempting fallback.  Skip when
-                        # content has inline <think> tags (model chose
-                        # to reason, just no visible text).
-                        _truly_empty = not final_response.strip()
-                        if _truly_empty and not _has_structured and self._empty_content_retries < 3:
+                        # ── Empty response retry ──────────────────────
+                        # Model returned nothing usable.  Retry up to 3
+                        # times before attempting fallback.  This covers
+                        # both truly empty responses (no content, no
+                        # reasoning) AND reasoning-only responses after
+                        # prefill exhaustion — models like mimo-v2-pro
+                        # always populate reasoning fields via OpenRouter,
+                        # so the old `not _has_structured` guard blocked
+                        # retries for every reasoning model after prefill.
+                        _truly_empty = not self._strip_think_blocks(
+                            final_response
+                        ).strip()
+                        _prefill_exhausted = (
+                            _has_structured
+                            and self._thinking_prefill_retries >= 2
+                        )
+                        if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3:
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "
@@ -10087,17 +10406,11 @@ class AIAgent:
         if final_response is None and (
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
-        ) and not self._budget_exhausted_injected:
-            # Budget exhausted but we haven't tried asking the model to
-            # summarise yet.  Inject a user message and give it one grace
-            # API call to produce a text response.
-            self._budget_exhausted_injected = True
-            self._budget_grace_call = True
-            _grace_msg = (
-                "Your tool budget ran out. Please give me the information "
-                "or actions you've completed so far."
-            )
-            messages.append({"role": "user", "content": _grace_msg})
+        ):
+            # Budget exhausted — ask the model for a summary via one extra
+            # API call with tools stripped.  _handle_max_iterations injects a
+            # user message and makes a single toolless request.
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
             self._emit_status(
                 f"⚠️ Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                 "— asking model to summarise"
@@ -10107,14 +10420,6 @@ class AIAgent:
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                     "— requesting summary..."
                 )
-
-        if final_response is None and (
-            api_call_count >= self.max_iterations
-            or self.iteration_budget.remaining <= 0
-        ) and not self._budget_grace_call:
-            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
-            if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
-                print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully

@@ -41,10 +41,18 @@ jobs:
           python-version: '3.11'
 
       - name: Install PyYAML for skill extraction
-        run: pip install pyyaml
+        run: pip install pyyaml httpx
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
+
+      - name: Build skills index (if not already present)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ ! -f website/static/api/skills-index.json ]; then
+            python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
+          fi
 
       - name: Install dependencies
         run: npm ci

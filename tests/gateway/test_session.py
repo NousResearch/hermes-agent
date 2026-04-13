@@ -552,6 +552,45 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
+class TestSessionStoreSwitchSession:
+    """Regression coverage for gateway /resume session switching semantics."""
+
+    def test_switch_session_reopens_target_session_in_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+        current_entry = store.get_or_create_session(source)
+        current_session_id = current_entry.session_id
+
+        target_session_id = "old_session_abc"
+        db.create_session(target_session_id, source="feishu", user_id="user-1")
+        db.end_session(target_session_id, end_reason="user_exit")
+        assert db.get_session(target_session_id)["ended_at"] is not None
+
+        switched = store.switch_session(current_entry.session_key, target_session_id)
+
+        assert switched is not None
+        assert switched.session_id == target_session_id
+        assert db.get_session(current_session_id)["end_reason"] == "session_switch"
+        resumed = db.get_session(target_session_id)
+        assert resumed["ended_at"] is None
+        assert resumed["end_reason"] is None
+        db.close()
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""

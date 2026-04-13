@@ -44,6 +44,16 @@ def _redact(value: str) -> str:
 def _gateway_status() -> str:
     """Return a short gateway status string."""
     if sys.platform.startswith("linux"):
+        from hermes_constants import is_container
+        if is_container():
+            try:
+                from hermes_cli.gateway import find_gateway_pids
+                pids = find_gateway_pids()
+                if pids:
+                    return f"running (docker, pid {pids[0]})"
+                return "stopped (docker)"
+            except Exception:
+                return "stopped (docker)"
         try:
             from hermes_cli.gateway import get_service_name
             svc = get_service_name()

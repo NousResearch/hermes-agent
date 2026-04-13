@@ -463,8 +463,6 @@ class TestVisionRequirements:
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("AUXILIARY_VISION_PROVIDER", raising=False)
-        monkeypatch.delenv("CONTEXT_VISION_PROVIDER", raising=False)
 
         assert check_vision_requirements() is True
 

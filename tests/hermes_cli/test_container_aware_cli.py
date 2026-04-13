@@ -12,47 +12,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_cli.config import (
-    _is_inside_container,
     get_container_exec_info,
 )
-
-
-# =============================================================================
-# _is_inside_container
-# =============================================================================
-
-
-def test_is_inside_container_dockerenv():
-    """Detects /.dockerenv marker file."""
-    with patch("os.path.exists") as mock_exists:
-        mock_exists.side_effect = lambda p: p == "/.dockerenv"
-        assert _is_inside_container() is True
-
-
-def test_is_inside_container_containerenv():
-    """Detects Podman's /run/.containerenv marker."""
-    with patch("os.path.exists") as mock_exists:
-        mock_exists.side_effect = lambda p: p == "/run/.containerenv"
-        assert _is_inside_container() is True
-
-
-def test_is_inside_container_cgroup_docker():
-    """Detects 'docker' in /proc/1/cgroup."""
-    with patch("os.path.exists", return_value=False), \
-         patch("builtins.open", create=True) as mock_open:
-        mock_open.return_value.__enter__ = lambda s: s
-        mock_open.return_value.__exit__ = MagicMock(return_value=False)
-        mock_open.return_value.read = MagicMock(
-            return_value="12:memory:/docker/abc123\n"
-        )
-        assert _is_inside_container() is True
-
-
-def test_is_inside_container_false_on_host():
-    """Returns False when none of the container indicators are present."""
-    with patch("os.path.exists", return_value=False), \
-         patch("builtins.open", side_effect=OSError("no such file")):
-        assert _is_inside_container() is False
 
 
 # =============================================================================
@@ -81,7 +42,7 @@ def container_env(tmp_path, monkeypatch):
 
 def test_get_container_exec_info_returns_metadata(container_env):
     """Reads .container-mode and returns all fields including exec_user."""
-    with patch("hermes_cli.config._is_inside_container", return_value=False):
+    with patch("hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info is not None
@@ -93,7 +54,7 @@ def test_get_container_exec_info_returns_metadata(container_env):
 
 def test_get_container_exec_info_none_inside_container(container_env):
     """Returns None when we're already inside a container."""
-    with patch("hermes_cli.config._is_inside_container", return_value=True):
+    with patch("hermes_constants.is_container", return_value=True):
         info = get_container_exec_info()
 
     assert info is None
@@ -106,7 +67,7 @@ def test_get_container_exec_info_none_without_file(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("HERMES_DEV", raising=False)
 
-    with patch("hermes_cli.config._is_inside_container", return_value=False):
+    with patch("hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info is None
@@ -116,7 +77,7 @@ def test_get_container_exec_info_skipped_when_hermes_dev(container_env, monkeypa
     """Returns None when HERMES_DEV=1 is set (dev mode bypass)."""
     monkeypatch.setenv("HERMES_DEV", "1")
 
-    with patch("hermes_cli.config._is_inside_container", return_value=False):
+    with patch("hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info is None
@@ -126,7 +87,7 @@ def test_get_container_exec_info_not_skipped_when_hermes_dev_zero(container_env,
     """HERMES_DEV=0 does NOT trigger bypass — only '1' does."""
     monkeypatch.setenv("HERMES_DEV", "0")
 
-    with patch("hermes_cli.config._is_inside_container", return_value=False):
+    with patch("hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info is not None
@@ -143,7 +104,7 @@ def test_get_container_exec_info_defaults():
             "# minimal file with no keys\n"
         )
 
-        with patch("hermes_cli.config._is_inside_container", return_value=False), \
+        with patch("hermes_constants.is_container", return_value=False), \
              patch("hermes_cli.config.get_hermes_home", return_value=hermes_home), \
              patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_DEV", None)
@@ -165,7 +126,7 @@ def test_get_container_exec_info_docker_backend(container_env):
         "hermes_bin=/opt/hermes/bin/hermes\n"
     )
 
-    with patch("hermes_cli.config._is_inside_container", return_value=False):
+    with patch("hermes_constants.is_container", return_value=False):
         info = get_container_exec_info()
 
     assert info["backend"] == "docker"
@@ -176,7 +137,7 @@ def test_get_container_exec_info_docker_backend(container_env):
 
 def test_get_container_exec_info_crashes_on_permission_error(container_env):
     """PermissionError propagates instead of being silently swallowed."""
-    with patch("hermes_cli.config._is_inside_container", return_value=False), \
+    with patch("hermes_constants.is_container", return_value=False), \
          patch("builtins.open", side_effect=PermissionError("permission denied")):
         with pytest.raises(PermissionError):
             get_container_exec_info()

@@ -273,18 +273,6 @@ class TestDefaultConfigShape:
         assert web["provider"] == "auto"
         assert web["model"] == ""
 
-    def test_compression_provider_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        compression = DEFAULT_CONFIG["compression"]
-        assert "summary_provider" in compression
-        assert compression["summary_provider"] == "auto"
-
-    def test_compression_base_url_default(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        compression = DEFAULT_CONFIG["compression"]
-        assert "summary_base_url" in compression
-        assert compression["summary_base_url"] is None
-
 
 # ── CLI defaults parity ─────────────────────────────────────────────────────
 

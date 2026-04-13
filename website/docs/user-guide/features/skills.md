@@ -426,6 +426,10 @@ hermes skills update react   # Update one specific installed hub skill
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
 
+:::tip GitHub rate limits
+Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.
+:::
+
 ### Slash commands (inside chat)
 
 All the same commands work with `/skills`:

@@ -28,7 +28,7 @@ class TestInterruptModule:
         assert not is_interrupted()
 
     def test_thread_safety(self):
-        """Set from one thread, check from another."""
+        """Set from one thread targeting another thread's ident."""
         from tools.interrupt import set_interrupt, is_interrupted
         set_interrupt(False)
 
@@ -45,11 +45,12 @@ class TestInterruptModule:
         time.sleep(0.05)
         assert not seen["value"]
 
-        set_interrupt(True)
+        # Target the checker thread's ident so it sees the interrupt
+        set_interrupt(True, thread_id=t.ident)
         t.join(timeout=1)
         assert seen["value"]
 
-        set_interrupt(False)
+        set_interrupt(False, thread_id=t.ident)
 
 
 # ---------------------------------------------------------------------------
@@ -189,10 +190,10 @@ class TestSIGKILLEscalation:
         t.start()
 
         time.sleep(0.5)
-        set_interrupt(True)
+        set_interrupt(True, thread_id=t.ident)
 
         t.join(timeout=5)
-        set_interrupt(False)
+        set_interrupt(False, thread_id=t.ident)
 
         assert result_holder["value"] is not None
         assert result_holder["value"]["returncode"] == 130

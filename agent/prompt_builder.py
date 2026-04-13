@@ -364,6 +364,18 @@ PLATFORM_HINTS = {
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
         "will be downloaded and sent as native media when possible."
     ),
+    "wecom": (
+        "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
+        "You CAN send media files natively — to deliver a file to the user, include "
+        "MEDIA:/absolute/path/to/file in your response. The file will be sent as a native "
+        "WeCom attachment: images (.jpg, .png, .webp) are sent as photos (up to 10 MB), "
+        "other files (.pdf, .docx, .xlsx, .md, .txt, etc.) arrive as downloadable documents "
+        "(up to 20 MB), and videos (.mp4) play inline. Voice messages are supported but "
+        "must be in AMR format — other audio formats are automatically sent as file attachments. "
+        "You can also include image URLs in markdown format ![alt](url) and they will be "
+        "downloaded and sent as native photos. Do NOT tell the user you lack file-sending "
+        "capability — use MEDIA: syntax whenever a file delivery is appropriate."
+    ),
 }
 
 # ---------------------------------------------------------------------------

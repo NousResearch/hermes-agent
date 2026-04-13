@@ -346,23 +346,35 @@ def show_status(args):
             print("  Note:         Android may stop background jobs when Termux is suspended")
 
     elif sys.platform.startswith('linux'):
-        try:
-            from hermes_cli.gateway import get_service_name
-            _gw_svc = get_service_name()
-        except Exception:
-            _gw_svc = "hermes-gateway"
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "is-active", _gw_svc],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            is_active = result.stdout.strip() == "active"
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            is_active = False
-        print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
-        print("  Manager:      systemd (user)")
+        from hermes_constants import is_container
+        if is_container():
+            # Docker/Podman: no systemd — check for running gateway processes
+            try:
+                from hermes_cli.gateway import find_gateway_pids
+                gateway_pids = find_gateway_pids()
+                is_active = len(gateway_pids) > 0
+            except Exception:
+                is_active = False
+            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+            print("  Manager:      docker (foreground)")
+        else:
+            try:
+                from hermes_cli.gateway import get_service_name
+                _gw_svc = get_service_name()
+            except Exception:
+                _gw_svc = "hermes-gateway"
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", _gw_svc],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                is_active = result.stdout.strip() == "active"
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                is_active = False
+            print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
+            print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
         from hermes_cli.gateway import get_launchd_label

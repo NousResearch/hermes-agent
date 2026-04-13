@@ -102,7 +102,19 @@ class _PromptTooLongError(Exception):
         self.status_code = 400
 
 
+class _FakeMessages:
+    """Stub for client.messages.create() / client.messages.stream()."""
+    def create(self, **kwargs):
+        raise NotImplementedError("_FakeAnthropicClient.messages.create should not be called directly in tests")
+
+    def stream(self, **kwargs):
+        raise NotImplementedError("_FakeAnthropicClient.messages.stream should not be called directly in tests")
+
+
 class _FakeAnthropicClient:
+    def __init__(self):
+        self.messages = _FakeMessages()
+
     def close(self):
         pass
 
@@ -131,13 +143,14 @@ def _make_agent_cls(error_cls, recover_after=None):
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
             calls = {"n": 0}
 
-            def _fake_api_call(api_kwargs):
+            def _fake_api_call(api_kwargs, **kw):
                 calls["n"] += 1
                 if recover_after is not None and calls["n"] > recover_after:
                     return _anthropic_response("Recovered")
                 raise error_cls()
 
             self._interruptible_api_call = _fake_api_call
+            self._interruptible_streaming_api_call = _fake_api_call
             return super().run_conversation(
                 user_message, conversation_history=conversation_history, task_id=task_id
             )
@@ -352,10 +365,11 @@ def test_401_refresh_fails_is_non_retryable(monkeypatch):
             return False  # Simulate failed credential refresh
 
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
-            def _fake_api_call(api_kwargs):
+            def _fake_api_call(api_kwargs, **kw):
                 raise _UnauthorizedError()
 
             self._interruptible_api_call = _fake_api_call
+            self._interruptible_streaming_api_call = _fake_api_call
             return super().run_conversation(
                 user_message, conversation_history=conversation_history, task_id=task_id
             )
@@ -436,13 +450,14 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
         def run_conversation(self, user_message, conversation_history=None, task_id=None):
             calls = {"n": 0}
 
-            def _fake_api_call(api_kwargs):
+            def _fake_api_call(api_kwargs, **kw):
                 calls["n"] += 1
                 if calls["n"] == 1:
                     raise _PromptTooLongError()
                 return _anthropic_response("Compressed and recovered")
 
             self._interruptible_api_call = _fake_api_call
+            self._interruptible_streaming_api_call = _fake_api_call
             return super().run_conversation(
                 user_message, conversation_history=conversation_history, task_id=task_id
             )

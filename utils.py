@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, List, Optional, Union
+from typing import Any, Union
 
 import yaml
 
@@ -145,57 +145,7 @@ def safe_json_loads(text: str, default: Any = None) -> Any:
         return default
 
 
-def read_json_file(path: Path, default: Any = None) -> Any:
-    """Read and parse a JSON file, returning *default* on any error.
-
-    Replaces the repeated ``try: json.loads(path.read_text()) except ...``
-    pattern in anthropic_adapter.py, auxiliary_client.py, credential_pool.py,
-    and skill_utils.py.
-    """
-    try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, IOError, ValueError) as exc:
-        logger.debug("Failed to read %s: %s", path, exc)
-        return default
-
-
-def read_jsonl(path: Path) -> List[dict]:
-    """Read a JSONL file (one JSON object per line).
-
-    Returns a list of parsed objects, skipping blank lines.
-    """
-    entries = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                entries.append(json.loads(line))
-    return entries
-
-
-def append_jsonl(path: Path, entry: dict) -> None:
-    """Append a single JSON object as a new line to a JSONL file."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
 # ─── Environment Variable Helpers ─────────────────────────────────────────────
-
-
-def env_str(key: str, default: str = "") -> str:
-    """Read an environment variable, stripped of whitespace.
-
-    Replaces the ``os.getenv("X", "").strip()`` pattern repeated 50+ times
-    across runtime_provider.py, anthropic_adapter.py, models.py, etc.
-    """
-    return os.getenv(key, default).strip()
-
-
-def env_lower(key: str, default: str = "") -> str:
-    """Read an environment variable, stripped and lowercased."""
-    return os.getenv(key, default).strip().lower()
 
 
 def env_int(key: str, default: int = 0) -> int:

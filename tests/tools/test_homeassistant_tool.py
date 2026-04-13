@@ -5,6 +5,7 @@ handler validation, and availability gating.
 """
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -18,6 +19,7 @@ from tools.homeassistant_tool import (
     _handle_call_service,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
+    _SERVICE_NAME_RE,
 )
 
 
@@ -301,6 +303,147 @@ class TestEntityIdValidation:
         }))
         if "error" in result:
             assert "Invalid entity_id" not in result["error"]
+
+
+# ---------------------------------------------------------------------------
+# String-data deserialization (XML tool calling workaround)
+# ---------------------------------------------------------------------------
+
+
+class TestCallServiceStringData:
+    """data param may arrive as a JSON string (XML tool calling mode)."""
+
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    def test_string_data_deserialized(self, mock_run):
+        """JSON string data is parsed into a dict before dispatch."""
+        _handle_call_service({
+            "domain": "climate",
+            "service": "set_hvac_mode",
+            "entity_id": "climate.living_room",
+            "data": '{"hvac_mode": "heat"}',
+        })
+        call_args = mock_run.call_args[0][0]  # the coroutine arg
+        # _run_async was called, meaning we got past validation
+
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    def test_dict_data_passthrough(self, mock_run):
+        """Dict data (JSON tool calling mode) still works unchanged."""
+        _handle_call_service({
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "light.bedroom",
+            "data": {"brightness": 255},
+        })
+        mock_run.assert_called_once()
+
+    def test_invalid_json_string_returns_error(self):
+        """Malformed JSON string in data returns a clear error."""
+        result = json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "light.bedroom",
+            "data": "{not valid json}",
+        }))
+        assert "error" in result
+        assert "Invalid JSON" in result["error"]
+
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    def test_empty_string_data_becomes_none(self, mock_run):
+        """Empty/whitespace string data is treated as None."""
+        _handle_call_service({
+            "domain": "light",
+            "service": "turn_on",
+            "entity_id": "light.bedroom",
+            "data": "   ",
+        })
+        mock_run.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Security: domain/service name format validation
+# ---------------------------------------------------------------------------
+
+
+class TestServiceNameValidation:
+    """Verify domain/service format validation prevents path traversal in URL.
+
+    The domain and service parameters are interpolated into
+    /api/services/{domain}/{service}, so allowing arbitrary strings would
+    enable SSRF via path traversal or blocked-domain bypass.
+    """
+
+    def test_valid_domain_names(self):
+        assert _SERVICE_NAME_RE.match("light")
+        assert _SERVICE_NAME_RE.match("switch")
+        assert _SERVICE_NAME_RE.match("climate")
+        assert _SERVICE_NAME_RE.match("shell_command")
+        assert _SERVICE_NAME_RE.match("media_player")
+
+    def test_valid_service_names(self):
+        assert _SERVICE_NAME_RE.match("turn_on")
+        assert _SERVICE_NAME_RE.match("turn_off")
+        assert _SERVICE_NAME_RE.match("set_temperature")
+        assert _SERVICE_NAME_RE.match("toggle")
+
+    def test_path_traversal_in_domain_rejected(self):
+        assert _SERVICE_NAME_RE.match("../../api/config") is None
+        assert _SERVICE_NAME_RE.match("light/../../../etc") is None
+        assert _SERVICE_NAME_RE.match("../config") is None
+
+    def test_path_traversal_in_service_rejected(self):
+        assert _SERVICE_NAME_RE.match("../../api/config") is None
+        assert _SERVICE_NAME_RE.match("turn_on/../../config") is None
+
+    def test_blocked_domain_bypass_via_traversal_rejected(self):
+        """Ensure shell_command/../light is rejected, not just checked against blocklist."""
+        assert _SERVICE_NAME_RE.match("shell_command/../light") is None
+        assert _SERVICE_NAME_RE.match("python_script/../scene") is None
+        assert _SERVICE_NAME_RE.match("hassio/../automation") is None
+
+    def test_slashes_rejected(self):
+        assert _SERVICE_NAME_RE.match("light/turn_on") is None
+        assert _SERVICE_NAME_RE.match("a/b/c") is None
+
+    def test_dots_rejected(self):
+        assert _SERVICE_NAME_RE.match("light.turn_on") is None
+        assert _SERVICE_NAME_RE.match("..") is None
+
+    def test_uppercase_rejected(self):
+        assert _SERVICE_NAME_RE.match("LIGHT") is None
+        assert _SERVICE_NAME_RE.match("Turn_On") is None
+
+    def test_special_chars_rejected(self):
+        assert _SERVICE_NAME_RE.match("light;rm") is None
+        assert _SERVICE_NAME_RE.match("light&cmd") is None
+        assert _SERVICE_NAME_RE.match("light cmd") is None
+
+    def test_handler_rejects_traversal_domain(self):
+        """_handle_call_service must reject domain with path traversal."""
+        result = json.loads(_handle_call_service({
+            "domain": "../../api/config",
+            "service": "turn_on",
+        }))
+        assert "error" in result
+        assert "Invalid domain" in result["error"]
+
+    def test_handler_rejects_traversal_service(self):
+        """_handle_call_service must reject service with path traversal."""
+        result = json.loads(_handle_call_service({
+            "domain": "light",
+            "service": "../../api/config",
+        }))
+        assert "error" in result
+        assert "Invalid service" in result["error"]
+
+    def test_handler_rejects_blocklist_bypass_traversal(self):
+        """Blocklist bypass via shell_command/../light must be caught by format validation."""
+        result = json.loads(_handle_call_service({
+            "domain": "shell_command/../light",
+            "service": "turn_on",
+        }))
+        assert "error" in result
+        # Must be rejected as "Invalid domain", not slip through the blocklist
+        assert "Invalid domain" in result["error"]
 
 
 # ---------------------------------------------------------------------------

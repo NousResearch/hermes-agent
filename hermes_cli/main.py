@@ -999,7 +999,7 @@ def select_provider_and_model(args=None):
     from hermes_cli.auth import (
         resolve_provider, AuthError, format_auth_error,
     )
-    from hermes_cli.config import load_config, get_env_value
+    from hermes_cli.config import get_compatible_custom_providers, load_config, get_env_value
 
     config = load_config()
     current_model = config.get("model")
@@ -1090,11 +1090,8 @@ def select_provider_and_model(args=None):
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
-        custom_providers_cfg = cfg.get("custom_providers") or []
         custom_provider_map = {}
-        if not isinstance(custom_providers_cfg, list):
-            return custom_provider_map
-        for entry in custom_providers_cfg:
+        for entry in get_compatible_custom_providers(cfg):
             if not isinstance(entry, dict):
                 continue
             name = (entry.get("name") or "").strip()
@@ -1102,12 +1099,20 @@ def select_provider_and_model(args=None):
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
+            provider_key = (entry.get("provider_key") or "").strip()
+            if provider_key:
+                try:
+                    resolve_provider(provider_key)
+                except AuthError:
+                    key = provider_key
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
+                "key_env": entry.get("key_env", ""),
                 "model": entry.get("model", ""),
                 "api_mode": entry.get("api_mode", ""),
+                "provider_key": provider_key,
             }
         return custom_provider_map
 
@@ -1157,7 +1162,8 @@ def select_provider_and_model(args=None):
     if selected_provider == "more":
         ext_ordered = list(extended_providers)
         ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
-        if _custom_provider_map:
+        _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(config.get("custom_providers"))
+        if _has_saved_custom_list:
             ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
         ext_ordered.append(("cancel", "Cancel"))
 
@@ -1184,7 +1190,7 @@ def select_provider_and_model(args=None):
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
-    elif selected_provider.startswith("custom:"):
+    elif selected_provider.startswith("custom:") or selected_provider in _custom_provider_map:
         provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
         if provider_info is None:
             print(
@@ -1869,7 +1875,9 @@ def _model_flow_named_custom(config, provider_info):
     name = provider_info["name"]
     base_url = provider_info["base_url"]
     api_key = provider_info.get("api_key", "")
+    key_env = provider_info.get("key_env", "")
     saved_model = provider_info.get("model", "")
+    provider_key = (provider_info.get("provider_key") or "").strip()
 
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
@@ -1952,10 +1960,15 @@ def _model_flow_named_custom(config, provider_info):
     if not isinstance(model, dict):
         model = {"default": model} if model else {}
         cfg["model"] = model
-    model["provider"] = "custom"
-    model["base_url"] = base_url
-    if api_key:
-        model["api_key"] = api_key
+    if provider_key:
+        model["provider"] = provider_key
+        model.pop("base_url", None)
+        model.pop("api_key", None)
+    else:
+        model["provider"] = "custom"
+        model["base_url"] = base_url
+        if api_key:
+            model["api_key"] = api_key
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
@@ -1965,8 +1978,23 @@ def _model_flow_named_custom(config, provider_info):
     save_config(cfg)
     deactivate_provider()
 
-    # Save model name to the custom_providers entry for next time
-    _save_custom_provider(base_url, api_key, model_name)
+    # Persist the selected model back to whichever schema owns this endpoint.
+    if provider_key:
+        cfg = load_config()
+        providers_cfg = cfg.get("providers")
+        if isinstance(providers_cfg, dict):
+            provider_entry = providers_cfg.get(provider_key)
+            if isinstance(provider_entry, dict):
+                provider_entry["default_model"] = model_name
+                if api_key and not str(provider_entry.get("api_key", "") or "").strip():
+                    provider_entry["api_key"] = api_key
+                if key_env and not str(provider_entry.get("key_env", "") or "").strip():
+                    provider_entry["key_env"] = key_env
+                cfg["providers"] = providers_cfg
+                save_config(cfg)
+    else:
+        # Save model name to the custom_providers entry for next time
+        _save_custom_provider(base_url, api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")

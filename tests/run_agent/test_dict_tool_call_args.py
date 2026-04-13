@@ -20,6 +20,10 @@ def _response_with_tool_call(arguments):
     return SimpleNamespace(choices=[choice], usage=None)
 
 
+# Shared completions instance so that state survives client rebuilds.
+_shared_completions = None
+
+
 class _FakeChatCompletions:
     def __init__(self):
         self.calls = 0
@@ -41,10 +45,19 @@ class _FakeChatCompletions:
 
 class _FakeClient:
     def __init__(self):
-        self.chat = SimpleNamespace(completions=_FakeChatCompletions())
+        # Reuse the shared completions object so call counting is preserved
+        # across client rebuilds (agent may recreate the OpenAI client on
+        # connection errors or provider switches).
+        global _shared_completions
+        if _shared_completions is None:
+            _shared_completions = _FakeChatCompletions()
+        self.chat = SimpleNamespace(completions=_shared_completions)
 
 
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
+    global _shared_completions
+    _shared_completions = None  # reset between test runs
+
     from run_agent import AIAgent
 
     monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient())

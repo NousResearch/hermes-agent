@@ -375,6 +375,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
         last_result = None
+        disable_link_previews = bool(getattr(pconfig, "extra", {}) and pconfig.extra.get("disable_link_previews"))
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
             result = await _send_telegram(
@@ -383,6 +384,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chunk,
                 media_files=media_files if is_last else [],
                 thread_id=thread_id,
+                disable_link_previews=disable_link_previews,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -484,7 +486,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -520,6 +522,8 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         thread_kwargs = {}
         if thread_id is not None:
             thread_kwargs["message_thread_id"] = int(thread_id)
+        if disable_link_previews:
+            thread_kwargs["disable_web_page_preview"] = True
 
         last_msg = None
         warnings = []

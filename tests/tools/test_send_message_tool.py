@@ -577,7 +577,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -755,6 +755,17 @@ class TestSendTelegramHtmlDetection:
         bot.send_message.assert_awaited_once()
         kwargs = bot.send_message.await_args.kwargs
         assert kwargs["parse_mode"] == "MarkdownV2"
+
+    def test_disable_link_previews_sets_disable_web_page_preview(self, monkeypatch):
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram("tok", "123", "https://example.com", disable_link_previews=True)
+        )
+
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["disable_web_page_preview"] is True
 
     def test_html_with_code_and_pre_tags(self, monkeypatch):
         bot = self._make_bot()

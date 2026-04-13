@@ -2,9 +2,9 @@ import { Ansi, Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 import { LONG_MSG, ROLE } from '../constants.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, userDisplay } from '../lib/text.js'
+import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, thinkingPreview, userDisplay } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { Msg } from '../types.js'
+import type { Msg, ThinkingMode } from '../types.js'
 
 import { Md } from './markdown.js'
 import { ToolTrail } from './thinking.js'
@@ -12,18 +12,20 @@ import { ToolTrail } from './thinking.js'
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
+  thinkingMode = 'truncated',
   msg,
   t
 }: {
   cols: number
   compact?: boolean
+  thinkingMode?: ThinkingMode
   msg: Msg
   t: Theme
 }) {
   if (msg.kind === 'trail' && msg.tools?.length) {
     return (
       <Box flexDirection="column" marginTop={1}>
-        <ToolTrail t={t} trail={msg.tools} />
+        <ToolTrail t={t} thinkingMode={thinkingMode} trail={msg.tools} />
       </Box>
     )
   }
@@ -41,6 +43,9 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
+  const thinking = msg.thinking?.replace(/\n/g, ' ').trim() ?? ''
+  const preview = thinkingPreview(thinking, thinkingMode, Math.min(96, Math.max(32, cols - 18)))
+  const showThinkingPreview = Boolean(preview && !msg.tools?.length)
 
   const content = (() => {
     if (msg.kind === 'slash') {
@@ -80,17 +85,18 @@ export const MessageLine = memo(function MessageLine({
       marginBottom={msg.role === 'user' ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}
     >
-      {msg.thinking && (
-        <Text color={t.color.dim} dimColor wrap="truncate-end">
-          💭 {msg.thinking.replace(/\n/g, ' ').slice(0, 200)}
-        </Text>
-      )}
-
       {msg.tools?.length ? (
         <Box flexDirection="column" marginBottom={1}>
-          <ToolTrail t={t} trail={msg.tools} />
+          <ToolTrail reasoning={thinking} t={t} thinkingMode={thinkingMode} trail={msg.tools} />
         </Box>
       ) : null}
+
+      {showThinkingPreview && (
+        <Text color={t.color.dim} dimColor {...(thinkingMode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
+          {'└ '}
+          {preview}
+        </Text>
+      )}
 
       <Box>
         <Box flexShrink={0} width={3}>

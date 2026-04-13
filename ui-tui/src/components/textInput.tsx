@@ -329,6 +329,7 @@ export function TextInput({
         k.upArrow ||
         k.downArrow ||
         (k.ctrl && inp === 'c') ||
+        (k.ctrl && inp === 't') ||
         k.tab ||
         (k.shift && k.tab) ||
         k.pageUp ||

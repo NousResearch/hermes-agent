@@ -401,7 +401,8 @@ class TestValidateFormatChecks:
 
     def test_no_slash_model_rejected_if_not_in_api(self):
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
-        assert result["accepted"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
 
@@ -427,15 +428,15 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_accepted_with_warning(self):
+    def test_model_not_in_api_rejected_with_guidance(self):
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
-        assert result["accepted"] is True
+        assert result["accepted"] is False
         assert "Similar models" in result["message"]
 
 

@@ -21,7 +21,7 @@ export function estimateQueuedRows(queueLen: number, queueEditIdx: number | null
 
   const win = getQueueWindow(queueLen, queueEditIdx)
 
-  return 1 + (win.showLead ? 1 : 0) + (win.end - win.start) + (win.showTail ? 1 : 0)
+  return 1 + 1 + (win.showLead ? 1 : 0) + (win.end - win.start) + (win.showTail ? 1 : 0)
 }
 
 export function QueuedMessages({
@@ -42,7 +42,7 @@ export function QueuedMessages({
   const q = getQueueWindow(queued.length, queueEditIdx)
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" marginTop={1}>
       <Text color={t.color.dim} dimColor>
         queued ({queued.length}){queueEditIdx !== null ? ` · editing ${queueEditIdx + 1}` : ''}
       </Text>

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -10,9 +10,10 @@ import {
   Globe,
   MessageCircle,
   Hash,
+  X,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SessionInfo, SessionMessage } from "@/lib/api";
+import type { SessionInfo, SessionMessage, SessionSearchResult } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +35,35 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> = 
   whatsapp: { icon: Globe, color: "text-success" },
   cron: { icon: Clock, color: "text-warning" },
 };
+
+/** Render an FTS5 snippet with highlighted matches.
+ *  The backend wraps matches in >>> and <<< delimiters. */
+function SnippetHighlight({ snippet }: { snippet: string }) {
+  const parts: React.ReactNode[] = [];
+  const regex = />>>(.*?)<<</g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  while ((match = regex.exec(snippet)) !== null) {
+    if (match.index > last) {
+      parts.push(snippet.slice(last, match.index));
+    }
+    parts.push(
+      <mark key={i++} className="bg-warning/30 text-warning rounded-sm px-0.5">
+        {match[1]}
+      </mark>
+    );
+    last = regex.lastIndex;
+  }
+  if (last < snippet.length) {
+    parts.push(snippet.slice(last));
+  }
+  return (
+    <p className="text-xs text-muted-foreground/80 truncate max-w-lg mt-0.5">
+      {parts}
+    </p>
+  );
+}
 
 function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name: string; arguments: string } } }) {
   const [open, setOpen] = useState(false);
@@ -66,14 +96,30 @@ function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name:
   );
 }
 
-function MessageBubble({ msg }: { msg: SessionMessage }) {
+function MessageBubble({ msg, highlight }: { msg: SessionMessage; highlight?: string }) {
   const style = ROLE_STYLES[msg.role] ?? ROLE_STYLES.system;
   const label = msg.tool_name ? `Tool: ${msg.tool_name}` : style.label;
 
+  // Check if any search term appears as a prefix of any word in content
+  const isHit = (() => {
+    if (!highlight || !msg.content) return false;
+    const content = msg.content.toLowerCase();
+    const terms = highlight.toLowerCase().split(/\s+/).filter(Boolean);
+    return terms.some((term) => content.includes(term));
+  })();
+
+  // Split search query into terms for inline highlighting
+  const highlightTerms = isHit && highlight
+    ? highlight.split(/\s+/).filter(Boolean)
+    : undefined;
+
   return (
-    <div className={`${style.bg} p-3`}>
+    <div className={`${style.bg} p-3 ${isHit ? "ring-1 ring-warning/40" : ""}`} data-search-hit={isHit || undefined}>
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
+        {isHit && (
+          <Badge variant="warning" className="text-[9px] py-0 px-1.5">match</Badge>
+        )}
         {msg.timestamp && (
           <span className="text-[10px] text-muted-foreground">{timeAgo(msg.timestamp)}</span>
         )}
@@ -81,7 +127,7 @@ function MessageBubble({ msg }: { msg: SessionMessage }) {
       {msg.content && (
         msg.role === "system"
           ? <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">{msg.content}</div>
-          : <Markdown content={msg.content} />
+          : <Markdown content={msg.content} highlightTerms={highlightTerms} />
       )}
       {msg.tool_calls && msg.tool_calls.length > 0 && (
         <div className="mt-1">
@@ -94,13 +140,42 @@ function MessageBubble({ msg }: { msg: SessionMessage }) {
   );
 }
 
+/** Message list with auto-scroll to first search hit. */
+function MessageList({ messages, highlight }: { messages: SessionMessage[]; highlight?: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!highlight || !containerRef.current) return;
+    // Scroll to first hit after render
+    const timer = setTimeout(() => {
+      const hit = containerRef.current?.querySelector("[data-search-hit]");
+      if (hit) {
+        hit.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [messages, highlight]);
+
+  return (
+    <div ref={containerRef} className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
+      {messages.map((msg, i) => (
+        <MessageBubble key={i} msg={msg} highlight={highlight} />
+      ))}
+    </div>
+  );
+}
+
 function SessionRow({
   session,
+  snippet,
+  searchQuery,
   isExpanded,
   onToggle,
   onDelete,
 }: {
   session: SessionInfo;
+  snippet?: string;
+  searchQuery?: string;
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
@@ -163,6 +238,9 @@ function SessionRow({
               <span className="text-border">&#183;</span>
               <span>{timeAgo(session.last_active)}</span>
             </div>
+            {snippet && (
+              <SnippetHighlight snippet={snippet} />
+            )}
           </div>
         </div>
 
@@ -199,11 +277,7 @@ function SessionRow({
             <p className="text-sm text-muted-foreground py-4 text-center">No messages</p>
           )}
           {messages && messages.length > 0 && (
-            <div className="flex flex-col gap-3 max-h-[600px] overflow-y-auto pr-2">
-              {messages.map((msg, i) => (
-                <MessageBubble key={i} msg={msg} />
-              ))}
-            </div>
+            <MessageList messages={messages} highlight={searchQuery} />
           )}
         </div>
       )}
@@ -216,6 +290,9 @@ export default function SessionsPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
   const loadSessions = useCallback(() => {
     api
@@ -229,6 +306,30 @@ export default function SessionsPage() {
     loadSessions();
   }, [loadSessions]);
 
+  // Debounced FTS search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (!search.trim()) {
+      setSearchResults(null);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    debounceRef.current = setTimeout(() => {
+      api
+        .searchSessions(search.trim())
+        .then((resp) => setSearchResults(resp.results))
+        .catch(() => setSearchResults(null))
+        .finally(() => setSearching(false));
+    }, 300);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [search]);
+
   const handleDelete = async (id: string) => {
     try {
       await api.deleteSession(id);
@@ -239,16 +340,19 @@ export default function SessionsPage() {
     }
   };
 
-  const filtered = sessions.filter((s) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      (s.title ?? "").toLowerCase().includes(q) ||
-      (s.model ?? "").toLowerCase().includes(q) ||
-      (s.source ?? "").toLowerCase().includes(q) ||
-      (s.preview ?? "").toLowerCase().includes(q)
-    );
-  });
+  // Build snippet map from search results (session_id → snippet)
+  const snippetMap = new Map<string, string>();
+  if (searchResults) {
+    for (const r of searchResults) {
+      snippetMap.set(r.session_id, r.snippet);
+    }
+  }
+
+  // When searching, filter sessions to those with FTS matches;
+  // when not searching, show all sessions
+  const filtered = searchResults
+    ? sessions.filter((s) => snippetMap.has(s.id))
+    : sessions;
 
   if (loading) {
     return (
@@ -270,13 +374,26 @@ export default function SessionsPage() {
           </Badge>
         </div>
         <div className="relative w-64">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          {searching ? (
+            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+          ) : (
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          )}
           <Input
-            placeholder="Search sessions..."
+            placeholder="Search message content..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 h-8 text-xs"
+            className="pl-8 pr-7 h-8 text-xs"
           />
+          {search && (
+            <button
+              type="button"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+              onClick={() => setSearch("")}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -296,6 +413,8 @@ export default function SessionsPage() {
             <SessionRow
               key={s.id}
               session={s}
+              snippet={snippetMap.get(s.id)}
+              searchQuery={search || undefined}
               isExpanded={expandedId === s.id}
               onToggle={() =>
                 setExpandedId((prev) => (prev === s.id ? null : s.id))

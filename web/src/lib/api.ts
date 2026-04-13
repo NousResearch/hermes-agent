@@ -106,6 +106,10 @@ export const api = {
       body: JSON.stringify({ name, enabled }),
     }),
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
+
+  // Session search (FTS5)
+  searchSessions: (q: string) =>
+    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
 };
 
 export interface PlatformStatus {
@@ -240,4 +244,17 @@ export interface ToolsetInfo {
   enabled: boolean;
   configured: boolean;
   tools: string[];
+}
+
+export interface SessionSearchResult {
+  session_id: string;
+  snippet: string;
+  role: string | null;
+  source: string | null;
+  model: string | null;
+  session_started: number | null;
+}
+
+export interface SessionSearchResponse {
+  results: SessionSearchResult[];
 }

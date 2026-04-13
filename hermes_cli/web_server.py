@@ -354,6 +354,48 @@ async def get_sessions():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get("/api/sessions/search")
+async def search_sessions(q: str = "", limit: int = 20):
+    """Full-text search across session message content using FTS5."""
+    if not q or not q.strip():
+        return {"results": []}
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            # Auto-add prefix wildcards so partial words match
+            # e.g. "nimb" → "nimb*" matches "nimby"
+            # Preserve quoted phrases and existing wildcards as-is
+            import re
+            terms = []
+            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                if token.startswith('"') or token.endswith("*"):
+                    terms.append(token)
+                else:
+                    terms.append(token + "*")
+            prefix_query = " ".join(terms)
+            matches = db.search_messages(query=prefix_query, limit=limit)
+            # Group by session_id — return unique sessions with their best snippet
+            seen: dict = {}
+            for m in matches:
+                sid = m["session_id"]
+                if sid not in seen:
+                    seen[sid] = {
+                        "session_id": sid,
+                        "snippet": m.get("snippet", ""),
+                        "role": m.get("role"),
+                        "source": m.get("source"),
+                        "model": m.get("model"),
+                        "session_started": m.get("session_started"),
+                    }
+            return {"results": list(seen.values())}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/search failed")
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
 def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Normalize config for the web UI.
 

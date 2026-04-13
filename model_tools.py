@@ -172,6 +172,7 @@ def _discover_tools():
         "tools.browser_autonomous_tool",
         "tools.mac_native_tools",
         "tools.probe_targets_tool",
+        "tools.podcast_tool",
     ]
     import importlib
     for mod_name in _modules:

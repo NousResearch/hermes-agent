@@ -152,78 +152,46 @@ def _normalize_prerequisite_values(value: Any) -> List[str]:
 
 
 def _collect_prerequisite_values(
-    frontmatter: Dict[str, Any],
+    frontmatter_model: "SkillFrontmatter",
 ) -> Tuple[List[str], List[str]]:
-    prereqs = frontmatter.get("prerequisites")
-    if not prereqs or not isinstance(prereqs, dict):
+    prereqs = frontmatter_model.prerequisites
+    if not prereqs:
         return [], []
-    return (
-        _normalize_prerequisite_values(prereqs.get("env_vars")),
-        _normalize_prerequisite_values(prereqs.get("commands")),
-    )
+    return prereqs.env_vars, prereqs.commands
 
 
-def _normalize_setup_metadata(frontmatter: Dict[str, Any]) -> Dict[str, Any]:
-    setup = frontmatter.get("setup")
-    if not isinstance(setup, dict):
+def _normalize_setup_metadata(frontmatter_model: "SkillFrontmatter") -> Dict[str, Any]:
+    setup = frontmatter_model.setup
+    if not setup:
         return {"help": None, "collect_secrets": []}
 
-    help_text = setup.get("help")
-    normalized_help = (
-        str(help_text).strip()
-        if isinstance(help_text, str) and help_text.strip()
-        else None
-    )
-
-    collect_secrets_raw = setup.get("collect_secrets")
-    if isinstance(collect_secrets_raw, dict):
-        collect_secrets_raw = [collect_secrets_raw]
-    if not isinstance(collect_secrets_raw, list):
-        collect_secrets_raw = []
-
     collect_secrets: List[Dict[str, Any]] = []
-    for item in collect_secrets_raw:
-        if not isinstance(item, dict):
-            continue
-
-        env_var = str(item.get("env_var") or "").strip()
-        if not env_var:
-            continue
-
-        prompt = str(item.get("prompt") or f"Enter value for {env_var}").strip()
-        provider_url = str(item.get("provider_url") or item.get("url") or "").strip()
-
+    for item in setup.collect_secrets:
         entry: Dict[str, Any] = {
-            "env_var": env_var,
-            "prompt": prompt,
-            "secret": bool(item.get("secret", True)),
+            "env_var": item.env_var,
+            "prompt": item.prompt or f"Enter value for {item.env_var}",
+            "secret": item.secret,
         }
-        if provider_url:
-            entry["provider_url"] = provider_url
+        if item.provider_url:
+            entry["provider_url"] = item.provider_url
         collect_secrets.append(entry)
 
     return {
-        "help": normalized_help,
+        "help": setup.help,
         "collect_secrets": collect_secrets,
     }
 
 
 def _get_required_environment_variables(
-    frontmatter: Dict[str, Any],
+    frontmatter_model: "SkillFrontmatter",
     legacy_env_vars: List[str] | None = None,
 ) -> List[Dict[str, Any]]:
-    setup = _normalize_setup_metadata(frontmatter)
-    required_raw = frontmatter.get("required_environment_variables")
-    if isinstance(required_raw, dict):
-        required_raw = [required_raw]
-    if not isinstance(required_raw, list):
-        required_raw = []
-
+    setup = _normalize_setup_metadata(frontmatter_model)
+    
     required: List[Dict[str, Any]] = []
     seen: set[str] = set()
 
-    def _append_required(entry: Dict[str, Any]) -> None:
-        env_name = str(entry.get("name") or entry.get("env_var") or "").strip()
+    def _append_required(env_name: str, prompt: str, help_text: str|None, required_for: str|None) -> None:
         if not env_name or env_name in seen:
             return
         if not _ENV_VAR_NAME_RE.match(env_name):
@@ -231,45 +199,45 @@ def _get_required_environment_variables(
 
         normalized: Dict[str, Any] = {
             "name": env_name,
-            "prompt": str(entry.get("prompt") or f"Enter value for {env_name}").strip(),
+            "prompt": prompt or f"Enter value for {env_name}",
         }
 
-        help_text = (
-            entry.get("help")
-            or entry.get("provider_url")
-            or entry.get("url")
-            or setup.get("help")
-        )
-        if isinstance(help_text, str) and help_text.strip():
-            normalized["help"] = help_text.strip()
+        if help_text:
+            normalized["help"] = help_text
 
-        required_for = entry.get("required_for")
-        if isinstance(required_for, str) and required_for.strip():
-            normalized["required_for"] = required_for.strip()
+        if required_for:
+            normalized["required_for"] = required_for
 
         seen.add(env_name)
         required.append(normalized)
 
-    for item in required_raw:
+    # 1. required_environment_variables
+    for item in frontmatter_model.required_environment_variables:
         if isinstance(item, str):
-            _append_required({"name": item})
-            continue
-        if isinstance(item, dict):
-            _append_required(item)
+            _append_required(item, "", None, None)
+        elif isinstance(item, dict):
+            env_name = str(item.get("name") or item.get("env_var") or "").strip()
+            prompt = str(item.get("prompt") or "")
+            help_val = item.get("help") or item.get("provider_url") or setup.get("help")
+            req_for = item.get("required_for")
+            _append_required(env_name, prompt, help_val, req_for)
+        else: # RequiredEnvVar model
+            _append_required(item.name, item.prompt or "", item.help or setup.get("help"), item.required_for)
 
-    for item in setup["collect_secrets"]:
+    # 2. setup.collect_secrets
+    for item in frontmatter_model.setup.collect_secrets if frontmatter_model.setup else []:
         _append_required(
-            {
-                "name": item.get("env_var"),
-                "prompt": item.get("prompt"),
-                "help": item.get("provider_url") or setup.get("help"),
-            }
+            item.env_var,
+            item.prompt or "",
+            item.provider_url or setup.get("help"),
+            None
         )
 
+    # 3. legacy env_vars
     if legacy_env_vars is None:
-        legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
+        legacy_env_vars, _ = _collect_prerequisite_values(frontmatter_model)
     for env_var in legacy_env_vars:
-        _append_required({"name": env_var})
+        _append_required(env_var, "", None, None)
 
     return required
 
@@ -543,18 +511,26 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
             try:
                 content = skill_md.read_text(encoding="utf-8")[:4000]
-                frontmatter, body = _parse_frontmatter(content)
-
-                if not skill_matches_platform(frontmatter):
+                raw_frontmatter, body = _parse_frontmatter(content)
+                if not skill_matches_platform(raw_frontmatter):
+                    continue
+                
+                try:
+                    from tools.skills_models import SkillFrontmatter
+                    if "name" not in raw_frontmatter:
+                        raw_frontmatter["name"] = skill_dir.name[:MAX_NAME_LENGTH]
+                    frontmatter = SkillFrontmatter.model_validate(raw_frontmatter)
+                except Exception as e:
+                    logger.debug("Skipping skill at %s: Pydantic validation failed: %s", skill_md, e)
                     continue
 
-                name = frontmatter.get("name", skill_dir.name)[:MAX_NAME_LENGTH]
+                name = frontmatter.name
                 if name in seen_names:
                     continue
                 if name in disabled:
                     continue
 
-                description = frontmatter.get("description", "")
+                description = frontmatter.description
                 if not description:
                     for line in body.strip().split("\n"):
                         line = line.strip()
@@ -985,13 +961,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             import logging as _logging
             _logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
 
-        parsed_frontmatter: Dict[str, Any] = {}
+        raw_frontmatter: Dict[str, Any] = {}
         try:
-            parsed_frontmatter, _ = _parse_frontmatter(content)
+            raw_frontmatter, _ = _parse_frontmatter(content)
         except Exception:
-            parsed_frontmatter = {}
+            pass
 
-        if not skill_matches_platform(parsed_frontmatter):
+        if not skill_matches_platform(raw_frontmatter):
             return json.dumps(
                 {
                     "success": False,
@@ -1002,7 +978,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             )
 
         # Check if the skill is disabled by the user
-        resolved_name = parsed_frontmatter.get("name", skill_md.parent.name)
+        resolved_name = raw_frontmatter.get("name", skill_md.parent.name if skill_dir else skill_md.stem)
         if _is_skill_disabled(resolved_name):
             return json.dumps(
                 {
@@ -1127,7 +1103,17 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             )
 
         # Reuse the parse from the platform check above
-        frontmatter = parsed_frontmatter
+        try:
+            from tools.skills_models import SkillFrontmatter
+            if "name" not in raw_frontmatter:
+                raw_frontmatter["name"] = resolved_name[:MAX_NAME_LENGTH]
+            frontmatter_model = SkillFrontmatter.model_validate(raw_frontmatter)
+        except Exception as e:
+            logger.debug(f"Pydantic validation failed for {skill_md}: {e}")
+            from tools.skills_models import SkillFrontmatter
+            # fallback minimal
+            frontmatter_model = SkillFrontmatter(name=resolved_name[:MAX_NAME_LENGTH])
+        
 
         # Get reference, template, asset, and script files if this is a directory-based skill
         reference_files = []
@@ -1176,15 +1162,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Read tags/related_skills with backward compat:
         # Check metadata.hermes.* first (agentskills.io convention), fall back to top-level
-        hermes_meta = {}
-        metadata = frontmatter.get("metadata")
-        if isinstance(metadata, dict):
-            hermes_meta = metadata.get("hermes", {}) or {}
-
-        tags = _parse_tags(hermes_meta.get("tags") or frontmatter.get("tags", ""))
-        related_skills = _parse_tags(
-            hermes_meta.get("related_skills") or frontmatter.get("related_skills", "")
-        )
+        tags = frontmatter_model.tags
+        related_skills = []
+        if frontmatter_model.metadata and frontmatter_model.metadata.hermes:
+            if hasattr(frontmatter_model.metadata.hermes, "tags") and not tags:
+                tags = frontmatter_model.metadata.hermes.tags
+            if hasattr(frontmatter_model.metadata.hermes, "related_skills"):
+                related_skills = frontmatter_model.metadata.hermes.related_skills
 
         # Build linked files structure for clear discovery
         linked_files = {}
@@ -1200,14 +1184,12 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         try:
             rel_path = str(skill_md.relative_to(SKILLS_DIR))
         except ValueError:
-            # External skill — use path relative to the skill's own parent dir
+            # External skill - use path relative to the skill's own parent dir
             rel_path = str(skill_md.relative_to(skill_md.parent.parent)) if skill_md.parent.parent else skill_md.name
-        skill_name = frontmatter.get(
-            "name", skill_md.stem if not skill_dir else skill_dir.name
-        )
-        legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
+        skill_name = frontmatter_model.name
+        legacy_env_vars, _ = _collect_prerequisite_values(frontmatter_model)
         required_env_vars = _get_required_environment_variables(
-            frontmatter, legacy_env_vars
+            frontmatter_model, legacy_env_vars
         )
         backend = _get_terminal_backend_name()
         env_snapshot = load_env()
@@ -1230,7 +1212,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # Dependency check (Phase 1)
         from agent.skill_utils import check_skill_dependencies
-        missing_dependencies = check_skill_dependencies(frontmatter, skill_dir)
+        missing_dependencies = check_skill_dependencies(raw_frontmatter, skill_dir)
 
         setup_needed = bool(remaining_missing_required_envs) or bool(missing_dependencies)
 
@@ -1257,7 +1239,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         # Register credential files for mounting into remote sandboxes
         # (Modal, Docker).  Files that exist on the host are registered;
         # missing ones are added to the setup_needed indicators.
-        required_cred_files_raw = frontmatter.get("required_credential_files", [])
+        required_cred_files_raw = raw_frontmatter.get("required_credential_files", [])
         if not isinstance(required_cred_files_raw, list):
             required_cred_files_raw = []
         missing_cred_files: list = []
@@ -1315,7 +1297,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         result = {
             "success": True,
             "name": skill_name,
-            "description": frontmatter.get("description", ""),
+            "description": raw_frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
             "content": content,
@@ -1366,10 +1348,11 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 result["setup_note"] = setup_note
 
         # Surface agentskills.io optional fields when present
-        if frontmatter.get("compatibility"):
-            result["compatibility"] = frontmatter["compatibility"]
-        if isinstance(metadata, dict):
-            result["metadata"] = metadata
+        if raw_frontmatter.get("compatibility"):
+            result["compatibility"] = raw_frontmatter["compatibility"]
+        _metadata = raw_frontmatter.get("metadata")
+        if isinstance(_metadata, dict):
+            result["metadata"] = _metadata
 
         return json.dumps(result, ensure_ascii=False)
 

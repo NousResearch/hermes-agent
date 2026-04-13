@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "browser_vision", "browser_console", "browser_use_agent",
     # Text-to-speech
     "text_to_speech",
+    # Podcast generation
+    "podcast_generate",
     # Planning & memory
     "todo", "memory",
     # Session state (persistent k/v surviving compression)
@@ -182,6 +184,12 @@ TOOLSETS = {
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, or OpenAI",
         "tools": ["text_to_speech"],
+        "includes": []
+    },
+
+    "podcast": {
+        "description": "Podcast generation: two-host conversational audio from source content",
+        "tools": ["podcast_generate"],
         "includes": []
     },
     

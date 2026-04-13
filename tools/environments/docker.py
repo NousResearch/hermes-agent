@@ -214,12 +214,14 @@ class DockerEnvironment(BaseEnvironment):
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
+        hibernate: bool = False,
     ):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
         self._base_image = image
         self._persistent = persistent_filesystem
+        self._hibernate = hibernate
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._container_id: Optional[str] = None
@@ -509,15 +511,28 @@ class DockerEnvironment(BaseEnvironment):
             return {"output": f"Docker execution error: {e}", "returncode": 1}
 
     def cleanup(self):
-        """Stop and remove the container. Bind-mount dirs persist if persistent=True."""
+        """Stop and remove the container. Bind-mount dirs persist if persistent=True.
+        If hibernate=True, the container is left running as a daemon."""
+        if self._hibernate:
+            logger.info("Hibernate enabled: leaving container %s running in the background", self._container_id)
+            return
+
         if self._container_id:
+            # Defense-in-depth: container IDs from `docker run` are hex, but
+            # validate before interpolating into shell strings in case an
+            # unexpected value ever sneaks in.
+            import re as _re
+            if not _re.fullmatch(r"[A-Za-z0-9_.\-]+", self._container_id or ""):
+                logger.error("Refusing to stop container with unsafe id %r", self._container_id)
+                self._container_id = None
+                return
             try:
                 # Stop in background so cleanup doesn't block
                 stop_cmd = (
                     f"(timeout 60 {self._docker_exe} stop {self._container_id} || "
                     f"{self._docker_exe} rm -f {self._container_id}) >/dev/null 2>&1 &"
                 )
-                subprocess.Popen(stop_cmd, shell=True)
+                subprocess.Popen(stop_cmd, shell=True)  # noqa: S602 - id validated above
             except Exception as e:
                 logger.warning("Failed to stop container %s: %s", self._container_id, e)
 
@@ -526,7 +541,7 @@ class DockerEnvironment(BaseEnvironment):
                 try:
                     subprocess.Popen(
                         f"sleep 3 && {self._docker_exe} rm -f {self._container_id} >/dev/null 2>&1 &",
-                        shell=True,
+                        shell=True,  # noqa: S602 - id validated above
                     )
                 except Exception:
                     pass

@@ -561,6 +561,19 @@ def _lint_wiki(stale_days: int = 180) -> str:
         details=[f"{key}: {len(value)}" for key, value in issues.items()],
     )
 
+    try:
+        import asyncio
+        from agent.graph_manager import GraphManager
+        from hermes_constants import get_hermes_dir
+        gm = GraphManager(get_hermes_dir("context-graph/kuzu_db", "kuzu_db"))
+        archived_facts = asyncio.run(gm.decay_knowledge_graph(half_life_days=365, threshold=0.2))
+        if archived_facts > 0:
+            issues["archived_facts"] = ["%d stale facts tombstoned" % archived_facts]
+            issue_count += archived_facts
+            _append_log(layout, "lint", f"Decayed memory graph. Archived {archived_facts} stale facts.")
+    except Exception as e:
+        logger.debug("Failed to run active memory decay during lint: %s", e)
+
     return json.dumps(
         {
             "success": True,

@@ -60,29 +60,7 @@ INDEX_CACHE_TTL = 3600  # 1 hour
 # Data models
 # ---------------------------------------------------------------------------
 
-@dataclass
-class SkillMeta:
-    """Minimal metadata returned by search results."""
-    name: str
-    description: str
-    source: str           # "official", "github", "clawhub", "claude-marketplace", "lobehub"
-    identifier: str       # source-specific ID (e.g. "openai/skills/skill-creator")
-    trust_level: str      # "builtin" | "trusted" | "community"
-    repo: Optional[str] = None
-    path: Optional[str] = None
-    tags: List[str] = field(default_factory=list)
-    extra: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class SkillBundle:
-    """A downloaded skill ready for quarantine/scanning/installation."""
-    name: str
-    files: Dict[str, Union[str, bytes]]   # relative_path -> file content
-    source: str
-    identifier: str
-    trust_level: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+from tools.skills_models import SkillMeta, SkillBundle
 
 
 def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bool) -> str:

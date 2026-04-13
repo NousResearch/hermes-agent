@@ -615,6 +615,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
+            hibernate=cc.get("managed_agent_hibernate", False),
         )
     
     elif env_type == "singularity":

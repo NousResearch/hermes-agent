@@ -98,21 +98,25 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
+    expanded = os.path.expanduser(filepath)
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = os.path.realpath(expanded)
     except (OSError, ValueError):
-        resolved = filepath
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix):
+        resolved = expanded
+
+    candidates = (expanded, resolved)
+    for candidate in candidates:
+        for prefix in _SENSITIVE_PATH_PREFIXES:
+            if candidate.startswith(prefix):
+                return (
+                    f"Refusing to write to sensitive system path: {filepath}\n"
+                    "Use the terminal tool with sudo if you need to modify system files."
+                )
+        if candidate in _SENSITIVE_EXACT_PATHS:
             return (
                 f"Refusing to write to sensitive system path: {filepath}\n"
                 "Use the terminal tool with sudo if you need to modify system files."
             )
-    if resolved in _SENSITIVE_EXACT_PATHS:
-        return (
-            f"Refusing to write to sensitive system path: {filepath}\n"
-            "Use the terminal tool with sudo if you need to modify system files."
-        )
     return None
 
 

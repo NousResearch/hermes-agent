@@ -14,6 +14,7 @@ from tools.file_tools import (
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
+    _check_sensitive_path,
 )
 
 
@@ -74,6 +75,13 @@ class TestReadFileHandler:
 
 
 class TestWriteFileHandler:
+    def test_sensitive_path_check_blocks_literal_and_resolved_paths(self):
+        with patch("tools.file_tools.os.path.realpath", return_value="/private/etc/hosts"):
+            error = _check_sensitive_path("/etc/hosts")
+
+        assert error is not None
+        assert "sensitive system path" in error.lower()
+
     @patch("tools.file_tools._get_file_ops")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
@@ -309,6 +317,5 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
-
 
 

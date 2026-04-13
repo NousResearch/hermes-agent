@@ -7411,9 +7411,11 @@ class GatewayRunner:
                     _pl = get_tool_preview_max_len()
                     import json as _json
                     args_str = _json.dumps(args, ensure_ascii=False, default=str)
-                    _cap = _pl if _pl > 0 else 200
-                    if len(args_str) > _cap:
-                        args_str = args_str[:_cap - 3] + "..."
+                    # When tool_preview_length is 0 (default), don't truncate
+                    # in verbose mode — the user explicitly asked for full
+                    # detail.  Platform message-length limits handle the rest.
+                    if _pl > 0 and len(args_str) > _pl:
+                        args_str = args_str[:_pl - 3] + "..."
                     msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
                 elif preview:
                     msg = f"{emoji} {tool_name}: \"{preview}\""

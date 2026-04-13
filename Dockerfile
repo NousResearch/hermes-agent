@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libffi-dev \
         ripgrep \
         curl \
+        git \
         supervisor \
     && rm -rf /var/lib/apt/lists/*
 

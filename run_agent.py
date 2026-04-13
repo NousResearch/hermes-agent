@@ -460,6 +460,40 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
     return found
 
 
+def _sanitize_tools_non_ascii(tools: list) -> bool:
+    """Strip non-ASCII characters from tool payloads in-place."""
+    return _sanitize_structure_non_ascii(tools)
+
+
+def _sanitize_structure_non_ascii(payload: Any) -> bool:
+    """Strip non-ASCII characters from nested dict/list payloads in-place."""
+    found = False
+
+    def _walk(node):
+        nonlocal found
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[key] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+        elif isinstance(node, list):
+            for idx, value in enumerate(node):
+                if isinstance(value, str):
+                    sanitized = _strip_non_ascii(value)
+                    if sanitized != value:
+                        node[idx] = sanitized
+                        found = True
+                elif isinstance(value, (dict, list)):
+                    _walk(value)
+
+    _walk(payload)
+    return found
+
+
 
 
 
@@ -737,6 +771,7 @@ class AIAgent:
         self.service_tier = service_tier
         self.request_overrides = dict(request_overrides or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
+        self._force_ascii_payload = False
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
@@ -8189,6 +8224,8 @@ class AIAgent:
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
+                    if self._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
@@ -8819,18 +8856,56 @@ class AIAgent:
                             )
                             continue
                         if _is_ascii_codec:
+                            self._force_ascii_payload = True
                             # ASCII codec: the system encoding can't handle
                             # non-ASCII characters at all. Sanitize all
-                            # non-ASCII content from messages and retry.
-                            if _sanitize_messages_non_ascii(messages):
+                            # non-ASCII content from messages/tool schemas and retry.
+                            _messages_sanitized = _sanitize_messages_non_ascii(messages)
+                            _prefill_sanitized = False
+                            if isinstance(getattr(self, "prefill_messages", None), list):
+                                _prefill_sanitized = _sanitize_messages_non_ascii(self.prefill_messages)
+
+                            _tools_sanitized = False
+                            if isinstance(getattr(self, "tools", None), list):
+                                _tools_sanitized = _sanitize_tools_non_ascii(self.tools)
+
+                            _system_sanitized = False
+                            if isinstance(active_system_prompt, str):
+                                _sanitized_system = _strip_non_ascii(active_system_prompt)
+                                if _sanitized_system != active_system_prompt:
+                                    active_system_prompt = _sanitized_system
+                                    self._cached_system_prompt = _sanitized_system
+                                    _system_sanitized = True
+                            if isinstance(getattr(self, "ephemeral_system_prompt", None), str):
+                                _sanitized_ephemeral = _strip_non_ascii(self.ephemeral_system_prompt)
+                                if _sanitized_ephemeral != self.ephemeral_system_prompt:
+                                    self.ephemeral_system_prompt = _sanitized_ephemeral
+                                    _system_sanitized = True
+
+                            _headers_sanitized = False
+                            _default_headers = (
+                                self._client_kwargs.get("default_headers")
+                                if isinstance(getattr(self, "_client_kwargs", None), dict)
+                                else None
+                            )
+                            if isinstance(_default_headers, dict):
+                                _headers_sanitized = _sanitize_structure_non_ascii(_default_headers)
+
+                            if (
+                                _messages_sanitized
+                                or _prefill_sanitized
+                                or _tools_sanitized
+                                or _system_sanitized
+                                or _headers_sanitized
+                            ):
                                 self._unicode_sanitization_passes += 1
                                 self._vprint(
-                                    f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from messages. Retrying...",
+                                    f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying...",
                                     force=True,
                                 )
                                 continue
-                        # Nothing to sanitize in messages — might be in system
-                        # prompt or prefill. Fall through to normal error path.
+                        # Nothing to sanitize in any payload component.
+                        # Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)

@@ -900,7 +900,21 @@ def restore_quick_snapshot(
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
+
+    # Security: reject snapshot_id values that contain path separators or
+    # traversal sequences so that `root / snapshot_id` stays inside root.
+    if not snapshot_id or "/" in snapshot_id or "\\" in snapshot_id or snapshot_id in (".", ".."):
+        logger.error("Invalid snapshot_id: %s", snapshot_id)
+        return False
+
     snap_dir = root / snapshot_id
+
+    # Confirm the resolved path is still inside root (handles symlinks etc.)
+    try:
+        snap_dir.resolve().relative_to(root.resolve())
+    except ValueError:
+        logger.error("Snapshot path traversal blocked for id: %s", snapshot_id)
+        return False
 
     if not snap_dir.is_dir():
         return False
@@ -914,11 +928,24 @@ def restore_quick_snapshot(
 
     restored = 0
     for rel in meta.get("files", {}):
+        # Security: reject absolute paths and traversals in manifest entries
         src = snap_dir / rel
-        if not src.exists():
+        try:
+            src.resolve().relative_to(snap_dir.resolve())
+        except ValueError:
+            logger.error("Manifest path traversal blocked: %s", rel)
             continue
 
         dst = home / rel
+        try:
+            dst.resolve().relative_to(home.resolve())
+        except ValueError:
+            logger.error("Manifest path traversal blocked: %s", rel)
+            continue
+
+        if not src.exists():
+            continue
+
         dst.parent.mkdir(parents=True, exist_ok=True)
 
         try:

@@ -24,11 +24,35 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+_MEMORY_PROVIDER_MARKERS = ("register_memory_provider", "MemoryProvider")
+
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+
+
+def _looks_like_user_memory_provider_dir(provider_dir: Path) -> bool:
+    """Return True when a user plugin directory appears to provide memory.
+
+    User-installed providers share the general ``$HERMES_HOME/plugins`` root with
+    non-memory plugins, so avoid importing arbitrary plugin code during memory
+    provider discovery. We only treat a user plugin as a memory provider candidate
+    when it has a manifest and its ``__init__.py`` references memory provider
+    registration or the ``MemoryProvider`` base class.
+    """
+    yaml_file = provider_dir / "plugin.yaml"
+    init_file = provider_dir / "__init__.py"
+    if not yaml_file.exists() or not init_file.exists():
+        return False
+
+    try:
+        init_source = init_file.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+
+    return any(marker in init_source for marker in _MEMORY_PROVIDER_MARKERS)
 
 
 def _iter_provider_dirs() -> List[Path]:
@@ -42,7 +66,8 @@ def _iter_provider_dirs() -> List[Path]:
     provider_dirs: List[Path] = []
     seen_names: set[str] = set()
 
-    for base_dir in (_MEMORY_PLUGINS_DIR, get_hermes_home() / "plugins"):
+    bundled_dirs = (_MEMORY_PLUGINS_DIR, True), (get_hermes_home() / "plugins", False)
+    for base_dir, is_bundled in bundled_dirs:
         if not base_dir.is_dir():
             continue
         for child in sorted(base_dir.iterdir()):
@@ -50,7 +75,10 @@ def _iter_provider_dirs() -> List[Path]:
                 continue
             if child.name in seen_names:
                 continue
-            if not (child / "__init__.py").exists():
+            if is_bundled:
+                if not (child / "__init__.py").exists():
+                    continue
+            elif not _looks_like_user_memory_provider_dir(child):
                 continue
             provider_dirs.append(child)
             seen_names.add(child.name)
@@ -73,9 +101,11 @@ def find_memory_provider_dir(name: str) -> Optional[Path]:
 def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     """Scan bundled and user-installed memory provider directories.
 
-    Returns list of (name, description, is_available) tuples.
-    Does NOT import the providers — just reads plugin.yaml for metadata
-    and does a lightweight availability check.
+    Returns list of ``(name, description, is_available)`` tuples. Reads
+    ``plugin.yaml`` for metadata when present and performs an availability
+    check by loading the provider module and calling ``is_available()``.
+    Providers that look like memory providers but fail to load stay visible
+    with ``is_available=False`` so setup flows can still surface them.
     """
     results = []
 
@@ -92,13 +122,13 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
             except Exception:
                 pass
 
-        # Quick availability check — try loading and calling is_available()
-        available = True
+        # Availability check: load the provider and call is_available().
+        # Keep broken providers visible so setup flows can still surface them.
+        available = False
         try:
             provider = _load_provider_from_dir(child)
-            if provider is None:
-                continue
-            available = provider.is_available()
+            if provider is not None:
+                available = provider.is_available()
         except Exception:
             available = False
 

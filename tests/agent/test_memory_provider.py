@@ -492,6 +492,48 @@ class TestPluginMemoryDiscovery:
         finally:
             sys.modules.pop("plugins.memory.holographic", None)
 
+    def test_broken_user_memory_provider_stays_visible_as_unavailable(self):
+        """Broken memory providers stay discoverable so setup can surface them."""
+        plugin_name = "broken_memory_provider"
+        plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / plugin_name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "raise RuntimeError('boom')\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {plugin_name}\n"
+            "description: Broken memory provider\n"
+        )
+
+        from plugins.memory import discover_memory_providers
+
+        try:
+            providers = {name: available for name, _, available in discover_memory_providers()}
+            assert providers[plugin_name] is False
+        finally:
+            sys.modules.pop(f"plugins.memory.{plugin_name}", None)
+
+    def test_non_memory_user_plugin_is_not_treated_as_memory_provider(self):
+        """General user plugins should be ignored by memory provider discovery."""
+        plugin_name = "general_tool_plugin"
+        plugin_dir = Path(os.environ["HERMES_HOME"]) / "plugins" / plugin_name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    raise RuntimeError('should not be imported')\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {plugin_name}\n"
+            "description: General plugin, not memory\n"
+        )
+
+        from plugins.memory import discover_memory_providers, load_memory_provider
+
+        providers = [name for name, _, _ in discover_memory_providers()]
+        assert plugin_name not in providers
+        assert load_memory_provider(plugin_name) is None
+
 
 # ---------------------------------------------------------------------------
 # Sequential dispatch routing tests

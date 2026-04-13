@@ -53,7 +53,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `_maybe_compress_session`). This is a **safety net** that
+Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 

@@ -135,7 +135,7 @@ uv pip install -e "."
 | Extra | What it adds | Install command |
 |-------|-------------|-----------------|
 | `all` | Everything below | `uv pip install -e ".[all]"` |
-| `messaging` | Telegram & Discord gateway | `uv pip install -e ".[messaging]"` |
+| `messaging` | Telegram, Discord & Slack gateway | `uv pip install -e ".[messaging]"` |
 | `cron` | Cron expression parsing for scheduled tasks | `uv pip install -e ".[cron]"` |
 | `cli` | Terminal menu UI for setup wizard | `uv pip install -e ".[cli]"` |
 | `modal` | Modal cloud execution backend | `uv pip install -e ".[modal]"` |

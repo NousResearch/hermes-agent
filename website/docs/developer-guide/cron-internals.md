@@ -37,16 +37,25 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
 
 ```json
 {
-  "id": "job_abc123",
+  "id": "a1b2c3d4e5f6",
   "name": "Daily briefing",
   "prompt": "Summarize today's AI news and funding rounds",
-  "schedule": "0 9 * * *",
+  "schedule": {
+    "kind": "cron",
+    "expr": "0 9 * * *",
+    "display": "0 9 * * *"
+  },
   "skills": ["ai-funding-daily-report"],
   "deliver": "telegram:-1001234567890",
-  "repeat": null,
+  "repeat": {
+    "times": null,
+    "completed": 42
+  },
   "state": "scheduled",
-  "next_run": "2025-01-16T09:00:00Z",
-  "run_count": 42,
+  "enabled": true,
+  "next_run_at": "2025-01-16T09:00:00Z",
+  "last_run_at": "2025-01-15T09:00:00Z",
+  "last_status": "ok",
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,

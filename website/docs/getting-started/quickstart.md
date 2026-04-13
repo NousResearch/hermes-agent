@@ -152,9 +152,7 @@ Want microphone input in the CLI or spoken replies in messaging?
 
 ```bash
 pip install "hermes-agent[voice]"
-
-# Optional but recommended for free local speech-to-text
-pip install faster-whisper
+# Includes faster-whisper for free local speech-to-text
 ```
 
 Then start Hermes and enable it inside the CLI:

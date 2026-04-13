@@ -60,7 +60,10 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
-| `hermes web` | Launch the web dashboard for managing config, API keys, and sessions. |
+| `hermes dashboard` | Launch the web dashboard for managing config, API keys, and sessions. |
+| `hermes debug` | Debug tools — upload logs and system info for support. |
+| `hermes backup` | Back up Hermes home directory to a zip file. |
+| `hermes import` | Restore a Hermes backup from a zip file. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
@@ -80,10 +83,11 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `gemini`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
+| `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
 | `--worktree` | Create an isolated git worktree for this run. |
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
@@ -160,7 +164,7 @@ Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd sup
 ## `hermes setup`
 
 ```bash
-hermes setup [model|terminal|gateway|tools|agent] [--non-interactive] [--reset]
+hermes setup [model|tts|terminal|gateway|tools|agent] [--non-interactive] [--reset]
 ```
 
 Use the full wizard or jump into one section:
@@ -448,6 +452,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
 | `--session <ID>` | Filter lines containing a session ID substring. |
 | `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
+| `--component <NAME>` | Filter by component: `gateway`, `agent`, `tools`, `cli`, `cron`. |
 
 ### Examples
 
@@ -769,10 +774,10 @@ hermes claw migrate --preset user-data --overwrite
 hermes claw migrate --source /home/user/old-openclaw
 ```
 
-## `hermes web`
+## `hermes dashboard`
 
 ```bash
-hermes web [options]
+hermes dashboard [options]
 ```
 
 Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
@@ -785,10 +790,10 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 
 ```bash
 # Default — opens browser to http://127.0.0.1:9119
-hermes web
+hermes dashboard
 
 # Custom port, no browser
-hermes web --port 8080 --no-open
+hermes dashboard --port 8080 --no-open
 ```
 
 ## `hermes profile`

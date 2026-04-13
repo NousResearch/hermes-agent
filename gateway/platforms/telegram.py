@@ -66,6 +66,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    utf16_len,
+    _prefix_within_utf16_limit,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -799,7 +801,9 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self.truncate_message(
+                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
+            )
             if len(chunks) > 1:
                 # truncate_message appends a raw " (1/2)" suffix. Escape the
                 # MarkdownV2-special parentheses so Telegram doesn't reject the
@@ -970,7 +974,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # streaming).  Truncate and succeed so the stream consumer can
             # split the overflow into a new message instead of dying.
             if "message_too_long" in err_str or "too long" in err_str:
-                truncated = content[: self.MAX_MESSAGE_LENGTH - 20] + "…"
+                truncated = _prefix_within_utf16_limit(
+                    content, self.MAX_MESSAGE_LENGTH - 20
+                ) + "…"
                 try:
                     await self._bot.edit_message_text(
                         chat_id=int(chat_id),

@@ -322,7 +322,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
-    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.telegram import TelegramAdapter
     from gateway.platforms.discord import DiscordAdapter
     from gateway.platforms.slack import SlackAdapter
@@ -354,9 +354,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
+    # Telegram measures length in UTF-16 code units, not Unicode codepoints.
     max_len = _MAX_LENGTHS.get(platform)
     if max_len:
-        chunks = BasePlatformAdapter.truncate_message(message, max_len)
+        _len_fn = utf16_len if platform == Platform.TELEGRAM else None
+        chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
         chunks = [message]
 

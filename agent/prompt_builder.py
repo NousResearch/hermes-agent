@@ -365,8 +365,8 @@ PLATFORM_HINTS = {
         "will be downloaded and sent as native media when possible."
     ),
     "openilink": (
-        "You are chatting via OpeniLink Hub (WeChat). Markdown formatting is not supported — "
-        "use plain text. Keep responses concise and chat-friendly."
+        "You are chatting via OpeniLink Hub (WeChat). Markdown formatting is supported, so you "
+        "may use it when it improves readability, but keep the message compact and chat-friendly."
     ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "

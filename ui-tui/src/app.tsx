@@ -952,6 +952,23 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
   }
 
+  const sendQueued = (text: string) => {
+    if (text.startsWith('!')) {
+      shellExec(text.slice(1).trim())
+
+      return
+    }
+
+    if (hasInterpolation(text)) {
+      setBusy(true)
+      interpolate(text, send)
+
+      return
+    }
+
+    send(text)
+  }
+
   // ── Dispatch ─────────────────────────────────────────────────────
 
   const dispatchSubmission = useCallback(
@@ -1017,14 +1034,12 @@ export function App({ gw }: { gw: GatewayClient }) {
         if (picked && busy && sid) {
           queueRef.current.unshift(picked)
           syncQueue()
-          gw.request('session.interrupt', { session_id: sid }).catch(() => {})
-          setStatus('interrupting…')
 
           return
         }
 
         if (picked && sid) {
-          send(picked)
+          sendQueued(picked)
         }
 
         return
@@ -1033,12 +1048,6 @@ export function App({ gw }: { gw: GatewayClient }) {
       pushHistory(full)
 
       if (busy) {
-        if (hasInterpolation(full)) {
-          interpolate(full, enqueue)
-
-          return
-        }
-
         enqueue(full)
 
         return
@@ -1571,7 +1580,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           const next = dequeue()
 
           if (next) {
-            send(next)
+            sendQueued(next)
           }
 
           break
@@ -1600,7 +1609,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       pulseReasoningStreaming,
       pushActivity,
       pushTrail,
-      send,
+      sendQueued,
       sys,
       stdout
     ]

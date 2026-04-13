@@ -184,7 +184,7 @@ class TestGeminiAgentInit:
     def test_gemini_agent_uses_chat_completions(self, monkeypatch):
         """Gemini falls through to chat_completions — no special elif needed."""
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.core.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(

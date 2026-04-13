@@ -52,7 +52,7 @@ def main() -> int:
     result_holder = [None]
 
     def run_delegate():
-        with patch("run_agent.OpenAI") as MockOpenAI:
+        with patch("agent.core.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
 
             def slow_create(**kwargs):

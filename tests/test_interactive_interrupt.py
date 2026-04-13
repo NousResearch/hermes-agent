@@ -103,7 +103,7 @@ def main() -> int:
         """Simulates the agent_thread in cli.py's chat() method."""
         log.info("🟢 agent_thread starting")
 
-        with patch("run_agent.OpenAI") as MockOpenAI:
+        with patch("agent.core.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
             mock_client.chat.completions.create = make_slow_response(delay=3.0)
             mock_client.close = MagicMock()

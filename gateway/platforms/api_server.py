@@ -1506,7 +1506,7 @@ class APIServerAdapter(BasePlatformAdapter):
     # /v1/runs — structured event streaming
     # ------------------------------------------------------------------
 
-    _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
+    _MAX_CONCURRENT_RUNS = int(os.getenv("API_SERVER_MAX_CONCURRENT_RUNS", "30"))
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):

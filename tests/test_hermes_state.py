@@ -1262,6 +1262,46 @@ class TestExcludeSources:
         assert "s2" not in ids
         assert "s3" not in ids
 
+
+class TestListSessionsRichPreviewLength:
+    """Tests for preview_length and full_preview_length on list_sessions_rich."""
+
+    def test_preview_length_truncates(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "This is a test message that is quite long and should be truncated")
+        sessions = db.list_sessions_rich(preview_length=20)
+        assert sessions[0]["preview"] == "This is a test messa..."
+
+    def test_preview_length_no_truncation(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Short message")
+        sessions = db.list_sessions_rich(preview_length=60)
+        assert sessions[0]["preview"] == "Short message"
+
+    def test_full_preview_preserves_newlines(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Line one\nLine two\nLine three")
+        sessions = db.list_sessions_rich(full_preview_length=200)
+        assert sessions[0]["_full_preview"] == "Line one\nLine two\nLine three"
+
+    def test_full_preview_empty_when_not_requested(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "A message")
+        sessions = db.list_sessions_rich()
+        assert "_full_preview" not in sessions[0]
+
+    def test_full_preview_truncated(self, db):
+        db.create_session("s1", "cli")
+        long_msg = "A" * 300
+        db.append_message("s1", "user", long_msg)
+        sessions = db.list_sessions_rich(full_preview_length=50)
+        assert len(sessions[0]["_full_preview"]) == 50
+
+    def test_full_preview_handles_empty_session(self, db):
+        db.create_session("s1", "cli")
+        sessions = db.list_sessions_rich(full_preview_length=100)
+        assert sessions[0]["_full_preview"] == ""
+
     def test_search_messages_excludes_tool_source(self, db):
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Python deployment question")

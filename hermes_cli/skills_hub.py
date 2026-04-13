@@ -335,7 +335,23 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not bundle:
-        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
+        # Check if any source hit GitHub API rate limit
+        rate_limited = any(
+            getattr(src, "is_rate_limited", False)
+            or getattr(getattr(src, "github", None), "is_rate_limited", False)
+            for src in sources
+        )
+        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
+        if rate_limited:
+            c.print(
+                "[yellow]Hint:[/] GitHub API rate limit exhausted "
+                "(unauthenticated: 60 requests/hour).\n"
+                "Set [bold]GITHUB_TOKEN[/] in your .env or install the "
+                "[bold]gh[/] CLI and run [bold]gh auth login[/] "
+                "to raise the limit to 5,000/hr.\n"
+            )
+        else:
+            c.print()
         return
 
     # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")

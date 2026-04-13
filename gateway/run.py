@@ -186,6 +186,8 @@ if _config_path.exists():
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+            if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
+                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
             if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
         _display_cfg = _cfg.get("display", {})
@@ -7663,10 +7665,18 @@ class GatewayRunner:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
+                        # Platforms that don't support editing sent messages
+                        # (e.g. WeChat) must not show a cursor in intermediate
+                        # sends — the cursor would be permanently visible because
+                        # it can never be edited away.  Use an empty cursor for
+                        # such platforms so streaming still delivers the final
+                        # response, just without the typing indicator.
+                        _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
-                            cursor=_scfg.cursor,
+                            cursor=_effective_cursor,
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
@@ -8146,11 +8156,17 @@ class GatewayRunner:
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
         # Periodic "still working" notifications for long-running tasks.
-        # Fires every 10 minutes so the user knows the agent hasn't died.
-        _NOTIFY_INTERVAL = 600  # 10 minutes
+        # Fires every N seconds so the user knows the agent hasn't died.
+        # Config: agent.gateway_notify_interval in config.yaml, or
+        # HERMES_AGENT_NOTIFY_INTERVAL env var.  Default 600s (10 min).
+        # 0 = disable notifications.
+        _NOTIFY_INTERVAL_RAW = float(os.getenv("HERMES_AGENT_NOTIFY_INTERVAL", 600))
+        _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
         _notify_start = time.time()
 
         async def _notify_long_running():
+            if _NOTIFY_INTERVAL is None:
+                return  # Notifications disabled (gateway_notify_interval: 0)
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return

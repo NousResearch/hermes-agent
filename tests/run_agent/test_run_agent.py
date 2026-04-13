@@ -302,6 +302,17 @@ class TestStripThinkBlocks:
         assert "<think>" not in result
         assert "visible" in result
 
+    def test_thought_block_removed(self, agent):
+        """Gemma 4 uses <thought> tags for inline reasoning."""
+        result = agent._strip_think_blocks("<thought>internal reasoning</thought> answer")
+        assert "internal reasoning" not in result
+        assert "<thought>" not in result
+        assert "answer" in result
+
+    def test_orphaned_thought_tag(self, agent):
+        result = agent._strip_think_blocks("<thought>orphaned reasoning without close")
+        assert "<thought>" not in result
+
 
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
@@ -1730,9 +1741,9 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
-        # 3 responses: original + 2 prefill continuations (structured reasoning triggers prefill)
+        # 6 responses: original + 2 prefill + 3 retries after prefill exhaustion
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, empty_resp, empty_resp]),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp] * 6),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1743,18 +1754,18 @@ class TestRunConversation:
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill continuation (up to 2), then falls through to (empty)."""
+        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        # 3 responses: original + 2 prefill continuations, all reasoning-only
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
+        # 6 responses: 1 original + 2 prefill + 3 retries after prefill exhaustion
+        agent.client.chat.completions.create.side_effect = [empty_resp] * 6
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1763,7 +1774,7 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+        assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
         """When prefill continuation produces content, it becomes the final response."""

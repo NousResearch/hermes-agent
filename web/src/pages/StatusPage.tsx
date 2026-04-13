@@ -173,20 +173,20 @@ export default function StatusPage() {
             {activeSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex items-center justify-between border border-border p-3"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
               >
-                <div className="flex flex-col gap-1">
+                <div className="flex flex-col gap-1 min-w-0 w-full">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{s.title ?? "Untitled"}</span>
+                    <span className="font-medium text-sm truncate">{s.title ?? "Untitled"}</span>
 
-                    <Badge variant="success" className="text-[10px]">
+                    <Badge variant="success" className="text-[10px] shrink-0">
                       <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                       Live
                     </Badge>
                   </div>
 
-                  <span className="text-xs text-muted-foreground">
-                    <span className="font-mono-ui">{s.model ?? "unknown"}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
+                  <span className="text-xs text-muted-foreground truncate">
+                    <span className="font-mono-ui">{(s.model ?? "unknown").split("/").pop()}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
                   </span>
                 </div>
               </div>
@@ -208,23 +208,23 @@ export default function StatusPage() {
             {recentSessions.map((s) => (
               <div
                 key={s.id}
-                className="flex items-center justify-between border border-border p-3"
+                className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
               >
-                <div className="flex flex-col gap-1">
-                  <span className="font-medium text-sm">{s.title ?? "Untitled"}</span>
+                <div className="flex flex-col gap-1 min-w-0 w-full">
+                  <span className="font-medium text-sm truncate">{s.title ?? "Untitled"}</span>
 
-                  <span className="text-xs text-muted-foreground">
-                    <span className="font-mono-ui">{s.model ?? "unknown"}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
+                  <span className="text-xs text-muted-foreground truncate">
+                    <span className="font-mono-ui">{(s.model ?? "unknown").split("/").pop()}</span> · {s.message_count} msgs · {timeAgo(s.last_active)}
                   </span>
 
                   {s.preview && (
-                    <span className="text-xs text-muted-foreground/70 truncate max-w-md">
+                    <span className="text-xs text-muted-foreground/70 truncate">
                       {s.preview}
                     </span>
                   )}
                 </div>
 
-                <Badge variant="outline" className="text-[10px]">
+                <Badge variant="outline" className="text-[10px] shrink-0 self-start sm:self-center">
                   <Database className="mr-1 h-3 w-3" />
                   {s.source ?? "local"}
                 </Badge>
@@ -258,10 +258,10 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
           return (
             <div
               key={name}
-              className="flex items-center justify-between border border-border p-3"
+              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
             >
-              <div className="flex items-center gap-3">
-                <IconComponent className={`h-4 w-4 ${
+              <div className="flex items-center gap-3 min-w-0 w-full">
+                <IconComponent className={`h-4 w-4 shrink-0 ${
                   info.state === "connected"
                     ? "text-success"
                     : info.state === "fatal"
@@ -269,8 +269,8 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
                       : "text-warning"
                 }`} />
 
-                <div className="flex flex-col gap-0.5">
-                  <span className="text-sm font-medium capitalize">{name}</span>
+                <div className="flex flex-col gap-0.5 min-w-0">
+                  <span className="text-sm font-medium capitalize truncate">{name}</span>
 
                   {info.error_message && (
                     <span className="text-xs text-destructive">{info.error_message}</span>
@@ -284,7 +284,7 @@ function PlatformsCard({ platforms }: PlatformsCardProps) {
                 </div>
               </div>
 
-              <Badge variant={display.variant}>
+              <Badge variant={display.variant} className="shrink-0 self-start sm:self-center">
                 {display.variant === "success" && (
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                 )}

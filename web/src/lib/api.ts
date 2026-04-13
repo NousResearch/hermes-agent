@@ -222,12 +222,14 @@ export interface CronJob {
   id: string;
   name?: string;
   prompt: string;
-  schedule: string;
-  status: "enabled" | "paused" | "error";
+  schedule: { kind: string; expr: string; display: string };
+  schedule_display: string;
+  enabled: boolean;
+  state: string;
   deliver?: string;
   last_run_at?: string | null;
   next_run_at?: string | null;
-  error?: string | null;
+  last_error?: string | null;
 }
 
 export interface SkillInfo {

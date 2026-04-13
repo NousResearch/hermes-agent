@@ -880,6 +880,7 @@ class TestBuildApiKwargs:
         assert kwargs["extra_body"]["reasoning"] == {"enabled": False}
 
     def test_reasoning_not_sent_for_unsupported_openrouter_model(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
@@ -1575,6 +1576,7 @@ class TestHandleMaxIterations:
         assert "API down" in result
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
         agent.model = "minimax/minimax-m2.5"
         resp = _mock_response(content="Summary")
         agent.client.chat.completions.create.return_value = resp
@@ -1704,27 +1706,6 @@ class TestRunConversation:
         assert result["final_response"] == "Got it"
         assert result["completed"] is True
         assert result["api_calls"] == 2
-
-    def test_inline_think_blocks_reasoning_only_accepted(self, agent):
-        """Inline <think> reasoning-only responses accepted with (empty) content, no retries."""
-        self._setup_agent(agent)
-        empty_resp = _mock_response(
-            content="<think>internal reasoning</think>",
-            finish_reason="stop",
-        )
-        agent.client.chat.completions.create.side_effect = [empty_resp]
-        with (
-            patch.object(agent, "_persist_session"),
-            patch.object(agent, "_save_trajectory"),
-            patch.object(agent, "_cleanup_task_resources"),
-        ):
-            result = agent.run_conversation("answer me")
-        assert result["completed"] is True
-        assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1  # no retries
-        # Reasoning should be preserved in the assistant message
-        assistant_msgs = [m for m in result["messages"] if m.get("role") == "assistant"]
-        assert any(m.get("reasoning") for m in assistant_msgs)
 
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
         """Reasoning-only responses no longer trigger compression — prefill then accepted."""

@@ -44,11 +44,11 @@ class _FakeOpenAI:
         pass
 
 
-def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1"):
+def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="https://openrouter.ai/api/v1", model=None):
     monkeypatch.setattr("run_agent.get_tool_definitions", lambda **kw: _tool_defs("web_search", "terminal"))
     monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
     monkeypatch.setattr("run_agent.OpenAI", _FakeOpenAI)
-    return AIAgent(
+    kwargs = dict(
         api_key="test-key",
         base_url=base_url,
         provider=provider,
@@ -58,6 +58,9 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
         skip_context_files=True,
         skip_memory=True,
     )
+    if model:
+        kwargs["model"] = model
+    return AIAgent(**kwargs)
 
 
 # ── _build_api_kwargs tests ─────────────────────────────────────────────────
@@ -247,7 +250,7 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
 
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
+        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "messages" in kwargs
@@ -255,7 +258,7 @@ class TestBuildApiKwargsAIGateway:
         assert kwargs["messages"][-1]["content"] == "hi"
 
     def test_no_responses_api_fields(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
+        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "input" not in kwargs
@@ -263,7 +266,7 @@ class TestBuildApiKwargsAIGateway:
         assert "store" not in kwargs
 
     def test_includes_reasoning_in_extra_body(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
+        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
@@ -271,7 +274,7 @@ class TestBuildApiKwargsAIGateway:
         assert extra["reasoning"]["enabled"] is True
 
     def test_includes_tools(self, monkeypatch):
-        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1")
+        agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         assert "tools" in kwargs

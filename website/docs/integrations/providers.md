@@ -20,7 +20,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
-| **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, multi-model aggregator) |
+| **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 90+ models, pay-per-use) |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
@@ -549,7 +549,7 @@ The base URL can be overridden with `HF_BASE_URL`.
 
 ### NovitaAI
 
-[NovitaAI](https://novita.ai) is a multi-model aggregator with pay-per-use pricing. Access models from DeepSeek, Kimi, MiniMax, GLM, Qwen, and more through a unified OpenAI-compatible API.
+[NovitaAI](https://novita.ai) is a 90+ model aggregator with pay-per-use pricing. Access models from DeepSeek, Kimi, MiniMax, GLM, Qwen, and more through a unified OpenAI-compatible API.
 
 ```bash
 # Use any available model

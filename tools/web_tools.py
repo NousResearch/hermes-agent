@@ -47,7 +47,6 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -123,6 +122,18 @@ def _is_backend_available(backend: str) -> bool:
 
 _firecrawl_client = None
 _firecrawl_client_config = None
+
+
+def _load_firecrawl_class():
+    """Import Firecrawl lazily so non-Firecrawl backends work without the package."""
+    try:
+        from firecrawl import Firecrawl
+    except ImportError as exc:
+        raise ImportError(
+            "firecrawl package is required only for the Firecrawl backend. "
+            "Install it with: pip install firecrawl-py"
+        ) from exc
+    return Firecrawl
 
 
 def _get_direct_firecrawl_config() -> Optional[tuple[Dict[str, str], tuple[str, Optional[str], Optional[str]]]]:
@@ -235,7 +246,8 @@ def _get_firecrawl_client():
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
 
-    _firecrawl_client = Firecrawl(**kwargs)
+    firecrawl_cls = _load_firecrawl_class()
+    _firecrawl_client = firecrawl_cls(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client
 

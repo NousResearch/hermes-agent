@@ -452,3 +452,44 @@ class TestDialecticInputGuard:
         # The query passed to chat() should be truncated
         actual_query = mock_peer.chat.call_args[0][0]
         assert len(actual_query) <= 100
+
+
+# ---------------------------------------------------------------------------
+
+
+class TestDialecticCadenceDefaults:
+    """Regression tests for dialectic_cadence default value."""
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        """Create a HonchoMemoryProvider with mocked dependencies."""
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        return provider
+
+    def test_default_is_3(self):
+        """Default dialectic_cadence should be 3 to avoid per-turn LLM calls."""
+        provider = self._make_provider()
+        assert provider._dialectic_cadence == 3
+
+    def test_config_override(self):
+        """dialecticCadence from config overrides the default."""
+        provider = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 5}})
+        assert provider._dialectic_cadence == 5

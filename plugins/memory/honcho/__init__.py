@@ -139,7 +139,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._turn_count = 0
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
-        self._dialectic_cadence = 1  # minimum turns between dialectic API calls
+        self._dialectic_cadence = 3  # minimum turns between dialectic API calls
         self._reasoning_level_cap: Optional[str] = None  # "minimal", "low", "mid", "high"
         self._last_context_turn = -999
         self._last_dialectic_turn = -999
@@ -236,7 +236,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 raw = cfg.raw or {}
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
                 self._context_cadence = int(raw.get("contextCadence", 1))
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                self._dialectic_cadence = int(raw.get("dialecticCadence", 3))
                 cap = raw.get("reasoningLevelCap")
                 if cap and cap in ("minimal", "low", "mid", "high"):
                     self._reasoning_level_cap = cap

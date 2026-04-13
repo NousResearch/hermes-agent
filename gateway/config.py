@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    QQ = "qq"
 
 
 @dataclass
@@ -302,6 +303,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # QQ uses extra dict for app credentials
+            elif platform == Platform.QQ and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
         return connected
     
@@ -1108,6 +1112,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
+
+    # QQ (Official Bot API v2)
+    qq_app_id = os.getenv("QQ_APP_ID")
+    qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
+    if qq_app_id or qq_client_secret:
+        if Platform.QQ not in config.platforms:
+            config.platforms[Platform.QQ] = PlatformConfig()
+        config.platforms[Platform.QQ].enabled = True
+        extra = config.platforms[Platform.QQ].extra
+        if qq_app_id:
+            extra["app_id"] = qq_app_id
+        if qq_client_secret:
+            extra["client_secret"] = qq_client_secret
+        qq_allowed_users = os.getenv("QQ_ALLOWED_USERS", "").strip()
+        if qq_allowed_users:
+            extra["allow_from"] = qq_allowed_users
+        qq_group_allowed = os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
+        if qq_group_allowed:
+            extra["group_allow_from"] = qq_group_allowed
+        qq_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+        if qq_home:
+            config.platforms[Platform.QQ].home_channel = HomeChannel(
+                platform=Platform.QQ,
+                chat_id=qq_home,
+                name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

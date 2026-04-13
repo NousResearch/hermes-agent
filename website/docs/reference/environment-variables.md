@@ -262,6 +262,20 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
+
+#### QQ Bot
+
+| Variable | Description |
+|----------|-------------|
+| `QQ_APP_ID` | QQ Bot App ID (from open.qq.com) |
+| `QQ_CLIENT_SECRET` | QQ Bot App Secret |
+| `QQ_SANDBOX` | Enable sandbox mode for testing (`true`/`false`) |
+| `QQ_ALLOWED_USERS` | Comma-separated QQ user IDs allowed to DM the bot |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ user IDs allowed in group messages |
+| `QQ_ALLOW_ALL_USERS` | Allow all QQ users (`true`/`false`) |
+| `QQ_HOME_CHANNEL` | QQ group ID for cron delivery and notifications |
+| `QQ_HOME_CHANNEL_NAME` | Display name for the QQ home channel |
+
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

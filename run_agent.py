@@ -523,6 +523,36 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+def _update_context_engine_model(
+    engine,
+    *,
+    model: str,
+    base_url: str,
+    api_key: str,
+    provider: str,
+    api_mode: str,
+    config_context_length: int | None = None,
+) -> None:
+    """Initialize a pluggable context engine with active model metadata."""
+    from agent.model_metadata import get_model_context_length
+
+    context_length = get_model_context_length(
+        model,
+        base_url=base_url,
+        api_key=api_key,
+        config_context_length=config_context_length,
+        provider=provider,
+    )
+    engine.update_model(
+        model=model,
+        context_length=context_length,
+        base_url=base_url,
+        api_key=api_key,
+        provider=provider,
+        api_mode=api_mode,
+    )
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -1325,6 +1355,15 @@ class AIAgent:
         # else: config says "compressor" — use built-in, don't auto-activate plugins
 
         if _selected_engine is not None:
+            _update_context_engine_model(
+                _selected_engine,
+                model=self.model,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
+                api_mode=self.api_mode,
+                config_context_length=_config_context_length,
+            )
             self.context_compressor = _selected_engine
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)

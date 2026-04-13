@@ -356,6 +356,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=(),
         base_url_env_var="BEDROCK_BASE_URL",
     ),
+    "azure-foundry": ProviderConfig(
+        id="azure-foundry",
+        name="Azure Foundry",
+        auth_type="api_key",
+        inference_base_url="",  # User-provided endpoint
+        api_key_env_vars=("AZURE_FOUNDRY_API_KEY",),
+        base_url_env_var="AZURE_FOUNDRY_BASE_URL",
+    ),
 }
 
 

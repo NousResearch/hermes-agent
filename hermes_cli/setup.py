@@ -2034,6 +2034,15 @@ def _setup_bluebubbles():
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
+def _setup_qq():
+    """Configure QQ Bot (Official API v2) via standard platform setup."""
+    from hermes_cli.gateway import _PLATFORMS
+    qq_platform = next((p for p in _PLATFORMS if p["key"] == "qq"), None)
+    if qq_platform:
+        from hermes_cli.gateway import _setup_standard_platform
+        _setup_standard_platform(qq_platform)
+
+
 def _setup_webhooks():
     """Configure webhook integration."""
     print_header("Webhooks")
@@ -2097,6 +2106,7 @@ _GATEWAY_PLATFORMS = [
     ("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", _setup_wecom_callback),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
+    ("QQ Bot", "QQ_APP_ID", _setup_qq),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
 

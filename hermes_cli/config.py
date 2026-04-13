@@ -45,6 +45,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
+    "QQ_APP_ID", "QQ_CLIENT_SECRET",
+    "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS",
+    "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME", "QQ_SANDBOX",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
@@ -1329,6 +1332,53 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Allowed iMessage addresses (comma-separated)",
         "url": None,
         "password": False,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_ALLOW_ALL_USERS": {
+        "description": "Allow all BlueBubbles users without allowlist",
+        "prompt": "Allow All BlueBubbles Users",
+        "category": "messaging",
+    },
+    "QQ_APP_ID": {
+        "description": "QQ Bot App ID from QQ Open Platform (q.qq.com)",
+        "prompt": "QQ App ID",
+        "url": "https://q.qq.com",
+        "category": "messaging",
+    },
+    "QQ_CLIENT_SECRET": {
+        "description": "QQ Bot Client Secret from QQ Open Platform",
+        "prompt": "QQ Client Secret",
+        "password": True,
+        "category": "messaging",
+    },
+    "QQ_ALLOWED_USERS": {
+        "description": "Comma-separated QQ user IDs allowed to use the bot",
+        "prompt": "QQ Allowed Users",
+        "category": "messaging",
+    },
+    "QQ_GROUP_ALLOWED_USERS": {
+        "description": "Comma-separated QQ group IDs allowed to interact with the bot",
+        "prompt": "QQ Group Allowed Users",
+        "category": "messaging",
+    },
+    "QQ_ALLOW_ALL_USERS": {
+        "description": "Allow all QQ users without an allowlist (true/false)",
+        "prompt": "Allow All QQ Users",
+        "category": "messaging",
+    },
+    "QQ_HOME_CHANNEL": {
+        "description": "Default QQ channel/group for cron delivery and notifications",
+        "prompt": "QQ Home Channel",
+        "category": "messaging",
+    },
+    "QQ_HOME_CHANNEL_NAME": {
+        "description": "Display name for the QQ home channel",
+        "prompt": "QQ Home Channel Name",
+        "category": "messaging",
+    },
+    "QQ_SANDBOX": {
+        "description": "Enable QQ sandbox mode for development testing (true/false)",
+        "prompt": "QQ Sandbox Mode",
         "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {

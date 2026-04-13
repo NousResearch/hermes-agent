@@ -160,6 +160,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
+        "qq": Platform.QQ,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -426,6 +427,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.QQ:
+            result = await _send_qq(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -966,6 +969,25 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_qq(extra, chat_id, message):
+    """Send via QQ Bot Official API v2 using the adapter's REST endpoint."""
+    try:
+        from gateway.platforms.qq import QQAdapter
+    except ImportError:
+        return {"error": "QQ adapter not available."}
+
+    try:
+        from gateway.config import PlatformConfig
+        pconfig = PlatformConfig(extra=extra)
+        adapter = QQAdapter(pconfig)
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return _error(f"QQ send failed: {result.error}")
+        return {"success": True, "platform": "qq", "chat_id": chat_id, "message_id": result.message_id}
+    except Exception as e:
+        return _error(f"QQ send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

@@ -1913,6 +1913,30 @@ _PLATFORMS = [
              "help": "Phone number or Apple ID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "qq",
+        "label": "QQ Bot",
+        "emoji": "💬",
+        "token_var": "QQ_APP_ID",
+        "setup_instructions": [
+            "1. Go to https://open.qq.com/ and create an application",
+            "2. In the application dashboard, create a QQ Bot",
+            "3. Note your App ID and App Secret",
+            "4. Configure the WebSocket Gateway URL in QQ Open Platform settings",
+            "5. Set up message push URL if needed for event callbacks",
+        ],
+        "vars": [
+            {"name": "QQ_APP_ID", "prompt": "App ID", "password": False,
+             "help": "Paste the App ID from QQ Open Platform."},
+            {"name": "QQ_CLIENT_SECRET", "prompt": "App Secret", "password": True,
+             "help": "Paste the App Secret from QQ Open Platform."},
+            {"name": "QQ_ALLOWED_USERS", "prompt": "Allowed QQ user IDs (comma-separated, or empty for DM pairing)", "password": False,
+             "is_allowlist": True,
+             "help": "Optional — pre-authorize specific users. Leave empty to use DM pairing instead."},
+            {"name": "QQ_HOME_CHANNEL", "prompt": "Home channel (QQ group ID for cron/notifications, or empty)", "password": False,
+             "help": "QQ group ID to deliver cron results and notifications to."},
+        ],
+    },
 ]
 
 

@@ -33,6 +33,7 @@ export interface Msg {
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
+export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
 export interface SessionInfo {
   cwd?: string

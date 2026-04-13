@@ -284,6 +284,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
+            # Resolve the API key from the env var name stored in key_env
+            key_env = str(entry.get("key_env", "") or "").strip()
+            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
+
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
@@ -291,7 +295,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     return {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
-                        "api_key": str(entry.get("key_env", "") or "").strip(),
+                        "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
             # Also check the 'name' field if present
@@ -305,7 +309,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         return {
                             "name": display_name,
                             "base_url": base_url.strip(),
-                            "api_key": str(entry.get("key_env", "") or "").strip(),
+                            "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
 

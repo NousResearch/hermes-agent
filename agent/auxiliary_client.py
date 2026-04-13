@@ -46,6 +46,7 @@ import time
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse, parse_qs, urlunparse
 
 from openai import OpenAI
 
@@ -54,6 +55,17 @@ from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_url_query_params(url: str):
+    """Extract query params from URL, return (clean_url, default_query dict or None)."""
+    parsed = urlparse(url)
+    if parsed.query:
+        clean = urlunparse(parsed._replace(query=""))
+        params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        return clean, params
+    return url, None
+
 
 # Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
 _stale_base_url_warned = False
@@ -936,10 +948,12 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    _clean_base, _dq = _extract_url_query_params(custom_base)
+    _extra = {"default_query": _dq} if _dq else {}
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        real_client = OpenAI(api_key=custom_key, base_url=_clean_base, **_extra)
         return CodexAuxiliaryClient(real_client, model), model
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    return OpenAI(api_key=custom_key, base_url=_clean_base, **_extra), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -1437,12 +1451,15 @@ def resolve_provider_client(
                 provider,
             )
             extra = {}
+            _clean_base, _dq = _extract_url_query_params(custom_base)
+            if _dq:
+                extra["default_query"] = _dq
             if "api.kimi.com" in custom_base.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
-            client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
+            client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
@@ -1472,8 +1489,10 @@ def resolve_provider_client(
                     model or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
-                client = _wrap_if_needed(client, final_model, custom_base)
+                _clean_base2, _dq2 = _extract_url_query_params(custom_base)
+                _extra2 = {"default_query": _dq2} if _dq2 else {}
+                client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
+                client = _wrap_if_needed(client, final_model, _clean_base2)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
                     provider, final_model)

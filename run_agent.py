@@ -38,6 +38,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse, parse_qs, urlunparse
 from openai import OpenAI
 import fire
 from datetime import datetime
@@ -854,7 +855,15 @@ class AIAgent:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
-                client_kwargs = {"api_key": api_key, "base_url": base_url}
+                # Extract query params (e.g. Azure api-version) from base_url
+                # and pass via default_query to prevent loss during SDK URL joining
+                _parsed_url = urlparse(base_url)
+                if _parsed_url.query:
+                    _clean_url = urlunparse(_parsed_url._replace(query=""))
+                    _query_params = {k: v[0] for k, v in parse_qs(_parsed_url.query).items()}
+                    client_kwargs = {"api_key": api_key, "base_url": _clean_url, "default_query": _query_params}
+                else:
+                    client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if self.provider == "copilot-acp":
                     client_kwargs["command"] = self.acp_command
                     client_kwargs["args"] = self.acp_args

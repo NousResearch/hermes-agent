@@ -131,10 +131,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     # Per-profile HOME isolation for background processes (same as _make_run_env).
     # Controlled by config: terminal.profile_home_isolation (default: true).
-    from hermes_constants import get_subprocess_home
+    from hermes_constants import get_subprocess_home, get_real_home
     _profile_home = get_subprocess_home()
-    if _profile_home and _should_isolate_profile_home():
+    _isolate = _should_isolate_profile_home()
+    if _profile_home and _isolate:
         sanitized["HOME"] = _profile_home
+    elif _profile_home and not _isolate:
+        sanitized["HOME"] = str(get_real_home())
 
     return sanitized
 
@@ -187,12 +190,16 @@ def _should_isolate_profile_home() -> bool:
     if _profile_home_isolation is not None:
         return _profile_home_isolation
     try:
-        from hermes_cli.config import get_config
-        cfg = get_config()
+        from hermes_cli.config import load_config
+        cfg = load_config()
         _profile_home_isolation = cfg.get("terminal", {}).get(
             "profile_home_isolation", True
         )
-    except Exception:
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "profile_home_isolation config read failed: %s, defaulting to True", e
+        )
         _profile_home_isolation = True  # safe default
     return _profile_home_isolation
 
@@ -227,10 +234,15 @@ def _make_run_env(env: dict) -> dict:
     # npm …) into {HERMES_HOME}/home/ when that directory exists.  Only the
     # subprocess sees the override — the Python process keeps the real HOME.
     # Controlled by config: terminal.profile_home_isolation (default: true).
-    from hermes_constants import get_subprocess_home
+    from hermes_constants import get_subprocess_home, get_real_home
     _profile_home = get_subprocess_home()
-    if _profile_home and _should_isolate_profile_home():
+    _isolate = _should_isolate_profile_home()
+    if _profile_home and _isolate:
         run_env["HOME"] = _profile_home
+    elif _profile_home and not _isolate:
+        # Explicitly restore real HOME when isolation is disabled, in case
+        # the parent process already has the profile HOME set.
+        run_env["HOME"] = str(get_real_home())
 
     return run_env
 

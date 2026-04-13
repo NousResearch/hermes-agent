@@ -499,7 +499,7 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook(
+            hook_results = invoke_hook(
                 "pre_tool_call",
                 tool_name=function_name,
                 args=function_args,
@@ -507,6 +507,11 @@ def handle_function_call(
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
             )
+            for hr in hook_results:
+                if isinstance(hr, dict) and hr.get("block"):
+                    reason = hr.get("reason", "Blocked by plugin policy")
+                    logger.warning("pre_tool_call hook blocked %s: %s", function_name, reason)
+                    return json.dumps({"error": reason, "blocked_by_plugin": True})
         except Exception:
             pass
 

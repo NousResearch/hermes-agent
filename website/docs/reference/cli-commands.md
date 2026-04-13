@@ -57,6 +57,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
+| `hermes web` | Launch the web dashboard for managing config, API keys, and sessions. |
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
@@ -76,7 +77,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `alibaba`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `alibaba`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -140,14 +141,18 @@ Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `run` | Run the gateway in the foreground. |
-| `start` | Start the installed gateway service. |
-| `stop` | Stop the service. |
+| `run` | Run the gateway in the foreground. Recommended for WSL, Docker, and Termux. |
+| `start` | Start the installed systemd/launchd background service. |
+| `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
-| `install` | Install as a user service (`systemd` on Linux, `launchd` on macOS). |
+| `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
+
+:::tip WSL users
+Use `hermes gateway run` instead of `hermes gateway start` — WSL's systemd support is unreliable. Wrap it in tmux for persistence: `tmux new -s hermes 'hermes gateway run'`. See [WSL FAQ](/docs/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails) for details.
+:::
 
 ## `hermes setup`
 
@@ -586,11 +591,14 @@ See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../
 hermes plugins [subcommand]
 ```
 
-Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launches an interactive curses checklist to enable/disable installed plugins.
+Unified plugin management — general plugins, memory providers, and context engines in one place. Running `hermes plugins` with no subcommand opens a composite interactive screen with two sections:
+
+- **General Plugins** — multi-select checkboxes to enable/disable installed plugins
+- **Provider Plugins** — single-select configuration for Memory Provider and Context Engine. Press ENTER on a category to open a radio picker.
 
 | Subcommand | Description |
 |------------|-------------|
-| *(none)* | Interactive toggle UI — enable/disable plugins with arrow keys and space. |
+| *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
 | `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
 | `update <name>` | Pull latest changes for an installed plugin. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
@@ -598,7 +606,11 @@ Manage Hermes Agent plugins. Running `hermes plugins` with no subcommand launche
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
 
-Disabled plugins are stored in `config.yaml` under `plugins.disabled` and skipped during loading.
+Provider plugin selections are saved to `config.yaml`:
+- `memory.provider` — active memory provider (empty = built-in only)
+- `context.engine` — active context engine (`"compressor"` = built-in default)
+
+General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../guides/build-a-hermes-plugin.md).
 
@@ -649,7 +661,7 @@ hermes insights [--days N] [--source platform]
 hermes claw migrate [options]
 ```
 
-Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moldbot`) and config filenames (`clawdbot.json`, `moldbot.json`).
+Migrate your OpenClaw setup to Hermes. Reads from `~/.openclaw` (or a custom path) and writes to `~/.hermes`. Automatically detects legacy directory names (`~/.clawdbot`, `~/.moltbot`) and config filenames (`clawdbot.json`, `moltbot.json`).
 
 | Option | Description |
 |--------|-------------|
@@ -688,6 +700,28 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
+```
+
+## `hermes web`
+
+```bash
+hermes web [options]
+```
+
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). See [Web Dashboard](/docs/user-guide/features/web-dashboard) for full documentation.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--port` | `9119` | Port to run the web server on |
+| `--host` | `127.0.0.1` | Bind address |
+| `--no-open` | — | Don't auto-open the browser |
+
+```bash
+# Default — opens browser to http://127.0.0.1:9119
+hermes web
+
+# Custom port, no browser
+hermes web --port 8080 --no-open
 ```
 
 ## `hermes profile`

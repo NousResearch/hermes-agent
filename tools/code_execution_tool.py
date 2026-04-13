@@ -301,7 +301,7 @@ def _call(tool_name, args):
 # ---------------------------------------------------------------------------
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
+_TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
 
 def _rpc_server_loop(
@@ -924,8 +924,8 @@ def execute_code(
 
     # --- Local execution path (UDS) --- below this line is unchanged ---
 
-    # Import interrupt event from terminal_tool (cooperative cancellation)
-    from tools.terminal_tool import _interrupt_event
+    # Import per-thread interrupt check (cooperative cancellation)
+    from tools.interrupt import is_interrupted as _is_interrupted
 
     # Resolve config
     _cfg = _load_config()
@@ -1020,6 +1020,13 @@ def execute_code(
         if _tz_name:
             child_env["TZ"] = _tz_name
 
+        # Per-profile HOME isolation: redirect system tool configs into
+        # {HERMES_HOME}/home/ when that directory exists.
+        from hermes_constants import get_subprocess_home
+        _profile_home = get_subprocess_home()
+        if _profile_home:
+            child_env["HOME"] = _profile_home
+
         proc = subprocess.Popen(
             [sys.executable, "script.py"],
             cwd=tmpdir,
@@ -1107,7 +1114,7 @@ def execute_code(
 
         status = "success"
         while proc.poll() is None:
-            if _interrupt_event.is_set():
+            if _is_interrupted():
                 _kill_process_group(proc)
                 status = "interrupted"
                 break

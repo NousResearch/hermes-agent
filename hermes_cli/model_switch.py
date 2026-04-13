@@ -812,45 +812,101 @@ def list_authenticated_providers(
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
     from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
+
+    # Build reverse mapping: models.dev ID → Hermes provider ID.
+    # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
+    # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
+    _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid in seen_slugs:
             continue
+
+        # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
+        hermes_slug = _mdev_to_hermes.get(pid, pid)
+        if hermes_slug in seen_slugs:
+            continue
+
         # Check if credentials exist
         has_creds = False
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
         if not has_creds and overlay.auth_type == "api_key":
-            pcfg = _auth_registry.get(pid)
-            if pcfg and pcfg.api_key_env_vars:
-                has_creds = any(os.environ.get(ev) for ev in pcfg.api_key_env_vars)
-        if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
+            for _key in (pid, hermes_slug):
+                pcfg = _auth_registry.get(_key)
+                if pcfg and pcfg.api_key_env_vars:
+                    if any(os.environ.get(ev) for ev in pcfg.api_key_env_vars):
+                        has_creds = True
+                        break
+        # Check auth store and credential pool for non-env-var credentials.
+        # This applies to OAuth providers AND api_key providers that also
+        # support OAuth (e.g. anthropic supports both API key and Claude Code
+        # OAuth via external credential files).
+        if not has_creds:
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
-                if store and (pid in store.get("providers", {}) or pid in store.get("credential_pool", {})):
+                providers_store = store.get("providers", {})
+                pool_store = store.get("credential_pool", {})
+                if store and (
+                    pid in providers_store or hermes_slug in providers_store
+                    or pid in pool_store or hermes_slug in pool_store
+                ):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
+        # Fallback: check the credential pool with full auto-seeding.
+        # This catches credentials that exist in external stores (e.g.
+        # Codex CLI ~/.codex/auth.json) which _seed_from_singletons()
+        # imports on demand but aren't in the raw auth.json yet.
+        if not has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                pool = load_pool(hermes_slug)
+                if pool.has_credentials():
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Credential pool check failed for %s: %s", hermes_slug, exc)
+        # Fallback: check external credential files directly.
+        # The credential pool gates anthropic behind
+        # is_provider_explicitly_configured() to prevent auxiliary tasks
+        # from silently consuming Claude Code tokens (PR #4210).
+        # But the /model picker is discovery-oriented — we WANT to show
+        # providers the user can switch to, even if they aren't currently
+        # configured.
+        if not has_creds and hermes_slug == "anthropic":
+            try:
+                from agent.anthropic_adapter import (
+                    read_claude_code_credentials,
+                    read_hermes_oauth_credentials,
+                )
+                hermes_creds = read_hermes_oauth_credentials()
+                cc_creds = read_claude_code_credentials()
+                if (hermes_creds and hermes_creds.get("accessToken")) or \
+                   (cc_creds and cc_creds.get("accessToken")):
+                    has_creds = True
+            except Exception as exc:
+                logger.debug("Anthropic external creds check failed: %s", exc)
         if not has_creds:
             continue
 
-        # Use curated list
-        model_ids = curated.get(pid, [])
+        # Use curated list — look up by Hermes slug, fall back to overlay key
+        model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
 
         results.append({
-            "slug": pid,
-            "name": get_label(pid),
-            "is_current": pid == current_provider,
+            "slug": hermes_slug,
+            "name": get_label(hermes_slug),
+            "is_current": hermes_slug == current_provider or pid == current_provider,
             "is_user_defined": False,
             "models": top,
             "total_models": total,
             "source": "hermes",
         })
         seen_slugs.add(pid)
+        seen_slugs.add(hermes_slug)
 
     # --- 3. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):

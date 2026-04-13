@@ -27,12 +27,14 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
+    "xiaomi",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "mimo", "xiaomi-mimo",
     "qwen-portal",
 })
 
@@ -83,6 +85,11 @@ CONTEXT_PROBE_TIERS = [
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
+# Minimum context length required to run Hermes Agent.  Models with fewer
+# tokens cannot maintain enough working memory for tool-calling workflows.
+# Sessions, model switches, and cron jobs should reject models below this.
+MINIMUM_CONTEXT_LENGTH = 64_000
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -113,17 +120,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen
+    # Qwen — specific model families before the catch-all.
+    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3-coder-plus": 1000000,  # 1M context
+    "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
-    # MiniMax (lowercase — lookup lowercases model names at line 973)
-    "minimax-m1-256k": 1000000,
-    "minimax-m1-128k": 1000000,
-    "minimax-m1-80k": 1000000,
-    "minimax-m1-40k": 1000000,
-    "minimax-m1": 1000000,
-    "minimax-m2.5": 1048576,
-    "minimax-m2.7": 1048576,
-    "minimax": 1048576,
+    # MiniMax — official docs: 204,800 context for all models
+    # https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    "minimax": 204800,
     # GLM
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
@@ -151,10 +155,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 1048576,
-    "XiaomiMiMo/MiMo-V2-Flash": 32768,
-    "mimo-v2-pro": 1048576,
-    "mimo-v2-omni": 1048576,
+    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "XiaomiMiMo/MiMo-V2-Flash": 256000,
+    "mimo-v2-pro": 1000000,
+    "mimo-v2-omni": 256000,
+    "mimo-v2-flash": 256000,
     "zai-org/GLM-5": 202752,
 }
 
@@ -179,6 +184,12 @@ _MAX_COMPLETION_KEYS = (
 
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+# Docker / Podman / Lima DNS names that resolve to the host machine
+_CONTAINER_LOCAL_SUFFIXES = (
+    ".docker.internal",
+    ".containers.internal",
+    ".lima.internal",
+)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -213,6 +224,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
+    "api.x.ai": "xai",
+    "api.xiaomimimo.com": "xiaomi",
+    "xiaomimimo.com": "xiaomi",
 }
 
 
@@ -250,6 +264,9 @@ def is_local_endpoint(base_url: str) -> bool:
     except Exception:
         return False
     if host in _LOCAL_HOSTS:
+        return True
+    # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
+    if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
         return True
     # RFC-1918 private ranges and link-local
     import ipaddress
@@ -1028,16 +1045,21 @@ def get_model_context_length(
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate (~4 chars/token) for pre-flight checks.
+
+    Uses ceiling division so short texts (1-3 chars) never estimate as
+    0 tokens, which would cause the compressor and pre-flight checks to
+    systematically undercount when many short tool results are present.
+    """
     if not text:
         return 0
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return total_chars // 4
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
@@ -1060,4 +1082,4 @@ def estimate_request_tokens_rough(
         total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
         total_chars += len(str(tools))
-    return total_chars // 4
+    return (total_chars + 3) // 4

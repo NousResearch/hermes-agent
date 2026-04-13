@@ -347,7 +347,8 @@ def _capture_required_environment_variables(
 def _is_gateway_surface() -> bool:
     if os.getenv("HERMES_GATEWAY_SESSION"):
         return True
-    return bool(os.getenv("HERMES_SESSION_PLATFORM"))
+    from gateway.session_context import get_session_env
+    return bool(get_session_env("HERMES_SESSION_PLATFORM"))
 
 
 def _get_terminal_backend_name() -> str:
@@ -446,17 +447,8 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-def _estimate_tokens(content: str) -> int:
-    """
-    Rough token estimate (4 chars per token average).
-
-    Args:
-        content: Text content
-
-    Returns:
-        Estimated token count
-    """
-    return len(content) // 4
+# Token estimation — use the shared implementation from model_metadata.
+from agent.model_metadata import estimate_tokens_rough as _estimate_tokens
 
 
 def _parse_tags(tags_value) -> List[str]:
@@ -946,9 +938,10 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
 
         # If a specific file path is requested, read that instead
         if file_path and skill_dir:
+            from tools.path_security import validate_within_dir, has_traversal_component
+
             # Security: Prevent path traversal attacks
-            normalized_path = Path(file_path)
-            if ".." in normalized_path.parts:
+            if has_traversal_component(file_path):
                 return json.dumps(
                     {
                         "success": False,
@@ -961,24 +954,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
             target_file = skill_dir / file_path
 
             # Security: Verify resolved path is still within skill directory
-            try:
-                resolved = target_file.resolve()
-                skill_dir_resolved = skill_dir.resolve()
-                if not resolved.is_relative_to(skill_dir_resolved):
-                    return json.dumps(
-                        {
-                            "success": False,
-                            "error": "Path escapes skill directory boundary.",
-                            "hint": "Use a relative path within the skill directory",
-                        },
-                        ensure_ascii=False,
-                    )
-            except (OSError, ValueError):
+            traversal_error = validate_within_dir(target_file, skill_dir)
+            if traversal_error:
                 return json.dumps(
                     {
                         "success": False,
-                        "error": f"Invalid file path: '{file_path}'",
-                        "hint": "Use a valid relative path within the skill directory",
+                        "error": traversal_error,
+                        "hint": "Use a relative path within the skill directory",
                     },
                     ensure_ascii=False,
                 )

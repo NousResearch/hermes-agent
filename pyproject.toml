@@ -16,7 +16,7 @@ dependencies = [
   "anthropic>=0.39.0,<1",
   "python-dotenv>=1.2.1,<2",
   "fire>=0.7.1,<1",
-  "httpx>=0.28.1,<1",
+  "httpx[socks]>=0.28.1,<1",
   "rich>=14.3.3,<15",
   "tenacity>=9.1.4,<10",
   "pyyaml>=6.0.2,<7",
@@ -43,7 +43,7 @@ dev = ["debugpy>=1.8.0,<2", "pytest>=9.0.2,<10", "pytest-asyncio>=1.3.0,<2", "py
 messaging = ["python-telegram-bot[webhooks]>=22.6,<23", "discord.py[voice]>=2.7.1,<3", "aiohttp>=3.13.3,<4", "slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
 cron = ["croniter>=6.0.0,<7"]
 slack = ["slack-bolt>=1.18.0,<2", "slack-sdk>=3.27.0,<4"]
-matrix = ["matrix-nio[e2e]>=0.24.0,<1", "Markdown>=3.6,<4"]
+matrix = ["mautrix[encryption]>=0.20,<1", "Markdown>=3.6,<4", "aiosqlite>=0.20", "asyncpg>=0.29"]
 cli = ["simple-term-menu>=1.0,<2"]
 tts-premium = ["elevenlabs>=1.0,<2"]
 voice = [
@@ -76,6 +76,7 @@ termux = [
 ]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
+web = ["fastapi>=0.104.0,<1", "uvicorn[standard]>=0.24.0,<1"]
 rl = [
   "atroposlib @ git+https://github.com/NousResearch/atropos.git",
   "tinker @ git+https://github.com/thinking-machines-lab/tinker.git",
@@ -88,10 +89,10 @@ all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
   "hermes-agent[messaging]",
-  # matrix excluded: python-olm (required by matrix-nio[e2e]) is upstream-broken
-  # on modern macOS (archived libolm, C++ errors with Clang 21+). Including it
-  # here causes the entire [all] install to fail, dropping all other extras.
-  # Users who need Matrix can install manually: pip install 'hermes-agent[matrix]'
+  # matrix: python-olm (required by matrix-nio[e2e]) is upstream-broken on
+  # modern macOS (archived libolm, C++ errors with Clang 21+).  On Linux the
+  # [matrix] extra's own marker pulls in the [e2e] variant automatically.
+  "hermes-agent[matrix]; sys_platform == 'linux'",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[dev]",
@@ -107,6 +108,7 @@ all = [
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
   "hermes-agent[mistral]",
+  "hermes-agent[web]",
 ]
 
 [project.scripts]
@@ -116,6 +118,9 @@ hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
+
+[tool.setuptools.package-data]
+hermes_cli = ["web_dist/**/*"]
 
 [tool.setuptools.packages.find]
 include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]

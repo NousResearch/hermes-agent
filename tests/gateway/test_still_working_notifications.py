@@ -75,6 +75,14 @@ class TestLoadStillWorkingInterval:
         monkeypatch.setattr(gw, "_hermes_home", tmp_path)
         assert GatewayRunner._load_still_working_interval("telegram") == 600.0
 
+    def test_falls_back_to_legacy_env_var_when_new_display_key_missing(self, monkeypatch, tmp_path):
+        (tmp_path / "config.yaml").write_text("display:\n  tool_progress: off\n", encoding="utf-8")
+        import gateway.run as gw
+
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "180")
+        assert GatewayRunner._load_still_working_interval("telegram") == 180.0
+
     def test_invalid_platform_override_inherits_global_interval(self, monkeypatch, tmp_path):
         (tmp_path / "config.yaml").write_text(
             "display:\n"

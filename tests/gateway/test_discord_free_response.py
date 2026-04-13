@@ -302,7 +302,7 @@ async def test_discord_bot_thread_skips_mention_requirement(adapter, monkeypatch
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     # Simulate bot having previously participated in thread 456
-    adapter._bot_participated_threads.add("456")
+    adapter._threads.mark("456")
 
     thread = FakeThread(channel_id=456, name="existing thread")
     message = make_message(channel=thread, content="follow-up without mention")
@@ -344,7 +344,7 @@ async def test_discord_auto_thread_tracks_participation(adapter, monkeypatch):
 
     await adapter._handle_message(message)
 
-    assert "555" in adapter._bot_participated_threads
+    assert "555" in adapter._threads
 
 
 @pytest.mark.asyncio
@@ -358,4 +358,4 @@ async def test_discord_thread_participation_tracked_on_dispatch(adapter, monkeyp
 
     await adapter._handle_message(message)
 
-    assert "777" in adapter._bot_participated_threads
+    assert "777" in adapter._threads

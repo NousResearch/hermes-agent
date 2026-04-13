@@ -42,6 +42,11 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # Per-profile HOME for subprocesses: isolates system tool configs (git,
+    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
+    # this also ensures tool configs land inside the persistent volume.
+    # See hermes_constants.get_subprocess_home() and issue #4426.
+    "home",
 ]
 
 # Files copied during --clone (if they exist in the source)
@@ -453,6 +458,16 @@ def create_profile(
                     dst = profile_dir / relpath
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
+
+    # Seed a default SOUL.md so the user has a file to customize immediately.
+    # Skipped when the profile already has one (from --clone / --clone-all).
+    soul_path = profile_dir / "SOUL.md"
+    if not soul_path.exists():
+        try:
+            from hermes_cli.default_soul import DEFAULT_SOUL_MD
+            soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
+        except Exception:
+            pass  # best-effort — don't fail profile creation over this
 
     return profile_dir
 

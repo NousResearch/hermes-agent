@@ -2018,6 +2018,7 @@ class AIAgent:
             inline_patterns = (
                 r"<think>(.*?)</think>",
                 r"<thinking>(.*?)</thinking>",
+                r"<thought>(.*?)</thought>",
                 r"<reasoning>(.*?)</reasoning>",
                 r"<REASONING_SCRATCHPAD>(.*?)</REASONING_SCRATCHPAD>",
             )

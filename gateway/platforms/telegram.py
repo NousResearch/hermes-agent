@@ -2715,4 +2715,5 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+            # Telegram only allows specific reaction emojis (ReactionEmoji enum).
+            await self._set_reaction(chat_id, message_id, "\U0001f44d" if success else "\U0001f44e")

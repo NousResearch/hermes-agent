@@ -204,17 +204,42 @@ class ConfigHookManager:
         input_data = json.dumps(context).encode('utf-8')
 
         try:
+            if not wait:
+                # Fire and forget: spawn the child process and detach it
+                # from the event loop entirely so it never blocks cleanup.
+                proc = subprocess.Popen(
+                    hook.command,
+                    shell=True,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                # Write stdin in a best-effort way; if the process hasn't
+                # read it yet we just close the pipe.
+                try:
+                    proc.stdin.write(input_data)
+                    proc.stdin.close()
+                except Exception:
+                    pass
+                # Reap the child in a daemon thread to avoid zombies,
+                # with a timeout so we don't leak threads.
+                import threading
+                def _reaper(p=proc, t=hook.timeout):
+                    try:
+                        p.wait(timeout=t)
+                    except subprocess.TimeoutExpired:
+                        p.kill()
+                        p.wait()
+                threading.Thread(target=_reaper, daemon=True).start()
+                return None
+
+            # Blocking path: use asyncio subprocess with timeout
             proc = await asyncio.create_subprocess_shell(
                 hook.command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-
-            if not wait:
-                # Fire and forget for async hooks
-                asyncio.create_task(self._cleanup_process(proc, input_data))
-                return None
 
             # Wait with timeout
             stdout, stderr = await asyncio.wait_for(
@@ -243,13 +268,6 @@ class ConfigHookManager:
         except Exception as e:
             logger.debug("Hook execution failed: %s", e)
             return None
-
-    async def _cleanup_process(self, proc, input_data: bytes) -> None:
-        """Clean up an async (fire-and-forget) process."""
-        try:
-            await proc.communicate(input=input_data)
-        except Exception:
-            pass  # Ignore errors for async hooks
 
     def _merge_context(self, original: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
         """Merge hook result into original context.

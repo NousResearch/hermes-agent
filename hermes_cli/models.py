@@ -130,6 +130,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-26b-it",
     ],
     "zai": [
+        "glm-5.1",
         "glm-5",
         "glm-5-turbo",
         "glm-4.7",

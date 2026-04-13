@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -89,6 +90,20 @@ def test_validate_signature_accepts_linear_hmac():
 
     assert adapter._validate_signature(body, sig) is True
     assert adapter._validate_signature(body, "bad") is False
+
+
+@pytest.mark.asyncio
+async def test_callback_rejects_expired_oauth_state():
+    adapter = _make_adapter()
+    adapter._save_json(adapter._states_path, {"expired-state": {"created_at": 0}})
+
+    request = SimpleNamespace(query={"code": "code-123", "state": "expired-state", "error": ""})
+
+    response = await adapter._handle_callback(request)
+
+    assert response.status == 400
+    assert response.text == "Invalid or expired OAuth state.\n"
+    assert adapter._load_json(adapter._states_path) == {}
 
 
 def test_build_prompt_for_created_event_uses_prompt_context():

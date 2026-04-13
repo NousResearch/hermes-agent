@@ -28,12 +28,31 @@ def _schema(name: str, description: str = "") -> dict:
 def _tool_call(name: str, arguments: str = "{}", call_id: str = "call-1") -> SimpleNamespace:
     return SimpleNamespace(
         id=call_id,
+        type="function",
         function=SimpleNamespace(name=name, arguments=arguments),
     )
 
 
 def _assistant_message(*tool_calls: SimpleNamespace) -> SimpleNamespace:
     return SimpleNamespace(tool_calls=list(tool_calls))
+
+
+def _chat_response(
+    *,
+    content: str | None = None,
+    tool_calls: list[SimpleNamespace] | None = None,
+    finish_reason: str = "stop",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                finish_reason=finish_reason,
+                message=SimpleNamespace(content=content, tool_calls=tool_calls or []),
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        model="test-model",
+    )
 
 
 def _make_agent(*, enabled_toolsets: list[str], hermes_home) -> AIAgent:
@@ -218,6 +237,58 @@ def test_tool_search_activates_deferred_tools_in_agent_runtime(register_tools, t
     assert deferred_name in next_names
     assert hidden_name not in next_names
     assert always_name in next_names
+
+
+def test_tool_search_activation_updates_real_run_conversation_loop(register_tools, tmp_path):
+    toolset = "c2_conversation_activation_toolset"
+    deferred_name = register_tools(
+        "c2_conversation_deferred_tool",
+        toolset=toolset,
+        description="Deferred tool activated during the real agent loop.",
+        search_hint="orion conversation activation",
+        deferred=True,
+    )
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    agent = _make_agent(enabled_toolsets=[toolset], hermes_home=hermes_home)
+    assert isinstance(agent._activated_deferred_tools, set)
+    assert deferred_name not in agent._activated_deferred_tools
+    assert deferred_name not in agent.valid_tool_names
+
+    create_tool_names = []
+    search_call = _tool_call("tool_search", arguments='{"query":"orion conversation"}', call_id="search-1")
+    responses = [
+        _chat_response(tool_calls=[search_call], finish_reason="tool_calls"),
+        _chat_response(content="done"),
+    ]
+
+    def _create(**kwargs):
+        tool_names = {
+            tool["function"]["name"]
+            for tool in (kwargs.get("tools") or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
+        create_tool_names.append(tool_names)
+        return responses.pop(0)
+
+    agent.client.chat.completions.create.side_effect = _create
+
+    result = agent.run_conversation("Find the right tool")
+
+    assert result["final_response"] == "done"
+    assert deferred_name in agent._activated_deferred_tools
+    assert len(create_tool_names) >= 2
+    assert deferred_name not in create_tool_names[0]
+    assert deferred_name in create_tool_names[1]
+
+    next_defs = get_tool_definitions(
+        enabled_toolsets=[toolset],
+        quiet_mode=True,
+        activated_tools=sorted(agent._activated_deferred_tools),
+    )
+    next_names = {tool["function"]["name"] for tool in next_defs}
+    assert deferred_name in next_names
 
 
 def test_tool_search_activation_hydrates_from_history(register_tools, tmp_path):

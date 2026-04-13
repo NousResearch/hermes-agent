@@ -2721,17 +2721,22 @@ class AIAgent:
             else:
                 print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
-    def _extract_deferred_tool_names_from_search_result(self, function_result: str) -> set[str]:
-        """Return valid deferred tool names from a tool_search JSON result."""
-        try:
-            payload = json.loads(function_result)
-        except (json.JSONDecodeError, TypeError):
+    def _extract_deferred_tool_names_from_search_result(self, function_result: Any) -> set[str]:
+        """Return valid deferred tool names from a tool_search result payload."""
+        payload = function_result
+        if isinstance(function_result, str):
+            try:
+                payload = json.loads(function_result)
+            except (json.JSONDecodeError, TypeError):
+                return set()
+
+        if isinstance(payload, dict):
+            results = payload.get("results")
+        elif isinstance(payload, list):
+            results = payload
+        else:
             return set()
 
-        if not isinstance(payload, dict):
-            return set()
-
-        results = payload.get("results")
         if not isinstance(results, list):
             return set()
 

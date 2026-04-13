@@ -2214,10 +2214,13 @@ class AIAgent:
                         conversation_history=messages_snapshot,
                     )
 
-                # Scan the review agent's messages for successful tool actions
-                # and surface a compact summary to the user.
+                # Scan only messages added by the review agent itself — skip the
+                # snapshot (snapshot_len entries) and the review prompt (+1).
+                # Without this slice, old tool results from the main conversation
+                # are included and trigger false 💾 notifications on every cycle.
+                snapshot_len = len(messages_snapshot)
                 actions = []
-                for msg in getattr(review_agent, "_session_messages", []):
+                for msg in getattr(review_agent, "_session_messages", [])[snapshot_len + 1:]:
                     if not isinstance(msg, dict) or msg.get("role") != "tool":
                         continue
                     try:

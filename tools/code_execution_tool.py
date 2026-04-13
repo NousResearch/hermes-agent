@@ -1022,10 +1022,20 @@ def execute_code(
 
         # Per-profile HOME isolation: redirect system tool configs into
         # {HERMES_HOME}/home/ when that directory exists.
+        # Controlled by config: terminal.profile_home_isolation (default: true).
         from hermes_constants import get_subprocess_home
         _profile_home = get_subprocess_home()
         if _profile_home:
-            child_env["HOME"] = _profile_home
+            _isolate = True
+            try:
+                from hermes_cli.config import get_config
+                _isolate = get_config().get("terminal", {}).get(
+                    "profile_home_isolation", True
+                )
+            except Exception:
+                pass
+            if _isolate:
+                child_env["HOME"] = _profile_home
 
         proc = subprocess.Popen(
             [sys.executable, "script.py"],

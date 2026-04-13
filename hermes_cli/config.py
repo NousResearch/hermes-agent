@@ -348,6 +348,11 @@ DEFAULT_CONFIG = {
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,
+        # Per-profile HOME isolation: when running inside a profile, redirect
+        # subprocess HOME to {HERMES_HOME}/home/ so system tool configs (git,
+        # ssh, gh, npm) stay inside the profile.  Set to false to keep the
+        # real OS user home for all subprocesses.
+        "profile_home_isolation": True,
         # Environment variables to pass through to sandboxed execution
         # (terminal and execute_code).  Skill-declared required_environment_variables
         # are passed through automatically; this list is for non-skill use cases.

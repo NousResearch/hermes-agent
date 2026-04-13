@@ -2575,6 +2575,89 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
+    def test_minimax_delta_overflow_keeps_known_context_length(self, agent):
+        """MiniMax reports overflow deltas like 'limit (2013)' without the real window.
+
+        Keep the known 204,800-token window and compress instead of probing down
+        to the generic 128K fallback tier.
+        """
+        self._setup_agent(agent)
+        agent.provider = "minimax"
+        agent.model = "MiniMax-M2.7-highspeed"
+        agent.base_url = "https://api.minimax.io/anthropic"
+        agent.context_compressor.context_length = 204_800
+        agent.context_compressor.threshold_tokens = int(
+            agent.context_compressor.context_length * agent.context_compressor.threshold_percent
+        )
+
+        err_400 = Exception(
+            "HTTP 400: invalid params, context window exceeds limit (2013)"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.context_compressor.context_length == 204_800
+        assert agent.context_compressor._context_probed is False
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+
+    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
+        """Non-MiniMax providers should keep the generic probe-down behavior."""
+        self._setup_agent(agent)
+        agent.provider = "openrouter"
+        agent.model = "some/unknown-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = int(
+            agent.context_compressor.context_length * agent.context_compressor.threshold_percent
+        )
+
+        err_400 = Exception(
+            "HTTP 400: invalid params, context window exceeds limit (2013)"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.context_compressor.context_length == 128_000
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+
     def test_length_finish_reason_requests_continuation(self, agent):
         """Normal truncation (partial real content) triggers continuation."""
         self._setup_agent(agent)

@@ -183,12 +183,12 @@ def _remap_content(content: str, source_home: Path, target_home: Path) -> str:
     normalized_content = content.replace("\\", "/")
     if source_str == target_str or source_str not in normalized_content:
         return content
-    # Negative lookahead: replace source only when NOT followed by a word character.
-    # This correctly treats /home/user-backup as a subdirectory of /home/user
-    # (not an embedded occurrence of /home/user) while avoiding corruption of
-    # strings like HOME=/home/userx where the source path is embedded in a
-    # larger identifier.
-    boundary = re.escape(source_str) + r"(?![\w])"
+    # Match at a path boundary: / (separator), end of string, whitespace,
+    # or quote character. Using a positive lookahead instead of negative
+    # (?!\w) avoids false positives on paths like /home/user-backup where
+    # the hyphen is not a word character and would incorrectly trigger
+    # replacement of /home/user inside it.
+    boundary = re.escape(source_str) + r"(?=/|$|\s|[:'\"])"
     result = re.sub(boundary, target_str, normalized_content)
     # Restore original backslashes in content that wasn't remapped
     if result == normalized_content:

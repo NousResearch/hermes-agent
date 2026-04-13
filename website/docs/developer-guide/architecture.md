@@ -117,8 +117,8 @@ hermes-agent/
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
 │   ├── builtin_hooks/        # Always-registered hooks
-│   └── platforms/            # 15 adapters: telegram, discord, slack, whatsapp,
-│                             #   signal, matrix, mattermost, email, sms,
+│   └── platforms/            # 16 adapters: telegram, discord, slack, whatsapp,
+│                             #   signal, imessage, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, weixin, bluebubbles, homeassistant, webhook
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)

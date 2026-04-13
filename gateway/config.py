@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    IMESSAGE = "imessage"
 
 
 @dataclass
@@ -302,6 +303,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # iMessage uses enabled flag only (macOS system permissions handle auth)
+            elif platform == Platform.IMESSAGE:
                 connected.append(platform)
         return connected
     
@@ -1107,6 +1111,36 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.BLUEBUBBLES,
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # iMessage (macOS only, uses imsg CLI)
+    imessage_enabled = os.getenv("IMESSAGE_ENABLED", "").lower() in ("true", "1", "yes")
+    if imessage_enabled:
+        if Platform.IMESSAGE not in config.platforms:
+            config.platforms[Platform.IMESSAGE] = PlatformConfig()
+        config.platforms[Platform.IMESSAGE].enabled = True
+        watch_chat_ids = os.getenv("IMESSAGE_WATCH_CHAT_IDS", "")
+        if watch_chat_ids:
+            config.platforms[Platform.IMESSAGE].extra["watch_chat_ids"] = [
+                cid.strip() for cid in watch_chat_ids.split(",") if cid.strip()
+            ]
+        # Watch mode: fsevents (default imsg watch), poll (DB polling), auto (try fsevents, fallback)
+        watch_mode = os.getenv("IMESSAGE_WATCH_MODE", "auto").lower()
+        if watch_mode in ("fsevents", "poll", "auto"):
+            config.platforms[Platform.IMESSAGE].extra["watch_mode"] = watch_mode
+        # Poll interval in seconds (for poll/auto modes)
+        poll_interval = os.getenv("IMESSAGE_POLL_INTERVAL")
+        if poll_interval:
+            try:
+                config.platforms[Platform.IMESSAGE].extra["poll_interval"] = float(poll_interval)
+            except ValueError:
+                pass
+    imessage_home = os.getenv("IMESSAGE_HOME_CHANNEL")
+    if imessage_home and Platform.IMESSAGE in config.platforms:
+        config.platforms[Platform.IMESSAGE].home_channel = HomeChannel(
+            platform=Platform.IMESSAGE,
+            chat_id=imessage_home,
+            name=os.getenv("IMESSAGE_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Session settings

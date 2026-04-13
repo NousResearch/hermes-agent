@@ -66,6 +66,7 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
+from tools.registry import registry
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
@@ -232,6 +233,25 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+# Legacy registry entries still surface a fully-default metadata dict even
+# before parallel safety is explicitly annotated. Treat that exact shape as
+# "unknown" so the legacy allowlist remains the fallback during migration.
+_DEFAULT_TOOL_METADATA = {
+    "mutates_local_fs": False,
+    "mutates_agent_state": False,
+    "mutates_browser_session": False,
+    "mutates_external_world": False,
+    "requires_confirmation_default": False,
+    "allowed_in_plan_mode_default": False,
+    "parallel_safe_default": False,
+    "risk_level": "low",
+    "deferred": False,
+    "always_load": False,
+    "search_hint": "",
+}
+_METADATA_PARALLEL_OVERRIDE_KEYS = frozenset({"parallel_safe_default"})
+_REGISTRY_METADATA_KEYS = frozenset(_DEFAULT_TOOL_METADATA.keys())
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -301,10 +321,49 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             reserved_paths.append(scoped_path)
             continue
 
+        metadata_parallel_safe = _parallel_safe_candidate_from_metadata(tool_name)
+        if metadata_parallel_safe is False:
+            return False
+        if metadata_parallel_safe is True:
+            continue
         if tool_name not in _PARALLEL_SAFE_TOOLS:
             return False
 
     return True
+
+
+def _parallel_safe_candidate_from_metadata(tool_name: str) -> bool | None:
+    """Return True/False when metadata is authoritative, else None for legacy fallback."""
+    try:
+        metadata = registry.get_metadata(tool_name)
+    except Exception:
+        logging.debug(
+            "Could not read registry metadata for %s; falling back to legacy parallel allowlist",
+            tool_name,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+
+    parallel_safe = metadata.get("parallel_safe_default")
+    if parallel_safe is None:
+        return None
+
+    if parallel_safe is False and tool_name in _PARALLEL_SAFE_TOOLS:
+        metadata_keys = frozenset(metadata.keys())
+        # Migration shim: the registry still returns a full metadata payload
+        # for legacy allowlisted tools even before parallel_safe_default is
+        # explicitly set. Keep those tools on the legacy fallback path until
+        # they opt into an override. Tests can still force an explicit deny by
+        # patching a minimal metadata dict with only parallel_safe_default.
+        if metadata_keys == _METADATA_PARALLEL_OVERRIDE_KEYS:
+            return False
+        if _REGISTRY_METADATA_KEYS.issubset(metadata_keys):
+            return None
+
+    return bool(parallel_safe)
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:

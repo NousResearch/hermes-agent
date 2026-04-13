@@ -8150,7 +8150,9 @@ class GatewayRunner:
                     return
                 await asyncio.sleep(0.05)
 
-        stream_task = asyncio.create_task(_start_stream_consumer())
+        _streaming_active = getattr(getattr(self, "config", None), "streaming", None)
+        if _streaming_active and _streaming_active.enabled and _streaming_active.transport != "off":
+            stream_task = asyncio.create_task(_start_stream_consumer())
         
         # Track this agent as running for this session (for interrupt support)
         # We do this in a callback after the agent is created

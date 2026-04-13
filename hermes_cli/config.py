@@ -1656,7 +1656,8 @@ def get_compatible_custom_providers(
         provider_key = str(entry.get("provider_key", "") or "").strip().lower()
         name = str(entry.get("name", "") or "").strip().lower()
         base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
-        pair = (name, base_url)
+        model = str(entry.get("model", "") or "").strip().lower()
+        pair = (name, base_url, model)
 
         if provider_key and provider_key in seen_provider_keys:
             return

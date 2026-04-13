@@ -709,3 +709,55 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+
+# =========================================================================
+# Thread safety (#8039)
+# =========================================================================
+
+class TestFetchThreadSafety:
+    """Verify concurrent fetch_model_metadata calls don't race."""
+
+    def test_concurrent_fetch_uses_lock(self):
+        """Two threads calling fetch_model_metadata should serialize via lock."""
+        import threading
+        from agent import model_metadata
+
+        results = []
+        call_count = {"n": 0}
+        original_cache = model_metadata._model_metadata_cache
+        original_time = model_metadata._model_metadata_cache_time
+
+        def mock_get(*args, **kwargs):
+            call_count["n"] += 1
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"data": [{"id": "test/model", "context_length": 8192, "name": "Test"}]}
+            return resp
+
+        try:
+            # Clear cache to force fetch
+            model_metadata._model_metadata_cache = {}
+            model_metadata._model_metadata_cache_time = 0
+
+            with patch("agent.model_metadata.requests.get", side_effect=mock_get):
+                barrier = threading.Barrier(2)
+
+                def fetch():
+                    barrier.wait()
+                    result = fetch_model_metadata(force_refresh=True)
+                    results.append(result)
+
+                t1 = threading.Thread(target=fetch)
+                t2 = threading.Thread(target=fetch)
+                t1.start()
+                t2.start()
+                t1.join(timeout=10)
+                t2.join(timeout=10)
+
+            assert len(results) == 2
+            # Both should return valid dicts
+            assert all(isinstance(r, dict) for r in results)
+        finally:
+            model_metadata._model_metadata_cache = original_cache
+            model_metadata._model_metadata_cache_time = original_time

@@ -7,6 +7,7 @@ and run_agent.py for pre-flight context checks.
 import logging
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -67,9 +68,11 @@ def _strip_provider_prefix(model: str) -> str:
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
+_model_metadata_lock = threading.Lock()
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_endpoint_metadata_lock = threading.Lock()
 
 # Descending tiers for context length probing when the model is unknown.
 # We start at 128K (a safe default for most modern models) and step down
@@ -429,36 +432,37 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     """Fetch model metadata from OpenRouter (cached for 1 hour)."""
     global _model_metadata_cache, _model_metadata_cache_time
 
-    if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
-        return _model_metadata_cache
+    with _model_metadata_lock:
+        if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+            return _model_metadata_cache
 
-    try:
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=10)
-        response.raise_for_status()
-        data = response.json()
+        try:
+            response = requests.get(OPENROUTER_MODELS_URL, timeout=10)
+            response.raise_for_status()
+            data = response.json()
 
-        cache = {}
-        for model in data.get("data", []):
-            model_id = model.get("id", "")
-            entry = {
-                "context_length": model.get("context_length", 128000),
-                "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
-                "name": model.get("name", model_id),
-                "pricing": model.get("pricing", {}),
-            }
-            _add_model_aliases(cache, model_id, entry)
-            canonical = model.get("canonical_slug", "")
-            if canonical and canonical != model_id:
-                _add_model_aliases(cache, canonical, entry)
+            cache = {}
+            for model in data.get("data", []):
+                model_id = model.get("id", "")
+                entry = {
+                    "context_length": model.get("context_length", 128000),
+                    "max_completion_tokens": model.get("top_provider", {}).get("max_completion_tokens", 4096),
+                    "name": model.get("name", model_id),
+                    "pricing": model.get("pricing", {}),
+                }
+                _add_model_aliases(cache, model_id, entry)
+                canonical = model.get("canonical_slug", "")
+                if canonical and canonical != model_id:
+                    _add_model_aliases(cache, canonical, entry)
 
-        _model_metadata_cache = cache
-        _model_metadata_cache_time = time.time()
-        logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
-        return cache
+            _model_metadata_cache = cache
+            _model_metadata_cache_time = time.time()
+            logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
+            return cache
 
-    except Exception as e:
-        logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        return _model_metadata_cache or {}
+        except Exception as e:
+            logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+            return _model_metadata_cache or {}
 
 
 def fetch_endpoint_model_metadata(
@@ -475,81 +479,82 @@ def fetch_endpoint_model_metadata(
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
 
-    if not force_refresh:
-        cached = _endpoint_model_metadata_cache.get(normalized)
-        cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
-        if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
-            return cached
+    with _endpoint_metadata_lock:
+        if not force_refresh:
+            cached = _endpoint_model_metadata_cache.get(normalized)
+            cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
+            if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
+                return cached
 
-    candidates = [normalized]
-    if normalized.endswith("/v1"):
-        alternate = normalized[:-3].rstrip("/")
-    else:
-        alternate = normalized + "/v1"
-    if alternate and alternate not in candidates:
-        candidates.append(alternate)
+        candidates = [normalized]
+        if normalized.endswith("/v1"):
+            alternate = normalized[:-3].rstrip("/")
+        else:
+            alternate = normalized + "/v1"
+        if alternate and alternate not in candidates:
+            candidates.append(alternate)
 
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    last_error: Optional[Exception] = None
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        last_error: Optional[Exception] = None
 
-    for candidate in candidates:
-        url = candidate.rstrip("/") + "/models"
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            payload = response.json()
-            cache: Dict[str, Dict[str, Any]] = {}
-            for model in payload.get("data", []):
-                if not isinstance(model, dict):
-                    continue
-                model_id = model.get("id")
-                if not model_id:
-                    continue
-                entry: Dict[str, Any] = {"name": model.get("name", model_id)}
-                context_length = _extract_context_length(model)
-                if context_length is not None:
-                    entry["context_length"] = context_length
-                max_completion_tokens = _extract_max_completion_tokens(model)
-                if max_completion_tokens is not None:
-                    entry["max_completion_tokens"] = max_completion_tokens
-                pricing = _extract_pricing(model)
-                if pricing:
-                    entry["pricing"] = pricing
-                _add_model_aliases(cache, model_id, entry)
+        for candidate in candidates:
+            url = candidate.rstrip("/") + "/models"
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+                cache: Dict[str, Dict[str, Any]] = {}
+                for model in payload.get("data", []):
+                    if not isinstance(model, dict):
+                        continue
+                    model_id = model.get("id")
+                    if not model_id:
+                        continue
+                    entry: Dict[str, Any] = {"name": model.get("name", model_id)}
+                    context_length = _extract_context_length(model)
+                    if context_length is not None:
+                        entry["context_length"] = context_length
+                    max_completion_tokens = _extract_max_completion_tokens(model)
+                    if max_completion_tokens is not None:
+                        entry["max_completion_tokens"] = max_completion_tokens
+                    pricing = _extract_pricing(model)
+                    if pricing:
+                        entry["pricing"] = pricing
+                    _add_model_aliases(cache, model_id, entry)
 
-            # If this is a llama.cpp server, query /props for actual allocated context
-            is_llamacpp = any(
-                m.get("owned_by") == "llamacpp"
-                for m in payload.get("data", []) if isinstance(m, dict)
-            )
-            if is_llamacpp:
-                try:
-                    # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
-                    props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
-                    if not props_resp.ok:
-                        props_resp = requests.get(base + "/props", headers=headers, timeout=5)
-                    if props_resp.ok:
-                        props = props_resp.json()
-                        gen_settings = props.get("default_generation_settings", {})
-                        n_ctx = gen_settings.get("n_ctx")
-                        model_alias = props.get("model_alias", "")
-                        if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
-                except Exception:
-                    pass
+                # If this is a llama.cpp server, query /props for actual allocated context
+                is_llamacpp = any(
+                    m.get("owned_by") == "llamacpp"
+                    for m in payload.get("data", []) if isinstance(m, dict)
+                )
+                if is_llamacpp:
+                    try:
+                        # Try /v1/props first (current llama.cpp); fall back to /props for older builds
+                        base = candidate.rstrip("/").replace("/v1", "")
+                        props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5)
+                        if not props_resp.ok:
+                            props_resp = requests.get(base + "/props", headers=headers, timeout=5)
+                        if props_resp.ok:
+                            props = props_resp.json()
+                            gen_settings = props.get("default_generation_settings", {})
+                            n_ctx = gen_settings.get("n_ctx")
+                            model_alias = props.get("model_alias", "")
+                            if n_ctx and model_alias and model_alias in cache:
+                                cache[model_alias]["context_length"] = n_ctx
+                    except Exception:
+                        pass
 
-            _endpoint_model_metadata_cache[normalized] = cache
-            _endpoint_model_metadata_cache_time[normalized] = time.time()
-            return cache
-        except Exception as exc:
-            last_error = exc
+                _endpoint_model_metadata_cache[normalized] = cache
+                _endpoint_model_metadata_cache_time[normalized] = time.time()
+                return cache
+            except Exception as exc:
+                last_error = exc
 
-    if last_error:
-        logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
-    _endpoint_model_metadata_cache[normalized] = {}
-    _endpoint_model_metadata_cache_time[normalized] = time.time()
-    return {}
+        if last_error:
+            logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
+        _endpoint_model_metadata_cache[normalized] = {}
+        _endpoint_model_metadata_cache_time[normalized] = time.time()
+        return {}
 
 
 def _get_context_cache_path() -> Path:

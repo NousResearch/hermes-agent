@@ -22,6 +22,7 @@ import difflib
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ _MODELS_DEV_CACHE_TTL = 3600  # 1 hour in-memory
 # In-memory cache
 _models_dev_cache: Dict[str, Any] = {}
 _models_dev_cache_time: float = 0
+_models_dev_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -219,41 +221,42 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     """
     global _models_dev_cache, _models_dev_cache_time
 
-    # Check in-memory cache
-    if (
-        not force_refresh
-        and _models_dev_cache
-        and (time.time() - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL
-    ):
+    with _models_dev_lock:
+        # Check in-memory cache
+        if (
+            not force_refresh
+            and _models_dev_cache
+            and (time.time() - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL
+        ):
+            return _models_dev_cache
+
+        # Try network fetch
+        try:
+            response = requests.get(MODELS_DEV_URL, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and data:
+                _models_dev_cache = data
+                _models_dev_cache_time = time.time()
+                _save_disk_cache(data)
+                logger.debug(
+                    "Fetched models.dev registry: %d providers, %d total models",
+                    len(data),
+                    sum(len(p.get("models", {})) for p in data.values() if isinstance(p, dict)),
+                )
+                return data
+        except Exception as e:
+            logger.debug("Failed to fetch models.dev: %s", e)
+
+        # Fall back to disk cache — use a short TTL (5 min) so we retry
+        # the network fetch soon instead of serving stale data for a full hour.
+        if not _models_dev_cache:
+            _models_dev_cache = _load_disk_cache()
+            if _models_dev_cache:
+                _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
+                logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
+
         return _models_dev_cache
-
-    # Try network fetch
-    try:
-        response = requests.get(MODELS_DEV_URL, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        if isinstance(data, dict) and data:
-            _models_dev_cache = data
-            _models_dev_cache_time = time.time()
-            _save_disk_cache(data)
-            logger.debug(
-                "Fetched models.dev registry: %d providers, %d total models",
-                len(data),
-                sum(len(p.get("models", {})) for p in data.values() if isinstance(p, dict)),
-            )
-            return data
-    except Exception as e:
-        logger.debug("Failed to fetch models.dev: %s", e)
-
-    # Fall back to disk cache — use a short TTL (5 min) so we retry
-    # the network fetch soon instead of serving stale data for a full hour.
-    if not _models_dev_cache:
-        _models_dev_cache = _load_disk_cache()
-        if _models_dev_cache:
-            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
-            logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
-
-    return _models_dev_cache
 
 
 def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:

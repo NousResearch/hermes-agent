@@ -58,6 +58,10 @@ class TestNormalizeVisionProvider:
         assert _normalize_vision_provider("beans") == "beans"
         assert _normalize_vision_provider("deepseek") == "deepseek"
 
+    def test_custom_colon_named_provider_preserved(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("custom:beans") == "beans"
+
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("codex") == "openai-codex"
@@ -229,3 +233,22 @@ class TestResolveVisionProviderClientModelNormalization:
         assert provider == "zai"
         assert client is not None
         assert model == "glm-5.1"
+
+
+class TestVisionPathApiMode:
+    """Vision path should propagate api_mode to _get_cached_client."""
+
+    def test_explicit_provider_passes_api_mode(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "auxiliary": {"vision": {"api_mode": "chat_completions"}},
+        })
+        with patch("agent.auxiliary_client._get_cached_client") as mock_gcc:
+            mock_gcc.return_value = (MagicMock(), "test-model")
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client(provider="deepseek")
+
+        mock_gcc.assert_called_once()
+        _, kwargs = mock_gcc.call_args
+        assert kwargs.get("api_mode") == "chat_completions"

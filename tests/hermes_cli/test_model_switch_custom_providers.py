@@ -102,3 +102,30 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.new_model == "rotator-openrouter-coding"
     assert result.base_url == "http://127.0.0.1:4141/v1"
     assert result.api_key == "no-key-required"
+
+
+def test_switch_model_strips_provider_prefix_for_unlisted_model(monkeypatch):
+    """Regression for #7922: zai/glm-5.1 should strip prefix even if not in curated list."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested: {
+            "api_key": "zai-key",
+            "base_url": "https://api.z.ai/api/coding/paas/v4/",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="zai/glm-5.1",
+        current_provider="auto",
+        current_model="gpt-4o",
+        current_base_url="",
+        current_api_key="some-key",
+    )
+
+    assert result.success is True
+    assert result.new_model == "glm-5.1"
+    assert result.target_provider == "zai"

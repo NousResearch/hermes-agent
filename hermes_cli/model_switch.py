@@ -677,6 +677,24 @@ def switch_model(
                 api_key = "no-key-required"
 
     # --- Normalize model name for target provider ---
+    # If the model still has a provider/ prefix and the target provider wasn't
+    # explicitly resolved, extract the prefix as the provider so normalization
+    # can strip it.  Handles cases where the model is not in the curated list
+    # and detect_provider_for_model() returned None.  (#7922)
+    # Skip for aggregator providers where vendor/model is the expected format.
+    if (
+        "/" in new_model
+        and not explicit_provider
+        and not resolved_alias
+        and not is_aggregator(target_provider)
+    ):
+        prefix, bare = new_model.split("/", 1)
+        if bare:
+            from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_ALIASES
+            canonical = _PROVIDER_ALIASES.get(prefix.lower(), prefix.lower())
+            if canonical in _PROVIDER_MODELS:
+                target_provider = canonical
+                new_model = bare
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---

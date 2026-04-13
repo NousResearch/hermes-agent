@@ -5853,14 +5853,23 @@ class AIAgent:
         return transformed
 
     def _anthropic_preserve_dots(self) -> bool:
-        """True when using an anthropic-compatible endpoint that preserves dots in model names.
-        Alibaba/DashScope keeps dots (e.g. qwen3.5-plus).
-        MiniMax keeps dots (e.g. MiniMax-M2.7).
-        OpenCode Go keeps dots (e.g. minimax-m2.7)."""
-        if (getattr(self, "provider", "") or "").lower() in {"alibaba", "minimax", "minimax-cn", "opencode-go"}:
-            return True
-        base = (getattr(self, "base_url", "") or "").lower()
-        return "dashscope" in base or "aliyuncs" in base or "minimax" in base or "opencode.ai/zen/go" in base
+        """True when model name dots should NOT be converted to hyphens.
+
+        The dot-to-hyphen conversion exists for native Anthropic endpoints,
+        where OpenRouter uses dots (claude-opus-4.6) but Anthropic's API
+        uses hyphens (claude-opus-4-6).
+
+        All third-party Anthropic-compatible endpoints use their own model
+        naming conventions which often include dots (e.g. GLM-5.1,
+        qwen3.5-plus, MiniMax-M2.7), so dots must be preserved.  Rather
+        than maintaining a hard-coded allowlist of known providers, we
+        simply check whether the endpoint is the native Anthropic API."""
+        base = (getattr(self, "base_url", "") or "").lower().rstrip("/")
+        # No base_url or direct Anthropic API → convert dots to hyphens
+        if not base or "api.anthropic.com" in base:
+            return False
+        # All third-party endpoints → preserve dots
+        return True
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""

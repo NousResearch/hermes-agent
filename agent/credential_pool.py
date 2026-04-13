@@ -48,6 +48,23 @@ def _load_config_safe() -> Optional[dict]:
         return None
 
 
+def _sanitize_ascii_token(value: Any, *, field: str, provider: str, entry_id: str) -> str:
+    """Return a token-safe ASCII string, stripping unexpected non-ASCII chars."""
+    token = "".join(str(value or "").split())
+    if not token:
+        return ""
+    if token.isascii():
+        return token
+    sanitized = "".join(ch for ch in token if ord(ch) < 128)
+    logger.warning(
+        "Credential pool entry %s (%s) has non-ASCII %s; sanitizing token value.",
+        entry_id,
+        provider,
+        field,
+    )
+    return sanitized
+
+
 # --- Status and type constants ---
 
 STATUS_OK = "ok"
@@ -136,6 +153,27 @@ class PooledCredential:
         data.setdefault("priority", 0)
         data.setdefault("source", SOURCE_MANUAL)
         data.setdefault("access_token", "")
+        entry_id = str(data.get("id") or payload.get("id") or "unknown")
+        data["access_token"] = _sanitize_ascii_token(
+            data.get("access_token"),
+            field="access_token",
+            provider=provider,
+            entry_id=entry_id,
+        )
+        if "refresh_token" in data:
+            data["refresh_token"] = _sanitize_ascii_token(
+                data.get("refresh_token"),
+                field="refresh_token",
+                provider=provider,
+                entry_id=entry_id,
+            ) or None
+        if "agent_key" in data:
+            data["agent_key"] = _sanitize_ascii_token(
+                data.get("agent_key"),
+                field="agent_key",
+                provider=provider,
+                entry_id=entry_id,
+            ) or None
         return cls(provider=provider, **data)
 
     def to_dict(self) -> Dict[str, Any]:

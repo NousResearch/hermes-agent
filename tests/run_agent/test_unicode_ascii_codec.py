@@ -9,6 +9,8 @@ import pytest
 from run_agent import (
     _strip_non_ascii,
     _sanitize_messages_non_ascii,
+    _sanitize_structure_non_ascii,
+    _sanitize_tools_non_ascii,
     _sanitize_messages_surrogates,
 )
 
@@ -138,3 +140,66 @@ class TestSurrogateVsAsciiSanitization:
         """When no surrogates present, _sanitize_messages_surrogates returns False."""
         messages = [{"role": "user", "content": "hello ⚕ world"}]
         assert _sanitize_messages_surrogates(messages) is False
+
+
+class TestSanitizeToolsNonAscii:
+    """Tests for _sanitize_tools_non_ascii."""
+
+    def test_sanitizes_tool_description_and_parameter_descriptions(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Print structured output │ with emoji 🤖",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path │ with unicode",
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+
+        assert _sanitize_tools_non_ascii(tools) is True
+        assert tools[0]["function"]["description"] == "Print structured output  with emoji "
+        assert tools[0]["function"]["parameters"]["properties"]["path"]["description"] == "File path  with unicode"
+
+    def test_no_change_for_ascii_only_tools(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read file content",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "File path",
+                            }
+                        },
+                    },
+                },
+            }
+        ]
+
+        assert _sanitize_tools_non_ascii(tools) is False
+
+
+class TestSanitizeStructureNonAscii:
+    def test_sanitizes_nested_dict_structure(self):
+        payload = {
+            "default_headers": {
+                "X-Title": "Hermes │ Agent",
+                "User-Agent": "Hermes/1.0 🤖",
+            }
+        }
+        assert _sanitize_structure_non_ascii(payload) is True
+        assert payload["default_headers"]["X-Title"] == "Hermes  Agent"
+        assert payload["default_headers"]["User-Agent"] == "Hermes/1.0 "

@@ -565,3 +565,108 @@ class TestPreLlmCallTargetRouting:
 # in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
 # commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
 # integration — all of which are unimplemented features.
+
+
+class TestPluginManagerSkillRegistry:
+    def test_register_plugin_skill_stores_entry(self, tmp_path):
+        """_register_plugin_skill adds an entry keyed by qualified name."""
+        from hermes_cli.plugins import PluginManager
+
+        skill_path = tmp_path / "skill.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        pm = PluginManager()
+        pm._register_plugin_skill(
+            plugin_name="myplugin",
+            skill_name="foo",
+            path=skill_path,
+            description="test desc",
+        )
+
+        assert "myplugin:foo" in pm._plugin_skills
+        entry = pm._plugin_skills["myplugin:foo"]
+        assert entry["path"] == skill_path
+        assert entry["plugin"] == "myplugin"
+        assert entry["bare_name"] == "foo"
+        assert entry["description"] == "test desc"
+
+    def test_find_plugin_skill_hit(self, tmp_path):
+        from hermes_cli.plugins import PluginManager
+
+        skill_path = tmp_path / "skill.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        pm = PluginManager()
+        pm._register_plugin_skill("myplugin", "foo", skill_path, "")
+
+        assert pm.find_plugin_skill("myplugin:foo") == skill_path
+
+    def test_find_plugin_skill_miss_wrong_namespace(self, tmp_path):
+        from hermes_cli.plugins import PluginManager
+
+        skill_path = tmp_path / "skill.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        pm = PluginManager()
+        pm._register_plugin_skill("myplugin", "foo", skill_path, "")
+
+        assert pm.find_plugin_skill("other:foo") is None
+
+    def test_find_plugin_skill_miss_wrong_skill(self, tmp_path):
+        from hermes_cli.plugins import PluginManager
+
+        skill_path = tmp_path / "skill.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        pm = PluginManager()
+        pm._register_plugin_skill("myplugin", "foo", skill_path, "")
+
+        assert pm.find_plugin_skill("myplugin:nonexistent") is None
+
+    def test_list_plugin_skills_sorted(self):
+        from hermes_cli.plugins import PluginManager
+        from pathlib import Path
+
+        pm = PluginManager()
+        pm._register_plugin_skill("sp", "z-skill", Path("/a"), "")
+        pm._register_plugin_skill("sp", "a-skill", Path("/b"), "")
+        pm._register_plugin_skill("sp", "m-skill", Path("/c"), "")
+
+        assert pm.list_plugin_skills("sp") == ["a-skill", "m-skill", "z-skill"]
+
+    def test_list_plugin_skills_isolates_by_plugin(self):
+        from hermes_cli.plugins import PluginManager
+        from pathlib import Path
+
+        pm = PluginManager()
+        pm._register_plugin_skill("sp", "foo", Path("/a"), "")
+        pm._register_plugin_skill("other", "bar", Path("/b"), "")
+
+        assert pm.list_plugin_skills("sp") == ["foo"]
+        assert pm.list_plugin_skills("other") == ["bar"]
+
+    def test_list_plugin_skills_empty_for_unknown_plugin(self):
+        from hermes_cli.plugins import PluginManager
+
+        pm = PluginManager()
+        assert pm.list_plugin_skills("nonexistent") == []
+
+    def test_remove_stale_plugin_skill(self, tmp_path):
+        from hermes_cli.plugins import PluginManager
+
+        skill_path = tmp_path / "skill.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        pm = PluginManager()
+        pm._register_plugin_skill("myplugin", "foo", skill_path, "")
+        assert pm.find_plugin_skill("myplugin:foo") is not None
+
+        pm._remove_stale_plugin_skill("myplugin:foo")
+        assert pm.find_plugin_skill("myplugin:foo") is None
+
+    def test_remove_stale_plugin_skill_noop_on_missing(self):
+        from hermes_cli.plugins import PluginManager
+
+        pm = PluginManager()
+        # Should not raise
+        pm._remove_stale_plugin_skill("nonexistent:skill")

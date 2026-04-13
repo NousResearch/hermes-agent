@@ -279,6 +279,8 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        # 插件技能注册表：键为 "plugin:skill" 的限定名，值为技能元数据字典
+        self._plugin_skills: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -554,6 +556,47 @@ class PluginManager:
                 }
             )
         return result
+
+    # -----------------------------------------------------------------------
+    # 插件技能注册表
+    # -----------------------------------------------------------------------
+
+    def _register_plugin_skill(
+        self,
+        plugin_name: str,
+        skill_name: str,
+        path: Path,
+        description: str,
+    ) -> None:
+        """由 PluginContext.register_skill() 调用。
+
+        以限定名 'plugin:skill' 为键存储技能条目。
+        """
+        qualified = f"{plugin_name}:{skill_name}"
+        self._plugin_skills[qualified] = {
+            "path": path,
+            "plugin": plugin_name,
+            "bare_name": skill_name,
+            "description": description,
+        }
+
+    def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
+        """返回插件技能 SKILL.md 的 Path，若未找到则返回 None。"""
+        entry = self._plugin_skills.get(qualified_name)
+        return entry["path"] if entry else None
+
+    def list_plugin_skills(self, plugin_name: str) -> List[str]:
+        """返回某插件注册的所有技能的裸名（bare name），按字母排序。"""
+        prefix = f"{plugin_name}:"
+        return sorted(
+            entry["bare_name"]
+            for qn, entry in self._plugin_skills.items()
+            if qn.startswith(prefix)
+        )
+
+    def _remove_stale_plugin_skill(self, qualified_name: str) -> None:
+        """自愈：删除 SKILL.md 已不存在的注册条目。"""
+        self._plugin_skills.pop(qualified_name, None)
 
 
 # ---------------------------------------------------------------------------

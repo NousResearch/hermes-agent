@@ -23,8 +23,10 @@ import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from hermes_constants import get_real_home
 from toolsets import TOOLSETS
 
 
@@ -139,7 +141,10 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
         if not candidate:
             continue
         try:
-            text = os.path.abspath(os.path.expanduser(str(candidate)))
+            text = str(candidate)
+            if text.startswith("~"):
+                text = str(get_real_home()) + text[1:]
+            text = os.path.abspath(text)
         except Exception:
             continue
         if os.path.isabs(text) and os.path.isdir(text):

@@ -16,14 +16,15 @@ class TestGetDefaultHermesRoot:
     def test_no_hermes_home_returns_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME is not set, returns ~/.hermes."""
         monkeypatch.delenv("HERMES_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         assert get_default_hermes_root() == tmp_path / ".hermes"
 
     def test_hermes_home_is_native(self, tmp_path, monkeypatch):
         """When HERMES_HOME = ~/.hermes, returns ~/.hermes."""
         native = tmp_path / ".hermes"
         native.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(native))
         assert get_default_hermes_root() == native
 
@@ -32,7 +33,7 @@ class TestGetDefaultHermesRoot:
         native = tmp_path / ".hermes"
         profile = native / "profiles" / "coder"
         profile.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == native
 
@@ -40,7 +41,7 @@ class TestGetDefaultHermesRoot:
         """When HERMES_HOME points outside ~/.hermes (Docker), returns HERMES_HOME."""
         docker_home = tmp_path / "opt" / "data"
         docker_home.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(docker_home))
         assert get_default_hermes_root() == docker_home
 
@@ -48,7 +49,7 @@ class TestGetDefaultHermesRoot:
         """Any HERMES_HOME outside ~/.hermes is treated as the root."""
         custom = tmp_path / "my-hermes-data"
         custom.mkdir()
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(custom))
         assert get_default_hermes_root() == custom
 
@@ -58,7 +59,7 @@ class TestGetDefaultHermesRoot:
         docker_root = tmp_path / "opt" / "data"
         profile = docker_root / "profiles" / "coder"
         profile.mkdir(parents=True)
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr("hermes_constants._REAL_HOME", tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
 

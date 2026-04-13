@@ -8,13 +8,43 @@ import os
 from pathlib import Path
 
 
+# ── Real user home (captured at import time) ──────────────────────────────
+#
+# The terminal sandbox overrides ``HOME`` to ``{HERMES_HOME}/home/`` for
+# per-profile subprocess isolation.  ``Path.home()`` reads the overridden
+# value, so any code that needs the *real* OS user home must use this
+# module-level constant instead.
+#
+# Captured once at import time — before the sandbox can override it — so
+# downstream consumers always get the correct value even when ``HOME`` has
+# been repointed to a profile directory.
+
+_REAL_HOME: Path = Path(os.environ.get("HERMES_REAL_HOME", "")) or Path.home()
+
+
+def get_real_home() -> Path:
+    """Return the real OS user home directory.
+
+    Unlike ``Path.home()`` — which returns the sandbox-overridden ``HOME``
+    when running inside a profile — this always returns the actual user
+    home (e.g. ``/Users/alice``).
+
+    Use this when:
+    - Looking for external tool configs (``~/.claude.json``, ``~/.modal.toml``)
+    - Resolving the hermes root directory (``~/.hermes``)
+    - Creating wrapper scripts (``~/.local/bin``)
+    - Expanding user file paths (``~/Documents/file.txt``)
+    """
+    return _REAL_HOME
+
+
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: ~/.hermes).
 
     Reads HERMES_HOME env var, falls back to ~/.hermes.
     This is the single source of truth — all other copies should import this.
     """
-    return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    return Path(os.getenv("HERMES_HOME", get_real_home() / ".hermes"))
 
 
 def get_default_hermes_root() -> Path:
@@ -33,7 +63,7 @@ def get_default_hermes_root() -> Path:
 
     Import-safe — no dependencies beyond stdlib.
     """
-    native_home = Path.home() / ".hermes"
+    native_home = get_real_home() / ".hermes"
     env_home = os.environ.get("HERMES_HOME", "")
     if not env_home:
         return native_home

@@ -16,7 +16,7 @@ import logging
 import os
 from pathlib import Path
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, get_real_home
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -308,7 +308,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = _real_home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
             data = json.loads(cred_path.read_text(encoding="utf-8"))
@@ -330,7 +330,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
 def read_claude_managed_key() -> Optional[str]:
     """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
-    claude_json = Path.home() / ".claude.json"
+    claude_json = get_real_home() / ".claude.json"
     if claude_json.exists():
         try:
             data = json.loads(claude_json.read_text(encoding="utf-8"))
@@ -456,7 +456,7 @@ def _write_claude_code_credentials(
     as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
     in the stored scopes before it will use the token.
     """
-    cred_path = Path.home() / ".claude" / ".credentials.json"
+    cred_path = get_real_home() / ".claude" / ".credentials.json"
     try:
         # Read existing file to preserve other fields
         existing = {}

@@ -3810,7 +3810,8 @@ class HermesCLI:
         home = get_hermes_home()
         display = display_hermes_home()
 
-        profiles_parent = Path.home() / ".hermes" / "profiles"
+        from hermes_constants import get_real_home
+        profiles_parent = get_real_home() / ".hermes" / "profiles"
         try:
             rel = home.relative_to(profiles_parent)
             profile_name = str(rel).split("/")[0]

@@ -7,11 +7,20 @@ import logging
 import os
 import threading
 from pathlib import Path
+from hermes_constants import get_real_home
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+def _expanduser(path: str) -> str:
+    """Expand ``~`` to the real user home, not the sandbox-overridden HOME."""
+    home = str(get_real_home())
+    if path == "~" or path.startswith("~/"):
+        return home + path[1:]
+    return os.path.expanduser(path)
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -79,7 +88,7 @@ def _is_blocked_device(filepath: str) -> bool:
     through (e.g. /dev/stdin → /proc/self/fd/0 → /dev/pts/0), defeating
     the check.
     """
-    normalized = os.path.expanduser(filepath)
+    normalized = _expanduser(filepath)
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
     # /proc/self/fd/0-2 and /proc/<pid>/fd/0-2 are Linux aliases for stdio
@@ -99,7 +108,7 @@ _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 def _check_sensitive_path(filepath: str) -> str | None:
     """Return an error message if the path targets a sensitive system location."""
     try:
-        resolved = os.path.realpath(os.path.expanduser(filepath))
+        resolved = os.path.realpath(_expanduser(filepath))
     except (OSError, ValueError):
         resolved = filepath
     for prefix in _SENSITIVE_PATH_PREFIXES:

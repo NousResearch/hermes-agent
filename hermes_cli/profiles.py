@@ -149,7 +149,8 @@ def _get_active_profile_path() -> Path:
 
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
-    return Path.home() / ".local" / "bin"
+    from hermes_constants import get_real_home
+    return get_real_home() / ".local" / "bin"
 
 
 # ---------------------------------------------------------------------------

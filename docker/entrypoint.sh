@@ -2,7 +2,8 @@
 # Docker entrypoint: bootstrap config files into the mounted volume, then run hermes.
 set -e
 
-HERMES_HOME="/opt/data"
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+export HERMES_HOME
 INSTALL_DIR="/opt/hermes"
 
 # --- Privilege dropping via gosu ---
@@ -39,7 +40,7 @@ source "${INSTALL_DIR}/.venv/bin/activate"
 # The "home/" subdirectory is a per-profile HOME for subprocesses (git,
 # ssh, gh, npm …).  Without it those tools write to /root which is
 # ephemeral and shared across profiles.  See issue #4426.
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home,profiles}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then

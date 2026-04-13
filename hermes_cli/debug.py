@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -22,8 +23,9 @@ from hermes_constants import get_hermes_home, display_hermes_home
 _PASTE_RS_URL = "https://paste.rs/"
 _DPASTE_COM_URL = "https://dpaste.com/api/"
 
-# Map user-facing "expire days" to dpaste.com's expiry_days parameter.
-# paste.rs doesn't support expiry — pastes persist indefinitely.
+# Maximum bytes to read from a single log file for upload.
+# paste.rs caps at ~1 MB; we stay under that with headroom.
+_MAX_LOG_BYTES = 512_000
 
 
 def _upload_paste_rs(content: str) -> str:
@@ -107,7 +109,7 @@ def upload_to_pastebin(content: str, expiry_days: int = 7) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Debug report collection
+# Log file reading
 # ---------------------------------------------------------------------------
 
 def _read_log_tail(log_name: str, num_lines: int) -> str:
@@ -129,15 +131,53 @@ def _read_log_tail(log_name: str, num_lines: int) -> str:
         return f"(error reading: {exc})"
 
 
+def _read_full_log(log_name: str, max_bytes: int = _MAX_LOG_BYTES) -> Optional[str]:
+    """Read a log file for standalone upload.
+
+    Returns the file content (last *max_bytes* if truncated), or None if the
+    file doesn't exist or is empty.
+    """
+    from hermes_cli.logs import LOG_FILES
+
+    filename = LOG_FILES.get(log_name)
+    if not filename:
+        return None
+
+    log_path = get_hermes_home() / "logs" / filename
+    if not log_path.exists():
+        return None
+
+    try:
+        size = log_path.stat().st_size
+        if size == 0:
+            return None
+
+        if size <= max_bytes:
+            return log_path.read_text(encoding="utf-8", errors="replace")
+
+        # File is larger than max_bytes — read the tail.
+        with open(log_path, "rb") as f:
+            f.seek(size - max_bytes)
+            # Skip partial line at the seek point.
+            f.readline()
+            content = f.read().decode("utf-8", errors="replace")
+        return f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{content}"
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Debug report collection
+# ---------------------------------------------------------------------------
+
 def collect_debug_report(*, log_lines: int = 200) -> str:
-    """Build a full debug report: system dump + recent logs.
+    """Build the summary debug report: system dump + log tails.
 
     Returns the report as a plain-text string ready for upload.
     """
     buf = io.StringIO()
 
     # ── System dump ──────────────────────────────────────────────────────
-    # Re-use the dump module's logic by capturing its output.
     from hermes_cli.dump import run_dump
 
     class _FakeArgs:
@@ -154,7 +194,7 @@ def collect_debug_report(*, log_lines: int = 200) -> str:
 
     buf.write(capture.getvalue())
 
-    # ── Recent logs ──────────────────────────────────────────────────────
+    # ── Recent log tails (summary only) ──────────────────────────────────
     buf.write("\n\n")
     buf.write(f"--- agent.log (last {log_lines} lines) ---\n")
     buf.write(_read_log_tail("agent", log_lines))
@@ -177,29 +217,67 @@ def collect_debug_report(*, log_lines: int = 200) -> str:
 # ---------------------------------------------------------------------------
 
 def run_debug_share(args):
-    """Collect debug report, upload to paste service, print URL."""
+    """Collect debug report + full logs, upload each, print URLs."""
     log_lines = getattr(args, "lines", 200)
     expiry = getattr(args, "expire", 7)
     local_only = getattr(args, "local", False)
 
     print("Collecting debug report...")
     report = collect_debug_report(log_lines=log_lines)
+    agent_log = _read_full_log("agent")
+    gateway_log = _read_full_log("gateway")
 
     if local_only:
         print(report)
+        if agent_log:
+            print(f"\n\n{'=' * 60}")
+            print("FULL agent.log")
+            print(f"{'=' * 60}\n")
+            print(agent_log)
+        if gateway_log:
+            print(f"\n\n{'=' * 60}")
+            print("FULL gateway.log")
+            print(f"{'=' * 60}\n")
+            print(gateway_log)
         return
 
     print("Uploading...")
+    urls: dict[str, str] = {}
+    failures: list[str] = []
+
+    # 1. Summary report (required)
     try:
-        url = upload_to_pastebin(report, expiry_days=expiry)
-        print(f"\nDebug report uploaded:")
-        print(f"  {url}")
-        print(f"\nShare this link with the Hermes team for support.")
+        urls["Report"] = upload_to_pastebin(report, expiry_days=expiry)
     except RuntimeError as exc:
         print(f"\nUpload failed: {exc}", file=sys.stderr)
         print("\nFull report printed below — copy-paste it manually:\n")
         print(report)
         sys.exit(1)
+
+    # 2. Full agent.log (optional)
+    if agent_log:
+        try:
+            urls["agent.log"] = upload_to_pastebin(agent_log, expiry_days=expiry)
+        except Exception as exc:
+            failures.append(f"agent.log: {exc}")
+
+    # 3. Full gateway.log (optional)
+    if gateway_log:
+        try:
+            urls["gateway.log"] = upload_to_pastebin(gateway_log, expiry_days=expiry)
+        except Exception as exc:
+            failures.append(f"gateway.log: {exc}")
+
+    # Print results
+    label_width = max(len(k) for k in urls)
+    print(f"\nDebug report uploaded:")
+    for label, url in urls.items():
+        print(f"  {label:<{label_width}}  {url}")
+
+    if failures:
+        print(f"\n  (failed to upload: {', '.join(failures)})")
+
+    print(f"\nShare these links with the Hermes team for support.")
 
 
 def run_debug(args):

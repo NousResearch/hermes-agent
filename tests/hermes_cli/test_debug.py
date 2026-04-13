@@ -4,7 +4,7 @@ import os
 import sys
 import urllib.error
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 import pytest
 
@@ -45,7 +45,6 @@ class TestUploadPasteRs:
     """Test paste.rs upload path."""
 
     def test_upload_paste_rs_success(self):
-        """Successful paste.rs upload returns the paste URL."""
         from hermes_cli.debug import _upload_paste_rs
 
         mock_resp = MagicMock()
@@ -59,7 +58,6 @@ class TestUploadPasteRs:
         assert url == "https://paste.rs/abc123"
 
     def test_upload_paste_rs_bad_response(self):
-        """paste.rs non-URL response raises ValueError."""
         from hermes_cli.debug import _upload_paste_rs
 
         mock_resp = MagicMock()
@@ -72,7 +70,6 @@ class TestUploadPasteRs:
                 _upload_paste_rs("test")
 
     def test_upload_paste_rs_network_error(self):
-        """paste.rs upload raises on network failure."""
         from hermes_cli.debug import _upload_paste_rs
 
         with patch(
@@ -87,7 +84,6 @@ class TestUploadDpasteCom:
     """Test dpaste.com fallback upload path."""
 
     def test_upload_dpaste_com_success(self):
-        """Successful dpaste.com upload returns the paste URL."""
         from hermes_cli.debug import _upload_dpaste_com
 
         mock_resp = MagicMock()
@@ -105,7 +101,6 @@ class TestUploadToPastebin:
     """Test the combined upload with fallback."""
 
     def test_tries_paste_rs_first(self):
-        """upload_to_pastebin tries paste.rs before dpaste.com."""
         from hermes_cli.debug import upload_to_pastebin
 
         with patch("hermes_cli.debug._upload_paste_rs",
@@ -116,7 +111,6 @@ class TestUploadToPastebin:
         prs.assert_called_once()
 
     def test_falls_back_to_dpaste_com(self):
-        """Falls back to dpaste.com when paste.rs fails."""
         from hermes_cli.debug import upload_to_pastebin
 
         with patch("hermes_cli.debug._upload_paste_rs",
@@ -129,7 +123,6 @@ class TestUploadToPastebin:
         dp.assert_called_once()
 
     def test_raises_when_both_fail(self):
-        """RuntimeError when all services fail."""
         from hermes_cli.debug import upload_to_pastebin
 
         with patch("hermes_cli.debug._upload_paste_rs",
@@ -141,6 +134,52 @@ class TestUploadToPastebin:
 
 
 # ---------------------------------------------------------------------------
+# Log reading
+# ---------------------------------------------------------------------------
+
+class TestReadFullLog:
+    """Test _read_full_log for standalone log uploads."""
+
+    def test_reads_small_file(self, hermes_home):
+        from hermes_cli.debug import _read_full_log
+
+        content = _read_full_log("agent")
+        assert content is not None
+        assert "session started" in content
+
+    def test_returns_none_for_missing(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.debug import _read_full_log
+        assert _read_full_log("agent") is None
+
+    def test_returns_none_for_empty(self, hermes_home):
+        # Truncate agent.log to empty
+        (hermes_home / "logs" / "agent.log").write_text("")
+
+        from hermes_cli.debug import _read_full_log
+        assert _read_full_log("agent") is None
+
+    def test_truncates_large_file(self, hermes_home):
+        """Files larger than max_bytes get tail-truncated."""
+        from hermes_cli.debug import _read_full_log
+
+        # Write a file larger than 1KB
+        big_content = "x" * 100 + "\n"
+        (hermes_home / "logs" / "agent.log").write_text(big_content * 200)
+
+        content = _read_full_log("agent", max_bytes=1024)
+        assert content is not None
+        assert "truncated" in content
+
+    def test_unknown_log_returns_none(self, hermes_home):
+        from hermes_cli.debug import _read_full_log
+        assert _read_full_log("nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
 # Debug report collection
 # ---------------------------------------------------------------------------
 
@@ -148,7 +187,6 @@ class TestCollectDebugReport:
     """Test the debug report builder."""
 
     def test_report_includes_dump_output(self, hermes_home):
-        """Report includes the hermes dump section."""
         from hermes_cli.debug import collect_debug_report
 
         with patch("hermes_cli.dump.run_dump") as mock_dump:
@@ -161,7 +199,6 @@ class TestCollectDebugReport:
         assert "version: 0.8.0" in report
 
     def test_report_includes_agent_log(self, hermes_home):
-        """Report includes agent.log tail."""
         from hermes_cli.debug import collect_debug_report
 
         with patch("hermes_cli.dump.run_dump"):
@@ -171,7 +208,6 @@ class TestCollectDebugReport:
         assert "session started" in report
 
     def test_report_includes_errors_log(self, hermes_home):
-        """Report includes errors.log tail."""
         from hermes_cli.debug import collect_debug_report
 
         with patch("hermes_cli.dump.run_dump"):
@@ -181,7 +217,6 @@ class TestCollectDebugReport:
         assert "connection lost" in report
 
     def test_report_includes_gateway_log(self, hermes_home):
-        """Report includes gateway.log tail."""
         from hermes_cli.debug import collect_debug_report
 
         with patch("hermes_cli.dump.run_dump"):
@@ -190,7 +225,6 @@ class TestCollectDebugReport:
         assert "--- gateway.log" in report
 
     def test_missing_logs_handled(self, tmp_path, monkeypatch):
-        """Report handles missing log files gracefully."""
         home = tmp_path / ".hermes"
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
@@ -204,14 +238,14 @@ class TestCollectDebugReport:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI entry point — run_debug_share
 # ---------------------------------------------------------------------------
 
 class TestRunDebugShare:
     """Test the run_debug_share CLI handler."""
 
-    def test_local_flag_prints_report(self, hermes_home, capsys):
-        """--local prints the report without uploading."""
+    def test_local_flag_prints_full_logs(self, hermes_home, capsys):
+        """--local prints the report plus full log contents."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -224,9 +258,11 @@ class TestRunDebugShare:
 
         out = capsys.readouterr().out
         assert "--- agent.log" in out
+        assert "FULL agent.log" in out
+        assert "FULL gateway.log" in out
 
-    def test_share_prints_url_on_success(self, hermes_home, capsys):
-        """Successful upload prints the paste URL."""
+    def test_share_uploads_three_pastes(self, hermes_home, capsys):
+        """Successful share uploads report + agent.log + gateway.log."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -234,17 +270,82 @@ class TestRunDebugShare:
         args.expire = 7
         args.local = False
 
+        call_count = [0]
+        def _mock_upload(content, expiry_days=7):
+            call_count[0] += 1
+            return f"https://paste.rs/paste{call_count[0]}"
+
         with patch("hermes_cli.dump.run_dump"), \
              patch("hermes_cli.debug.upload_to_pastebin",
-                    return_value="https://paste.rs/xyz"):
+                    side_effect=_mock_upload):
             run_debug_share(args)
 
         out = capsys.readouterr().out
-        assert "https://paste.rs/xyz" in out
-        assert "Share this link" in out
+        # Should have 3 uploads: report, agent.log, gateway.log
+        assert call_count[0] == 3
+        assert "paste.rs/paste1" in out  # Report
+        assert "paste.rs/paste2" in out  # agent.log
+        assert "paste.rs/paste3" in out  # gateway.log
+        assert "Report" in out
+        assert "agent.log" in out
+        assert "gateway.log" in out
 
-    def test_share_falls_back_on_upload_failure(self, hermes_home, capsys):
-        """Upload failure prints report locally and exits with code 1."""
+    def test_share_skips_missing_logs(self, tmp_path, monkeypatch, capsys):
+        """Only uploads logs that exist."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        call_count = [0]
+        def _mock_upload(content, expiry_days=7):
+            call_count[0] += 1
+            return f"https://paste.rs/paste{call_count[0]}"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    side_effect=_mock_upload):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        # Only the report should be uploaded (no log files exist)
+        assert call_count[0] == 1
+        assert "Report" in out
+
+    def test_share_continues_on_log_upload_failure(self, hermes_home, capsys):
+        """Log upload failure doesn't stop the report from being shared."""
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        call_count = [0]
+        def _mock_upload(content, expiry_days=7):
+            call_count[0] += 1
+            if call_count[0] > 1:
+                raise RuntimeError("upload failed")
+            return "https://paste.rs/report"
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    side_effect=_mock_upload):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "Report" in out
+        assert "paste.rs/report" in out
+        assert "failed to upload" in out
+
+    def test_share_exits_on_report_upload_failure(self, hermes_home, capsys):
+        """If the main report fails to upload, exit with code 1."""
         from hermes_cli.debug import run_debug_share
 
         args = MagicMock()
@@ -263,11 +364,12 @@ class TestRunDebugShare:
         assert "all failed" in out.err
 
 
-class TestRunDebug:
-    """Test the top-level run_debug router."""
+# ---------------------------------------------------------------------------
+# run_debug router
+# ---------------------------------------------------------------------------
 
+class TestRunDebug:
     def test_no_subcommand_shows_usage(self, capsys):
-        """No subcommand prints usage help."""
         from hermes_cli.debug import run_debug
 
         args = MagicMock()
@@ -279,7 +381,6 @@ class TestRunDebug:
         assert "hermes debug share" in out
 
     def test_share_subcommand_routes(self, hermes_home):
-        """'share' subcommand routes to run_debug_share."""
         from hermes_cli.debug import run_debug
 
         args = MagicMock()
@@ -289,7 +390,7 @@ class TestRunDebug:
         args.local = True
 
         with patch("hermes_cli.dump.run_dump"):
-            run_debug(args)  # Should not raise
+            run_debug(args)
 
 
 # ---------------------------------------------------------------------------
@@ -297,20 +398,14 @@ class TestRunDebug:
 # ---------------------------------------------------------------------------
 
 class TestArgparseIntegration:
-    """Verify the debug subparser is correctly wired in main.py."""
-
     def test_module_imports_clean(self):
-        """debug module functions are importable."""
         from hermes_cli.debug import run_debug, run_debug_share
         assert callable(run_debug)
         assert callable(run_debug_share)
 
     def test_cmd_debug_dispatches(self):
-        """cmd_debug in main.py correctly calls run_debug."""
         from hermes_cli.main import cmd_debug
 
         args = MagicMock()
         args.debug_command = None
-
-        # Should print usage without error
         cmd_debug(args)

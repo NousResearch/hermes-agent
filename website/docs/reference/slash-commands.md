@@ -34,7 +34,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/stop` | Kill all running background processes |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn (doesn't interrupt the current agent response). **Note:** `/q` is claimed by both `/queue` and `/quit`; the last registration wins, so `/q` resolves to `/quit` in practice. Use `/queue` explicitly. |
 | `/resume [name]` | Resume a previously-named session |
-| `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
+| `/status` | Show session info |
+| `/snapshot` (alias: `/snap`) | Create or restore state snapshots of Hermes config/state (usage: /snapshot [create\|restore \<id\>\|prune]) |
 | `/background <prompt>` (alias: `/bg`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/btw <question>` | Ephemeral side question using session context (no tools, not persisted). Useful for quick clarifications without affecting the conversation history. |
 | `/plan [request]` | Load the bundled `plan` skill to write a markdown plan instead of executing the work. Plans are saved under `.hermes/plans/` relative to the active workspace/backend working directory. |
@@ -49,9 +50,11 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/provider` | Show available providers and current provider |
 | `/personality` | Set a predefined personality |
 | `/verbose` | Cycle tool progress display: off → new → all → verbose. Can be [enabled for messaging](#notes) via config. |
+| `/fast` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (usage: /fast [normal\|fast\|status]) |
 | `/reasoning` | Manage reasoning effort and display (usage: /reasoning [level\|show\|hide]) |
 | `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. Options: `normal`, `fast`, `status`, `on`, `off`. |
 | `/skin` | Show or change the display skin/theme |
+| `/statusbar` (alias: `/sb`) | Toggle the context/model status bar on or off |
 | `/voice [on\|off\|tts\|status]` | Toggle CLI voice mode and spoken playback. Recording uses `voice.record_key` (default: `Ctrl+B`). |
 | `/yolo` | Toggle YOLO mode — skip all dangerous command approval prompts. |
 
@@ -147,6 +150,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/deny` | Reject a pending dangerous command. |
 | `/update` | Update Hermes Agent to the latest version. |
 | `/restart` | Gracefully restart the gateway after draining active runs. When the gateway comes back online, it sends a confirmation to the requester's chat/thread. |
+| `/fast [normal\|fast\|status]` | Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode. |
+| `/debug` | Upload debug report (system info + logs) and get shareable links. |
 | `/debug` | Upload debug report (system info + logs) and get shareable links. |
 | `/help` | Show messaging help. |
 | `/<skill-name>` | Invoke any installed skill by name. |

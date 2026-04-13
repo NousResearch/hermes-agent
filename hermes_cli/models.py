@@ -1625,8 +1625,14 @@ def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
     timeout: float = 5.0,
+    api_mode: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Probe an OpenAI-compatible ``/models`` endpoint with light URL heuristics."""
+    """Probe an OpenAI-compatible ``/models`` endpoint with light URL heuristics.
+
+    When *api_mode* is ``"anthropic_messages"``, an ``anthropic-version`` header
+    is included so that Anthropic-compatible proxies (e.g. Claude Code Hub) return
+    their Anthropic model catalog instead of the OpenAI one.
+    """
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return {
@@ -1662,6 +1668,8 @@ def probe_api_models(
         headers["Authorization"] = f"Bearer {api_key}"
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
+    if api_mode == "anthropic_messages":
+        headers["anthropic-version"] = "2023-06-01"
 
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
@@ -1720,13 +1728,14 @@ def fetch_api_models(
     api_key: Optional[str],
     base_url: Optional[str],
     timeout: float = 5.0,
+    api_mode: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
     """
-    return probe_api_models(api_key, base_url, timeout=timeout).get("models")
+    return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
 
 
 def validate_requested_model(
@@ -1735,6 +1744,7 @@ def validate_requested_model(
     *,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Validate a ``/model`` value for the active provider.
@@ -1775,8 +1785,8 @@ def validate_requested_model(
             "message": "Model names cannot contain spaces.",
         }
 
-    if normalized == "custom":
-        probe = probe_api_models(api_key, base_url)
+    if normalized == "custom" or normalized.startswith("custom:"):
+        probe = probe_api_models(api_key, base_url, api_mode=api_mode)
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -1854,7 +1864,7 @@ def validate_requested_model(
             }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):

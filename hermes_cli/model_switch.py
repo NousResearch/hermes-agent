@@ -454,6 +454,7 @@ def switch_model(
     """
     from hermes_cli.models import (
         detect_provider_for_model,
+        parse_model_input,
         validate_requested_model,
         opencode_model_api_mode,
     )
@@ -612,7 +613,18 @@ def switch_model(
             "localhost" in _base or "127.0.0.1" in _base
         )
 
-        if (
+        # Always attempt to parse ``custom:<name>:<model>`` triple syntax
+        # even when currently on a custom provider, so users can switch
+        # between named custom providers (e.g. custom:cch_anthropic:glm-5-turbo).
+        # ``parse_model_input`` handles this; ``detect_provider_for_model``
+        # only matches against known provider catalogs and misses custom slugs.
+        if new_model.startswith("custom:") and ":" in new_model[len("custom:"):]:
+            parsed_provider, parsed_model = parse_model_input(new_model, current_provider)
+            if parsed_provider != current_provider or parsed_model != new_model:
+                target_provider = parsed_provider
+                new_model = parsed_model
+                is_custom = False  # provider changed, re-evaluate
+        elif (
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
@@ -686,6 +698,7 @@ def switch_model(
             target_provider,
             api_key=api_key,
             base_url=base_url,
+            api_mode=api_mode,
         )
     except Exception:
         validation = {
@@ -992,6 +1005,18 @@ def list_authenticated_providers(
             default_model = (entry.get("model") or "").strip()
             if default_model:
                 models_list.append(default_model)
+
+            # Also include models from the "models" field (dict or list).
+            # Users define models as {name: {context_length: N}} or [name, ...].
+            cfg_models = entry.get("models")
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if isinstance(m, str) and m not in models_list:
+                        models_list.append(m)
 
             results.append({
                 "slug": slug,

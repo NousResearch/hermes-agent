@@ -3377,6 +3377,21 @@ class GatewayRunner:
                 event_message_id=event.message_id,
             )
 
+            # Sync session_id: if in-loop context compression fired inside the agent,
+            # it created a new session_id and stashed it in the result dict.
+            # Update session_entry so post-compression messages are appended to the
+            # correct (new) session rather than the pre-compression one.
+            # The hygiene-path compression (pre-agent) already handles this via
+            # _hyg_new_sid; this covers the in-agent path.
+            _new_sid = agent_result.get("session_id_after_compression")
+            if _new_sid and _new_sid != session_entry.session_id:
+                logger.debug(
+                    "In-agent compression: updating session_entry.session_id %s → %s",
+                    session_entry.session_id, _new_sid,
+                )
+                session_entry.session_id = _new_sid
+                self.session_store._save()
+
             # Stop persistent typing indicator now that the agent is done
             try:
                 _typing_adapter = self.adapters.get(source.platform)

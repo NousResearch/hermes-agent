@@ -9947,6 +9947,11 @@ class AIAgent:
             "completion_tokens": self.session_completion_tokens,
             "total_tokens": self.session_total_tokens,
             "last_prompt_tokens": getattr(self.context_compressor, "last_prompt_tokens", 0) or 0,
+            # Captures the session_id AFTER any in-loop context compression.
+            # Used by the gateway to update session_entry so post-compression
+            # messages are appended to the correct (new) session, not the old one.
+            # See: https://github.com/NousResearch/hermes-agent/wiki/session-compression-context-bleed-2026-04-13
+            "session_id_after_compression": self.session_id,
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,

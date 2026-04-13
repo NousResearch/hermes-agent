@@ -657,6 +657,23 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Align to avoid splitting tool groups
         cut_idx = self._align_boundary_backward(messages, cut_idx)
 
+        # ------------------------------------------------------------------
+        # HOTFIX: Ensure the last user message is always in the TAIL.
+        #
+        # The token-budget walk can land the cut AFTER the last user turn
+        # if tool results are small (few tokens, many fit under budget).
+        # That puts the user's question in MIDDLE → summarized → ghost.
+        # Search from the TRUE end of the message list to find the last
+        # user, then ensure the cut includes it regardless of alignment.
+        # ------------------------------------------------------------------
+        last_user_idx = None
+        for i in range(n - 1, -1, -1):
+            if messages[i].get("role") == "user":
+                last_user_idx = i
+                break
+        if last_user_idx is not None and cut_idx > last_user_idx:
+            cut_idx = last_user_idx
+
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
@@ -704,7 +721,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
 
         # Phase 2: Determine boundaries
-        compress_start = self.protect_first_n
+        # ------------------------------------------------------------------
+        # HOTFIX 2: Only fossilize HEAD when the session starts with a system
+        # message.  The intent of protect_first_n is to preserve the system
+        # prompt + first exchange.  If the session has NO system message it
+        # starts cold with a plain user message; copying that into every child
+        # session after compression causes the model to re-process it on every
+        # compaction cycle ("HEAD fossilization" bug).
+        # Fix: set compress_start = 0 when messages[0] is not a system message.
+        # ------------------------------------------------------------------
+        if messages and messages[0].get("role") == "system":
+            compress_start = self.protect_first_n
+        else:
+            compress_start = 0
         compress_start = self._align_boundary_forward(messages, compress_start)
 
         # Use token-budget tail protection instead of fixed message count

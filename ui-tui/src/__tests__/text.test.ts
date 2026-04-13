@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { estimateRows, fmtK, isToolTrailResultLine, lastCotTrailIndex, sameToolTrailGroup } from '../lib/text.js'
+import {
+  edgePreview,
+  estimateRows,
+  estimateTokensRough,
+  fmtK,
+  isToolTrailResultLine,
+  lastCotTrailIndex,
+  pasteTokenLabel,
+  sameToolTrailGroup
+} from '../lib/text.js'
 
 describe('isToolTrailResultLine', () => {
   it('detects completion markers', () => {
@@ -47,6 +56,46 @@ describe('fmtK', () => {
   it('formats millions and billions', () => {
     expect(fmtK(1_000_000)).toBe('1M')
     expect(fmtK(1_000_000_000)).toBe('1B')
+  })
+})
+
+describe('estimateTokensRough', () => {
+  it('uses 4 chars per token rounding up', () => {
+    expect(estimateTokensRough('')).toBe(0)
+    expect(estimateTokensRough('a')).toBe(1)
+    expect(estimateTokensRough('abcd')).toBe(1)
+    expect(estimateTokensRough('abcde')).toBe(2)
+  })
+})
+
+describe('edgePreview', () => {
+  it('keeps both ends for long text', () => {
+    expect(edgePreview('Vampire Bondage ropes slipped from her neck, still stained with blood', 8, 18)).toBe(
+      'Vampire.. stained with blood'
+    )
+  })
+})
+
+describe('pasteTokenLabel', () => {
+  it('builds readable long-paste labels with counts', () => {
+    expect(
+      pasteTokenLabel({
+        charCount: 1000,
+        id: 7,
+        lineCount: 250,
+        text: 'Vampire Bondage ropes slipped from her neck, still stained with blood',
+        tokenCount: 250
+      })
+    ).toContain('[[paste:7 ')
+    expect(
+      pasteTokenLabel({
+        charCount: 1000,
+        id: 7,
+        lineCount: 250,
+        text: 'Vampire Bondage ropes slipped from her neck, still stained with blood',
+        tokenCount: 250
+      })
+    ).toContain('[250 lines · 250 tok · 1K chars]')
   })
 })
 

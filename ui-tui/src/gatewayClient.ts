@@ -22,6 +22,8 @@ export class GatewayClient extends EventEmitter {
   private reqId = 0
   private logs: string[] = []
   private pending = new Map<string, Pending>()
+  private bufferedEvents: GatewayEvent[] = []
+  private subscribed = false
 
   start() {
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
@@ -76,7 +78,13 @@ export class GatewayClient extends EventEmitter {
     }
 
     if (msg.method === 'event') {
-      this.emit('event', msg.params as GatewayEvent)
+      const ev = msg.params as GatewayEvent
+
+      if (this.subscribed) {
+        this.emit('event', ev)
+      } else {
+        this.bufferedEvents.push(ev)
+      }
     }
   }
 
@@ -92,6 +100,15 @@ export class GatewayClient extends EventEmitter {
     for (const [id, pending] of this.pending) {
       this.pending.delete(id)
       pending.reject(err)
+    }
+  }
+
+  drain() {
+    this.subscribed = true
+    const pending = this.bufferedEvents.splice(0)
+
+    for (const ev of pending) {
+      this.emit('event', ev)
     }
   }
 

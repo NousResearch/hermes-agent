@@ -908,46 +908,80 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        executed = 0
-        for job in due_jobs:
-            try:
-                # For recurring jobs (cron/interval), advance next_run_at to the
-                # next future occurrence BEFORE execution.  This way, if the
-                # process crashes mid-run, the job won't re-fire on restart.
-                # One-shot jobs are left alone so they can retry on restart.
-                advance_next_run(job["id"])
+        # Resolve max parallel workers: env var > config.yaml > unbounded.
+          # Set HERMES_CRON_MAX_PARALLEL=1 to restore the old serial behaviour.
+          _max_workers: Optional[int] = None
+          try:
+              _env_par = os.getenv("HERMES_CRON_MAX_PARALLEL", "").strip()
+              if _env_par:
+                  _max_workers = int(_env_par) or None
+          except (ValueError, TypeError):
+              logger.warning("Invalid HERMES_CRON_MAX_PARALLEL value; defaulting to unbounded")
+          if _max_workers is None:
+              try:
+                  _ucfg = load_config() or {}
+                  _cfg_par = (
+                      _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+                  ).get("max_parallel_jobs")
+                  if _cfg_par is not None:
+                      _max_workers = int(_cfg_par) or None
+              except Exception:
+                  pass
 
-                success, output, final_response, error = run_job(job)
+          if verbose:
+              logger.info(
+                  "Running %d job(s) in parallel (max_workers=%s)",
+                  len(due_jobs),
+                  _max_workers if _max_workers else "unbounded",
+              )
 
-                output_file = save_job_output(job["id"], output)
-                if verbose:
-                    logger.info("Output saved to: %s", output_file)
+          def _process_job(job: dict) -> bool:
+              """Run one due job end-to-end: advance, execute, save, deliver, mark."""
+              try:
+                  advance_next_run(job["id"])
 
-                # Deliver the final response to the origin/target chat.
-                # If the agent responded with [SILENT], skip delivery (but
-                # output is already saved above).  Failed jobs always deliver.
-                deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
-                if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                    should_deliver = False
+                  success, output, final_response, error = run_job(job)
 
-                delivery_error = None
-                if should_deliver:
-                    try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                    except Exception as de:
-                        delivery_error = str(de)
-                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+                  output_file = save_job_output(job["id"], output)
+                  if verbose:
+                      logger.info("Output saved to: %s", output_file)
 
-                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-                executed += 1
+                  deliver_content = (
+                      final_response
+                      if success
+                      else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
+                  )
+                  should_deliver = bool(deliver_content)
+                  if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                      logger.info(
+                          "Job '%s': agent returned %s — skipping delivery",
+                          job["id"],
+                          SILENT_MARKER,
+                      )
+                      should_deliver = False
 
-            except Exception as e:
-                logger.error("Error processing job %s: %s", job['id'], e)
-                mark_job_run(job["id"], False, str(e))
+                  delivery_error = None
+                  if should_deliver:
+                      try:
+                          delivery_error = _deliver_result(
+                              job, deliver_content, adapters=adapters, loop=loop
+                          )
+                      except Exception as de:
+                          delivery_error = str(de)
+                          logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-        return executed
+                  mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+                  return True
+
+              except Exception as e:
+                  logger.error("Error processing job %s: %s", job["id"], e)
+                  mark_job_run(job["id"], False, str(e))
+                  return False
+
+          with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
+              _job_results = list(_tick_pool.map(_process_job, due_jobs))
+
+          return sum(_job_results)
     finally:
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_UN)

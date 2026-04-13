@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "Web Dashboard"
-description: "Browser-based dashboard for managing configuration, API keys, and monitoring sessions"
+description: "Browser-based dashboard for managing configuration, API keys, sessions, logs, analytics, cron jobs, and skills"
 ---
 
 # Web Dashboard
@@ -104,6 +104,54 @@ Each key shows:
 
 Advanced/rarely-used keys are hidden by default behind a toggle.
 
+### Sessions
+
+Browse and inspect all agent sessions. Each row shows the session title, source platform icon (CLI, Telegram, Discord, Slack, cron), model name, message count, tool call count, and how long ago it was active. Live sessions are marked with a pulsing badge.
+
+- **Search** — full-text search across all message content using FTS5. Results show highlighted snippets and auto-scroll to the first matching message when expanded.
+- **Expand** — click a session to load its full message history. Messages are color-coded by role (user, assistant, system, tool) and rendered as Markdown with syntax highlighting.
+- **Tool calls** — assistant messages with tool calls show collapsible blocks with the function name and JSON arguments.
+- **Delete** — remove a session and its message history with the trash icon.
+
+### Logs
+
+View agent, gateway, and error log files with filtering and live tailing.
+
+- **File** — switch between `agent`, `errors`, and `gateway` log files
+- **Level** — filter by log level: ALL, DEBUG, INFO, WARNING, or ERROR
+- **Component** — filter by source component: all, gateway, agent, tools, cli, or cron
+- **Lines** — choose how many lines to display (50, 100, 200, or 500)
+- **Auto-refresh** — toggle live tailing that polls for new log lines every 5 seconds
+- **Color-coded** — log lines are colored by severity (red for errors, yellow for warnings, dim for debug)
+
+### Analytics
+
+Usage and cost analytics computed from session history. Select a time period (7, 30, or 90 days) to see:
+
+- **Summary cards** — total tokens (input/output), cache hit percentage, total estimated or actual cost, and total session count with daily average
+- **Daily token chart** — stacked bar chart showing input and output token usage per day, with hover tooltips showing breakdowns and cost
+- **Daily breakdown table** — date, session count, input tokens, output tokens, cache hit rate, and cost for each day
+- **Per-model breakdown** — table showing each model used, its session count, token usage, and estimated cost
+
+### Cron
+
+Create and manage scheduled cron jobs that run agent prompts on a recurring schedule.
+
+- **Create** — fill in a name (optional), prompt, cron expression (e.g. `0 9 * * *`), and delivery target (local, Telegram, Discord, Slack, or email)
+- **Job list** — each job shows its name, prompt preview, schedule expression, state badge (enabled/paused/error), delivery target, last run time, and next run time
+- **Pause / Resume** — toggle a job between active and paused states
+- **Trigger now** — immediately execute a job outside its normal schedule
+- **Delete** — permanently remove a cron job
+
+### Skills
+
+Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.hermes/skills/` and grouped by category.
+
+- **Search** — filter skills and toolsets by name, description, or category
+- **Category filter** — click category pills to narrow the list (e.g. MLOps, MCP, Red Teaming, AI)
+- **Toggle** — enable or disable individual skills with a switch. Changes take effect on the next session.
+- **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
+
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
 :::
@@ -158,6 +206,66 @@ Sets an environment variable. Body: `{"key": "VAR_NAME", "value": "secret"}`.
 ### DELETE /api/env
 
 Removes an environment variable. Body: `{"key": "VAR_NAME"}`.
+
+### GET /api/sessions/\{session_id\}
+
+Returns metadata for a single session.
+
+### GET /api/sessions/\{session_id\}/messages
+
+Returns the full message history for a session, including tool calls and timestamps.
+
+### GET /api/sessions/search
+
+Full-text search across message content. Query parameter: `q`. Returns matching session IDs with highlighted snippets.
+
+### DELETE /api/sessions/\{session_id\}
+
+Deletes a session and its message history.
+
+### GET /api/logs
+
+Returns log lines. Query parameters: `file` (agent/errors/gateway), `lines` (count), `level`, `component`.
+
+### GET /api/analytics/usage
+
+Returns token usage, cost, and session analytics. Query parameter: `days` (default 30). Response includes daily breakdowns and per-model aggregates.
+
+### GET /api/cron/jobs
+
+Returns all configured cron jobs with their state, schedule, and run history.
+
+### POST /api/cron/jobs
+
+Creates a new cron job. Body: `{"prompt": "...", "schedule": "0 9 * * *", "name": "...", "deliver": "local"}`.
+
+### POST /api/cron/jobs/\{job_id\}/pause
+
+Pauses a cron job.
+
+### POST /api/cron/jobs/\{job_id\}/resume
+
+Resumes a paused cron job.
+
+### POST /api/cron/jobs/\{job_id\}/trigger
+
+Immediately triggers a cron job outside its schedule.
+
+### DELETE /api/cron/jobs/\{job_id\}
+
+Deletes a cron job.
+
+### GET /api/skills
+
+Returns all skills with their name, description, category, and enabled status.
+
+### PUT /api/skills/toggle
+
+Enables or disables a skill. Body: `{"name": "skill-name", "enabled": true}`.
+
+### GET /api/tools/toolsets
+
+Returns all toolsets with their label, description, tools list, and active/configured status.
 
 ## CORS
 

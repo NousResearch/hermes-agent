@@ -15,9 +15,14 @@ print(f"Goal: {goal_text}\n")
 
 class DummyAgent:
     name = "DummyDemoAgent"
-    model = "anthropic/claude-sonnet-4"
+    model = "accounts/fireworks/routers/kimi-k2p5-turbo"
     base_url = None
     _active_children = []
+    platform = "linux"
+    providers_allowed = []
+    providers_ignored = []
+    providers_order = []
+    provider_sort = "performance"
 dummy = DummyAgent()
 
 # plan_only 모드로 실행

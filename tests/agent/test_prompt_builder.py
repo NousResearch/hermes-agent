@@ -25,6 +25,8 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
+    FOUR_LAYER_MEMORY_GUIDANCE,
+    build_four_layer_memory_guidance,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
@@ -44,6 +46,43 @@ class TestGuidanceConstants:
         assert "session_search" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
+
+    def test_four_layer_memory_guidance_mentions_obsidian_and_session_search(self):
+        assert "four memory layers" in FOUR_LAYER_MEMORY_GUIDANCE
+        assert "Obsidian vault" in FOUR_LAYER_MEMORY_GUIDANCE
+        assert "session-end flushes" in FOUR_LAYER_MEMORY_GUIDANCE
+        assert "Session search" in FOUR_LAYER_MEMORY_GUIDANCE
+
+    def test_runtime_four_layer_guidance_hides_unavailable_layers(self):
+        guidance = build_four_layer_memory_guidance(
+            has_builtin_memory=True,
+            has_obsidian=False,
+            has_session_search=False,
+        )
+        assert "Built-in memory" in guidance
+        assert "AGENTS.md + SOUL.md" in guidance
+        assert "Obsidian vault" not in guidance
+        assert "Session search" not in guidance
+
+    def test_runtime_four_layer_guidance_mentions_only_available_optional_layers(self):
+        guidance = build_four_layer_memory_guidance(
+            has_builtin_memory=True,
+            has_obsidian=True,
+            has_session_search=False,
+        )
+        assert "Obsidian vault" in guidance
+        assert "Session search" not in guidance
+
+    def test_runtime_four_layer_guidance_hides_builtin_memory_when_disabled(self):
+        guidance = build_four_layer_memory_guidance(
+            has_builtin_memory=False,
+            has_obsidian=True,
+            has_session_search=True,
+        )
+        assert "Built-in memory" not in guidance
+        assert "AGENTS.md + SOUL.md" in guidance
+        assert "Obsidian vault" in guidance
+        assert "Session search" in guidance
 
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE

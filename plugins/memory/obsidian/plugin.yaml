@@ -1,0 +1,3 @@
+name: obsidian
+version: 1.0.0
+description: "Shared Obsidian-vault memory layer with session-start recall, working-context checkpoints, daily logs, and session flushes."

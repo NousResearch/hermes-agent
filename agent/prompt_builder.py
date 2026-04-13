@@ -155,6 +155,50 @@ MEMORY_GUIDANCE = (
     "necessary later, save it as a skill with the skill tool."
 )
 
+FOUR_LAYER_MEMORY_GUIDANCE = (
+    "# Memory layers\n"
+    "Hermes operates with four memory layers, from smallest/always-present to largest/on-demand:\n"
+    "1. Built-in memory (~2,200 chars): always injected compact facts and pointers.\n"
+    "2. AGENTS.md + SOUL.md: always injected operating rules, personality, and hard behavior constraints.\n"
+    "3. Obsidian vault: large read/write working memory that is NOT auto-injected; read it at session start, after compaction, and whenever more detail is needed. Write task starts, corrections, checkpoints every 3-5 tool calls, completions, and session-end flushes.\n"
+    "4. Session search: searchable archive of prior conversations; query it when the user references past work or cross-session context.\n"
+    "Use the smallest layer that solves the problem cleanly, and promote durable truths upward when they matter again."
+)
+
+
+def build_four_layer_memory_guidance(*, has_builtin_memory: bool = True, has_obsidian: bool = False, has_session_search: bool = False) -> str:
+    """Return runtime-accurate memory-layer guidance.
+
+    AGENTS/SOUL always exists. Built-in memory, Obsidian, and session-search
+    guidance should only be advertised when those capabilities are actually
+    available in the current runtime.
+    """
+    lines = [
+        "# Memory layers",
+        "Hermes operates with layered memory.",
+    ]
+    next_idx = 1
+    if has_builtin_memory:
+        lines.append(
+            f"{next_idx}. Built-in memory (~2,200 chars): always injected compact facts and pointers."
+        )
+        next_idx += 1
+    lines.append(
+        f"{next_idx}. AGENTS.md + SOUL.md: always injected operating rules, personality, and hard behavior constraints."
+    )
+    next_idx += 1
+    if has_obsidian:
+        lines.append(
+            f"{next_idx}. Obsidian vault: large read/write working memory that is NOT auto-injected; read it at session start, after compaction, and whenever more detail is needed. Write task starts, corrections, checkpoints every 3-5 tool calls, completions, and session-end flushes."
+        )
+        next_idx += 1
+    if has_session_search:
+        lines.append(
+            f"{next_idx}. Session search: searchable archive of prior conversations; query it when the user references past work or cross-session context."
+        )
+    lines.append("Use the smallest layer that solves the problem cleanly, and promote durable truths upward when they matter again.")
+    return "\n".join(lines)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

@@ -271,6 +271,17 @@ class MemoryManager:
                     provider.name, e,
                 )
 
+    def on_tool_call_complete(self, tool_name: str, args: Dict[str, Any], result: str, **kwargs) -> None:
+        """Notify all providers that a tool call finished."""
+        for provider in self._providers:
+            try:
+                provider.on_tool_call_complete(tool_name, args, result, **kwargs)
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' on_tool_call_complete failed: %s",
+                    provider.name, e,
+                )
+
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Notify all providers of session end."""
         for provider in self._providers:

@@ -94,7 +94,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE, build_four_layer_memory_guidance
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -3132,6 +3132,17 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        has_obsidian_layer = bool(self._memory_manager and self._memory_manager.get_provider("obsidian"))
+        has_session_search_layer = "session_search" in self.valid_tool_names
+        if self._memory_store or has_obsidian_layer or has_session_search_layer:
+            prompt_parts.append(
+                build_four_layer_memory_guidance(
+                    has_builtin_memory=bool(self._memory_store),
+                    has_obsidian=has_obsidian_layer,
+                    has_session_search=has_session_search_layer,
+                )
+            )
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -6970,6 +6981,22 @@ class AIAgent:
                 env=get_active_env(effective_task_id),
             )
 
+            if self._memory_manager:
+                try:
+                    self._memory_manager.on_tool_call_complete(
+                        name,
+                        args,
+                        function_result,
+                        tool_call_id=tc.id,
+                        duration=tool_duration,
+                        session_id=self.session_id,
+                        turn_number=self._user_turn_count,
+                        tool_index=i + 1,
+                        messages=list(messages),
+                    )
+                except Exception:
+                    pass
+
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
                 function_result += subdir_hints
@@ -7291,6 +7318,22 @@ class AIAgent:
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
             )
+
+            if self._memory_manager:
+                try:
+                    self._memory_manager.on_tool_call_complete(
+                        function_name,
+                        function_args,
+                        function_result,
+                        tool_call_id=tool_call.id,
+                        duration=tool_duration,
+                        session_id=self.session_id,
+                        turn_number=self._user_turn_count,
+                        tool_index=i,
+                        messages=list(messages),
+                    )
+                except Exception:
+                    pass
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -7647,6 +7690,20 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+
+        if self._memory_manager:
+            try:
+                self._memory_manager.on_turn_start(
+                    self._user_turn_count,
+                    original_user_message,
+                    session_id=self.session_id,
+                    model=self.model,
+                    platform=self.platform or "",
+                    is_first_turn=not bool(conversation_history),
+                    todo_count=len(self._todo_store.read()),
+                )
+            except Exception:
+                pass
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on

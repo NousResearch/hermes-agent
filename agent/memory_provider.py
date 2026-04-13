@@ -24,6 +24,7 @@ Lifecycle (called by MemoryManager, wired in run_agent.py):
 
 Optional hooks (override to opt in):
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
+  on_tool_call_complete(tool_name, args, result, **kwargs) — observe completed tool calls
   on_session_end(messages)               — end-of-session extraction
   on_pre_compress(messages) -> str       — extract before context compression
   on_memory_write(action, target, content) — mirror built-in memory writes
@@ -148,6 +149,15 @@ class MemoryProvider(ABC):
 
         kwargs may include: remaining_tokens, model, platform, tool_count.
         Providers use what they need; extras are ignored.
+        """
+
+    def on_tool_call_complete(self, tool_name: str, args: Dict[str, Any], result: str, **kwargs) -> None:
+        """Called after a tool call completes.
+
+        Use for checkpointing, audit logs, or provider-specific side channels.
+
+        kwargs may include: tool_call_id, duration, session_id, turn_number,
+        messages, and tool_index.
         """
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:

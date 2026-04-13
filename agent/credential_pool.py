@@ -24,7 +24,6 @@ from hermes_cli.auth import (
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _import_codex_cli_tokens,
-    _write_codex_cli_tokens,
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
@@ -695,7 +694,7 @@ class CredentialPool:
                         self._persist()
                         self._sync_device_code_entry_to_auth_store(updated)
                         try:
-                            _write_codex_cli_tokens(
+                            auth_mod._write_codex_cli_tokens(
                                 updated.access_token,
                                 updated.refresh_token,
                                 last_refresh=updated.last_refresh,
@@ -731,7 +730,7 @@ class CredentialPool:
         # and VS Code don't hit "refresh_token_reused" on their next refresh.
         if self.provider == "openai-codex":
             try:
-                _write_codex_cli_tokens(
+                auth_mod._write_codex_cli_tokens(
                     updated.access_token,
                     updated.refresh_token,
                     last_refresh=updated.last_refresh,

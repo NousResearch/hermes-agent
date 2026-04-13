@@ -24,6 +24,7 @@ class FakeMemoryProvider(MemoryProvider):
         self.prefetch_queries = []
         self.queued_prefetches = []
         self.turn_starts = []
+        self.tool_call_completions = []
         self.session_end_called = False
         self.pre_compress_called = False
         self.memory_writes = []
@@ -67,6 +68,9 @@ class FakeMemoryProvider(MemoryProvider):
     def on_turn_start(self, turn_number, message):
         self.turn_starts.append((turn_number, message))
 
+    def on_tool_call_complete(self, tool_name, args, result, **kwargs):
+        self.tool_call_completions.append((tool_name, args, result, kwargs))
+
     def on_session_end(self, messages):
         self.session_end_called = True
 
@@ -99,6 +103,7 @@ class TestMemoryProviderABC:
         p = FakeMemoryProvider()
         # These should not raise
         p.on_turn_start(1, "hello")
+        p.on_tool_call_complete("terminal", {"command": "pwd"}, "ok")
         p.on_session_end([])
         p.on_pre_compress([])
         p.on_memory_write("add", "memory", "test")
@@ -228,6 +233,57 @@ class TestMemoryManager:
         mgr.sync_all("user msg", "assistant msg")
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
+
+    def test_on_turn_start_calls_all_providers(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.on_turn_start(3, "What do you know?")
+        assert p1.turn_starts == [(3, "What do you know?")]
+        assert p2.turn_starts == [(3, "What do you know?")]
+
+    def test_on_tool_call_complete_calls_all_providers(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.on_tool_call_complete(
+            "terminal",
+            {"command": "pwd"},
+            "ok",
+            tool_call_id="call-1",
+            duration=0.25,
+            turn_number=2,
+        )
+
+        assert p1.tool_call_completions == [(
+            "terminal",
+            {"command": "pwd"},
+            "ok",
+            {"tool_call_id": "call-1", "duration": 0.25, "turn_number": 2},
+        )]
+        assert p2.tool_call_completions == [(
+            "terminal",
+            {"command": "pwd"},
+            "ok",
+            {"tool_call_id": "call-1", "duration": 0.25, "turn_number": 2},
+        )]
+
+    def test_on_session_end_calls_all_providers(self):
+        mgr = MemoryManager()
+        p1 = FakeMemoryProvider("builtin")
+        p2 = FakeMemoryProvider("external")
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+
+        mgr.on_session_end([{"role": "user", "content": "bye"}])
+        assert p1.session_end_called
+
 
     def test_sync_failure_doesnt_block_others(self):
         """If one provider's sync fails, others still run."""
@@ -381,6 +437,7 @@ class TestPluginMemoryDiscovery:
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
         assert "holographic" in names  # always available (no external deps)
+        assert "obsidian" in names
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""

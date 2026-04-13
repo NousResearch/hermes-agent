@@ -9,6 +9,11 @@ import threading
 from pathlib import Path
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
+from tools.path_security import (
+    get_workspace_root,
+    resolve_user_path,
+    validate_within_dir,
+)
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -116,6 +121,34 @@ def _check_sensitive_path(filepath: str) -> str | None:
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
     return None
+
+
+def _resolve_tool_path(path: str, file_ops: ShellFileOperations) -> Path:
+    """Resolve a file-tool path against the active file-ops cwd."""
+    expanded = file_ops._expand_path(path)
+    return resolve_user_path(expanded, base_dir=file_ops.cwd, expand_user=False)
+
+
+def _check_workspace_path(
+    path: str,
+    file_ops: ShellFileOperations,
+    *,
+    label: str = "path",
+) -> tuple[Path, str | None]:
+    """Resolve *path* and enforce the optional workspace-root boundary."""
+    resolved = _resolve_tool_path(path, file_ops)
+    workspace_root = get_workspace_root()
+    if workspace_root is None:
+        return resolved, None
+
+    error = validate_within_dir(resolved, workspace_root)
+    if error:
+        return (
+            resolved,
+            f"Blocked: {label} resolves outside the configured workspace_root ({workspace_root}): {path}",
+        )
+
+    return resolved, None
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:
@@ -282,18 +315,21 @@ def clear_file_ops_cache(task_id: str = None):
 def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
+        file_ops = _get_file_ops(task_id)
+        _resolved, workspace_err = _check_workspace_path(path, file_ops)
+        if workspace_err:
+            return tool_error(workspace_err)
+
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
-        if _is_blocked_device(path):
+        if _is_blocked_device(path) or _is_blocked_device(str(_resolved)):
             return json.dumps({
                 "error": (
                     f"Cannot read '{path}': this is a device file that would "
                     "block or produce infinite output."
                 ),
             })
-
-        _resolved = Path(path).expanduser().resolve()
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -357,7 +393,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
@@ -572,19 +607,22 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
 
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
-    sensitive_err = _check_sensitive_path(path)
-    if sensitive_err:
-        return tool_error(sensitive_err)
     try:
-        stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
+        resolved_path, workspace_err = _check_workspace_path(path, file_ops)
+        if workspace_err:
+            return tool_error(workspace_err)
+        sensitive_err = _check_sensitive_path(str(resolved_path))
+        if sensitive_err:
+            return tool_error(sensitive_err)
+        stale_warning = _check_file_staleness(str(resolved_path), task_id)
         result = file_ops.write_file(path, content)
         result_dict = result.to_dict()
         if stale_warning:
             result_dict["_warning"] = stale_warning
         # Refresh the stored timestamp so consecutive writes by this
         # task don't trigger false staleness warnings.
-        _update_read_timestamp(path, task_id)
+        _update_read_timestamp(str(resolved_path), task_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -598,27 +636,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
                task_id: str = "default") -> str:
     """Patch a file using replace mode or V4A patch format."""
-    # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
-    _paths_to_check = []
-    if path:
-        _paths_to_check.append(path)
-    if mode == "patch" and patch:
-        import re as _re
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
-    for _p in _paths_to_check:
-        sensitive_err = _check_sensitive_path(_p)
-        if sensitive_err:
-            return tool_error(sensitive_err)
     try:
+        file_ops = _get_file_ops(task_id)
+        # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
+        _paths_to_check = []
+        if path:
+            _paths_to_check.append(path)
+        if mode == "patch" and patch:
+            import re as _re
+            for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
+                _paths_to_check.append(_m.group(1).strip())
+        _resolved_paths: dict[str, Path] = {}
+        for _p in _paths_to_check:
+            _resolved, workspace_err = _check_workspace_path(_p, file_ops)
+            if workspace_err:
+                return tool_error(workspace_err)
+            _resolved_paths[_p] = _resolved
+            sensitive_err = _check_sensitive_path(str(_resolved))
+            if sensitive_err:
+                return tool_error(sensitive_err)
         # Check staleness for all files this patch will touch.
         stale_warnings = []
         for _p in _paths_to_check:
-            _sw = _check_file_staleness(_p, task_id)
+            _sw = _check_file_staleness(str(_resolved_paths[_p]), task_id)
             if _sw:
                 stale_warnings.append(_sw)
-
-        file_ops = _get_file_ops(task_id)
         
         if mode == "replace":
             if not path:
@@ -640,7 +682,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         # consecutive edits by this task don't trigger false warnings.
         if not result_dict.get("error"):
             for _p in _paths_to_check:
-                _update_read_timestamp(_p, task_id)
+                _update_read_timestamp(str(_resolved_paths[_p]), task_id)
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -657,6 +699,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 task_id: str = "default") -> str:
     """Search for content or files."""
     try:
+        file_ops = _get_file_ops(task_id)
+        resolved_path, workspace_err = _check_workspace_path(path, file_ops, label="search path")
+        if workspace_err:
+            return tool_error(workspace_err)
         # Track searches to detect *consecutive* repeated search loops.
         # Include pagination args so users can page through truncated
         # results without tripping the repeated-search guard.
@@ -690,10 +736,8 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 "pattern": pattern,
                 "already_searched": count,
             }, ensure_ascii=False)
-
-        file_ops = _get_file_ops(task_id)
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=str(resolved_path), target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         if hasattr(result, 'matches'):

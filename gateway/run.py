@@ -205,6 +205,10 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            _workspace_root = str(_security_cfg.get("workspace_root", "") or "").strip()
+            if _workspace_root:
+                os.environ["HERMES_WORKSPACE_ROOT"] = _workspace_root
+                os.environ["HERMES_WRITE_SAFE_ROOT"] = _workspace_root
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 
@@ -3075,7 +3079,7 @@ class GatewayRunner:
                     message_text,
                     cwd=_msg_cwd,
                     context_length=_msg_ctx_len,
-                    allowed_root=_msg_cwd,
+                    allowed_root=os.environ.get("HERMES_WORKSPACE_ROOT") or _msg_cwd,
                 )
                 if _ctx_result.blocked:
                     _adapter = self.adapters.get(source.platform)

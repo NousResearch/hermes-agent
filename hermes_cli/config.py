@@ -666,6 +666,9 @@ DEFAULT_CONFIG = {
     # Pre-exec security scanning via tirith
     "security": {
         "redact_secrets": True,
+        # Optional absolute path that bounds file/terminal/context-ref access.
+        # Empty string disables workspace-root enforcement.
+        "workspace_root": "",
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -2301,9 +2304,12 @@ _SECURITY_COMMENT = """
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+# workspace_root optionally constrains file tools, terminal cwd/workdir,
+# and @file/@folder references to a single workspace tree.
 #
 # security:
 #   redact_secrets: false
+#   workspace_root: /absolute/path/to/workspace
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
@@ -2353,6 +2359,7 @@ _COMMENTED_SECTIONS = """
 #
 # security:
 #   redact_secrets: false
+#   workspace_root: /absolute/path/to/workspace
 
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.

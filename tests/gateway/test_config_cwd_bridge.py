@@ -53,6 +53,14 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
             if isinstance(alias_val, str) and alias_val.strip():
                 env[alias_env] = alias_val.strip()
 
+    # --- Replicate security workspace-root bridge ---
+    security_cfg = cfg.get("security", {})
+    if isinstance(security_cfg, dict):
+        workspace_root = str(security_cfg.get("workspace_root", "") or "").strip()
+        if workspace_root:
+            env["HERMES_WORKSPACE_ROOT"] = workspace_root
+            env["HERMES_WRITE_SAFE_ROOT"] = workspace_root
+
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
     if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
@@ -146,3 +154,15 @@ class TestTopLevelCwdAlias:
         cfg = {"cwd": "/from/config"}
         result = _simulate_config_bridge(cfg, {"MESSAGING_CWD": "/from/env"})
         assert result["TERMINAL_CWD"] == "/from/config"
+
+    def test_workspace_root_bridged_to_security_env_vars(self):
+        cfg = {"security": {"workspace_root": "/srv/agents/agent-a"}}
+        result = _simulate_config_bridge(cfg)
+        assert result["HERMES_WORKSPACE_ROOT"] == "/srv/agents/agent-a"
+        assert result["HERMES_WRITE_SAFE_ROOT"] == "/srv/agents/agent-a"
+
+    def test_empty_workspace_root_not_bridged(self):
+        cfg = {"security": {"workspace_root": "  "}}
+        result = _simulate_config_bridge(cfg)
+        assert "HERMES_WORKSPACE_ROOT" not in result
+        assert "HERMES_WRITE_SAFE_ROOT" not in result

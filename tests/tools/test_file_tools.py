@@ -17,6 +17,13 @@ from tools.file_tools import (
 )
 
 
+def _make_mock_ops(cwd: str = "/tmp"):
+    mock_ops = MagicMock()
+    mock_ops.cwd = cwd
+    mock_ops._expand_path.side_effect = lambda p: p
+    return mock_ops
+
+
 class TestFileToolsList:
     def test_has_expected_entries(self):
         names = {t["name"] for t in FILE_TOOLS}
@@ -37,7 +44,7 @@ class TestFileToolsList:
 class TestReadFileHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_returns_file_content(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.content = "line1\nline2"
         result_obj.to_dict.return_value = {"content": "line1\nline2", "total_lines": 2}
@@ -52,7 +59,7 @@ class TestReadFileHandler:
 
     @patch("tools.file_tools._get_file_ops")
     def test_custom_offset_and_limit(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.content = "line10"
         result_obj.to_dict.return_value = {"content": "line10", "total_lines": 50}
@@ -72,11 +79,26 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_blocks_reads_outside_workspace_root(self, mock_get, monkeypatch, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_ops = _make_mock_ops(str(workspace))
+        mock_get.return_value = mock_ops
+        monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("../secret.txt"))
+
+        assert "workspace_root" in result["error"]
+        mock_ops.read_file.assert_not_called()
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_writes_content(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "path": "/tmp/out.txt", "bytes": 13}
         mock_ops.write_file.return_value = result_obj
@@ -109,11 +131,26 @@ class TestWriteFileHandler:
         assert result["error"] == "boom"
         assert any("write_file error" in r.getMessage() for r in caplog.records)
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_blocks_writes_outside_workspace_root(self, mock_get, monkeypatch, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_ops = _make_mock_ops(str(workspace))
+        mock_get.return_value = mock_ops
+        monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+        from tools.file_tools import write_file_tool
+        result = json.loads(write_file_tool("../secret.txt", "data"))
+
+        assert "workspace_root" in result["error"]
+        mock_ops.write_file.assert_not_called()
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_calls_patch_replace(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "replacements": 1}
         mock_ops.patch_replace.return_value = result_obj
@@ -129,7 +166,7 @@ class TestPatchHandler:
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_replace_all_flag(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "replacements": 5}
         mock_ops.patch_replace.return_value = result_obj
@@ -148,13 +185,14 @@ class TestPatchHandler:
 
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_missing_strings_errors(self, mock_get):
+        mock_get.return_value = _make_mock_ops()
         from tools.file_tools import patch_tool
         result = json.loads(patch_tool(mode="replace", path="/tmp/f.py", old_string=None, new_string="b"))
         assert "error" in result
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_mode_calls_patch_v4a(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"status": "ok", "operations": 1}
         mock_ops.patch_v4a.return_value = result_obj
@@ -178,11 +216,31 @@ class TestPatchHandler:
         assert "error" in result
         assert "Unknown mode" in result["error"]
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_blocks_patch_outside_workspace_root(self, mock_get, monkeypatch, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_ops = _make_mock_ops(str(workspace))
+        mock_get.return_value = mock_ops
+        monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+        from tools.file_tools import patch_tool
+        result = json.loads(patch_tool(
+            mode="replace",
+            path="../secret.txt",
+            old_string="foo",
+            new_string="bar",
+        ))
+
+        assert "workspace_root" in result["error"]
+        mock_ops.patch_replace.assert_not_called()
+
 
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"matches": ["file1.py:3:match"]}
         mock_ops.search.return_value = result_obj
@@ -195,7 +253,7 @@ class TestSearchHandler:
 
     @patch("tools.file_tools._get_file_ops")
     def test_search_passes_all_params(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"matches": []}
         mock_ops.search.return_value = result_obj
@@ -217,6 +275,21 @@ class TestSearchHandler:
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_blocks_searches_outside_workspace_root(self, mock_get, monkeypatch, tmp_path):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        mock_ops = _make_mock_ops(str(workspace))
+        mock_get.return_value = mock_ops
+        monkeypatch.setenv("HERMES_WORKSPACE_ROOT", str(workspace))
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(pattern="TODO", path="../other"))
+
+        assert "workspace_root" in result["error"]
+        mock_ops.search.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Tool result hint tests (#722)
@@ -227,7 +300,7 @@ class TestPatchHints:
 
     @patch("tools.file_tools._get_file_ops")
     def test_no_match_includes_hint(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {
             "error": "Could not find match for old_string in foo.py"
@@ -242,7 +315,7 @@ class TestPatchHints:
 
     @patch("tools.file_tools._get_file_ops")
     def test_success_no_hint(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {"success": True, "diff": "--- a\n+++ b"}
         mock_ops.patch_replace.return_value = result_obj
@@ -263,7 +336,7 @@ class TestSearchHints:
 
     @patch("tools.file_tools._get_file_ops")
     def test_truncated_results_hint(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {
             "total_count": 100,
@@ -280,7 +353,7 @@ class TestSearchHints:
 
     @patch("tools.file_tools._get_file_ops")
     def test_non_truncated_no_hint(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {
             "total_count": 3,
@@ -295,7 +368,7 @@ class TestSearchHints:
 
     @patch("tools.file_tools._get_file_ops")
     def test_truncated_hint_with_nonzero_offset(self, mock_get):
-        mock_ops = MagicMock()
+        mock_ops = _make_mock_ops()
         result_obj = MagicMock()
         result_obj.to_dict.return_value = {
             "total_count": 150,
@@ -309,6 +382,3 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
-
-
-

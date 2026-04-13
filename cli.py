@@ -516,6 +516,11 @@ def load_cli_config() -> Dict[str, Any]:
         redact = security_config.get("redact_secrets")
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        workspace_root = str(security_config.get("workspace_root", "") or "").strip()
+        if workspace_root:
+            os.environ["HERMES_WORKSPACE_ROOT"] = workspace_root
+            # Keep the legacy write-only guard aligned with the new workspace root.
+            os.environ["HERMES_WRITE_SAFE_ROOT"] = workspace_root
 
     return defaults
 
@@ -7608,8 +7613,14 @@ class HermesCLI:
                 from agent.model_metadata import get_model_context_length
                 _ctx_len = get_model_context_length(
                     self.model, base_url=self.base_url or "", api_key=self.api_key or "")
+                _ctx_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+                _ctx_allowed_root = os.getenv("HERMES_WORKSPACE_ROOT") or _ctx_cwd
                 _ctx_result = preprocess_context_references(
-                    message, cwd=os.getcwd(), context_length=_ctx_len)
+                    message,
+                    cwd=_ctx_cwd,
+                    context_length=_ctx_len,
+                    allowed_root=_ctx_allowed_root,
+                )
                 if _ctx_result.expanded or _ctx_result.blocked:
                     if _ctx_result.references:
                         _cprint(

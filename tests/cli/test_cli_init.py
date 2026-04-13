@@ -331,6 +331,36 @@ class TestRootLevelProviderOverride:
         assert "provider" not in result  # root key still cleaned up
 
 
+class TestWorkspaceRootBridge:
+    """security.workspace_root should bridge into process env for tools."""
+
+    def test_load_cli_config_bridges_workspace_root(self, tmp_path, monkeypatch):
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("HERMES_WORKSPACE_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "security": {
+                "workspace_root": str(workspace),
+            },
+        }))
+
+        import cli
+
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        assert os.environ["HERMES_WORKSPACE_ROOT"] == str(workspace)
+        assert os.environ["HERMES_WRITE_SAFE_ROOT"] == str(workspace)
+
+
 class TestProviderResolution:
     def test_api_key_is_string_or_none(self):
         cli = _make_cli()

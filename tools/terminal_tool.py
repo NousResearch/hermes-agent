@@ -143,6 +143,7 @@ from tools.approval import (
     check_dangerous_command as _check_dangerous_command_impl,
     check_all_command_guards as _check_all_guards_impl,
 )
+from tools.path_security import get_workspace_root, validate_workspace_path
 
 
 def _check_all_guards(command: str, env_type: str) -> dict:
@@ -177,6 +178,36 @@ def _validate_workdir(workdir: str) -> str | None:
                 )
         return "Blocked: workdir contains disallowed characters."
     return None
+
+
+def _validate_workspace_workdir(
+    path_value: str,
+    *,
+    base_dir: str,
+    env_type: str,
+    workspace_root: str | None,
+    label: str,
+) -> tuple[str | None, str]:
+    """Validate cwd/workdir against the configured workspace root."""
+    if not workspace_root:
+        return None, path_value
+
+    resolved, _root, error = validate_workspace_path(
+        path_value,
+        base_dir=base_dir,
+        workspace_root=workspace_root,
+        label=label,
+        expand_user=(env_type == "local"),
+    )
+    if error:
+        return error, path_value
+
+    # Normalize local workdirs to absolute paths so subprocess cwd resolution
+    # matches the same boundary check we just performed.
+    if env_type == "local":
+        return None, str(resolved)
+
+    return None, path_value
 
 
 def _handle_sudo_failure(output: str, env_type: str) -> str:
@@ -603,6 +634,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     env_type = os.getenv("TERMINAL_ENV", "local")
+    workspace_root = get_workspace_root()
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
 
@@ -623,6 +655,8 @@ def _get_env_config() -> Dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
+    if workspace_root is not None and env_type == "local" and "TERMINAL_CWD" not in os.environ:
+        cwd = str(workspace_root)
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
@@ -651,6 +685,7 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "cwd": cwd,
+        "workspace_root": str(workspace_root) if workspace_root is not None else "",
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
         "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
@@ -1207,8 +1242,47 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        workspace_root = overrides.get("workspace_root") or config.get("workspace_root", "")
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+
+        # Validate workdir against shell injection before any environment work.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
+        workdir_label = "workdir" if workdir else "cwd"
+        effective_cwd_value = workdir or cwd
+        workspace_error, normalized_workdir = _validate_workspace_workdir(
+            effective_cwd_value,
+            base_dir=cwd,
+            env_type=env_type,
+            workspace_root=workspace_root,
+            label=workdir_label,
+        )
+        if workspace_error:
+            logger.warning(
+                "Blocked %s outside workspace_root: %s (command: %s)",
+                workdir_label,
+                effective_cwd_value,
+                _safe_command_preview(command),
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": workspace_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
+        effective_workdir = normalized_workdir if workdir else None
+        env_cwd = effective_workdir or cwd
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
@@ -1287,7 +1361,7 @@ def terminal_tool(
                         new_env = _create_environment(
                             env_type=env_type,
                             image=image,
-                            cwd=cwd,
+                            cwd=env_cwd,
                             timeout=effective_timeout,
                             ssh_config=ssh_config,
                             container_config=container_config,
@@ -1346,19 +1420,6 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
-
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -1379,7 +1440,7 @@ def terminal_tool(
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
-            effective_cwd = workdir or cwd
+            effective_cwd = effective_workdir or cwd
             try:
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
@@ -1465,8 +1526,8 @@ def terminal_tool(
             while retry_count <= max_retries:
                 try:
                     execute_kwargs = {"timeout": effective_timeout}
-                    if workdir:
-                        execute_kwargs["cwd"] = workdir
+                    if effective_workdir:
+                        execute_kwargs["cwd"] = effective_workdir
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

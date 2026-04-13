@@ -1223,8 +1223,12 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
-    if sync_client.__class__.__name__ == "CopilotACPClient":
-        return sync_client, model
+    try:
+        from agent.copilot_acp_client import CopilotACPClient
+        if isinstance(sync_client, CopilotACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,

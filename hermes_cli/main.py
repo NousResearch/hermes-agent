@@ -2855,6 +2855,12 @@ def cmd_backup(args):
     run_backup(args)
 
 
+def cmd_migrate(args):
+    """Unified migration command — export, import, verify, doctor."""
+    from hermes_cli import migrate as migrate_module
+    migrate_module.run_migrate(args)
+
+
 def cmd_import(args):
     """Restore a Hermes backup from a zip file."""
     from hermes_cli.backup import run_import
@@ -5909,11 +5915,6 @@ Examples:
 
     # migrate doctor
     migrate_subparsers.add_parser("doctor", help="Check environment health")
-
-    def cmd_migrate(args):
-        """Unified migration command — export, import, verify, doctor."""
-        from hermes_cli import migrate as migrate_module
-        migrate_module.run_migrate(args)
 
     migrate_parser.set_defaults(func=cmd_migrate)
 

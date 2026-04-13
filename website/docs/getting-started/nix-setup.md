@@ -12,13 +12,14 @@ Nix and NixOS are [Tier 2 platforms](./platform-support.md#tier-2). The flake an
 For a supported setup, use one of the standard [installation](./installation.md) paths - either Docker or an FHS environment.
 :::
 
-Hermes Agent ships a Nix flake & a NixOS module.
+Hermes Agent ships a Nix flake with four levels of integration:
 
 | Level | Who it's for | What you get |
 |-------|-------------|--------------|
 | **`nix run` / `nix profile install`** | Any Nix user (macOS, Linux) | Pre-built binary with all deps — then use the standard CLI workflow |
 | **NixOS module (native)** | NixOS server deployments | Declarative config, hardened systemd service, managed secrets |
 | **NixOS module (container)** | Agents that need self-modification | Everything above, plus a persistent Ubuntu container where the agent can `apt`/`pip`/`npm install` |
+| **Home Manager module** | home-manager users | Per-user systemd service, declarative config, managed secrets |
 
 :::info What's different from the standard install
 The `curl | bash` installer manages Python, Node, and dependencies itself. The Nix flake replaces all of that — every Python dependency is a Nix derivation built by [uv2nix](https://github.com/pyproject-nix/uv2nix), and runtime tools (Node.js, git, ripgrep, ffmpeg) are wrapped into the binary's PATH. There is no runtime pip, no venv activation, no `npm install`.
@@ -221,6 +222,78 @@ To enable container mode, add one line:
 :::info
 Container mode auto-enables `virtualisation.docker.enable` via `mkDefault`. If you use Podman instead, set `container.backend = "podman"` and `virtualisation.docker.enable = false`.
 :::
+
+---
+
+## Home Manager Module
+
+For users managing their environment with [home-manager](https://github.com/nix-community/home-manager) (standalone or as a NixOS module), hermes-agent provides `homeManagerModules.default`. This runs the gateway as a **per-user systemd service** instead of a system-level one.
+
+**Key differences from the NixOS module:**
+- Runs under your user account (no system user/group creation)
+- State lives in `~/.local/share/hermes` by default (XDG convention)
+- Uses `systemd.user.services` (Linux) or `launchd.agents` (macOS) instead of system-level services
+- No container mode (requires system-level Docker/Podman)
+- No system-level hardening (ProtectSystem, NoNewPrivileges, etc.)
+
+### Standalone home-manager
+
+```nix
+# flake.nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    hermes-agent = {
+      url = "github:NousResearch/hermes-agent";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
+
+  outputs = { nixpkgs, home-manager, hermes-agent, ... }: {
+    homeConfigurations."you" = home-manager.lib.homeManagerConfiguration {
+      pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      modules = [
+        hermes-agent.homeManagerModules.default
+        {
+          home.username = "you";
+          home.homeDirectory = "/home/you";
+          home.stateVersion = "25.05";
+
+          programs.hermes-agent = {
+            enable = true;
+            settings.model = "anthropic/claude-sonnet-4";
+            environmentFiles = [ ./secrets.env ];
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+### home-manager as NixOS module
+
+```nix
+{
+  home-manager.users.alice = { pkgs, ... }: {
+    imports = [ hermes-agent.homeManagerModules.default ];
+    programs.hermes-agent = {
+      enable = true;
+      settings.model = "anthropic/claude-sonnet-4";
+      mcpServers.filesystem = {
+        command = "npx";
+        args = [ "-y" "@modelcontextprotocol/server-filesystem" "/home/alice" ];
+      };
+    };
+  };
+}
+```
+
+The `programs.hermes-agent` options are the same as the NixOS module's `services.hermes-agent` options, minus `user`, `group`, `createUser`, `addToSystemPackages`, and `container.*`.
 
 ---
 
@@ -962,11 +1035,17 @@ All `docker` commands below work the same with `podman`. Substitute accordingly 
 ### Service Logs
 
 ```bash
-# Both modes use the same systemd unit
+# NixOS: Both modes use the same systemd unit
 journalctl -u hermes-agent -f
 
-# Container mode: also available directly
+# NixOS with container mode: also available directly
 docker logs -f hermes-agent
+
+# Home-manager on linux: use user-scoped systemd unit
+journalctl -u hermes-agent -f --user
+
+# Home-manager on darwin: use launchd
+log stream --predicate 'eventMessage CONTAINS "hermes-agent"' --info
 ```
 
 ### Container Inspection

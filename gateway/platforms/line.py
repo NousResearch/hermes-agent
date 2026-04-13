@@ -19,8 +19,11 @@ import logging
 import mimetypes
 import os
 import secrets
+import struct
+import tempfile
 import time
 import uuid
+import zlib
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -52,6 +55,30 @@ MAX_MESSAGE_LENGTH = 5000
 DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8443
 DEFAULT_WEBHOOK_PATH = "/line/webhook"
+
+# LINE Messaging API file size limits
+LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024   # 10 MB
+LINE_AUDIO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+LINE_VIDEO_MAX_BYTES = 200 * 1024 * 1024  # 200 MB
+
+
+def _make_preview_png() -> bytes:
+    """Return a minimal 1×1 white PNG suitable for LINE video previewImageUrl.
+
+    LINE requires previewImageUrl to be a JPEG or PNG image.  When sending a
+    local video we have no thumbnail, so we serve this tiny placeholder instead.
+    Generated with pure stdlib (no Pillow required).
+    """
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))  # 1×1 RGB
+        + _chunk(b"IDAT", zlib.compress(b"\x00\xff\xff\xff"))             # white pixel
+        + _chunk(b"IEND", b"")
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +667,18 @@ class LineAdapter(BasePlatformAdapter):
             logger.error("[LINE] send_image_file: file not found: %s", image_path)
             return SendResult(success=False, error=f"File not found: {image_path}")
 
+        file_size = path.stat().st_size
+        if file_size > LINE_IMAGE_MAX_BYTES:
+            logger.error(
+                "[LINE] send_image_file: file too large (%d MB, limit 10 MB): %s",
+                file_size // 1024 // 1024,
+                image_path,
+            )
+            return SendResult(
+                success=False,
+                error=f"Image exceeds LINE's 10 MB limit ({file_size // 1024 // 1024} MB)",
+            )
+
         token = self._register_media(str(path))
         image_url = self._media_url(token, path.name)
         logger.debug("[LINE] serving local image via %s (token expires in %ds)", image_url, self._media_ttl)
@@ -649,6 +688,120 @@ class LineAdapter(BasePlatformAdapter):
             caption=caption,
             metadata=metadata,
         )
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,  # noqa: ARG002
+        **kwargs,
+    ) -> SendResult:
+        """Send a local audio file as a LINE native audio message."""
+        path = Path(audio_path)
+        if not path.exists() or not path.is_file():
+            logger.error("[LINE] send_voice: file not found: %s", audio_path)
+            return SendResult(success=False, error=f"File not found: {audio_path}")
+
+        file_size = path.stat().st_size
+        if file_size > LINE_AUDIO_MAX_BYTES:
+            logger.error(
+                "[LINE] send_voice: file too large (%d MB, limit 200 MB): %s",
+                file_size // 1024 // 1024,
+                audio_path,
+            )
+            return SendResult(
+                success=False,
+                error=f"Audio exceeds LINE's 200 MB limit ({file_size // 1024 // 1024} MB)",
+            )
+
+        token = self._register_media(str(path))
+        audio_url = self._media_url(token, path.name)
+
+        messages = []
+        if caption:
+            messages.append({"type": "text", "text": caption[:MAX_MESSAGE_LENGTH]})
+        messages.append({
+            "type": "audio",
+            "originalContentUrl": audio_url,
+            "duration": 0,  # duration (ms) unknown; LINE shows indeterminate progress bar
+        })
+        try:
+            client = await self._ensure_client()
+            resp = await client.post(
+                f"{LINE_API_BASE}/message/push",
+                headers=self._auth_headers(),
+                json={"to": chat_id, "messages": messages},
+            )
+            if resp.status_code == 200:
+                return SendResult(success=True)
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[LINE] send_voice error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,  # noqa: ARG002
+        **kwargs,
+    ) -> SendResult:
+        """Send a local video file as a LINE native video message.
+
+        LINE requires ``previewImageUrl`` to be a JPEG/PNG image.  Since we
+        have no thumbnail for a local file, we generate a 1×1 white PNG
+        placeholder and serve it alongside the video from the webhook server.
+        """
+        path = Path(video_path)
+        if not path.exists() or not path.is_file():
+            logger.error("[LINE] send_video: file not found: %s", video_path)
+            return SendResult(success=False, error=f"File not found: {video_path}")
+
+        file_size = path.stat().st_size
+        if file_size > LINE_VIDEO_MAX_BYTES:
+            logger.error(
+                "[LINE] send_video: file too large (%d MB, limit 200 MB): %s",
+                file_size // 1024 // 1024,
+                video_path,
+            )
+            return SendResult(
+                success=False,
+                error=f"Video exceeds LINE's 200 MB limit ({file_size // 1024 // 1024} MB)",
+            )
+
+        video_token = self._register_media(str(path))
+        video_url = self._media_url(video_token, path.name)
+
+        # Generate and serve a preview placeholder PNG (LINE requires an image URL)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(_make_preview_png())
+            preview_path = f.name
+        preview_token = self._register_media(preview_path)
+        preview_url = self._media_url(preview_token, "preview.png")
+
+        messages = []
+        if caption:
+            messages.append({"type": "text", "text": caption[:MAX_MESSAGE_LENGTH]})
+        messages.append({
+            "type": "video",
+            "originalContentUrl": video_url,
+            "previewImageUrl": preview_url,
+        })
+        try:
+            client = await self._ensure_client()
+            resp = await client.post(
+                f"{LINE_API_BASE}/message/push",
+                headers=self._auth_headers(),
+                json={"to": chat_id, "messages": messages},
+            )
+            if resp.status_code == 200:
+                return SendResult(success=True)
+            return SendResult(success=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        except Exception as e:
+            logger.error("[LINE] send_video error: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic chat info for the given chat_id."""

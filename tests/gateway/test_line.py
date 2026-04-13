@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import stat as stat_module
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -502,3 +503,167 @@ class TestLineMediaEndpoint:
         adapter = LineAdapter(_make_config(webhook_host="mybot.example.com", webhook_port=8443))
         url = adapter._media_url("tok123", "photo.jpg")
         assert url == "https://mybot.example.com:8443/line/media/tok123/photo.jpg"
+
+
+class TestLineSendVoice:
+    def test_send_voice_missing_file(self):
+        """send_voice() must return failure when file does not exist."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_voice("U123", "/nonexistent/audio.m4a")
+        )
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    def test_send_voice_calls_audio_message_type(self):
+        """send_voice() must send a LINE audio message (not text fallback)."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config(webhook_host="bot.example.com", webhook_port=443))
+
+        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+            f.write(b"\x00" * 100)
+            tmp_path = f.name
+
+        try:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+
+            with patch.object(adapter, "_ensure_client", return_value=mock_client):
+                asyncio.get_event_loop().run_until_complete(
+                    adapter.send_voice("U123", tmp_path)
+                )
+
+            payload = mock_client.post.call_args.kwargs["json"]
+            audio_msg = next(m for m in payload["messages"] if m["type"] == "audio")
+            assert audio_msg["originalContentUrl"].startswith("https://")
+            assert "duration" in audio_msg
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_voice_size_limit(self):
+        """send_voice() must reject files exceeding LINE's 200 MB limit."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        with tempfile.NamedTemporaryFile(suffix=".m4a", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            fake = MagicMock(st_size=201 * 1024 * 1024, st_mode=stat_module.S_IFREG | 0o644)
+            with patch("pathlib.Path.stat", return_value=fake):
+                result = asyncio.get_event_loop().run_until_complete(
+                    adapter.send_voice("U123", tmp_path)
+                )
+            assert not result.success
+            assert "200 MB" in result.error
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestLineSendVideo:
+    def test_send_video_missing_file(self):
+        """send_video() must return failure when file does not exist."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_video("U123", "/nonexistent/video.mp4")
+        )
+        assert not result.success
+        assert "not found" in result.error.lower()
+
+    def test_send_video_payload(self):
+        """send_video() must send video + preview PNG via LINE Push API."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config(webhook_host="bot.example.com", webhook_port=443))
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            f.write(b"\x00" * 100)
+            tmp_path = f.name
+
+        try:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+
+            with patch.object(adapter, "_ensure_client", return_value=mock_client):
+                asyncio.get_event_loop().run_until_complete(
+                    adapter.send_video("U123", tmp_path)
+                )
+
+            payload = mock_client.post.call_args.kwargs["json"]
+            video_msg = next(m for m in payload["messages"] if m["type"] == "video")
+            assert video_msg["originalContentUrl"].startswith("https://")
+            assert video_msg["previewImageUrl"].startswith("https://")
+            assert video_msg["previewImageUrl"].endswith(".png")
+            # video and preview must be different URLs
+            assert video_msg["originalContentUrl"] != video_msg["previewImageUrl"]
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_video_size_limit(self):
+        """send_video() must reject files exceeding LINE's 200 MB limit."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            fake = MagicMock(st_size=201 * 1024 * 1024, st_mode=stat_module.S_IFREG | 0o644)
+            with patch("pathlib.Path.stat", return_value=fake):
+                result = asyncio.get_event_loop().run_until_complete(
+                    adapter.send_video("U123", tmp_path)
+                )
+            assert not result.success
+            assert "200 MB" in result.error
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestLineSendImageFileSize:
+    def test_send_image_file_size_limit(self):
+        """send_image_file() must reject files exceeding LINE's 10 MB limit."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            fake = MagicMock(st_size=11 * 1024 * 1024, st_mode=stat_module.S_IFREG | 0o644)
+            with patch("pathlib.Path.stat", return_value=fake):
+                result = asyncio.get_event_loop().run_until_complete(
+                    adapter.send_image_file("U123", tmp_path)
+                )
+            assert not result.success
+            assert "10 MB" in result.error
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestLineMakePreviewPng:
+    def test_make_preview_png_is_valid_png(self):
+        """_make_preview_png() must return bytes starting with the PNG signature."""
+        from gateway.platforms.line import _make_preview_png
+
+        data = _make_preview_png()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n", "Not a valid PNG signature"
+        assert len(data) > 20

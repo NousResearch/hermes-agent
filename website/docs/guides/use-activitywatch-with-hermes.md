@@ -87,34 +87,16 @@ Common bucket types include:
 Do **not** ingest raw event streams into canon by default.
 Summarize a bounded time window first.
 
-Example: top app/window signals over the last 24 hours.
+Use the helper script shipped with the optional skill:
 
 ```bash
-python3 - <<'PY'
-import urllib.request, json, datetime as dt
-from collections import Counter
+python3 ~/.hermes/hermes-agent/optional-skills/productivity/activitywatch/scripts/activitywatch_summary.py summary --hours 24 --pretty
+```
 
-BASE = 'http://127.0.0.1:5600/api/0'
-now = dt.datetime.now(dt.timezone.utc)
-start = (now - dt.timedelta(hours=24)).isoformat()
-end = now.isoformat()
+For a lightweight project-heat hint based on window titles:
 
-buckets = json.loads(urllib.request.urlopen(f'{BASE}/buckets/', timeout=5).read().decode())
-window_buckets = [bid for bid, meta in buckets.items() if meta.get('type') == 'currentwindow']
-
-counter = Counter()
-for bid in window_buckets:
-    url = f'{BASE}/buckets/{bid}/events?start={start}&end={end}'
-    events = json.loads(urllib.request.urlopen(url, timeout=10).read().decode())
-    for ev in events:
-        data = ev.get('data') or {}
-        app = data.get('app') or 'unknown'
-        title = (data.get('title') or '')[:80]
-        counter[(app, title)] += ev.get('duration', 0) or 0
-
-for (app, title), secs in counter.most_common(20):
-    print(f'{secs/3600:5.2f}h  {app:20}  {title}')
-PY
+```bash
+python3 ~/.hermes/hermes-agent/optional-skills/productivity/activitywatch/scripts/activitywatch_summary.py heat --hours 24 --pretty
 ```
 
 ## Step 4: use it in Hermes reviews

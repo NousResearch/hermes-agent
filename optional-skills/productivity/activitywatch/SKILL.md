@@ -41,6 +41,26 @@ All of this is available over the local HTTP API, usually at:
 http://127.0.0.1:5600/api/0/
 ```
 
+## Helper script
+
+This skill now includes `scripts/activitywatch_summary.py` for repeatable local ActivityWatch queries.
+
+```bash
+# Server info
+python3 SKILL_DIR/scripts/activitywatch_summary.py info --pretty
+
+# List buckets
+python3 SKILL_DIR/scripts/activitywatch_summary.py buckets --pretty
+
+# Summarize top windows over the last 24h
+python3 SKILL_DIR/scripts/activitywatch_summary.py summary --hours 24 --pretty
+
+# Generate a lightweight project heat hint from window titles
+python3 SKILL_DIR/scripts/activitywatch_summary.py heat --hours 24 --pretty
+```
+
+`SKILL_DIR` is the directory containing this SKILL.md file.
+
 ## Quick checks
 
 ### 1. Verify the server is up
@@ -57,16 +77,10 @@ Expected output looks like JSON with hostname and version.
 curl -s http://127.0.0.1:5600/api/0/buckets/
 ```
 
-Or, for a cleaner list:
+Or use the helper:
 
 ```bash
-python3 - <<'PY'
-import urllib.request, json
-u = 'http://127.0.0.1:5600/api/0/buckets/'
-data = json.loads(urllib.request.urlopen(u, timeout=5).read().decode())
-for bucket_id, meta in data.items():
-    print(f"{bucket_id:45}  {meta.get('type')}")
-PY
+python3 SKILL_DIR/scripts/activitywatch_summary.py buckets --pretty
 ```
 
 ## Most useful pattern: private summary, not raw dump

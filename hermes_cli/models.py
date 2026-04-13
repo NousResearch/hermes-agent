@@ -70,13 +70,13 @@ def _codex_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
+        "xiaomi/mimo-v2-pro",
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",
         "openai/gpt-5.4-mini",
-        "xiaomi/mimo-v2-pro",
         "openai/gpt-5.3-codex",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
@@ -130,6 +130,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemma-4-26b-it",
     ],
     "zai": [
+        "glm-5.1",
         "glm-5",
         "glm-5-turbo",
         "glm-4.7",
@@ -544,6 +545,20 @@ _PROVIDER_ALIASES = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 }
+
+
+def get_default_model_for_provider(provider: str) -> str:
+    """Return the default model for a provider, or empty string if unknown.
+
+    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
+    model a user would be offered first in the ``hermes model`` picker.
+
+    Used as a fallback when the user has configured a provider but never
+    selected a model (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``).
+    """
+    models = _PROVIDER_MODELS.get(provider, [])
+    return models[0] if models else ""
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:

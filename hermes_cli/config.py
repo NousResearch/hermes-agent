@@ -50,6 +50,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
+    "MATRIX_RECOVERY_KEY",
 })
 import yaml
 
@@ -147,25 +148,6 @@ def managed_error(action: str = "modify configuration"):
 # Container-aware CLI (NixOS container mode)
 # =============================================================================
 
-def _is_inside_container() -> bool:
-    """Detect if we're already running inside a Docker/Podman container."""
-    # Standard Docker/Podman indicators
-    if os.path.exists("/.dockerenv"):
-        return True
-    # Podman uses /run/.containerenv
-    if os.path.exists("/run/.containerenv"):
-        return True
-    # Check cgroup for container runtime evidence (works for both Docker & Podman)
-    try:
-        with open("/proc/1/cgroup", "r") as f:
-            cgroup = f.read()
-            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
-                return True
-    except OSError:
-        pass
-    return False
-
-
 def get_container_exec_info() -> Optional[dict]:
     """Read container mode metadata from HERMES_HOME/.container-mode.
 
@@ -180,7 +162,8 @@ def get_container_exec_info() -> Optional[dict]:
     if os.environ.get("HERMES_DEV") == "1":
         return None
 
-    if _is_inside_container():
+    from hermes_constants import is_container
+    if is_container():
         return None
 
     container_mode_file = get_hermes_home() / ".container-mode"
@@ -354,6 +337,10 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Periodic "still working" notification interval (seconds).
+        # Sends a status message every N seconds so the user knows the
+        # agent hasn't died during long tasks.  0 = disable notifications.
+        "gateway_notify_interval": 600,
     },
     
     "terminal": {
@@ -1290,6 +1277,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Matrix device ID (stable across restarts)",
         "url": None,
         "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_RECOVERY_KEY": {
+        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
+        "prompt": "Matrix recovery key",
+        "url": None,
+        "password": True,
         "category": "messaging",
         "advanced": True,
     },
@@ -2639,6 +2634,28 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
         "validated": False,
     }
 
+
+
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+
+    Adds/updates vars that changed and removes vars that were deleted from
+    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
+    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    """
+    env_vars = load_env()
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    # Remove known Hermes vars that are no longer in .env
+    for key in known_keys:
+        if key not in env_vars and key in os.environ:
+            del os.environ[key]
+            count += 1
+    return count
 
 
 def get_env_value(key: str) -> Optional[str]:

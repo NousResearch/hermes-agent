@@ -26,6 +26,7 @@ def _make_agent(
     agent.provider = "openrouter"
     agent.base_url = "https://openrouter.ai/api/v1"
     agent.api_key = "sk-test"
+    agent.api_mode = "chat_completions"
     agent.quiet_mode = True
     agent.log_prefix = ""
     agent.compression_enabled = compression_enabled
@@ -37,6 +38,7 @@ def _make_agent(
     agent.status_callback = None
     agent.tool_progress_callback = None
     agent._compression_warning = None
+    agent.config = None
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -97,6 +99,94 @@ def test_no_warning_when_aux_context_sufficient(mock_get_client, mock_ctx_len):
 
     assert len(messages) == 0
     assert agent._compression_warning is None
+
+
+def test_feasibility_check_passes_live_main_runtime():
+    """Compression feasibility should probe using the live session runtime."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.model = "gpt-5.4"
+    agent.provider = "openai-codex"
+    agent.base_url = "https://chatgpt.com/backend-api/codex"
+    agent.api_key = "codex-token"
+    agent.api_mode = "codex_responses"
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://chatgpt.com/backend-api/codex"
+    mock_client.api_key = "codex-token"
+
+    with patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(mock_client, "gpt-5.4")) as mock_get_client, \
+         patch("agent.model_metadata.get_model_context_length", return_value=200_000):
+        agent._emit_status = lambda msg: None
+        agent._check_compression_model_feasibility()
+
+    mock_get_client.assert_called_once_with(
+        "compression",
+        main_runtime={
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        },
+    )
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ctx_len):
+    """auxiliary.compression.context_length from config is forwarded to
+    get_model_context_length so custom endpoints that lack /models still
+    report the correct context window (fixes #8499)."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.85)
+    agent.config = {
+        "auxiliary": {
+            "compression": {
+                "context_length": 1_000_000,
+            },
+        },
+    }
+    mock_client = MagicMock()
+    mock_client.base_url = "http://custom-endpoint:8080/v1"
+    mock_client.api_key = "sk-custom"
+    mock_get_client.return_value = (mock_client, "custom/big-model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "custom/big-model",
+        base_url="http://custom-endpoint:8080/v1",
+        api_key="sk-custom",
+        config_context_length=1_000_000,
+    )
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_ctx_len):
+    """Non-integer context_length in config is silently ignored."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.config = {
+        "auxiliary": {
+            "compression": {
+                "context_length": "not-a-number",
+            },
+        },
+    }
+    mock_client = MagicMock()
+    mock_client.base_url = "http://custom:8080/v1"
+    mock_client.api_key = "sk-test"
+    mock_get_client.return_value = (mock_client, "custom/model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    mock_ctx_len.assert_called_once_with(
+        "custom/model",
+        base_url="http://custom:8080/v1",
+        api_key="sk-test",
+        config_context_length=None,
+    )
 
 
 @patch("agent.auxiliary_client.get_text_auxiliary_client")

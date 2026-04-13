@@ -665,6 +665,17 @@ def load_gateway_config() -> GatewayConfig:
     _apply_env_overrides(config)
     
     # --- Validate loaded values ---
+    _validate_gateway_config(config)
+
+    return config
+
+
+def _validate_gateway_config(config: "GatewayConfig") -> None:
+    """Validate and sanitize a loaded GatewayConfig in place.
+
+    Called by ``load_gateway_config()`` after all config sources are merged.
+    Extracted as a separate function for testability.
+    """
     policy = config.default_reset_policy
 
     if not (0 <= policy.at_hour <= 23):
@@ -701,7 +712,31 @@ def load_gateway_config() -> GatewayConfig:
                 platform.value, env_name,
             )
 
-    return config
+    # Reject known-weak placeholder tokens.
+    # Ported from openclaw/openclaw#64586: users who copy .env.example
+    # without changing placeholder values get a clear startup error instead
+    # of a confusing "auth failed" from the platform API.
+    try:
+        from hermes_cli.auth import has_usable_secret
+    except ImportError:
+        has_usable_secret = None  # type: ignore[assignment]
+
+    if has_usable_secret is not None:
+        for platform, pconfig in config.platforms.items():
+            if not pconfig.enabled:
+                continue
+            env_name = _token_env_names.get(platform)
+            if not env_name:
+                continue
+            token = pconfig.token
+            if token and token.strip() and not has_usable_secret(token, min_length=4):
+                logger.error(
+                    "%s is enabled but %s is set to a placeholder value ('%s'). "
+                    "Set a real bot token before starting the gateway. "
+                    "The adapter will NOT be started.",
+                    platform.value, env_name, token.strip()[:6] + "...",
+                )
+                pconfig.enabled = False
 
 
 def _apply_env_overrides(config: GatewayConfig) -> None:

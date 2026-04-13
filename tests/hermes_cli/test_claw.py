@@ -1,6 +1,7 @@
 """Tests for hermes claw commands."""
 
 from argparse import Namespace
+import subprocess
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -58,13 +59,13 @@ class TestFindOpenclawDirs:
     def test_finds_legacy_dirs(self, tmp_path):
         clawdbot = tmp_path / ".clawdbot"
         clawdbot.mkdir()
-        moldbot = tmp_path / ".moldbot"
-        moldbot.mkdir()
+        moltbot = tmp_path / ".moltbot"
+        moltbot.mkdir()
         with patch("pathlib.Path.home", return_value=tmp_path):
             found = claw_mod._find_openclaw_dirs()
         assert len(found) == 2
         assert clawdbot in found
-        assert moldbot in found
+        assert moltbot in found
 
     def test_returns_empty_when_none_exist(self, tmp_path):
         with patch("pathlib.Path.home", return_value=tmp_path):
@@ -197,6 +198,11 @@ class TestClawCommand:
 class TestCmdMigrate:
     """Test the migrate command handler."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_openclaw_running(self):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            yield
+
     def test_error_when_source_missing(self, tmp_path, capsys):
         args = Namespace(
             source=str(tmp_path / "nonexistent"),
@@ -297,7 +303,6 @@ class TestCmdMigrate:
             patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
             patch.object(claw_mod, "get_config_path", return_value=config_path),
             patch.object(claw_mod, "prompt_yes_no", return_value=True),
-            patch.object(claw_mod, "_offer_source_archival"),
             patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_migrate(args)
@@ -306,43 +311,8 @@ class TestCmdMigrate:
         assert "Migration Results" in captured.out
         assert "Migration complete!" in captured.out
 
-    def test_execute_offers_archival_on_success(self, tmp_path, capsys):
-        """After successful migration, _offer_source_archival should be called."""
-        openclaw_dir = tmp_path / ".openclaw"
-        openclaw_dir.mkdir()
-
-        fake_mod = ModuleType("openclaw_to_hermes")
-        fake_mod.resolve_selected_options = MagicMock(return_value={"soul"})
-        fake_migrator = MagicMock()
-        fake_migrator.migrate.return_value = {
-            "summary": {"migrated": 3, "skipped": 0, "conflict": 0, "error": 0},
-            "items": [
-                {"kind": "soul", "status": "migrated", "destination": str(tmp_path / "SOUL.md")},
-            ],
-        }
-        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
-
-        args = Namespace(
-            source=str(openclaw_dir),
-            dry_run=False, preset="full", overwrite=False,
-            migrate_secrets=False, workspace_target=None,
-            skill_conflict="skip", yes=True,
-        )
-
-        with (
-            patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
-            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
-            patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
-            patch.object(claw_mod, "save_config"),
-            patch.object(claw_mod, "load_config", return_value={}),
-            patch.object(claw_mod, "_offer_source_archival") as mock_archival,
-        ):
-            claw_mod._cmd_migrate(args)
-
-        mock_archival.assert_called_once_with(openclaw_dir, True)
-
-    def test_dry_run_skips_archival(self, tmp_path, capsys):
-        """Dry run should not offer archival."""
+    def test_dry_run_does_not_touch_source(self, tmp_path, capsys):
+        """Dry run should not modify the source directory."""
         openclaw_dir = tmp_path / ".openclaw"
         openclaw_dir.mkdir()
 
@@ -369,11 +339,10 @@ class TestCmdMigrate:
             patch.object(claw_mod, "get_config_path", return_value=tmp_path / "config.yaml"),
             patch.object(claw_mod, "save_config"),
             patch.object(claw_mod, "load_config", return_value={}),
-            patch.object(claw_mod, "_offer_source_archival") as mock_archival,
         ):
             claw_mod._cmd_migrate(args)
 
-        mock_archival.assert_not_called()
+        assert openclaw_dir.is_dir()  # Source untouched
 
     def test_execute_cancelled_by_user(self, tmp_path, capsys):
         openclaw_dir = tmp_path / ".openclaw"
@@ -504,73 +473,6 @@ class TestCmdMigrate:
         # Migrator should have been called with migrate_secrets=True
         call_kwargs = fake_mod.Migrator.call_args[1]
         assert call_kwargs["migrate_secrets"] is True
-
-
-# ---------------------------------------------------------------------------
-# _offer_source_archival
-# ---------------------------------------------------------------------------
-
-
-class TestOfferSourceArchival:
-    """Test the post-migration archival offer."""
-
-    def test_archives_with_auto_yes(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-        (source / "workspace").mkdir()
-        (source / "workspace" / "todo.json").write_text("{}")
-
-        claw_mod._offer_source_archival(source, auto_yes=True)
-
-        captured = capsys.readouterr()
-        assert "Archived" in captured.out
-        assert not source.exists()
-        assert (tmp_path / ".openclaw.pre-migration").is_dir()
-
-    def test_skips_when_user_declines(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-
-        with (
-            patch.object(claw_mod, "prompt_yes_no", return_value=False),
-            patch("sys.stdin", mock_stdin),
-        ):
-            claw_mod._offer_source_archival(source, auto_yes=False)
-
-        captured = capsys.readouterr()
-        assert "Skipped" in captured.out
-        assert source.is_dir()  # Still exists
-
-    def test_noop_when_source_missing(self, tmp_path, capsys):
-        claw_mod._offer_source_archival(tmp_path / "nonexistent", auto_yes=True)
-        captured = capsys.readouterr()
-        assert captured.out == ""  # No output
-
-    def test_shows_state_files(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-        ws = source / "workspace"
-        ws.mkdir()
-        (ws / "todo.json").write_text("{}")
-
-        with patch.object(claw_mod, "prompt_yes_no", return_value=False):
-            claw_mod._offer_source_archival(source, auto_yes=False)
-
-        captured = capsys.readouterr()
-        assert "todo.json" in captured.out
-
-    def test_handles_archive_error(self, tmp_path, capsys):
-        source = tmp_path / ".openclaw"
-        source.mkdir()
-
-        with patch.object(claw_mod, "_archive_directory", side_effect=OSError("permission denied")):
-            claw_mod._offer_source_archival(source, auto_yes=True)
-
-        captured = capsys.readouterr()
-        assert "Could not archive" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -730,3 +632,120 @@ class TestPrintMigrationReport:
         claw_mod._print_migration_report(report, dry_run=False)
         captured = capsys.readouterr()
         assert "Nothing to migrate" in captured.out
+
+
+class TestDetectOpenclawProcesses:
+    def test_returns_match_when_pgrep_finds_openclaw(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                # systemd check misses, pgrep finds openclaw
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) == 1
+                assert "1234" in result[0]
+
+    def test_returns_empty_when_pgrep_finds_nothing(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl (not found)
+                    MagicMock(returncode=1, stdout=""),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
+
+    def test_detects_systemd_service(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout="active\n"),  # systemctl
+                    MagicMock(returncode=1, stdout=""),  # pgrep
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) == 1
+                assert "systemd" in result[0]
+
+    def test_returns_match_on_windows_when_openclaw_exe_running(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout="openclaw.exe                 1234 Console    1     45,056 K\n"),
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) >= 1
+                assert any("openclaw.exe" in r for r in result)
+
+    def test_returns_match_on_windows_when_node_exe_has_openclaw_in_cmdline(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),  # tasklist openclaw.exe
+                    MagicMock(returncode=0, stdout=""),  # tasklist clawd.exe
+                    MagicMock(returncode=0, stdout="1234\n"),  # PowerShell
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert len(result) >= 1
+                assert any("node.exe" in r for r in result)
+
+    def test_returns_empty_on_windows_when_nothing_found(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "win32"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                    MagicMock(returncode=0, stdout=""),
+                ]
+                result = claw_mod._detect_openclaw_processes()
+                assert result == []
+
+
+class TestWarnIfOpenclawRunning:
+    def test_noop_when_not_running(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=[]):
+            claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_warns_and_exits_when_running_and_user_declines(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=False):
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    with pytest.raises(SystemExit) as exc_info:
+                        claw_mod._warn_if_openclaw_running(auto_yes=False)
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_when_running_and_user_accepts(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod, "prompt_yes_no", return_value=True):
+                with patch.object(claw_mod.sys.stdin, "isatty", return_value=True):
+                    claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_auto_yes_mode(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            claw_mod._warn_if_openclaw_running(auto_yes=True)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+
+    def test_warns_and_continues_in_non_interactive_session(self, capsys):
+        with patch.object(claw_mod, "_detect_openclaw_processes", return_value=["openclaw process(es) (PIDs: 1234)"]):
+            with patch.object(claw_mod.sys.stdin, "isatty", return_value=False):
+                claw_mod._warn_if_openclaw_running(auto_yes=False)
+        captured = capsys.readouterr()
+        assert "OpenClaw appears to be running" in captured.out
+        assert "Non-interactive session" in captured.out

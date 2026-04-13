@@ -104,7 +104,7 @@ _DEFAULT_PROVIDER_MODELS = {
         "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite",
         "gemma-4-31b-it", "gemma-4-26b-it",
     ],
-    "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
+    "zai": ["glm-5.1", "glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
     "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
@@ -2232,6 +2232,7 @@ def setup_gateway(config: dict):
         from hermes_cli.gateway import (
             _is_service_installed,
             _is_service_running,
+            supports_systemd_services,
             has_conflicting_systemd_units,
             install_linux_gateway_from_setup,
             print_systemd_scope_conflict_warning,
@@ -2244,16 +2245,18 @@ def setup_gateway(config: dict):
 
         service_installed = _is_service_installed()
         service_running = _is_service_running()
+        supports_systemd = supports_systemd_services()
+        supports_service_manager = supports_systemd or _is_macos
 
         print()
-        if _is_linux and has_conflicting_systemd_units():
+        if supports_systemd and has_conflicting_systemd_units():
             print_systemd_scope_conflict_warning()
             print()
 
         if service_running:
             if prompt_yes_no("  Restart the gateway to pick up changes?", True):
                 try:
-                    if _is_linux:
+                    if supports_systemd:
                         systemd_restart()
                     elif _is_macos:
                         launchd_restart()
@@ -2262,14 +2265,14 @@ def setup_gateway(config: dict):
         elif service_installed:
             if prompt_yes_no("  Start the gateway service?", True):
                 try:
-                    if _is_linux:
+                    if supports_systemd:
                         systemd_start()
                     elif _is_macos:
                         launchd_start()
                 except Exception as e:
                     print_error(f"  Start failed: {e}")
-        elif _is_linux or _is_macos:
-            svc_name = "systemd" if _is_linux else "launchd"
+        elif supports_service_manager:
+            svc_name = "systemd" if supports_systemd else "launchd"
             if prompt_yes_no(
                 f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
                 True,
@@ -2277,7 +2280,7 @@ def setup_gateway(config: dict):
                 try:
                     installed_scope = None
                     did_install = False
-                    if _is_linux:
+                    if supports_systemd:
                         installed_scope, did_install = install_linux_gateway_from_setup(force=False)
                     else:
                         launchd_install(force=False)
@@ -2285,7 +2288,7 @@ def setup_gateway(config: dict):
                     print()
                     if did_install and prompt_yes_no("  Start the service now?", True):
                         try:
-                            if _is_linux:
+                            if supports_systemd:
                                 systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
@@ -2296,12 +2299,21 @@ def setup_gateway(config: dict):
                     print_info("  You can try manually: hermes gateway install")
             else:
                 print_info("  You can install later: hermes gateway install")
-                if _is_linux:
+                if supports_systemd:
                     print_info("  Or as a boot-time service: sudo hermes gateway install --system")
                 print_info("  Or run in foreground:  hermes gateway")
         else:
-            print_info("Start the gateway to bring your bots online:")
-            print_info("   hermes gateway              # Run in foreground")
+            from hermes_constants import is_container
+            if is_container():
+                print_info("Start the gateway to bring your bots online:")
+                print_info("   hermes gateway run          # Run as container main process")
+                print_info("")
+                print_info("For automatic restarts, use a Docker restart policy:")
+                print_info("   docker run --restart unless-stopped ...")
+                print_info("   docker restart <container>  # Manual restart")
+            else:
+                print_info("Start the gateway to bring your bots online:")
+                print_info("   hermes gateway              # Run in foreground")
 
         print_info("━" * 50)
 

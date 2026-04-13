@@ -445,9 +445,7 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
 
 # ── Namespace parsing helpers ──────────────────────────────────────────────
 
-import re as _re
-
-_NAMESPACE_PATTERN = _re.compile(r"^[a-zA-Z0-9_-]+$")
+NAMESPACE_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
@@ -482,4 +480,4 @@ def is_valid_namespace(candidate: Optional[str]) -> bool:
     """
     if not candidate:
         return False
-    return bool(_NAMESPACE_PATTERN.match(candidate))
+    return bool(NAMESPACE_PATTERN.match(candidate))

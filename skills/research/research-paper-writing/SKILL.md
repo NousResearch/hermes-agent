@@ -820,6 +820,24 @@ Every successful ML paper centers on what Neel Nanda calls "the narrative": a sh
 
 **If you cannot state your contribution in one sentence, you don't yet have a paper.**
 
+### The Sources Behind This Guidance
+
+This skill synthesizes writing philosophy from researchers who have published extensively at top venues. The writing philosophy layer was originally compiled by [Orchestra Research](https://github.com/orchestra-research) as the `ml-paper-writing` skill.
+
+| Source | Key Contribution | Link |
+|--------|-----------------|------|
+| **Neel Nanda** (Google DeepMind) | The Narrative Principle, What/Why/So What framework | [How to Write ML Papers](https://www.alignmentforum.org/posts/eJGptPbbFPZGLpjsp/highly-opinionated-advice-on-how-to-write-ml-papers) |
+| **Sebastian Farquhar** (DeepMind) | 5-sentence abstract formula | [How to Write ML Papers](https://sebastianfarquhar.com/on-research/2024/11/04/how_to_write_ml_papers/) |
+| **Gopen & Swan** | 7 principles of reader expectations | [Science of Scientific Writing](https://cseweb.ucsd.edu/~swanson/papers/science-of-writing.pdf) |
+| **Zachary Lipton** | Word choice, eliminating hedging | [Heuristics for Scientific Writing](https://www.approximatelycorrect.com/2018/01/29/heuristics-technical-scientific-writing-machine-learning-perspective/) |
+| **Jacob Steinhardt** (UC Berkeley) | Precision, consistent terminology | [Writing Tips](https://bounded-regret.ghost.io/) |
+| **Ethan Perez** (Anthropic) | Micro-level clarity tips | [Easy Paper Writing Tips](https://ethanperez.net/easy-paper-writing-tips/) |
+| **Andrej Karpathy** | Single contribution focus | Various lectures |
+
+**For deeper dives into any of these, see:**
+- [references/writing-guide.md](references/writing-guide.md) — Full explanations with examples
+- [references/sources.md](references/sources.md) — Complete bibliography
+
 ### Time Allocation
 
 Spend approximately **equal time** on each of:

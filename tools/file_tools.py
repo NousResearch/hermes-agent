@@ -361,6 +361,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 
+        if offset == 1 and not result_dict.get("error") and result.content:
+            related = _discover_related_paths(path, result.content)
+            if related:
+                result_dict["_related_paths"] = related
+                logger.debug("read_file _related_paths: %s -> %d hints", path, len(related))
+
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
         # the best proxy we have.  If the read produced an unreasonable
@@ -444,9 +450,174 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        # ── Related file hints ──────────────────────────────────────
+        # Lightweight deterministic hints: imports, test companions, __init__.
+        # Only injected for first reads (offset==1), text content, no error.
+        if offset == 1 and not result_dict.get("error") and result.content:
+            related = _discover_related_paths(path, result.content)
+            if related:
+                result_dict["_related_paths"] = related
+                logger.debug("read_file _related_paths: %s -> %d hints", path, len(related))
+
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
+
+
+def _discover_related_paths(path: str, content: str | None) -> list[dict]:
+    """Return lightweight related-file hints for a read_file result.
+
+    Deterministic only — no learning, no preview injection.
+    Detects: imports, test companions, package/config neighbors, and docs links.
+    Each entry: {"path": str, "reason": str}. Only existing files.
+    """
+    import re as _re
+    from pathlib import PurePosixPath
+
+    resolved = Path(path).expanduser().resolve()
+    cwd = Path.cwd()
+    try:
+        rel_str = str(resolved.relative_to(cwd))
+    except ValueError:
+        rel_str = str(resolved)
+
+    pp = PurePosixPath(rel_str)
+    if pp.is_absolute():
+        return []
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(candidate: str, reason: str):
+        if candidate not in seen and candidate != rel_str and (cwd / candidate).exists():
+            seen.add(candidate)
+            results.append({"path": candidate, "reason": reason})
+
+    def _strip_line_numbers(text: str) -> str:
+        raw_lines = []
+        for line in text.splitlines():
+            pipe = line.find("|")
+            if pipe >= 0 and line[:pipe].strip().isdigit():
+                raw_lines.append(line[pipe + 1:])
+            else:
+                raw_lines.append(line)
+        return "\n".join(raw_lines)
+
+    def _split_dir_with_dots(module: str) -> PurePosixPath:
+        return PurePosixPath(*[part for part in module.split("/") if part])
+
+    raw_content = _strip_line_numbers(content) if content else ""
+    suffix = pp.suffix.lower()
+    name = pp.name
+
+    if raw_content:
+        if suffix == ".py":
+            for m in _re.finditer(r'^\s*(?:from|import)\s+(\S+)', raw_content, _re.MULTILINE):
+                mod = m.group(1).split(",")[0].strip().split(" as ")[0].strip()
+                if not mod:
+                    continue
+                if mod.startswith('.'):
+                    leading = len(mod) - len(mod.lstrip('.'))
+                    remainder = mod[leading:]
+                    base = pp.parent
+                    for _ in range(max(leading - 1, 0)):
+                        base = base.parent
+                    if remainder:
+                        dotted = base.joinpath(*remainder.split('.'))
+                        _add(dotted.with_suffix('.py').as_posix(), f"local import ({mod})")
+                        _add((dotted / '__init__.py').as_posix(), f"local import ({mod})")
+                    else:
+                        _add((base / '__init__.py').as_posix(), f"local import ({mod})")
+                else:
+                    parts = mod.split('.')
+                    candidate_path = PurePosixPath(*parts)
+                    _add(candidate_path.with_suffix('.py').as_posix(), f"import ({mod})")
+                    _add((candidate_path / '__init__.py').as_posix(), f"import ({mod})")
+
+        elif suffix in {".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"}:
+            import_patterns = [
+                r'\bimport\s+(?:[^;]*?\s+from\s+)?["\'](.+?)["\']',
+                r'\brequire\(\s*["\'](.+?)["\']\s*\)',
+                r'\bexport\s+\*\s+from\s+["\'](.+?)["\']',
+            ]
+            for pattern in import_patterns:
+                for m in _re.finditer(pattern, raw_content, _re.MULTILINE):
+                    mod = m.group(1)
+                    if mod.startswith('.'):
+                        base = pp.parent / _split_dir_with_dots(mod)
+                        for ext in [".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"]:
+                            _add(base.with_suffix(ext).as_posix(), f"local import ({mod})")
+                        _add((base / 'index.js').as_posix(), f"local import ({mod})")
+            if name not in {"index.js", "index.ts", "index.jsx", "index.tsx"}:
+                stem = pp.stem
+                parent = pp.parent
+                for pattern in [f'{stem}.test{suffix}', f'{stem}.spec{suffix}']:
+                    _add((parent / pattern).as_posix(), f'test companion ({pattern})')
+                    _add(f'tests/{pattern}', f'test companion (tests/{pattern})')
+                _add((parent / '__tests__' / f'{stem}{suffix}').as_posix(), f'test companion (__tests__/{stem}{suffix})')
+
+        elif suffix == ".go":
+            for block in _re.finditer(r'^\s*import\s*\((.*?)\)', raw_content, _re.MULTILINE | _re.DOTALL):
+                for m in _re.finditer(r'["\`]([^"\`]+)["\`]', block.group(1)):
+                    mod = m.group(1)
+                    if mod.startswith('.') or mod.startswith('/'):
+                        base = pp.parent / _split_dir_with_dots(mod)
+                        _add(base.with_suffix('.go').as_posix(), f"local import ({mod})")
+                        _add((base / 'index.go').as_posix(), f"local import ({mod})")
+            if name.endswith('_test.go'):
+                pass
+
+        elif suffix == ".rs":
+            for m in _re.finditer(r'^\s*(?:use|mod)\s+([A-Za-z0-9_:]+)', raw_content, _re.MULTILINE):
+                mod = m.group(1).rstrip(';')
+                if '::' in mod or m.group(0).lstrip().startswith('mod '):
+                    base = pp.parent / PurePosixPath(*mod.split('::'))
+                    _add(base.with_suffix('.rs').as_posix(), f"rust module ({mod})")
+                    _add((base / 'mod.rs').as_posix(), f"rust module ({mod})")
+
+        elif suffix in {".sh", ".bash"}:
+            for m in _re.finditer(r'(?m)^\s*(?:source|\.)\s+([\w./-]+\.(?:sh|bash))', raw_content):
+                mod = m.group(1)
+                if mod.startswith('.'):
+                    _add((pp.parent / mod).as_posix(), f"shell include ({mod})")
+
+        elif suffix in {".yaml", ".yml", ".toml", ".json"}:
+            for ext in [".example", ".sample", ".template"]:
+                _add((pp.with_suffix(pp.suffix + ext)).as_posix(), f"config companion ({ext})")
+                _add((pp.parent / (pp.name + ext)).as_posix(), f"config companion ({ext})")
+            if name == 'package.json':
+                for candidate in ['src', 'lib', 'tests', 'test', '__tests__']:
+                    _add((pp.parent / candidate).as_posix(), f"package.json companion ({candidate})")
+
+        elif suffix == ".md":
+            for m in _re.finditer(r'\[[^\]]*\]\((\./[^)]+)\)', raw_content):
+                mod = m.group(1)
+                _add((pp.parent / mod).as_posix(), f"markdown link ({mod})")
+
+    if suffix == '.py' and pp.name != '__init__.py':
+        stem = pp.stem
+        parent = pp.parent
+        for pattern in [f'test_{stem}.py', f'{stem}_test.py']:
+            _add((parent / pattern).as_posix(), f'test companion ({pattern})')
+            _add(f'tests/{pattern}', f'test companion (tests/{pattern})')
+            _add(f'tests/{parent}/{pattern}', f'test companion (tests/{parent}/{pattern})')
+        _add((pp.parent / '__init__.py').as_posix(), 'package initializer')
+
+    # Generic companions for config files and other assets.
+    if suffix in {".yaml", ".yml", ".toml", ".json"}:
+        stem = pp.stem
+        for ext in [".example", ".sample", ".template"]:
+            _add((pp.parent / (pp.name + ext)).as_posix(), f"config companion ({ext})")
+            _add((pp.parent / (stem + ext)).as_posix(), f"config companion ({ext})")
+    if suffix == '.go' and name != '_test.go':
+        _add((pp.parent / f'{pp.stem}_test.go').as_posix(), 'test companion (*_test.go)')
+    if suffix == '.rs':
+        _add((pp.parent / 'tests' / f'{pp.stem}.rs').as_posix(), 'test companion (tests/*.rs)')
+    if suffix in {".sh", ".bash"}:
+        for candidate in [f'{pp.stem}.sh', f'{pp.stem}.bash']:
+            _add((pp.parent / candidate).as_posix(), f'shell companion ({candidate})')
+
+    return results[:5]
 
 
 def get_read_files_summary(task_id: str = "default") -> list:
@@ -654,7 +825,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+                preview_lines: int = 0, task_id: str = "default") -> str:
     """Search for content or files."""
     try:
         # Track searches to detect *consecutive* repeated search loops.
@@ -668,6 +839,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             file_glob or "",
             limit,
             offset,
+            preview_lines,
         )
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -694,13 +866,21 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
             pattern=pattern, path=path, target=target, file_glob=file_glob,
-            limit=limit, offset=offset, output_mode=output_mode, context=context
+            limit=limit, offset=offset, output_mode=output_mode, context=context,
+            preview_lines=preview_lines
         )
         if hasattr(result, 'matches'):
             for m in result.matches:
                 if hasattr(m, 'content') and m.content:
                     m.content = redact_sensitive_text(m.content)
+                if hasattr(m, 'preview') and m.preview:
+                    m.preview = redact_sensitive_text(m.preview)
         result_dict = result.to_dict()
+
+        if preview_lines > 0 and hasattr(result, 'matches'):
+            previews_attached = sum(1 for m in result.matches if getattr(m, 'preview', None))
+            logger.debug("search_files preview_lines=%d: %d/%d previews attached",
+                         preview_lines, previews_attached, len(result.matches))
 
         if count >= 3:
             result_dict["_warning"] = (
@@ -795,7 +975,8 @@ SEARCH_FILES_SCHEMA = {
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
             "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "preview_lines": {"type": "integer", "description": "Number of context lines to preview around each content match (default: 0 = disabled). Set to 2 for a compact snippet (5 lines) that often eliminates the need for a follow-up read_file call.", "default": 0, "minimum": 0}
         },
         "required": ["pattern"]
     }
@@ -828,7 +1009,8 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0),
+        preview_lines=args.get("preview_lines", 0), task_id=tid)
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))

@@ -186,6 +186,7 @@ class SearchMatch:
     path: str
     line_number: int
     content: str
+    preview: Optional[str] = None
     mtime: float = 0.0  # Modification time for sorting
 
 
@@ -203,7 +204,12 @@ class SearchResult:
         result = {"total_count": self.total_count}
         if self.matches:
             result["matches"] = [
-                {"path": m.path, "line": m.line_number, "content": m.content}
+                {
+                    "path": m.path,
+                    "line": m.line_number,
+                    "content": m.content,
+                    **({"preview": m.preview} if m.preview else {}),
+                }
                 for m in self.matches
             ]
         if self.files:
@@ -292,7 +298,7 @@ class FileOperations(ABC):
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0, preview_lines: int = 0) -> SearchResult:
         """Search for content or files."""
         ...
 
@@ -822,7 +828,7 @@ class ShellFileOperations(FileOperations):
     
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
-               output_mode: str = "content", context: int = 0) -> SearchResult:
+               output_mode: str = "content", context: int = 0, preview_lines: int = 0) -> SearchResult:
         """
         Search for content or files.
         
@@ -854,7 +860,7 @@ class ShellFileOperations(FileOperations):
             return self._search_files(pattern, path, limit, offset)
         else:
             return self._search_content(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+                                        output_mode, context, preview_lines)
     
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
@@ -939,15 +945,15 @@ class ShellFileOperations(FileOperations):
         )
     
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int, preview_lines: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
             return self._search_with_rg(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
+                                        output_mode, context, preview_lines)
         elif self._has_command('grep'):
             return self._search_with_grep(pattern, path, file_glob, limit, offset,
-                                          output_mode, context)
+                                          output_mode, context, preview_lines)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
@@ -956,7 +962,7 @@ class ShellFileOperations(FileOperations):
             )
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int, preview_lines: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
         
@@ -1048,14 +1054,33 @@ class ShellFileOperations(FileOperations):
             
             total = len(matches)
             page = matches[offset:offset + limit]
-            return SearchResult(
+            result = SearchResult(
                 matches=page,
                 total_count=total,
                 truncated=total > offset + limit
             )
+            return self._attach_match_previews(result, preview_lines)
+
+    def _attach_match_previews(self, result: SearchResult, preview_lines: int) -> SearchResult:
+        preview_lines = max(0, min(20, int(preview_lines or 0)))
+        if preview_lines <= 0 or not result.matches:
+            return result
+
+        cache: dict[tuple[str, int, int], str] = {}
+        for match in result.matches:
+            start = max(1, match.line_number - preview_lines)
+            size = preview_lines * 2 + 1
+            key = (match.path, start, size)
+            preview = cache.get(key)
+            if preview is None:
+                preview = self.read_file(match.path, offset=start, limit=size).content
+                cache[key] = preview
+            match.preview = preview
+        return result
+
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
-                          limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                          limit: int, offset: int, output_mode: str, context: int, preview_lines: int) -> SearchResult:
         """Fallback search using grep."""
         cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
         
@@ -1145,8 +1170,11 @@ class ShellFileOperations(FileOperations):
             
             total = len(matches)
             page = matches[offset:offset + limit]
-            return SearchResult(
+            result = SearchResult(
                 matches=page,
                 total_count=total,
                 truncated=total > offset + limit
             )
+            return self._attach_match_previews(result, preview_lines)
+
+

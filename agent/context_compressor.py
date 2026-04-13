@@ -17,8 +17,10 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -55,6 +57,86 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+TASK_CHECKPOINT_PREFIX = "[TASK_CHECKPOINT]"
+_TASK_CHECKPOINT_MAX_CHARS = 500
+
+
+@dataclass
+class TaskCheckpoint:
+    """Compact, machine-parseable task state preserved across compression."""
+
+    pending_tool_calls: List[str] = field(default_factory=list)
+    recently_modified_files: List[str] = field(default_factory=list)
+    current_plan_step: str = ""
+    last_tool_batch_results: List[str] = field(default_factory=list)
+    version: int = 1
+
+    @staticmethod
+    def _clip(text: str, limit: int) -> str:
+        text = " ".join(str(text or "").split())
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 1)] + "…"
+
+    def is_empty(self) -> bool:
+        return not any([
+            self.pending_tool_calls,
+            self.recently_modified_files,
+            self.current_plan_step,
+            self.last_tool_batch_results,
+        ])
+
+    def format_for_injection(self, max_chars: int = _TASK_CHECKPOINT_MAX_CHARS) -> Optional[str]:
+        if self.is_empty():
+            return None
+
+        payload: Dict[str, Any] = {
+            "v": self.version,
+            "p": [self._clip(item, 56) for item in self.pending_tool_calls[:2] if item],
+            "f": [self._clip(item, 36) for item in self.recently_modified_files[:3] if item],
+            "s": self._clip(self.current_plan_step, 72),
+            "r": [self._clip(item, 56) for item in self.last_tool_batch_results[:2] if item],
+        }
+        payload = {k: v for k, v in payload.items() if v not in ("", [], None)}
+        if payload == {"v": self.version}:
+            return None
+
+        def _render(current: Dict[str, Any]) -> str:
+            return f"{TASK_CHECKPOINT_PREFIX} " + json.dumps(
+                current,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        text = _render(payload)
+        if len(text) <= max_chars:
+            return text
+
+        shrunk = dict(payload)
+        for key in ("r", "p", "f"):
+            while shrunk.get(key) and len(_render(shrunk)) > max_chars:
+                shrunk[key] = shrunk[key][:-1]
+            if key in shrunk and not shrunk[key]:
+                shrunk.pop(key)
+
+        if len(_render(shrunk)) > max_chars and "s" in shrunk:
+            for limit in (56, 40, 24):
+                shrunk["s"] = self._clip(self.current_plan_step, limit)
+                if len(_render(shrunk)) <= max_chars:
+                    break
+            if not shrunk["s"]:
+                shrunk.pop("s")
+
+        if len(_render(shrunk)) > max_chars:
+            minimal: Dict[str, Any] = {"v": self.version}
+            if self.current_plan_step:
+                minimal["s"] = self._clip(self.current_plan_step, 24)
+            elif self.pending_tool_calls:
+                minimal["p"] = [self._clip(self.pending_tool_calls[0], 32)]
+            shrunk = minimal
+
+        text = _render(shrunk)
+        return text if len(text) <= max_chars else None
 
 
 class ContextCompressor(ContextEngine):
@@ -263,6 +345,203 @@ class ContextCompressor(ContextEngine):
     _CONTENT_TAIL = 1500      # chars kept from the end
     _TOOL_ARGS_MAX = 1500     # tool call argument chars
     _TOOL_ARGS_HEAD = 1200    # kept from the start of tool args
+
+    @staticmethod
+    def _compact_text(value: Any, limit: int = 80) -> str:
+        text = " ".join(str(value or "").split())
+        if len(text) <= limit:
+            return text
+        return text[: max(1, limit - 1)] + "…"
+
+    @staticmethod
+    def _strip_task_checkpoint(content: str) -> str:
+        text = content or ""
+        marker = text.find(TASK_CHECKPOINT_PREFIX)
+        if marker == -1:
+            return text
+        return text[:marker].rstrip()
+
+    @staticmethod
+    def _dedupe_keep_order(items: List[str], limit: int) -> List[str]:
+        seen = set()
+        result: List[str] = []
+        for item in items:
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            result.append(item)
+            if len(result) >= limit:
+                break
+        return result
+
+    @staticmethod
+    def _tool_call_name_and_args(tc) -> tuple:
+        if isinstance(tc, dict):
+            fn = tc.get("function", {})
+            name = fn.get("name", "?")
+            raw_args = fn.get("arguments", "")
+        else:
+            fn = getattr(tc, "function", None)
+            name = getattr(fn, "name", "?") if fn else "?"
+            raw_args = getattr(fn, "arguments", "") if fn else ""
+
+        if isinstance(raw_args, dict):
+            args = raw_args
+        else:
+            try:
+                args = json.loads(raw_args) if raw_args else {}
+            except (TypeError, json.JSONDecodeError):
+                args = {"_raw": str(raw_args or "")}
+        if not isinstance(args, dict):
+            args = {"_raw": str(raw_args or "")}
+        return name, args
+
+    def _describe_tool_call(self, name: str, args: Dict[str, Any]) -> str:
+        for key in ("path", "command", "query", "url", "action"):
+            value = args.get(key)
+            if value:
+                return f"{name}:{self._compact_text(value, 44)}"
+        if args:
+            key = next(iter(args))
+            return f"{name}:{key}={self._compact_text(args.get(key), 32)}"
+        return name
+
+    def _summarize_tool_result(self, name: str, content: Any) -> str:
+        text = str(content or "").strip()
+        if not text:
+            return f"{name}:ok"
+
+        try:
+            parsed = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            path = parsed.get("path") or parsed.get("file") or parsed.get("target")
+            status = parsed.get("status")
+            error = parsed.get("error") or parsed.get("message")
+            if error:
+                return f"{name}:error {self._compact_text(error, 44)}"
+            if status and path:
+                return f"{name}:{status} {self._compact_text(path, 36)}"
+            if status:
+                return f"{name}:{self._compact_text(status, 44)}"
+            if path:
+                return f"{name}:{self._compact_text(path, 44)}"
+            for key in ("summary", "result", "output"):
+                if parsed.get(key):
+                    return f"{name}:{self._compact_text(parsed[key], 44)}"
+
+        first_line = text.splitlines()[0] if text else "ok"
+        return f"{name}:{self._compact_text(first_line, 44)}"
+
+    def _latest_plan_step_from_todos(self, messages: List[Dict[str, Any]]) -> str:
+        for msg in reversed(messages):
+            if msg.get("role") != "tool":
+                continue
+            content = msg.get("content", "")
+            if '"todos"' not in content:
+                continue
+            try:
+                data = json.loads(content)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            todos = data.get("todos")
+            if not isinstance(todos, list):
+                continue
+            for status in ("in_progress", "pending"):
+                for item in todos:
+                    if str(item.get("status", "")).strip().lower() == status:
+                        return self._compact_text(item.get("content", ""), 96)
+        return ""
+
+    def _build_task_checkpoint(
+        self,
+        all_messages: List[Dict[str, Any]],
+        turns_to_summarize: List[Dict[str, Any]],
+    ) -> Optional[TaskCheckpoint]:
+        if not turns_to_summarize:
+            return None
+
+        result_ids = {
+            msg.get("tool_call_id")
+            for msg in all_messages
+            if msg.get("role") == "tool" and msg.get("tool_call_id")
+        }
+
+        pending_calls: List[str] = []
+        modified_files: List[str] = []
+        last_batch_results: List[str] = []
+
+        for idx, msg in enumerate(turns_to_summarize):
+            if msg.get("role") != "assistant":
+                continue
+            tool_calls = msg.get("tool_calls") or []
+            if not tool_calls:
+                continue
+
+            batch_results: List[str] = []
+            following_tools: Dict[str, Any] = {}
+            j = idx + 1
+            while j < len(turns_to_summarize) and turns_to_summarize[j].get("role") == "tool":
+                tool_msg = turns_to_summarize[j]
+                tool_call_id = tool_msg.get("tool_call_id")
+                if tool_call_id:
+                    following_tools[tool_call_id] = tool_msg.get("content", "")
+                j += 1
+
+            for tc in tool_calls:
+                tool_call_id = self._get_tool_call_id(tc)
+                name, args = self._tool_call_name_and_args(tc)
+                if tool_call_id and tool_call_id not in result_ids:
+                    pending_calls.append(self._describe_tool_call(name, args))
+                if name in ("write_file", "patch") and tool_call_id in following_tools:
+                    result_content = following_tools.get(tool_call_id, "")
+                    # Skip failed operations
+                    if '"error"' in result_content[:200]:
+                        continue
+                    path = args.get("path")
+                    if path:
+                        modified_files.append(str(path))
+                    # V4A patch mode: extract paths from patch argument
+                    if name == "patch" and not path and args.get("patch"):
+                        import re as _re_cp
+                        patch_text = args["patch"]
+                        # Unified diff headers: +++ b/path or --- a/path
+                        for pm in _re_cp.finditer(r'^(?:\+\+\+|---)\s+[ab]/(.+)$',
+                                                   patch_text, _re_cp.MULTILINE):
+                            fpath = pm.group(1)
+                            if fpath != "/dev/null" and fpath not in modified_files:
+                                modified_files.append(fpath)
+                        # V4A patch headers: *** Update File: path or *** Add/Delete File: path
+                        for pm in _re_cp.finditer(r'^\*\*\* (?:Update|Add|Delete) File: (.+)$',
+                                                   patch_text, _re_cp.MULTILINE):
+                            fpath = pm.group(1).strip()
+                            if fpath != "/dev/null" and fpath not in modified_files:
+                                modified_files.append(fpath)
+                if tool_call_id and tool_call_id in following_tools:
+                    batch_results.append(self._summarize_tool_result(name, following_tools[tool_call_id]))
+
+            if batch_results:
+                last_batch_results = batch_results
+
+        current_plan_step = self._latest_plan_step_from_todos(all_messages)
+        if not current_plan_step:
+            if pending_calls:
+                current_plan_step = pending_calls[0]
+            else:
+                for msg in reversed(turns_to_summarize):
+                    if msg.get("role") == "assistant" and msg.get("content"):
+                        current_plan_step = self._compact_text(msg.get("content"), 96)
+                        break
+
+        checkpoint = TaskCheckpoint(
+            pending_tool_calls=self._dedupe_keep_order(pending_calls, limit=2),
+            recently_modified_files=self._dedupe_keep_order(modified_files, limit=3),
+            current_plan_step=current_plan_step,
+            last_tool_batch_results=self._dedupe_keep_order(last_batch_results, limit=2),
+        )
+        return None if checkpoint.is_empty() else checkpoint
 
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
@@ -740,6 +1019,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+        # Phase 3b: Build task checkpoint for structural state preservation
+        checkpoint = self._build_task_checkpoint(messages, turns_to_summarize)
+        checkpoint_text = checkpoint.format_for_injection() if checkpoint else None
+        if checkpoint_text and not self.quiet_mode:
+            logger.info("TaskCheckpoint injected (%d chars)", len(checkpoint_text))
+
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
@@ -786,8 +1071,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 # Merge the summary into the first tail message instead
                 # of inserting a standalone message that breaks alternation.
                 _merge_summary_into_tail = True
+        # Inject checkpoint as a separate system message for maximum model adherence.
+        # System messages have higher attention weight than user/assistant content.
+        _checkpoint_msg = None
+        if checkpoint_text:
+            # Rewrite prefix from machine-parseable [TASK_CHECKPOINT] to
+            # a human/LLM-readable "RESUME STATE:" format
+            readable_checkpoint = checkpoint_text.replace(
+                TASK_CHECKPOINT_PREFIX, "RESUME STATE — after compression, continue from:"
+            )
+            _checkpoint_msg = {"role": "system", "content": readable_checkpoint}
+
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})
+            if _checkpoint_msg:
+                compressed.append(_checkpoint_msg)
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
@@ -800,6 +1098,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     + original
                 )
                 _merge_summary_into_tail = False
+                # Insert checkpoint as system message after the merged tail
+                if _checkpoint_msg:
+                    compressed.append(msg)
+                    compressed.append(_checkpoint_msg)
+                    _checkpoint_msg = None  # Don't double-insert
+                    continue  # Skip the normal append below
             compressed.append(msg)
 
         self.compression_count += 1

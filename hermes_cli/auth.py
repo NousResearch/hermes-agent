@@ -3009,6 +3009,76 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     }
 
 
+def _write_codex_cli_tokens(
+    access_token: str,
+    refresh_token: str,
+    *,
+    last_refresh: Optional[str] = None,
+) -> None:
+    """Write refreshed tokens back to ~/.codex/auth.json.
+
+    OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
+    When Hermes refreshes a token it consumes the old refresh_token; if we
+    don't write the new pair back, the Codex CLI (or VS Code extension) will
+    fail with ``refresh_token_reused`` on its next refresh attempt.
+
+    This mirrors the Anthropic write-back to ~/.claude/.credentials.json
+    via ``_write_claude_code_credentials()``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if not codex_home:
+        codex_home = str(Path.home() / ".codex")
+    auth_path = Path(codex_home).expanduser() / "auth.json"
+    try:
+        existing: Dict[str, Any] = {}
+        if auth_path.is_file():
+            existing = json.loads(auth_path.read_text(encoding="utf-8"))
+        if not isinstance(existing, dict):
+            existing = {}
+
+        tokens_dict = existing.get("tokens")
+        if not isinstance(tokens_dict, dict):
+            tokens_dict = {}
+        tokens_dict["access_token"] = access_token
+        tokens_dict["refresh_token"] = refresh_token
+        existing["tokens"] = tokens_dict
+        if last_refresh is not None:
+            existing["last_refresh"] = last_refresh
+
+        auth_path.parent.mkdir(parents=True, exist_ok=True)
+        auth_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        auth_path.chmod(0o600)
+    except (OSError, IOError) as exc:
+        logger.debug("Failed to write refreshed tokens to %s: %s", auth_path, exc)
+
+
+def _resolve_shared_codex_home() -> Optional[Path]:
+    """Return the shared Codex CLI home when it is safe to consult.
+
+    Tests and custom Hermes profiles often point ``HERMES_HOME`` at an isolated
+    temporary directory while leaving the user's real ``~/.codex/auth.json`` in
+    place. Blindly importing from that shared file makes those isolated stores
+    unexpectedly pick up real local credentials. To keep profile/test state
+    hermetic, only fall back to the default shared Codex home when Hermes is
+    running from the default ``~/.hermes`` root, or when the caller explicitly
+    opted in via ``CODEX_HOME``.
+    """
+    codex_home = os.getenv("CODEX_HOME", "").strip()
+    if codex_home:
+        return Path(codex_home).expanduser()
+
+    hermes_home = get_hermes_home().expanduser()
+    default_hermes_home = (Path.home() / ".hermes").expanduser()
+    try:
+        if hermes_home.resolve() != default_hermes_home.resolve():
+            return None
+    except Exception:
+        if str(hermes_home) != str(default_hermes_home):
+            return None
+
+    return Path.home() / ".codex"
+
+
 def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None:
     """Save Codex OAuth tokens to Hermes auth store (~/.hermes/auth.json)."""
     if last_refresh is None:
@@ -3145,19 +3215,24 @@ def _refresh_codex_auth_tokens(
     updated_tokens["refresh_token"] = refreshed["refresh_token"]
 
     _save_codex_tokens(updated_tokens)
+    _write_codex_cli_tokens(
+        refreshed["access_token"],
+        refreshed["refresh_token"],
+        last_refresh=refreshed.get("last_refresh"),
+    )
     return updated_tokens
 
 
 def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     """Try to read tokens from ~/.codex/auth.json (Codex CLI shared file).
-    
+
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
     """
-    codex_home = os.getenv("CODEX_HOME", "").strip()
-    if not codex_home:
-        codex_home = str(Path.home() / ".codex")
-    auth_path = Path(codex_home).expanduser() / "auth.json"
+    codex_home = _resolve_shared_codex_home()
+    if codex_home is None:
+        return None
+    auth_path = codex_home / "auth.json"
     if not auth_path.is_file():
         return None
     try:

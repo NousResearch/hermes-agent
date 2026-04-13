@@ -5811,7 +5811,7 @@ class GatewayRunner:
                         pass
 
                 # Send media files
-                for media_path in (media_files or []):
+                for media_path, _is_voice in (media_files or []):
                     try:
                         await adapter.send_document(
                             chat_id=source.chat_id,
@@ -5989,7 +5989,7 @@ class GatewayRunner:
                 except Exception:
                     pass
 
-            for media_path in (media_files or []):
+            for media_path, _is_voice in (media_files or []):
                 try:
                     await adapter.send_file(chat_id=source.chat_id, file_path=media_path)
                 except Exception:

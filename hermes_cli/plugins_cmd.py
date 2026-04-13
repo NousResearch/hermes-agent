@@ -719,6 +719,9 @@ def cmd_update(name: str) -> None:
         console.print(f"[red]Error:[/red] Git pull failed:\n{result.stderr.strip()}")
         sys.exit(1)
 
+    # Refresh autogen shim if needed (skill-only bundles)
+    _refresh_autogen_shim(target, console)
+
     # Copy any new .example files
     _copy_example_files(target, console)
 

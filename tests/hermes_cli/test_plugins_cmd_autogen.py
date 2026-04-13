@@ -470,3 +470,52 @@ class TestRefreshAutogenShim:
             for call in console.print.call_args_list
         )
         assert "skills/" in all_calls or "no longer" in all_calls
+
+
+class TestCmdUpdateInvokesRefresh:
+    def test_cmd_update_calls_refresh_autogen_shim(self, tmp_path, monkeypatch):
+        import subprocess
+
+        from hermes_cli import plugins_cmd
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+
+        # Set up an existing installed plugin with autogen shim
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        plugin_dir = plugins_dir / "existing"
+        plugin_dir.mkdir()
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "foo").mkdir()
+        (skills_dir / "foo" / "SKILL.md").write_text("---\nname: foo\n---\n")
+
+        _autogen_plugin_shim(plugin_dir, MagicMock())
+        assert (plugin_dir / "__init__.py").exists()
+
+        # Fake git pull success — plugin must have a .git directory to be updated
+        (plugin_dir / ".git").mkdir()
+
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: plugins_dir)
+
+        def fake_git(cmd, **kwargs):
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stdout = "Already up to date."
+            mock_result.stderr = ""
+            return mock_result
+
+        monkeypatch.setattr(subprocess, "run", fake_git)
+
+        # Track whether _refresh_autogen_shim was called
+        refresh_called = {"yes": False}
+        original_refresh = plugins_cmd._refresh_autogen_shim
+
+        def tracking_refresh(*args, **kwargs):
+            refresh_called["yes"] = True
+            return original_refresh(*args, **kwargs)
+
+        monkeypatch.setattr(plugins_cmd, "_refresh_autogen_shim", tracking_refresh)
+
+        plugins_cmd.cmd_update("existing")
+
+        assert refresh_called["yes"], "_refresh_autogen_shim was not called"

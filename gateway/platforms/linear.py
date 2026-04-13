@@ -7,7 +7,6 @@ Endpoints:
 - GET  /health
 - GET  /linear/oauth/authorize
 - GET  /linear/oauth/callback
-- GET  /linear/oauth/revoke
 - POST /linear/webhook
 
 Configuration lives under ``platforms.linear.extra`` and/or env vars loaded by
@@ -55,7 +54,6 @@ DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/linear/webhook"
 DEFAULT_AUTHORIZE_PATH = "/linear/oauth/authorize"
 DEFAULT_CALLBACK_PATH = "/linear/oauth/callback"
-DEFAULT_REVOKE_PATH = "/linear/oauth/revoke"
 DEFAULT_SCOPES = ["read", "comments:create", "app:mentionable", "app:assignable"]
 STATE_TTL_SECONDS = 1800
 TOKEN_REFRESH_SKEW_SECONDS = 60
@@ -81,7 +79,6 @@ class LinearAdapter(BasePlatformAdapter):
         self._webhook_path = str(extra.get("webhook_path") or DEFAULT_WEBHOOK_PATH)
         self._authorize_path = str(extra.get("authorize_path") or DEFAULT_AUTHORIZE_PATH)
         self._callback_path = str(extra.get("callback_path") or DEFAULT_CALLBACK_PATH)
-        self._revoke_path = str(extra.get("revoke_path") or DEFAULT_REVOKE_PATH)
         self._client_id = str(extra.get("client_id") or "")
         self._client_secret = str(extra.get("client_secret") or "")
         self._webhook_secret = str(extra.get("webhook_secret") or "")
@@ -117,7 +114,6 @@ class LinearAdapter(BasePlatformAdapter):
         app.router.add_get("/health", self._handle_health)
         app.router.add_get(self._authorize_path, self._handle_authorize)
         app.router.add_get(self._callback_path, self._handle_callback)
-        app.router.add_get(self._revoke_path, self._handle_revoke)
         app.router.add_post(self._webhook_path, self._handle_webhook)
 
         try:
@@ -222,6 +218,9 @@ class LinearAdapter(BasePlatformAdapter):
         self._save_json(self._states_path, states)
         if not state_entry:
             return web.Response(status=400, text="Invalid or expired OAuth state.\n")
+        created_at = float((state_entry or {}).get("created_at") or 0)
+        if not created_at or time.time() - created_at >= STATE_TTL_SECONDS:
+            return web.Response(status=400, text="Invalid or expired OAuth state.\n")
 
         try:
             token_data = await self._exchange_code_for_token(code)
@@ -245,25 +244,6 @@ class LinearAdapter(BasePlatformAdapter):
                 "Enable Linear Agent Session events and point them at the webhook URL above.\n"
             )
         )
-
-    async def _handle_revoke(self, request: "web.Request") -> "web.Response":
-        app_user_id = request.query.get("app_user_id", "")
-        tokens = self._load_json(self._tokens_path)
-        if app_user_id:
-            token = tokens.pop(app_user_id, None)
-            if token:
-                await self._revoke_token(token.get("access_token", ""))
-                self._save_json(self._tokens_path, tokens)
-                return web.Response(text=f"Revoked Linear token for {app_user_id}.\n")
-            return web.Response(status=404, text=f"No stored token for {app_user_id}.\n")
-
-        for token in list(tokens.values()):
-            try:
-                await self._revoke_token(token.get("access_token", ""))
-            except Exception:
-                logger.debug("[linear] Token revoke failed during bulk cleanup", exc_info=True)
-        self._save_json(self._tokens_path, {})
-        return web.Response(text="Revoked all stored Linear tokens.\n")
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         content_length = request.content_length or 0

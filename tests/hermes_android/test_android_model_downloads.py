@@ -33,7 +33,10 @@ def test_local_model_download_view_model_and_store_support_resumable_download_st
     assert 'DownloadManager' in download_manager
     assert 'setAllowedOverMetered(allowMetered)' in download_manager
     assert 'setAllowedOverRoaming(allowRoaming)' in download_manager
+    assert 'findCompatibleRepoFile' in download_manager
     assert 'findFallbackRepoFile' in download_manager
+    assert 'does not publish a .litertlm file' in download_manager
+    assert 'mobile-ready repo' in download_manager
     assert 'selectRepoFileForDownload(' in download_manager
     assert 'Downloading is allowed; the selected backend will decide at load time whether it can run this file.' in download_manager
     assert 'Paused because Android treats the current connection as roaming' in download_manager
@@ -58,13 +61,16 @@ def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobil
     assert 'Warning: this download is larger than your phone RAM' in download_manager
 
 
-def test_on_device_backend_attempts_any_completed_preferred_model_and_leaves_format_checks_to_runtime():
+def test_on_device_backend_preflights_required_model_extensions_before_launching_runtime():
     backend_manager = (REPO_ROOT / "android/app/src/main/java/com/nousresearch/hermesagent/backend/OnDeviceBackendManager.kt").read_text(encoding="utf-8")
 
     assert 'preferredCompletedDownload(context)' in backend_manager
     assert 'Download any repo or file and mark it as preferred' in backend_manager
-    assert 'matchesGguf' not in backend_manager
-    assert 'matchesLiteRtLm' not in backend_manager
+    assert 'matchesBackendArtifact' in backend_manager
+    assert 'incompatiblePreferredDownloadStatus' in backend_manager
+    assert 'lower.endsWith(".gguf")' in backend_manager
+    assert 'lower.endsWith(".litertlm")' in backend_manager
+    assert 'Download a $requiredExtension artifact and mark it as preferred first.' in backend_manager
 
 
 def test_portal_screen_exposes_fullscreen_and_minimize_controls():

@@ -4,6 +4,7 @@ import android.content.Context
 import com.nousresearch.hermesagent.data.LocalModelDownloadRecord
 import com.nousresearch.hermesagent.data.LocalModelDownloadStore
 import java.io.File
+import java.util.Locale
 
 enum class BackendKind(val persistedValue: String) {
     NONE("none"),
@@ -94,6 +95,10 @@ object OnDeviceBackendManager {
                 sourceModelPath = preferred.destinationPath,
             ).also { currentStatus = it }
         }
+        if (!preferred.matchesBackendArtifact(BackendKind.LLAMA_CPP)) {
+            LlamaCppServerController.stop()
+            return incompatiblePreferredDownloadStatus(preferred, BackendKind.LLAMA_CPP)
+        }
 
         val status = LlamaCppServerController.ensureRunning(
             context = context,
@@ -127,6 +132,10 @@ object OnDeviceBackendManager {
                 sourceModelPath = preferred.destinationPath,
             ).also { currentStatus = it }
         }
+        if (!preferred.matchesBackendArtifact(BackendKind.LITERT_LM)) {
+            LiteRtLmOpenAiProxy.stop()
+            return incompatiblePreferredDownloadStatus(preferred, BackendKind.LITERT_LM)
+        }
 
         val status = LiteRtLmOpenAiProxy.ensureRunning(
             context = context,
@@ -143,5 +152,36 @@ object OnDeviceBackendManager {
         val preferredId = store.preferredDownloadId().ifBlank { return null }
         val preferred = store.findDownload(preferredId) ?: return null
         return preferred.takeIf { it.status == "completed" }
+    }
+
+    private fun LocalModelDownloadRecord.matchesBackendArtifact(backendKind: BackendKind): Boolean {
+        val lower = destinationPath.lowercase(Locale.US)
+        return when (backendKind) {
+            BackendKind.LLAMA_CPP -> lower.endsWith(".gguf")
+            BackendKind.LITERT_LM -> lower.endsWith(".litertlm")
+            BackendKind.NONE -> true
+        }
+    }
+
+    private fun incompatiblePreferredDownloadStatus(
+        preferred: LocalModelDownloadRecord,
+        backendKind: BackendKind,
+    ): LocalBackendStatus {
+        val requiredExtension = when (backendKind) {
+            BackendKind.LLAMA_CPP -> ".gguf"
+            BackendKind.LITERT_LM -> ".litertlm"
+            BackendKind.NONE -> "supported"
+        }
+        val backendLabel = when (backendKind) {
+            BackendKind.LLAMA_CPP -> "llama.cpp"
+            BackendKind.LITERT_LM -> "LiteRT-LM"
+            BackendKind.NONE -> "the selected backend"
+        }
+        return LocalBackendStatus(
+            backendKind = backendKind,
+            started = false,
+            sourceModelPath = preferred.destinationPath,
+            statusMessage = "Preferred local model ${preferred.destinationFileName} is not a $requiredExtension file, so $backendLabel cannot load it. Download a $requiredExtension artifact and mark it as preferred first.",
+        ).also { currentStatus = it }
     }
 }

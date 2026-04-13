@@ -72,6 +72,8 @@ object HermesModelDownloadManager {
     )
 
     private data class RepoFileSelection(
+        val repoId: String,
+        val revision: String,
         val filePath: String,
         val compatibilityHint: String = "",
     )
@@ -278,7 +280,7 @@ object HermesModelDownloadManager {
                 explicitFilePath = explicitOrReferencedPath,
             )
             return ResolvedDownloadSource(
-                sourceUrl = "$HUGGING_FACE_BASE/${reference.repoId}/resolve/$resolvedRevision/${selection.filePath}?download=true",
+                sourceUrl = "$HUGGING_FACE_BASE/${selection.repoId}/resolve/${selection.revision}/${selection.filePath}?download=true",
                 resolvedFilePath = selection.filePath,
                 compatibilityHint = selection.compatibilityHint,
             )
@@ -301,7 +303,7 @@ object HermesModelDownloadManager {
             explicitFilePath = explicitFilePath,
         )
         return ResolvedDownloadSource(
-            sourceUrl = "$HUGGING_FACE_BASE/$repo/resolve/$requestedRevision/${selection.filePath}?download=true",
+            sourceUrl = "$HUGGING_FACE_BASE/${selection.repoId}/resolve/${selection.revision}/${selection.filePath}?download=true",
             resolvedFilePath = selection.filePath,
             compatibilityHint = selection.compatibilityHint,
         )
@@ -346,28 +348,72 @@ object HermesModelDownloadManager {
     ): RepoFileSelection {
         if (explicitFilePath.isNotBlank()) {
             return RepoFileSelection(
+                repoId = repoId,
+                revision = revision,
                 filePath = explicitFilePath,
                 compatibilityHint = compatibilityHintForFile(explicitFilePath, runtimeFlavor, explicitSelection = true),
             )
         }
         val siblings = loadRepoFiles(repoId = repoId, revision = revision, hfToken = hfToken)
-        val runtimeNative = siblings
-            .filter { isCompatibleRepoFile(it, runtimeFlavor) }
-            .sortedWith(compareBy<String> { compatibleFileRank(it, runtimeFlavor) }.thenBy { it.lowercase(Locale.US) })
-            .firstOrNull()
+        val runtimeNative = findCompatibleRepoFile(siblings, runtimeFlavor)
         if (runtimeNative != null) {
-            return RepoFileSelection(filePath = runtimeNative)
+            return RepoFileSelection(
+                repoId = repoId,
+                revision = revision,
+                filePath = runtimeNative,
+            )
+        }
+        if (runtimeFlavor.equals("LiteRT-LM", ignoreCase = true)) {
+            val aliasRepoId = liteRtAlias(repoId)
+            if (!aliasRepoId.isNullOrBlank() && aliasRepoId.lowercase(Locale.US) != repoId.lowercase(Locale.US)) {
+                val aliasRevision = "main"
+                val aliasRuntimeNative = findCompatibleRepoFile(
+                    loadRepoFiles(repoId = aliasRepoId, revision = aliasRevision, hfToken = hfToken),
+                    runtimeFlavor,
+                )
+                if (aliasRuntimeNative != null) {
+                    return RepoFileSelection(
+                        repoId = aliasRepoId,
+                        revision = aliasRevision,
+                        filePath = aliasRuntimeNative,
+                        compatibilityHint = "huggingface.co/$repoId does not publish a native LiteRT-LM artifact, so Hermes will download ${aliasRuntimeNative.substringAfterLast('/')} from the mobile-ready repo $aliasRepoId.",
+                    )
+                }
+            }
+            throw IllegalArgumentException(noLiteRtArtifactMessage(repoId, aliasRepoId))
         }
         val fallback = findFallbackRepoFile(siblings)
             ?: throw IllegalArgumentException(noDownloadableArtifactMessage(repoId, runtimeFlavor))
         return RepoFileSelection(
+            repoId = repoId,
+            revision = revision,
             filePath = fallback,
             compatibilityHint = compatibilityHintForFile(fallback, runtimeFlavor, explicitSelection = false),
         )
     }
 
+    private fun findCompatibleRepoFile(paths: List<String>, runtimeFlavor: String): String? {
+        return paths
+            .filter { isCompatibleRepoFile(it, runtimeFlavor) }
+            .sortedWith(compareBy<String> { compatibleFileRank(it, runtimeFlavor) }.thenBy { it.lowercase(Locale.US) })
+            .firstOrNull()
+    }
+
+    private fun noLiteRtArtifactMessage(repoId: String, aliasRepoId: String?): String {
+        return if (!aliasRepoId.isNullOrBlank()) {
+            "huggingface.co/$repoId does not publish a .litertlm file. Hermes recommends $aliasRepoId for LiteRT-LM, or you can enter an exact .litertlm file path."
+        } else {
+            "huggingface.co/$repoId does not publish a .litertlm file. Enter an exact .litertlm file path or choose a repo that ships LiteRT-LM artifacts."
+        }
+    }
+
     private fun noDownloadableArtifactMessage(repoId: String, runtimeFlavor: String): String {
-        return "Unable to infer a downloadable model artifact from huggingface.co/$repoId for $runtimeFlavor. Enter an exact file path inside the repo or paste a direct model URL to try a specific artifact."
+        val recommendedRepoId = ggufRecommendedRepo(repoId)
+        return if (runtimeFlavor.equals("GGUF", ignoreCase = true) && !recommendedRepoId.isNullOrBlank()) {
+            "Unable to infer a downloadable model artifact from huggingface.co/$repoId for $runtimeFlavor. Try the runtime-native repo $recommendedRepoId, enter an exact file path inside the repo, or paste a direct model URL to try a specific artifact."
+        } else {
+            "Unable to infer a downloadable model artifact from huggingface.co/$repoId for $runtimeFlavor. Enter an exact file path inside the repo or paste a direct model URL to try a specific artifact."
+        }
     }
 
     private fun compatibilityHintForFile(
@@ -453,6 +499,10 @@ object HermesModelDownloadManager {
 
     private fun liteRtAlias(repoId: String): String? {
         return LITERT_ALIAS_REPOS[repoId.lowercase(Locale.US)]
+    }
+
+    private fun ggufRecommendedRepo(repoId: String): String? {
+        return GGUF_RECOMMENDED_REPOS[repoId.lowercase(Locale.US)]
     }
 
     private fun loadRepoFiles(repoId: String, revision: String, hfToken: String): List<String> {

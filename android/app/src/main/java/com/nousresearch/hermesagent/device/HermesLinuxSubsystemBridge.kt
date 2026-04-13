@@ -13,8 +13,18 @@ object HermesLinuxSubsystemBridge {
 
     fun ensureInstalled(context: Context): JSONObject {
         readState(context)?.let { state ->
-            val bashPath = state.optString("bash_path")
-            if (bashPath.isNotBlank() && File(bashPath).isFile) {
+            val bashFile = File(state.optString("bash_path"))
+            val prefixDirPath = state.optString("prefix_path").ifBlank {
+                bashFile.parentFile?.parentFile?.absolutePath.orEmpty()
+            }
+            if (prefixDirPath.isNotBlank()) {
+                val prefixDir = File(prefixDirPath)
+                File(prefixDir, "home").mkdirs()
+                File(prefixDir, "tmp").mkdirs()
+                markExecutableTree(File(prefixDir, "bin"))
+                markExecutableTree(File(prefixDir, "libexec"))
+            }
+            if (bashFile.isFile && bashFile.canExecute()) {
                 return state
             }
         }

@@ -94,3 +94,25 @@ def test_switch_model_enables_prompt_caching_for_anthropic_compatible_provider(m
     assert agent.api_mode == "anthropic_messages"
     assert agent._use_prompt_caching is True
     mock_ctx_len.assert_called_once()
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=400_000)
+def test_switch_model_enables_prompt_caching_for_custom_anthropic_messages_provider(mock_ctx_len):
+    """Explicit anthropic_messages custom providers should not rely on /anthropic URLs."""
+    agent = _make_agent_with_compressor(config_context_length=None)
+
+    with (
+        patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        patch("agent.anthropic_adapter._is_oauth_token", return_value=False),
+    ):
+        agent.switch_model(
+            "claude-sonnet-4-20250514",
+            "litellm-proxy",
+            api_key="sk-anthropic",
+            base_url="https://api.example.com/v1/messages",
+            api_mode="anthropic_messages",
+        )
+
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._use_prompt_caching is True
+    mock_ctx_len.assert_called_once()

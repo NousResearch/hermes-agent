@@ -551,6 +551,26 @@ class TestInit:
             assert a.api_mode == "anthropic_messages"
             assert a._use_prompt_caching is True
 
+    def test_prompt_caching_custom_anthropic_messages_provider_without_anthropic_path(self):
+        """Explicit anthropic_messages custom providers should not need /anthropic in the URL."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            a = AIAgent(
+                api_key="test-key-1234567890",
+                provider="litellm-proxy",
+                model="claude-sonnet-4-20250514",
+                base_url="https://api.example.com/v1/messages",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a.api_mode == "anthropic_messages"
+            assert a._use_prompt_caching is True
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")
@@ -982,6 +1002,14 @@ class TestBuildApiKwargs:
         # Should not crash even without a system message
         assert kwargs["messages"][0]["content"][0]["text"] == "hi"
         assert "cache_control" not in kwargs["messages"][0]["content"][0]
+
+    def test_custom_anthropic_messages_provider_uses_non_native_cache_layout(self, agent):
+        agent.provider = "litellm-proxy"
+        agent.base_url = "https://api.example.com/v1/messages"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.api_mode = "anthropic_messages"
+        agent.model = "claude-sonnet-4-20250514"
+        assert agent._uses_native_anthropic_prompt_cache_layout() is False
 
     def test_qwen_portal_sends_explicit_max_tokens(self, agent):
         """When the user explicitly sets max_tokens, it should be sent to Qwen Portal."""

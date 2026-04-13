@@ -91,7 +91,6 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
-from agent.auxiliary_client import _is_anthropic_compat_endpoint
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
@@ -740,7 +739,7 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models on native
-        # Anthropic, OpenRouter, and Anthropic-compatible /anthropic endpoints.
+        # Anthropic, OpenRouter, and other Anthropic Messages transports.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
         self._use_prompt_caching = self._supports_anthropic_prompt_caching()
@@ -5865,20 +5864,36 @@ class AIAgent:
         effective_provider = (provider if provider is not None else self.provider or "").lower()
         effective_base_url = base_url if base_url is not None else self.base_url
         effective_model = (model if model is not None else self.model or "").lower()
+        base_url_lower = (effective_base_url or "").lower()
 
-        if (base_url is None and self._is_openrouter_url()) or "openrouter" in (effective_base_url or "").lower():
+        if (base_url is None and self._is_openrouter_url()) or "openrouter" in base_url_lower:
             return "claude" in effective_model
 
         if effective_api_mode != "anthropic_messages":
             return False
 
+        if effective_provider == "anthropic" or "api.anthropic.com" in base_url_lower:
+            return True
+
+        return "claude" in effective_model
+
+    def _uses_native_anthropic_prompt_cache_layout(
+        self,
+        provider: str | None = None,
+        base_url: str | None = None,
+        api_mode: str | None = None,
+    ) -> bool:
+        """Return True only for native Anthropic transports that support tool-level markers."""
+        effective_api_mode = api_mode if api_mode is not None else self.api_mode
+        if effective_api_mode != "anthropic_messages":
+            return False
+
+        effective_provider = (provider if provider is not None else self.provider or "").lower()
         if effective_provider == "anthropic":
             return True
 
-        return "claude" in effective_model and _is_anthropic_compat_endpoint(
-            effective_provider,
-            effective_base_url,
-        )
+        effective_base_url = (base_url if base_url is not None else self.base_url or "").lower()
+        return "api.anthropic.com" in effective_base_url
 
     def _is_qwen_portal(self) -> bool:
         """Return True when the base URL targets Qwen Portal."""
@@ -8015,13 +8030,13 @@ class AIAgent:
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
-            # Apply Anthropic prompt caching for Claude models on Anthropic-compatible
-            # endpoints (native Anthropic, OpenRouter, and /anthropic proxies).
+            # Apply Anthropic prompt caching for Claude models when the active
+            # transport supports Anthropic cache_control markers.
             if self._use_prompt_caching:
                 api_messages = apply_anthropic_cache_control(
                     api_messages,
                     cache_ttl=self._cache_ttl,
-                    native_anthropic=self._supports_anthropic_prompt_caching(),
+                    native_anthropic=self._uses_native_anthropic_prompt_cache_layout(),
                 )
 
             # Safety net: strip orphaned tool results / add stubs for missing

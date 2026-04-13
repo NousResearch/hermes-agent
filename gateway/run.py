@@ -573,6 +573,7 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._smart_classifying: set = set()  # Sessions with in-flight smart routing
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1203,7 +1204,56 @@ class GatewayRunner:
                     mode = str(cfg.get("display", {}).get("busy_input_mode", "") or "").strip().lower()
             except Exception:
                 pass
-        return "queue" if mode == "queue" else "interrupt"
+        if mode in ("queue", "smart"):
+            return mode
+        return "interrupt"
+
+    async def _classify_busy_message(self, new_text: str) -> str:
+        """Classify an incoming message while agent is busy.
+
+        Uses a fast auxiliary LLM call to decide whether the message should
+        interrupt the running agent or be routed to a background task.
+
+        Returns ``"interrupt"`` or ``"background"``.  Falls back to
+        ``"interrupt"`` on any error so existing behavior is preserved.
+        """
+        # Short messages are almost always conversational follow-ups.
+        if len(new_text.strip()) < 15:
+            return "interrupt"
+
+        try:
+            from agent.auxiliary_client import async_call_llm as _call_llm
+
+            response = await _call_llm(
+                task="semantic_routing",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a message router. A user sent a new message "
+                            "while their AI assistant is still processing a previous "
+                            "request. Classify it as A or B.\n"
+                            "A = follow-up, correction, or reply to the ongoing task.\n"
+                            "B = brand-new independent task that can run in parallel.\n"
+                            "Reply with ONLY the single letter A or B."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"<user_message>\n{new_text[:500]}\n</user_message>",
+                    },
+                ],
+                temperature=0.0,
+                max_tokens=4,
+                timeout=3.0,
+            )
+            answer = (response.choices[0].message.content or "").strip().upper()
+            if answer.startswith("B"):
+                return "background"
+            return "interrupt"
+        except Exception as exc:
+            logger.debug("Smart routing LLM call failed, falling back to interrupt: %s", exc)
+            return "interrupt"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:
@@ -2639,6 +2689,78 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
+            # ── smart mode: classify before interrupting ──────────────
+            if self._busy_input_mode == "smart":
+                # If photos are already queued for this session, merge text
+                # into them instead of interrupting — the user is likely
+                # still sending related photos/captions.  The next turn will
+                # see everything together.
+                adapter = self.adapters.get(source.platform)
+                _evt_text = (event.text or "").strip()
+                if adapter and _evt_text and _quick_key in getattr(adapter, "_pending_messages", {}):
+                    _pending_evt = adapter._pending_messages.get(_quick_key)
+                    if _pending_evt and getattr(_pending_evt, "message_type", None) == MessageType.PHOTO:
+                        _pending_evt.text = (
+                            (_pending_evt.text + "\n" + _evt_text) if _pending_evt.text else _evt_text
+                        )
+                        logger.info(
+                            "Smart routing: merged text into queued photo batch for session %s",
+                            _quick_key[:20],
+                        )
+                        return None
+
+                # Guard against concurrent classifications for the same session
+                # (STT + LLM can take 5-8s, during which another message may arrive).
+                if _quick_key in self._smart_classifying:
+                    return None
+                self._smart_classifying.add(_quick_key)
+                try:
+                    msg_text = (event.text or "").strip()
+
+                    # Voice messages arrive with empty text — transcribe first
+                    # so the classifier has actual content to work with.
+                    if not msg_text and event.media_urls:
+                        audio_paths = [
+                            path
+                            for i, path in enumerate(event.media_urls)
+                            if (event.media_types[i] if i < len(event.media_types) else "").startswith("audio/")
+                        ]
+                        if audio_paths:
+                            try:
+                                from tools.transcription_tools import transcribe_audio
+                                result = await asyncio.to_thread(transcribe_audio, audio_paths[0])
+                                if result.get("success"):
+                                    msg_text = result["transcript"].strip()
+                                    event.text = msg_text
+                                    logger.info("Smart routing: transcribed voice (%d chars)", len(msg_text))
+                            except Exception as exc:
+                                logger.debug("Smart routing STT failed: %s", exc)
+
+                    if msg_text:
+                        routing = await self._classify_busy_message(msg_text)
+                        if routing == "background":
+                            logger.info(
+                                "Smart routing: dispatching to background for session %s",
+                                _quick_key[:20],
+                            )
+                            task_id = f"bg_{os.urandom(6).hex()}"
+                            _task = asyncio.create_task(
+                                self._run_background_task(msg_text, source, task_id)
+                            )
+                            self._background_tasks.add(_task)
+                            _task.add_done_callback(self._background_tasks.discard)
+                            preview = msg_text[:60] + ("..." if len(msg_text) > 60 else "")
+                            return (
+                                f'🔀 Auto-routed to background (current task continues):\n'
+                                f'"{preview}"\n'
+                                f'Task ID: {task_id}'
+                            )
+                        # Classified as interrupt — fall through to normal interrupt below
+                    else:
+                        # No text even after STT attempt — tell the user.
+                        return "⚠️ Couldn't process that while the assistant is busy. Try again with text, or wait for the current task to finish."
+                finally:
+                    self._smart_classifying.discard(_quick_key)
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:

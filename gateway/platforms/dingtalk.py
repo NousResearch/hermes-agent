@@ -55,7 +55,7 @@ logger = logging.getLogger(__name__)
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 _SESSION_WEBHOOKS_MAX = 500
-_DINGTALK_WEBHOOK_RE = re.compile(r'^https://api\.dingtalk\.com/')
+_DINGTALK_WEBHOOK_RE = re.compile(r'^https?://(api|oapi)\.dingtalk\.com/')
 
 
 def check_dingtalk_requirements() -> bool:
@@ -129,12 +129,12 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the blocking stream client with auto-reconnection."""
+        """Run the async stream client with auto-reconnection."""
         backoff_idx = 0
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await asyncio.to_thread(self._stream_client.start)
+                await self._stream_client.start()
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -201,7 +201,6 @@ class DingTalkAdapter(BasePlatformAdapter):
         session_webhook = getattr(message, "session_webhook", None) or ""
         if session_webhook and chat_id and _DINGTALK_WEBHOOK_RE.match(session_webhook):
             if len(self._session_webhooks) >= _SESSION_WEBHOOKS_MAX:
-                # Evict oldest entry to cap memory growth
                 try:
                     self._session_webhooks.pop(next(iter(self._session_webhooks)))
                 except StopIteration:
@@ -233,8 +232,8 @@ class DingTalkAdapter(BasePlatformAdapter):
             timestamp=timestamp,
         )
 
-        logger.debug("[%s] Message from %s in %s: %s",
-                      self.name, sender_nick, chat_id[:20] if chat_id else "?", text[:50])
+        logger.info("[%s] Inbound %s message from %s: %s",
+                     self.name, chat_type, sender_nick, text[:80])
         await self.handle_message(event)
 
     @staticmethod
@@ -315,20 +314,23 @@ class _IncomingHandler(ChatbotHandler if DINGTALK_STREAM_AVAILABLE else object):
         self._adapter = adapter
         self._loop = loop
 
-    def process(self, message: "ChatbotMessage"):
-        """Called by dingtalk-stream in its thread when a message arrives.
+    async def process(self, callback_message):
+        """Called by dingtalk-stream when a CALLBACK message arrives.
 
-        Schedules the async handler on the main event loop.
+        Must return quickly so the SDK can send ACK to DingTalk server.
+        Spawns a background task for actual message processing.
         """
-        loop = self._loop
-        if loop is None or loop.is_closed():
-            logger.error("[DingTalk] Event loop unavailable, cannot dispatch message")
+        if not callback_message.data:
+            logger.warning("[DingTalk] Empty callback data, skipping")
             return dingtalk_stream.AckMessage.STATUS_OK, "OK"
 
-        future = asyncio.run_coroutine_threadsafe(self._adapter._on_message(message), loop)
-        try:
-            future.result(timeout=60)
-        except Exception:
-            logger.exception("[DingTalk] Error processing incoming message")
+        chatbot_msg = dingtalk_stream.ChatbotMessage.from_dict(callback_message.data)
+        logger.info("[DingTalk] Received message type=%s from %s: %s",
+                     getattr(chatbot_msg, 'message_type', '?'),
+                     getattr(chatbot_msg, 'sender_nick', '?'),
+                     str(chatbot_msg)[:200])
 
+        # Fire-and-forget: schedule processing as a background task
+        # so we can return ACK to DingTalk immediately.
+        asyncio.create_task(self._adapter._on_message(chatbot_msg))
         return dingtalk_stream.AckMessage.STATUS_OK, "OK"

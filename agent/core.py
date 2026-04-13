@@ -5524,65 +5524,116 @@ class AIAgent:
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
+        W1 / F-010: this method is now transactional. Before mutating any
+        agent state we snapshot the pieces that need to roll back together
+        (session_id, session_log_file, _cached_system_prompt,
+        _last_flushed_db_idx). If a known stage raises, we restore the
+        snapshot and re-raise as `CompressionFailed` so the caller can
+        surface "try /new" without publishing a poisoned session (pre-fix
+        behaviour: a partial session-DB write left the agent with a cached
+        prompt mismatched to the persisted session row).
+
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        from agent.compression_errors import CompressionFailed
+
         _pre_msg_count = len(messages)
         logger.info(
             "context compression started: session=%s messages=%d tokens=~%s model=%s",
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
         )
-        # Pre-compression memory flush: let the model save memories before they're lost
-        self.flush_memories(messages, min_turns=0)
+        # Pre-compression memory flush: let the model save memories before they're lost.
+        # Kept OUTSIDE the transaction — this is an idempotent external hook; re-running
+        # it on retry is cheap and safe. If it raises we surface as CompressionFailed
+        # but there's nothing agent-side to roll back.
+        try:
+            self.flush_memories(messages, min_turns=0)
+        except Exception as exc:
+            raise CompressionFailed("memory_flush", _pre_msg_count, str(exc)) from exc
 
         # External memory provider pre-compression hook (v0.7.0)
         if self._memory_manager:
             try:
                 self._memory_manager.on_pre_compress(messages)
             except Exception:
-                pass
+                pass  # Best-effort; intentionally swallowed.
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+        # Capture the pre-mutation snapshot. Anything we mutate on `self`
+        # between here and the end of the DB-split block must be in here.
+        _snap_session_id = self.session_id
+        _snap_session_log_file = self.session_log_file
+        _snap_cached_prompt = self._cached_system_prompt
+        _snap_last_flushed_idx = self._last_flushed_db_idx
 
-        todo_snapshot = self._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
+        def _restore_snapshot():
+            self.session_id = _snap_session_id
+            self.session_log_file = _snap_session_log_file
+            self._cached_system_prompt = _snap_cached_prompt
+            self._last_flushed_db_idx = _snap_last_flushed_idx
 
-        self._invalidate_system_prompt()
-        new_system_prompt = self._build_system_prompt(system_message)
-        self._cached_system_prompt = new_system_prompt
-
-        if self._session_db:
+        try:
             try:
-                # Propagate title to the new session with auto-numbering
-                old_title = self._session_db.get_session_title(self.session_id)
-                self._session_db.end_session(self.session_id, "compression")
-                old_session_id = self.session_id
-                self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-                # Update session_log_file to point to the new session's JSON file
-                self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
-                self._session_db.create_session(
-                    session_id=self.session_id,
-                    source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-                    model=self.model,
-                    parent_session_id=old_session_id,
-                )
-                # Auto-number the title for the continuation session
-                if old_title:
-                    try:
-                        new_title = self._session_db.get_next_title_in_lineage(old_title)
-                        self._session_db.set_session_title(self.session_id, new_title)
-                    except (ValueError, Exception) as e:
-                        logger.debug("Could not propagate title on compression: %s", e)
-                self._session_db.update_system_prompt(self.session_id, new_system_prompt)
-                # Carry session state forward to the new session
-                if self._session_state:
-                    self._session_db.set_session_state(self.session_id, self._session_state)
-                # Reset flush cursor — new session starts with no messages written
-                self._last_flushed_db_idx = 0
-            except Exception as e:
-                logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+                compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+            except Exception as exc:
+                raise CompressionFailed("compress", _pre_msg_count, str(exc)) from exc
+
+            todo_snapshot = self._todo_store.format_for_injection()
+            if todo_snapshot:
+                compressed.append({"role": "user", "content": todo_snapshot})
+
+            try:
+                self._invalidate_system_prompt()
+                new_system_prompt = self._build_system_prompt(system_message)
+                self._cached_system_prompt = new_system_prompt
+            except Exception as exc:
+                raise CompressionFailed("prompt_rebuild", _pre_msg_count, str(exc)) from exc
+
+            if self._session_db:
+                try:
+                    # Propagate title to the new session with auto-numbering
+                    old_title = self._session_db.get_session_title(self.session_id)
+                    self._session_db.end_session(self.session_id, "compression")
+                    old_session_id = self.session_id
+                    self.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+                    # Update session_log_file to point to the new session's JSON file
+                    self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
+                    self._session_db.create_session(
+                        session_id=self.session_id,
+                        source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                        model=self.model,
+                        parent_session_id=old_session_id,
+                    )
+                    # Auto-number the title for the continuation session
+                    if old_title:
+                        try:
+                            new_title = self._session_db.get_next_title_in_lineage(old_title)
+                            self._session_db.set_session_title(self.session_id, new_title)
+                        except (ValueError, Exception) as e:
+                            logger.debug("Could not propagate title on compression: %s", e)
+                    self._session_db.update_system_prompt(self.session_id, new_system_prompt)
+                    # Carry session state forward to the new session
+                    if self._session_state:
+                        self._session_db.set_session_state(self.session_id, self._session_state)
+                    # Reset flush cursor — new session starts with no messages written
+                    self._last_flushed_db_idx = 0
+                except Exception as exc:
+                    # Pre-fix: this was `logger.warning(...)` + silent continue,
+                    # which left `self.session_id` possibly changed and the cached
+                    # prompt rebuilt for a session that never fully persisted.
+                    # Now: roll back snapshot + surface via CompressionFailed.
+                    # The orphan DB row (if create_session succeeded before a
+                    # later step failed) is harmless and GC-able; the agent
+                    # resumes on the old session id.
+                    raise CompressionFailed("db_split", _pre_msg_count, str(exc)) from exc
+        except CompressionFailed:
+            _restore_snapshot()
+            raise
+        except Exception as exc:
+            # Defence-in-depth: any unexpected exception restores + wraps.
+            _restore_snapshot()
+            raise CompressionFailed("unknown", _pre_msg_count, str(exc)) from exc
 
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
@@ -7863,10 +7914,42 @@ class AIAgent:
                         self._emit_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                         original_len = len(messages)
-                        messages, active_system_prompt = self._compress_context(
-                            messages, system_message, approx_tokens=approx_tokens,
-                            task_id=effective_task_id,
-                        )
+                        try:
+                            messages, active_system_prompt = self._compress_context(
+                                messages, system_message, approx_tokens=approx_tokens,
+                                task_id=effective_task_id,
+                            )
+                        except Exception as _cf:
+                            # F-010: _compress_context now raises CompressionFailed
+                            # on any mid-transaction failure. Snapshot was restored
+                            # before this raise, so self.session_id /
+                            # _cached_system_prompt are back to their pre-attempt
+                            # values — safe to surface the same "try /new" outcome
+                            # we used for "no progress" fallthrough. Import is
+                            # deferred to avoid a circular import at module load.
+                            from agent.compression_errors import CompressionFailed
+                            if not isinstance(_cf, CompressionFailed):
+                                raise
+                            self._vprint(
+                                f"{self.log_prefix}❌ Compression failed at stage={_cf.stage} — state restored. Cannot compress further.",
+                                force=True,
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}   💡 Try /new to start a fresh conversation.",
+                                force=True,
+                            )
+                            logging.error(
+                                f"{self.log_prefix}compression raised CompressionFailed(stage=%s, reason=%s)",
+                                _cf.stage, _cf.reason,
+                            )
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Compression failed (stage={_cf.stage}). Cannot compress further.",
+                                "partial": True,
+                            }
 
                         if len(messages) < original_len:
                             self._emit_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")

@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, MemOS"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memos
 ```
 
 ## How It Works
@@ -260,6 +260,40 @@ echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 |-----|---------|-------------|
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+
+---
+
+### MemOS
+
+Server-side memory extraction and semantic search via MemOS Platform.
+
+| | |
+|---|---|
+| **Best for** | Automated memory extraction, preference management and multi-agent memory isolation |
+| **Requires** | `pip install MemoryOS` + MemOS API key |
+| **Data storage** | MemOS Cloud |
+| **Cost** | MemOS pricing |
+
+**Tools:** `memos_search` (semantic search), `memos_add_message` (explicitly store facts)
+
+**Setup:**
+```bash
+hermes memory setup    # select "memos"
+# Or manually:
+hermes config set memory.provider memos
+echo "MEMOS_API_KEY=your-key" >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/memos.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `api_key` | `""` | MemOS API key |
+| `base_url` | `https://memos.memtensor.cn/api/openmem/v1` | MemOS API Base URL |
+| `user_id` | `hermes_user` | User identifier on MemOS |
+| `knowledgebase` | `None` | Knowledgebase ID or list of IDs for searching |
+| `allowedAgents` | `None` | List of agent IDs allowed to use memory |
+| `multiAgentMode` | `False` | Enable multi-agent memory isolation |
 
 ---
 

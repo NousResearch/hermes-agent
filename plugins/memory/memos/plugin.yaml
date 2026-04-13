@@ -1,0 +1,9 @@
+name: memos
+version: 1.0.0
+description: "MemOS Platform memory provider plugin"
+pip_dependencies:
+  - MemoryOS
+hooks:
+  - prefetch
+  - queue_prefetch
+  - sync_turn

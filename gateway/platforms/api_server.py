@@ -54,6 +54,66 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
+MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
+
+def _normalize_chat_content(
+    content: Any, *, _max_depth: int = 10, _depth: int = 0,
+) -> str:
+    """Normalize OpenAI chat message content into a plain text string.
+
+    Some clients (Open WebUI, LobeChat, etc.) send content as an array of
+    typed parts instead of a plain string::
+
+        [{"type": "text", "text": "hello"}, {"type": "input_text", "text": "..."}]
+
+    This function flattens those into a single string so the agent pipeline
+    (which expects strings) doesn't choke.
+
+    Defensive limits prevent abuse: recursion depth, list size, and output
+    length are all bounded.
+    """
+    if _depth > _max_depth:
+        return ""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+
+    if isinstance(content, list):
+        parts: List[str] = []
+        items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
+        for item in items:
+            if isinstance(item, str):
+                if item:
+                    parts.append(item[:MAX_NORMALIZED_TEXT_LENGTH])
+            elif isinstance(item, dict):
+                item_type = str(item.get("type") or "").strip().lower()
+                if item_type in {"text", "input_text", "output_text"}:
+                    text = item.get("text", "")
+                    if text:
+                        try:
+                            parts.append(str(text)[:MAX_NORMALIZED_TEXT_LENGTH])
+                        except Exception:
+                            pass
+                # Silently skip image_url / other non-text parts
+            elif isinstance(item, list):
+                nested = _normalize_chat_content(item, _max_depth=_max_depth, _depth=_depth + 1)
+                if nested:
+                    parts.append(nested)
+            # Check accumulated size
+            if sum(len(p) for p in parts) >= MAX_NORMALIZED_TEXT_LENGTH:
+                break
+        result = "\n".join(parts)
+        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+
+    # Fallback for unexpected types (int, float, bool, etc.)
+    try:
+        result = str(content)
+        return result[:MAX_NORMALIZED_TEXT_LENGTH] if len(result) > MAX_NORMALIZED_TEXT_LENGTH else result
+    except Exception:
+        return ""
 
 
 def check_api_server_requirements() -> bool:
@@ -553,7 +613,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         for msg in messages:
             role = msg.get("role", "")
-            content = msg.get("content", "")
+            content = _normalize_chat_content(msg.get("content", ""))
             if role == "system":
                 # Accumulate system messages
                 if system_prompt is None:
@@ -926,18 +986,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
-                    content = item.get("content", "")
-                    # Handle content that may be a list of content parts
-                    if isinstance(content, list):
-                        text_parts = []
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "input_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, dict) and part.get("type") == "output_text":
-                                text_parts.append(part.get("text", ""))
-                            elif isinstance(part, str):
-                                text_parts.append(part)
-                        content = "\n".join(text_parts)
+                    content = _normalize_chat_content(item.get("content", ""))
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)

@@ -29,6 +29,7 @@ import {
   isTransientTrailLine,
   pick,
   sameToolTrailGroup,
+  stripTrailingPasteNewlines,
   toolTrailLabel
 } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
@@ -784,14 +785,19 @@ export function App({ gw }: { gw: GatewayClient }) {
         void paste(true)
       }
 
-      if (!text) {
+      const cleanedText = stripTrailingPasteNewlines(text)
+
+      if (!cleanedText) {
         return null
       }
 
-      const lineCount = text.split('\n').length
+      const lineCount = cleanedText.split('\n').length
 
-      if (text.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
-        return { cursor: cursor + text.length, value: value.slice(0, cursor) + text + value.slice(cursor) }
+      if (cleanedText.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
+        return {
+          cursor: cursor + cleanedText.length,
+          value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
+        }
       }
 
       pasteCounterRef.current++
@@ -806,13 +812,13 @@ export function App({ gw }: { gw: GatewayClient }) {
         [
           ...prev,
           {
-            charCount: text.length,
+            charCount: cleanedText.length,
             createdAt: Date.now(),
             id,
-            kind: classifyPaste(text),
+            kind: classifyPaste(cleanedText),
             lineCount,
             mode,
-            text
+            text: cleanedText
           }
         ].slice(-24)
       )

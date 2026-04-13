@@ -49,6 +49,8 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
   return !text || mode === 'collapsed' ? '' : mode === 'full' ? text : compactPreview(text, max)
 }
 
+export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
+
 export const toolTrailLabel = (name: string) =>
   name
     .split('_')

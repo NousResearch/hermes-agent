@@ -1248,6 +1248,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if sync_client.__class__.__name__ == "CopilotACPClient":
+        return sync_client, model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1488,7 +1490,11 @@ def resolve_provider_client(
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+            resolve_external_process_provider_credentials,
+        )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
         return None, None
@@ -1561,6 +1567,35 @@ def resolve_provider_client(
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
+
+    if pconfig.auth_type == "external_process":
+        creds = resolve_external_process_provider_credentials(provider)
+        final_model = _normalize_resolved_model(model or _read_main_model(), provider)
+        if provider == "copilot-acp":
+            # Do not invent a fallback model here. For ACP runtimes we either
+            # have an explicit model (task/runtime override) or a configured
+            # main model. Guessing a hard-coded model silently changes user
+            # intent and can hide configuration problems.
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: copilot-acp requested but no model "
+                    "was provided or configured"
+                )
+                return None, None
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(
+                api_key=str(creds.get("api_key", "")).strip() or "copilot-acp",
+                base_url=str(creds.get("base_url", "")).strip() or "acp://copilot",
+                command=str(creds.get("command", "")).strip() or None,
+                args=list(creds.get("args") or []),
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model) if async_mode
+                    else (client, final_model))
+        logger.warning("resolve_provider_client: external-process provider %s not "
+                       "directly supported", provider)
+        return None, None
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions

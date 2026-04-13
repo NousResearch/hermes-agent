@@ -1021,7 +1021,15 @@ class GatewayRunner:
     ) -> str:
         if source.platform != Platform.FEISHU:
             return ""
-
+        runtime = _resolve_runtime_agent_kwargs()
+        return build_feishu_usage_footer_from_agent_result(
+            agent_result,
+            response_time=response_time,
+            provider=runtime.get("provider") or "",
+            base_url=runtime.get("base_url") or "",
+            api_key=runtime.get("api_key") or "",
+            default_model=_resolve_gateway_model() or "unknown",
+        )
 
     def _append_feishu_usage_footer(
         self,
@@ -1040,6 +1048,12 @@ class GatewayRunner:
         )
         if not footer:
             return response
+        return (
+            f"{response.rstrip()}\n\n"
+            "[[HERMES_FOOTER]]\n"
+            f"{footer}\n"
+            "[[/HERMES_FOOTER]]"
+        )
 
     def _queue_during_drain_enabled(self) -> bool:
         return self._restart_requested and self._busy_input_mode == "queue"
@@ -3626,6 +3640,31 @@ class GatewayRunner:
                     else:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+
+            # Build HERMES_XXX section markers for Feishu interactive cards.
+            # The feishu.py _build_interactive_card_payload extracts these
+            # sections and renders them as collapsible panels + usage footer.
+            if response and source.platform == Platform.FEISHU:
+                feishu_sections = [response.rstrip()]
+                last_reasoning = str(agent_result.get("last_reasoning") or "").strip()
+                if last_reasoning:
+                    feishu_sections.append(
+                        "[[HERMES_REASONING]]\n"
+                        f"{last_reasoning}\n"
+                        "[[/HERMES_REASONING]]"
+                    )
+                tool_activity = [
+                    str(line).strip()
+                    for line in (agent_result.get("tool_activity") or [])
+                    if str(line).strip()
+                ]
+                if tool_activity:
+                    feishu_sections.append(
+                        "[[HERMES_TOOLS]]\n"
+                        + "\n".join(tool_activity)
+                        + "\n[[/HERMES_TOOLS]]"
+                    )
+                response = "\n\n".join(section for section in feishu_sections if section.strip())
 
             if response:
                 response = self._append_feishu_usage_footer(

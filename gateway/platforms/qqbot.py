@@ -152,7 +152,7 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.QQ)
+        super().__init__(config, Platform.QQBOT)
 
         extra = config.extra or {}
         self._app_id = str(extra.get("app_id") or os.getenv("QQ_APP_ID", "")).strip()
@@ -194,7 +194,7 @@ class QQAdapter(BasePlatformAdapter):
 
     @property
     def name(self) -> str:
-        return "QQ"
+        return "QQBot"
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -658,7 +658,7 @@ class QQAdapter(BasePlatformAdapter):
         try:
             payload = json.loads(raw)
         except Exception:
-            logger.debug("[%s] Failed to parse JSON: %r", "QQ", raw)
+            logger.debug("[%s] Failed to parse JSON: %r", "QQBot", raw)
             return None
         return payload if isinstance(payload, dict) else None
 

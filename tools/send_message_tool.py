@@ -152,6 +152,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "bluebubbles": Platform.BLUEBUBBLES,
+        "qqbot": Platform.QQBOT,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
@@ -160,7 +161,6 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
-        "qq": Platform.QQ,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -427,8 +427,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
-        elif platform == Platform.QQ:
-            result = await _send_qq(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.QQBOT:
+            result = await _send_qqbot(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -971,25 +971,6 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_qq(extra, chat_id, message):
-    """Send via QQ Bot Official API v2 using the adapter's REST endpoint."""
-    try:
-        from gateway.platforms.qq import QQAdapter
-    except ImportError:
-        return {"error": "QQ adapter not available."}
-
-    try:
-        from gateway.config import PlatformConfig
-        pconfig = PlatformConfig(extra=extra)
-        adapter = QQAdapter(pconfig)
-        result = await adapter.send(chat_id, message)
-        if not result.success:
-            return _error(f"QQ send failed: {result.error}")
-        return {"success": True, "platform": "qq", "chat_id": chat_id, "message_id": result.message_id}
-    except Exception as e:
-        return _error(f"QQ send failed: {e}")
-
-
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):
     """Send via Feishu/Lark using the adapter's send pipeline."""
     try:
@@ -1058,6 +1039,31 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
+
+
+async def _send_qqbot(pconfig, chat_id, message):
+    """Send via QQ Bot API using the adapter's REST API."""
+    try:
+        from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+        if not check_qq_requirements():
+            return {"error": "QQBot requirements not met (need aiohttp + httpx)."}
+    except ImportError:
+        return {"error": "QQBot adapter not available."}
+
+    try:
+        adapter = QQAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("QQBot: failed to connect to server")
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"QQ send failed: {result.error}")
+            return {"success": True, "platform": "qqbot", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"QQ send failed: {e}")
 
 
 # --- Registry ---

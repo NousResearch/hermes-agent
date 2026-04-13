@@ -66,7 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
-    QQ = "qq"
+    QQBOT = "qqbot"
 
 
 @dataclass
@@ -304,8 +304,8 @@ class GatewayConfig:
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
                 connected.append(platform)
-            # QQ uses extra dict for app credentials
-            elif platform == Platform.QQ and config.extra.get("app_id") and config.extra.get("client_secret"):
+            # QQBot uses extra dict for app credentials
+            elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
         return connected
     
@@ -1117,10 +1117,10 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     qq_app_id = os.getenv("QQ_APP_ID")
     qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
     if qq_app_id or qq_client_secret:
-        if Platform.QQ not in config.platforms:
-            config.platforms[Platform.QQ] = PlatformConfig()
-        config.platforms[Platform.QQ].enabled = True
-        extra = config.platforms[Platform.QQ].extra
+        if Platform.QQBOT not in config.platforms:
+            config.platforms[Platform.QQBOT] = PlatformConfig()
+        config.platforms[Platform.QQBOT].enabled = True
+        extra = config.platforms[Platform.QQBOT].extra
         if qq_app_id:
             extra["app_id"] = qq_app_id
         if qq_client_secret:
@@ -1133,8 +1133,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             extra["group_allow_from"] = qq_group_allowed
         qq_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
         if qq_home:
-            config.platforms[Platform.QQ].home_channel = HomeChannel(
-                platform=Platform.QQ,
+            config.platforms[Platform.QQBOT].home_channel = HomeChannel(
+                platform=Platform.QQBOT,
                 chat_id=qq_home,
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )

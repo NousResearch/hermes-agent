@@ -110,6 +110,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("wiki", "Personal wiki workflow: init, ingest, review, map, and file durable pages", "Research",
                args_hint="[init|status|lint|ingest|review|map|file-query|compare|entity|concept] [domain|source]",
                subcommands=("init", "status", "lint", "ingest", "review", "map", "file-query", "compare", "entity", "concept")),
+    CommandDef("teach", "Ask a Professor Emeritus to explain any topic from first principles (Feynman-style)", "Research",
+               args_hint="<topic>"),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

@@ -912,6 +912,56 @@ class CLICommandHandlersMixin:
             self._background_tasks[task_id] = thread
             thread.start()
 
+        def _handle_teach_command(self, cmd: str):
+            """Handle /teach <topic> — Professor Emeritus Feynman-style explanation.
+
+            Loads the canonical teach_professor_emeritus.md prompt and prepends
+            it to the user's topic as a directive block, then queues the
+            combined prompt for the main agent loop. The result is persisted
+            like any normal turn (unlike /btw which is ephemeral).
+            """
+            parts = cmd.strip().split(maxsplit=1)
+            if len(parts) < 2 or not parts[1].strip():
+                _cprint("  Usage: /teach <topic>")
+                _cprint("  Example: /teach entropy")
+                _cprint("  Asks a Professor Emeritus to explain the topic from first principles.")
+                return
+
+            import os
+            topic = parts[1].strip()
+            # handlers.py is at hermes-agent/hermes_cli/cmd_handlers/handlers.py
+            # → three dirname()s to reach hermes-agent/, then agent/prompts.
+            prompt_path = os.path.join(
+                os.path.dirname(
+                    os.path.dirname(
+                        os.path.dirname(os.path.abspath(__file__))
+                    )
+                ),
+                "agent",
+                "prompts",
+                "teach_professor_emeritus.md",
+            )
+            try:
+                with open(prompt_path, encoding="utf-8") as fh:
+                    system_prompt = fh.read().strip()
+            except OSError as exc:
+                _cprint(f"  ❌ /teach: failed to load prompt at {prompt_path}: {exc}")
+                return
+
+            composed = (
+                "[TEACH MODE — Professor Emeritus. Follow the contract below exactly.]\n\n"
+                f"{system_prompt}\n\n"
+                f"TOPIC: {topic}"
+            )
+
+            preview = topic[:60] + ("..." if len(topic) > 60 else "")
+            _cprint(f'  🎓 /teach: "{preview}"')
+
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(composed)
+            else:
+                _cprint("  ❌ /teach unavailable: input queue not initialized")
+
         def _handle_btw_command(self, cmd: str):
             """Handle /btw <question> — ephemeral side question using session context.
     

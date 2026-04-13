@@ -3239,6 +3239,8 @@ class HermesCLI(CLICommandHandlersMixin):
             self._handle_background_command(cmd_original)
         elif canonical == "btw":
             self._handle_btw_command(cmd_original)
+        elif canonical == "teach":
+            self._handle_teach_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)

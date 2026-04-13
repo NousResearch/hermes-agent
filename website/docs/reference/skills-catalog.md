@@ -37,6 +37,7 @@ Skills for data science workflows — interactive exploration, Jupyter notebooks
 | Skill | Description | Path |
 |-------|-------------|------|
 | `jupyter-live-kernel` | Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results. | `data-science/jupyter-live-kernel` |
+| `polars-lazyframes` | Polars (Rust-backed) dataframes — lazy schema inspect, bounded head previews, and CSV/Parquet/NDJSON conversion via a JSON CLI. Use for columnar ETL and large-file scans without SQL or a live Jupyter kernel. Optional: `uv run --with polars`. | `data-science/polars-lazyframes` |
 
 ## creative
 

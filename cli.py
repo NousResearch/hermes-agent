@@ -1502,6 +1502,10 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Paste collapse threshold — lines at which pasted text is saved to a file
+        # and replaced with a compact reference. Default 25 so short pastes stay inline.
+        self._paste_collapse_threshold = CLI_CONFIG["display"].get("paste_collapse_threshold", 25)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
@@ -8495,7 +8499,7 @@ class HermesCLI:
             if pasted_text:
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                if line_count >= self._paste_collapse_threshold and not buf.text.strip().startswith('/'):
                     _paste_counter[0] += 1
                     paste_dir = _hermes_home / "pastes"
                     paste_dir.mkdir(parents=True, exist_ok=True)
@@ -8625,7 +8629,7 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            if line_count >= cli_ref._paste_collapse_threshold and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"

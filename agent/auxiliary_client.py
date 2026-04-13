@@ -1953,7 +1953,11 @@ def _build_call_kwargs(
     }
 
     if temperature is not None:
-        kwargs["temperature"] = temperature
+        # kimi-coding (kimi-k2.5, kimi-k2-thinking, etc.) only accepts temperature=1.
+        # Sending any other value causes a 400 "invalid temperature: only 1 is allowed
+        # for this model" error. Omitting the parameter lets the API use its default (1).
+        if provider not in {"kimi-coding", "kimi", "moonshot"}:
+            kwargs["temperature"] = temperature
 
     if max_tokens is not None:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.

@@ -1166,3 +1166,49 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+class TestBuildCallKwargsKimiTemperature:
+    """kimi-coding (kimi-k2.5 etc.) only accepts temperature=1.
+
+    Sending any other value causes a 400 invalid temperature: only 1 is
+    allowed for this model error.  _build_call_kwargs must omit the
+    temperature key for all Kimi provider aliases so callers never need
+    to special-case the provider themselves.
+    """
+
+    @pytest.mark.parametrize("provider", ["kimi-coding", "kimi", "moonshot"])
+    def test_kimi_temperature_omitted_when_nondefault(self, provider):
+        from agent.auxiliary_client import _build_call_kwargs
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="kimi-k2.5",
+            messages=[{"role": "user", "content": "hi"}],
+            temperature=0.1,
+        )
+        assert "temperature" not in kwargs, (
+            f"{provider}: temperature=0.1 must be omitted — "
+            "Kimi rejects non-1 values with 400 'invalid temperature'")
+
+    @pytest.mark.parametrize("provider", ["kimi-coding", "kimi", "moonshot"])
+    def test_kimi_temperature_none_not_sent(self, provider):
+        from agent.auxiliary_client import _build_call_kwargs
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="kimi-k2.5",
+            messages=[],
+            temperature=None,
+        )
+        assert "temperature" not in kwargs
+
+    @pytest.mark.parametrize("provider", ["openai-codex", "zai", "custom", "nous"])
+    def test_non_kimi_temperature_preserved(self, provider):
+        from agent.auxiliary_client import _build_call_kwargs
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="some-model",
+            messages=[],
+            temperature=0.3,
+        )
+        assert kwargs.get("temperature") == 0.3, (
+            f"{provider} should pass temperature through unchanged")

@@ -221,6 +221,19 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
         base_url = base_url or PROVIDER_REGISTRY["copilot"].inference_base_url
+    elif provider == "azure-foundry":
+        # Azure Foundry: read api_mode and base_url from config
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        if cfg_provider == "azure-foundry":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if cfg_base_url:
+                base_url = cfg_base_url
+            configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
+            if configured_mode:
+                api_mode = configured_mode
+        # For Anthropic-style endpoints, strip /v1 suffix
+        if api_mode == "anthropic_messages":
+            base_url = re.sub(r"/v1/?$", "", base_url)
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
         # Honour model.base_url from config.yaml when the configured provider
@@ -675,6 +688,47 @@ def _resolve_explicit_runtime(
             "api_key": api_key,
             "source": "explicit",
             "expires_at": expires_at,
+            "requested_provider": requested_provider,
+        }
+
+    # Azure Foundry: user-configured endpoint with selectable API mode
+    if provider == "azure-foundry":
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        cfg_api_mode = "chat_completions"
+        if cfg_provider == "azure-foundry":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            cfg_api_mode = _parse_api_mode(model_cfg.get("api_mode")) or "chat_completions"
+
+        env_base_url = os.getenv("AZURE_FOUNDRY_BASE_URL", "").strip().rstrip("/")
+        base_url = explicit_base_url or cfg_base_url or env_base_url
+        if not base_url:
+            raise AuthError(
+                "Azure Foundry requires a base URL. Set it via 'hermes model' or "
+                "the AZURE_FOUNDRY_BASE_URL environment variable."
+            )
+
+        api_key = explicit_api_key
+        if not api_key:
+            from hermes_cli.config import get_env_value
+            api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or os.getenv("AZURE_FOUNDRY_API_KEY", "")
+        if not api_key:
+            raise AuthError(
+                "Azure Foundry requires an API key. Set AZURE_FOUNDRY_API_KEY in "
+                "~/.hermes/.env or run 'hermes model' to configure."
+            )
+
+        # For Anthropic-style endpoints, strip /v1 suffix since the Anthropic SDK
+        # appends /v1/messages internally
+        if cfg_api_mode == "anthropic_messages":
+            base_url = re.sub(r"/v1/?$", "", base_url)
+
+        return {
+            "provider": "azure-foundry",
+            "api_mode": cfg_api_mode,
+            "base_url": base_url,
+            "api_key": api_key,
+            "source": "explicit",
             "requested_provider": requested_provider,
         }
 

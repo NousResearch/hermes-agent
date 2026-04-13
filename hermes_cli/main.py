@@ -1719,6 +1719,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "azure-foundry":
+        _model_flow_azure_foundry(config, current_model)
     elif selected_provider in (
         "gemini",
         "deepseek",
@@ -2928,6 +2930,152 @@ def _save_custom_provider(
     cfg["custom_providers"] = providers
     save_config(cfg)
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
+
+
+def _model_flow_azure_foundry(config, current_model=""):
+    """Azure Foundry provider: configure endpoint, API mode, API key, and model.
+
+    Azure Foundry supports both OpenAI-style (/v1/chat/completions) and
+    Anthropic-style (/v1/messages) endpoints. The user must select which
+    API format their endpoint uses.
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    import getpass
+
+    # Load current Azure Foundry configuration
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, dict):
+        current_base_url = model_cfg.get("base_url", "") if model_cfg.get("provider") == "azure-foundry" else ""
+        current_api_mode = model_cfg.get("api_mode", "") if model_cfg.get("provider") == "azure-foundry" else ""
+    else:
+        current_base_url = ""
+        current_api_mode = ""
+
+    current_api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
+
+    print()
+    print("Azure Foundry Configuration")
+    print("=" * 50)
+    print()
+    print("Azure Foundry can host models with either OpenAI-style or")
+    print("Anthropic-style API endpoints. Configure your endpoint below.")
+    print()
+
+    if current_base_url:
+        print(f"  Current endpoint: {current_base_url}")
+    if current_api_mode:
+        mode_label = "OpenAI-style" if current_api_mode == "chat_completions" else "Anthropic-style"
+        print(f"  Current API mode: {mode_label}")
+    if current_api_key:
+        print(f"  Current API key:  {current_api_key[:8]}...")
+    print()
+
+    # Step 1: Get the endpoint URL
+    try:
+        base_url = input(f"API endpoint URL [{current_base_url or 'e.g. https://your-model.azure.com/v1'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    effective_url = base_url or current_base_url
+    if not effective_url:
+        print("No endpoint URL provided. Cancelled.")
+        return
+
+    # Validate URL format
+    if not effective_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    # Step 2: Select API mode (OpenAI or Anthropic style)
+    print()
+    print("Select the API format your Azure Foundry endpoint uses:")
+    print()
+    print("  1. OpenAI-style  (POST /v1/chat/completions)")
+    print("     For: GPT models, Llama, Mistral, and most open models")
+    print()
+    print("  2. Anthropic-style  (POST /v1/messages)")
+    print("     For: Claude models deployed via Anthropic API format")
+    print()
+
+    try:
+        default_choice = "1" if current_api_mode != "anthropic_messages" else "2"
+        mode_choice = input(f"API format [1/2] ({default_choice}): ").strip() or default_choice
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    if mode_choice == "2":
+        api_mode = "anthropic_messages"
+        print("  → Using Anthropic-style API format")
+    else:
+        api_mode = "chat_completions"
+        print("  → Using OpenAI-style API format")
+
+    # Step 3: Get the API key
+    print()
+    try:
+        api_key = getpass.getpass(f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    effective_key = api_key or current_api_key
+    if not effective_key:
+        print("No API key provided. Cancelled.")
+        return
+
+    # Step 4: Get the model name
+    print()
+    try:
+        model_name = input(f"Model name [{current_model or 'e.g. gpt-4, claude-3-5-sonnet'}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    effective_model = model_name or current_model
+    if not effective_model:
+        print("No model name provided. Cancelled.")
+        return
+
+    # Step 5: Save configuration
+    # Save API key to .env
+    save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
+
+    # Update config.yaml
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+
+    model["provider"] = "azure-foundry"
+    model["base_url"] = effective_url.rstrip("/")
+    model["api_mode"] = api_mode
+    model["default"] = effective_model
+
+    save_config(cfg)
+
+    # Deactivate any OAuth provider
+    deactivate_provider()
+
+    # Update caller's config dict
+    config["model"] = dict(model)
+
+    # Clear any conflicting env vars
+    if get_env_value("OPENAI_BASE_URL"):
+        save_env_value("OPENAI_BASE_URL", "")
+    if get_env_value("OPENAI_API_KEY"):
+        save_env_value("OPENAI_API_KEY", "")
+
+    mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+    print()
+    print(f"✓ Azure Foundry configured:")
+    print(f"    Endpoint:  {effective_url}")
+    print(f"    API mode:  {mode_label}")
+    print(f"    Model:     {effective_model}")
+    print()
 
 
 def _remove_custom_provider(config):

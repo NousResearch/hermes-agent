@@ -2157,7 +2157,7 @@ def _expand_env_vars(obj):
     if isinstance(obj, str):
         return re.sub(
             r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            lambda m: get_env_value(m.group(1)) or m.group(0),
             obj,
         )
     if isinstance(obj, dict):
@@ -2256,7 +2256,26 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
     
-    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+    config = _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+
+    # Auto-correct common user typo (api_base -> base_url)
+    if isinstance(config.get("model"), dict) and "api_base" in config["model"]:
+        config["model"]["base_url"] = config["model"].pop("api_base")
+
+    # Apply runtime environment overrides
+    env_provider = get_env_value("HERMES_INFERENCE_PROVIDER")
+    env_base_url = get_env_value("OPENAI_BASE_URL")
+    if env_provider or env_base_url:
+        model_cfg = config.get("model")
+        if not isinstance(model_cfg, dict):
+            model_cfg = {"default": model_cfg} if model_cfg else {}
+        if env_provider:
+            model_cfg["provider"] = env_provider
+        if env_base_url:
+            model_cfg["base_url"] = env_base_url
+        config["model"] = model_cfg
+
+    return config
 
 
 _SECURITY_COMMENT = """
@@ -2894,7 +2913,7 @@ def set_config_value(key: str, value: str):
         'TINKER_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
+    if key.upper() in api_keys or ('.' not in key and key.upper().endswith(('_API_KEY', '_TOKEN'))) or ('.' not in key and key.upper().startswith('TERMINAL_SSH')):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
@@ -2975,6 +2994,29 @@ def config_command(args):
     
     elif subcmd == "edit":
         edit_config()
+
+    elif subcmd == "get":
+        key = getattr(args, 'key', None)
+        if not key:
+            print("Usage: hermes config get <key>")
+            sys.exit(1)
+        config = load_config()
+        current = config
+        for part in key.split('.'):
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                current = None
+                break
+        if current is not None:
+            if isinstance(current, bool):
+                print(str(current).lower())
+            elif isinstance(current, (dict, list)):
+                print(yaml.dump(current, default_flow_style=False).strip())
+            else:
+                print(current)
+        else:
+            print()
     
     elif subcmd == "set":
         key = getattr(args, 'key', None)

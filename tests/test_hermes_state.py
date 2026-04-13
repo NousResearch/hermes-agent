@@ -1409,6 +1409,20 @@ class TestListSessionsRich:
         assert len(sessions) == 1
         assert "Actually, resume the deployment debugging" in sessions[0]["preview"]
 
+    def test_preview_can_use_first_user_message(self, db):
+        db.create_session("s1", "cli")
+        db.append_message("s1", "user", "Original opening request")
+        db.append_message("s1", "assistant", "Working on it.")
+        db.append_message("s1", "user", "Latest follow-up request")
+        sessions = db.list_sessions_rich(preview_message="first")
+        assert len(sessions) == 1
+        assert "Original opening request" in sessions[0]["preview"]
+
+    def test_preview_message_mode_must_be_valid(self, db):
+        db.create_session("s1", "cli")
+        with pytest.raises(ValueError, match="preview_message must be 'first' or 'last'"):
+            db.list_sessions_rich(preview_message="newest")
+
     def test_preview_truncated_at_60(self, db):
         db.create_session("s1", "cli")
         long_msg = "A" * 100
@@ -1567,6 +1581,22 @@ class TestCompressionChainProjection:
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+
+    def test_projected_tip_preview_respects_preview_message_mode(self, db):
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+        db.append_message("tip1", "assistant", "ack")
+        db.append_message("tip1", "user", "newest tip follow-up")
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["preview"].startswith("newest tip follow-up")
+
+        sessions = db.list_sessions_rich(
+            source="cli", limit=20, preview_message="first"
+        )
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+        assert tip_row["preview"].startswith("latest message")
 
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
@@ -1912,4 +1942,3 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
-

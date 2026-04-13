@@ -645,3 +645,23 @@ class TestResumeDisplayConfig:
 
         display = config.get("display", {})
         assert display.get("resume_display") == "full"
+
+    def test_default_config_has_resume_preview_message(self):
+        """DEFAULT_CONFIG in hermes_cli/config.py includes resume_preview_message."""
+        from hermes_cli.config import DEFAULT_CONFIG
+        display = DEFAULT_CONFIG.get("display", {})
+        assert display.get("resume_preview_message") == "last"
+
+    def test_cli_defaults_have_resume_preview_message(self):
+        """cli.py load_cli_config defaults include resume_preview_message."""
+        import cli as _cli_mod
+        from cli import load_cli_config
+
+        with (
+            patch("pathlib.Path.exists", return_value=False),
+            patch.dict("os.environ", {"LLM_MODEL": ""}, clear=False),
+        ):
+            config = load_cli_config()
+
+        display = config.get("display", {})
+        assert display.get("resume_preview_message") == "last"

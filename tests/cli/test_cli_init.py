@@ -245,6 +245,21 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_recent_sessions_respect_resume_preview_message_config(self):
+        cli = _make_cli(config_overrides={"display": {"resume_preview_message": "first"}})
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = []
+
+        cli._list_recent_sessions(limit=7)
+
+        cli._session_db.list_sessions_rich.assert_called_once_with(
+            source="cli",
+            exclude_sources=["tool"],
+            limit=7,
+            preview_message="first",
+        )
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

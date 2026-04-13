@@ -178,6 +178,45 @@ class TestReadFullLog:
         from hermes_cli.debug import _read_full_log
         assert _read_full_log("nonexistent") is None
 
+    def test_falls_back_to_rotated_file(self, hermes_home):
+        """When gateway.log doesn't exist, falls back to gateway.log.1."""
+        from hermes_cli.debug import _read_full_log
+
+        logs_dir = hermes_home / "logs"
+        # Remove the primary (if any) and create a .1 rotation
+        (logs_dir / "gateway.log").unlink(missing_ok=True)
+        (logs_dir / "gateway.log.1").write_text(
+            "2026-04-12 10:00:00 INFO gateway.run: rotated content\n"
+        )
+
+        content = _read_full_log("gateway")
+        assert content is not None
+        assert "rotated content" in content
+
+    def test_prefers_primary_over_rotated(self, hermes_home):
+        """Primary log is used when it exists, even if .1 also exists."""
+        from hermes_cli.debug import _read_full_log
+
+        logs_dir = hermes_home / "logs"
+        (logs_dir / "gateway.log").write_text("primary content\n")
+        (logs_dir / "gateway.log.1").write_text("rotated content\n")
+
+        content = _read_full_log("gateway")
+        assert "primary content" in content
+        assert "rotated" not in content
+
+    def test_falls_back_when_primary_empty(self, hermes_home):
+        """Empty primary log falls back to .1 rotation."""
+        from hermes_cli.debug import _read_full_log
+
+        logs_dir = hermes_home / "logs"
+        (logs_dir / "agent.log").write_text("")
+        (logs_dir / "agent.log.1").write_text("rotated agent data\n")
+
+        content = _read_full_log("agent")
+        assert content is not None
+        assert "rotated agent data" in content
+
 
 # ---------------------------------------------------------------------------
 # Debug report collection

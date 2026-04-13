@@ -598,6 +598,13 @@ class SignalAdapter(BasePlatformAdapter):
         """Send a text message."""
         await self._stop_typing_indicator(chat_id)
 
+        # Clean up leaked streaming cursors before sending
+        content = content.replace("▉", "")
+        
+        # Prevent sending empty messages if the chunk was purely a cursor
+        if not content.strip():
+            return SendResult(success=True)
+
         params: Dict[str, Any] = {
             "account": self.account,
             "message": content,

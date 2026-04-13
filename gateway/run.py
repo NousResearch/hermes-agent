@@ -16641,7 +16641,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return f"{prefix}\n\n{user_text}", []
             return prefix, []
 
-        from tools.transcription_tools import transcribe_audio
+        try:
+            from tools.transcription_tools import transcribe_audio
+        except ModuleNotFoundError as e:
+            logger.error("Transcription module unavailable: %s", e)
+            unavailable_note = "[voice message could not be transcribed]"
+            _placeholder = "(The user sent a message with no text content)"
+            if user_text and user_text.strip() == _placeholder:
+                return unavailable_note, []
+            if user_text:
+                return f"{unavailable_note}\n\n{user_text}", []
+            return unavailable_note, []
 
         enriched_parts = []
         successful_transcripts: List[str] = []

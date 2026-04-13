@@ -293,6 +293,8 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        "max_api_retries": 3,       # Max retries for non-streaming API calls (rate limits, 5xx)
+        "max_stream_retries": 2,    # Max retries for streaming API calls (connection drops, timeouts)
     },
     
     "terminal": {
@@ -374,6 +376,7 @@ DEFAULT_CONFIG = {
         "summary_model": "",          # empty = use main configured model
         "summary_provider": "auto",
         "summary_base_url": None,
+        "summary_ratio": 1.0,           # detail level for summaries: 1.0 = full detail, 0.5 = half, 0.1 = brief
     },
     "smart_model_routing": {
         "enabled": False,
@@ -468,6 +471,13 @@ DEFAULT_CONFIG = {
         "resume_preview_length": 60,         # Single-line preview column width
         "resume_full_preview_length": 500,   # Expanded multi-line preview char limit (newlines preserved)
         "resume_preview_lines": 3,           # How many lines of expanded preview to show for selected session
+        # Ctrl+W word boundary
+        "ctrlw_word_boundary": "whitespace",  # "whitespace" (current) or "alphanumeric" (URL-friendly)
+        # Terminal title
+        "terminal_title": True,               # Show session info in terminal window/tab title
+        # Paste collapse thresholds
+        "paste_collapse_threshold": 25,       # Lines at which pasted text collapses to file ref (bracketed paste)
+        "paste_collapse_threshold_fallback": 0,  # Fallback threshold (0 = disabled, uses buf.text replacement)
     },
 
     # Privacy settings
@@ -568,6 +578,7 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        "default_toolsets": ["terminal", "file", "web"],  # default toolsets for subagents
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

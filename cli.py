@@ -4710,10 +4710,10 @@ class HermesCLI:
             user_provs = None
             custom_provs = None
             try:
-                from hermes_cli.config import load_config
+                from hermes_cli.config import get_compatible_custom_providers, load_config
                 cfg = load_config()
                 user_provs = cfg.get("providers")
-                custom_provs = cfg.get("custom_providers")
+                custom_provs = get_compatible_custom_providers(cfg)
             except Exception:
                 pass
 

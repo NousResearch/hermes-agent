@@ -1544,6 +1544,136 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     return missing
 
 
+def _normalize_custom_provider_entry(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Return a runtime-compatible custom provider entry or ``None``."""
+    if not isinstance(entry, dict):
+        return None
+
+    base_url = ""
+    for url_key in ("api", "url", "base_url"):
+        raw_url = entry.get(url_key)
+        if isinstance(raw_url, str) and raw_url.strip():
+            base_url = raw_url.strip()
+            break
+    if not base_url:
+        return None
+
+    name = ""
+    raw_name = entry.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        name = raw_name.strip()
+    elif provider_key.strip():
+        name = provider_key.strip()
+    if not name:
+        return None
+
+    normalized: Dict[str, Any] = {
+        "name": name,
+        "base_url": base_url,
+    }
+
+    provider_key = provider_key.strip()
+    if provider_key:
+        normalized["provider_key"] = provider_key
+
+    api_key = entry.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        normalized["api_key"] = api_key.strip()
+
+    key_env = entry.get("key_env")
+    if isinstance(key_env, str) and key_env.strip():
+        normalized["key_env"] = key_env.strip()
+
+    api_mode = entry.get("api_mode") or entry.get("transport")
+    if isinstance(api_mode, str) and api_mode.strip():
+        normalized["api_mode"] = api_mode.strip()
+
+    model_name = entry.get("model") or entry.get("default_model")
+    if isinstance(model_name, str) and model_name.strip():
+        normalized["model"] = model_name.strip()
+
+    models = entry.get("models")
+    if isinstance(models, dict) and models:
+        normalized["models"] = models
+
+    context_length = entry.get("context_length")
+    if isinstance(context_length, int) and context_length > 0:
+        normalized["context_length"] = context_length
+
+    rate_limit_delay = entry.get("rate_limit_delay")
+    if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
+        normalized["rate_limit_delay"] = rate_limit_delay
+
+    return normalized
+
+
+def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
+    """Normalize ``providers`` config entries into the legacy custom-provider shape."""
+    if not isinstance(providers_dict, dict):
+        return []
+
+    custom_providers: List[Dict[str, Any]] = []
+    for key, entry in providers_dict.items():
+        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        if normalized is not None:
+            custom_providers.append(normalized)
+
+    return custom_providers
+
+
+def get_compatible_custom_providers(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Return a deduplicated custom-provider view across legacy and v12+ config.
+
+    ``custom_providers`` remains the on-disk legacy format, while ``providers``
+    is the newer keyed schema.  Runtime and picker flows still need a single
+    list-shaped view, but we should not materialise that compatibility layer
+    back into config.yaml because it duplicates entries in UIs.
+    """
+    if config is None:
+        config = load_config()
+
+    compatible: List[Dict[str, Any]] = []
+    seen_provider_keys: set = set()
+    seen_name_url_pairs: set = set()
+
+    def _append_if_new(entry: Optional[Dict[str, Any]]) -> None:
+        if entry is None:
+            return
+        provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+        name = str(entry.get("name", "") or "").strip().lower()
+        base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        pair = (name, base_url)
+
+        if provider_key and provider_key in seen_provider_keys:
+            return
+        if name and base_url and pair in seen_name_url_pairs:
+            return
+
+        compatible.append(entry)
+        if provider_key:
+            seen_provider_keys.add(provider_key)
+        if name and base_url:
+            seen_name_url_pairs.add(pair)
+
+    custom_providers = config.get("custom_providers")
+    if custom_providers is not None:
+        if not isinstance(custom_providers, list):
+            return []
+        for entry in custom_providers:
+            _append_if_new(_normalize_custom_provider_entry(entry))
+
+    for entry in providers_dict_to_custom_providers(config.get("providers")):
+        _append_if_new(entry)
+
+    return compatible
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1861,8 +1991,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
-                # Remove the old list
-                del config["custom_providers"]
+                # Remove the old list — runtime reads via get_compatible_custom_providers()
+                config.pop("custom_providers", None)
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")

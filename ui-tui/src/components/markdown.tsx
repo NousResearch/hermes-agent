@@ -81,15 +81,42 @@ const isTableDivider = (row: string) => {
   return cells.length > 1 && cells.every(cell => TABLE_DIVIDER_CELL_RE.test(cell))
 }
 
+const stripInlineMarkup = (value: string) =>
+  value
+    .replace(/!\[(.*?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '[image: $1] $2')
+    .replace(/\[(.+?)\]\(((?:[^\s()]|\([^\s()]*\))+?)\)/g, '$1')
+    .replace(/<((?:https?:\/\/|mailto:)[^>\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})>/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/_(.+?)_/g, '$1')
+    .replace(/==(.+?)==/g, '$1')
+    .replace(/\[\^([^\]]+)\]/g, '[$1]')
+    .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
+    .replace(/~([^~\s][^~]*?)~/g, '_$1')
+
 const renderTable = (key: number, rows: string[][], t: Theme) => {
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => (r[ci] ?? '').length)))
+  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
 
   return (
     <Box flexDirection="column" key={key} paddingLeft={2}>
       {rows.map((row, ri) => (
-        <Text color={ri === 0 ? t.color.amber : undefined} key={ri}>
-          {row.map((cell, ci) => cell.padEnd(widths[ci] ?? 0)).join('  ')}
-        </Text>
+        <Box key={ri}>
+          {widths.map((width, ci) => {
+            const cell = row[ci] ?? ''
+            const pad = ' '.repeat(Math.max(0, width - stripInlineMarkup(cell).length))
+
+            return (
+              <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
+                <MdInline t={t} text={cell} />
+                {pad}
+                {ci < widths.length - 1 ? '  ' : ''}
+              </Text>
+            )
+          })}
+        </Box>
       ))}
     </Box>
   )

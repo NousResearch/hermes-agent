@@ -43,7 +43,7 @@ from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
@@ -938,6 +938,355 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
+def _try_gemini_vision() -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Google AI Studio (Gemini) or Vertex AI as a vision backend.
+
+    Supports two Google APIs:
+      - Google AI Studio: generativelanguage.googleapis.com/v1beta/openai
+      - Vertex AI: aiplatform.googleapis.com/v1/models/{model}:streamGenerateContent
+
+    Detection: If GOOGLE_VERTEX_BASE_URL is set, use Vertex. Otherwise check
+    credential pool, then fall back to GOOGLE_API_KEY env var (AI Studio).
+    """
+    # Check for Vertex AI via env vars first
+    vertex_base_url = os.getenv("GOOGLE_VERTEX_BASE_URL", "").strip()
+    vertex_model = os.getenv("GOOGLE_VERTEX_MODEL", "").strip()
+    if vertex_base_url and vertex_model:
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("VERTEX_API_KEY", "").strip()
+        if not api_key:
+            # Try credential pool for google/vertex
+            pool_present, entry = _select_pool_entry("google")
+            if pool_present and entry:
+                api_key = _pool_runtime_api_key(entry)
+        if api_key:
+            base_url = vertex_base_url.rstrip("/")
+            logger.debug("Auxiliary vision client: Vertex AI (%s)", vertex_model)
+            client = OpenAI(api_key=api_key, base_url=base_url)
+            # Wrap with Vertex URL adapter so OpenAI SDK hits the right endpoint
+            wrapped = _VertexAIClientAdapter(client, vertex_model)
+            return wrapped, vertex_model
+
+    # Google AI Studio path (original logic)
+    pool_present, entry = _select_pool_entry("gemini")
+    if pool_present:
+        api_key = _pool_runtime_api_key(entry)
+        if api_key:
+            base_url = _to_openai_base_url(
+                _pool_runtime_base_url(entry, None)
+                or "https://generativelanguage.googleapis.com/v1beta/openai"
+            )
+            model = "gemini-2.5-flash-lite"
+            logger.debug("Auxiliary vision client: gemini via pool (%s)", model)
+            return OpenAI(api_key=api_key, base_url=base_url), model
+
+    api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        logger.debug("Auxiliary vision client: gemini — no API key found")
+        return None, None
+    model = "gemini-2.5-flash-lite"
+    base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+    logger.debug("Auxiliary vision client: gemini via GOOGLE_API_KEY (%s)", model)
+    return OpenAI(api_key=api_key, base_url=base_url), model
+
+
+class _VertexAIClientAdapter:
+    """Wraps an OpenAI client to route requests to Vertex AI's endpoint format.
+
+    Vertex AI uses: base_url/models/{model}:streamGenerateContent
+    instead of: base_url/chat/completions
+    """
+
+    def __init__(self, real_client: OpenAI, model: str):
+        self._client = real_client
+        self._model = model
+
+    @property
+    def api_key(self) -> str:
+        return self._client.api_key
+
+    @property
+    def base_url(self) -> str:
+        return self._client.base_url
+
+    @property
+    def chat(self):
+        return _VertexChatShim(self._client, self._model)
+
+
+class _VertexChatShim:
+    """Exposes .completions as a property for OpenAI SDK compatibility (.chat.completions.create)."""
+
+    def __init__(self, real_client: OpenAI, model: str):
+        self._client = real_client
+        self._model = model
+
+    @property
+    def completions(self):
+        return _VertexCompletionsAdapter(self._client, self._model)
+
+
+class _VertexCompletionsAdapter:
+    """Intercepts chat.completions.create() and rewrites the URL for Vertex."""
+
+    def __init__(self, real_client: OpenAI, model: str):
+        self._client = real_client
+        self._model = model
+
+    def _vertex_request(self, vertex_url: str, payload: dict, **kwargs) -> str:
+        """Shared HTTP call logic for both sync and async."""
+        import httpx, json
+        with httpx.Client(timeout=kwargs.get("timeout", 120)) as http:
+            resp = http.post(
+                vertex_url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": self._client.api_key,
+                },
+            )
+            resp.raise_for_status()
+            text_content = ""
+            raw = resp.text.strip()
+            try:
+                obj = json.loads(raw)
+                if isinstance(obj, list):
+                    for item in obj:
+                        for cand in item.get("candidates", []):
+                            for part in cand.get("content", {}).get("parts", []):
+                                text_content += part.get("text", "")
+                elif isinstance(obj, dict):
+                    for cand in obj.get("candidates", []):
+                        for part in cand.get("content", {}).get("parts", []):
+                            text_content += part.get("text", "")
+            except json.JSONDecodeError:
+                for line in raw.split("\n"):
+                    if not line.strip() or line.strip() in (",", "]", "["):
+                        continue
+                    line = line.rstrip(",").strip()
+                    if not line or line in ("[", "]"):
+                        continue
+                    try:
+                        item_obj = json.loads(line)
+                        if isinstance(item_obj, list):
+                            for sub in item_obj:
+                                for cand in sub.get("candidates", []):
+                                    for part in cand.get("content", {}).get("parts", []):
+                                        text_content += part.get("text", "")
+                        elif isinstance(item_obj, dict):
+                            for cand in item_obj.get("candidates", []):
+                                for part in cand.get("content", {}).get("parts", []):
+                                    text_content += part.get("text", "")
+                    except Exception:
+                        continue
+            return text_content
+
+    def create(self, **kwargs) -> Any:
+        model_arg = kwargs.get("model", self._model)
+        base = str(self._client.base_url).rstrip("/")
+        vertex_url = f"{base}/{model_arg}:streamGenerateContent"
+
+        messages = kwargs.get("messages", [])
+        contents = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if part.get("type") == "text":
+                        parts.append({"text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+                        if image_url.startswith("data:"):
+                            mime_type = image_url.split(",")[0].split(";")[0].replace("data:", "")
+                            data = image_url.split(",")[-1]
+                        else:
+                            mime_type = "image/jpeg"
+                            data = image_url
+                        parts.append({"inlineData": {"mimeType": mime_type, "data": data}})
+                contents.append({"role": role, "parts": parts})
+            else:
+                contents.append({"role": role, "parts": [{"text": str(content)}]})
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": kwargs.get("temperature", 0.9),
+                "maxOutputTokens": kwargs.get("max_tokens") or kwargs.get("max_completion_tokens", 8192),
+            }
+        }
+
+        text_content = self._vertex_request(vertex_url, payload, **kwargs)
+
+        class _FakeChoice:
+            index = 0
+            finish_reason = "stop"
+
+            class message:
+                content = text_content
+                role = "assistant"
+                function_call = None
+                tool_calls = None
+
+        class _FakeUsage:
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+            model = model_arg
+            usage = _FakeUsage()
+
+        return _FakeResponse()
+
+
+class _AsyncVertexCompletionsAdapter:
+    """Async version — intercepts chat.completions.create() and rewrites the URL for Vertex."""
+
+    def __init__(self, real_client, model: str):
+        self._client = real_client
+        self._model = model
+
+    async def create(self, **kwargs) -> Any:
+        import httpx, json
+
+        model_arg = kwargs.get("model", self._model)
+        base = str(self._client.base_url).rstrip("/")
+        vertex_url = f"{base}/{model_arg}:streamGenerateContent"
+
+        messages = kwargs.get("messages", [])
+        contents = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    if part.get("type") == "text":
+                        parts.append({"text": part.get("text", "")})
+                    elif part.get("type") == "image_url":
+                        image_url = part.get("image_url", {}).get("url", "")
+                        if image_url.startswith("data:"):
+                            mime_type = image_url.split(",")[0].split(";")[0].replace("data:", "")
+                            data = image_url.split(",")[-1]
+                        else:
+                            mime_type = "image/jpeg"
+                            data = image_url
+                        parts.append({"inlineData": {"mimeType": mime_type, "data": data}})
+                contents.append({"role": role, "parts": parts})
+            else:
+                contents.append({"role": role, "parts": [{"text": str(content)}]})
+
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": kwargs.get("temperature", 0.9),
+                "maxOutputTokens": kwargs.get("max_tokens") or kwargs.get("max_completion_tokens", 8192),
+            }
+        }
+
+        timeout = kwargs.get("timeout", 120)
+        async with httpx.AsyncClient(timeout=timeout) as http:
+            resp = await http.post(
+                vertex_url,
+                json=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": self._client.api_key,
+                },
+            )
+            resp.raise_for_status()
+
+        text_content = ""
+        raw = resp.text.strip()
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, list):
+                for item in obj:
+                    for cand in item.get("candidates", []):
+                        for part in cand.get("content", {}).get("parts", []):
+                            text_content += part.get("text", "")
+            elif isinstance(obj, dict):
+                for cand in obj.get("candidates", []):
+                    for part in cand.get("content", {}).get("parts", []):
+                        text_content += part.get("text", "")
+        except json.JSONDecodeError:
+            for line in raw.split("\n"):
+                if not line.strip() or line.strip() in (",", "]", "["):
+                    continue
+                line = line.rstrip(",").strip()
+                if not line or line in ("[", "]"):
+                    continue
+                try:
+                    item_obj = json.loads(line)
+                    if isinstance(item_obj, list):
+                        for sub in item_obj:
+                            for cand in sub.get("candidates", []):
+                                for part in cand.get("content", {}).get("parts", []):
+                                    text_content += part.get("text", "")
+                    elif isinstance(item_obj, dict):
+                        for cand in item_obj.get("candidates", []):
+                            for part in cand.get("content", {}).get("parts", []):
+                                text_content += part.get("text", "")
+                except Exception:
+                    continue
+
+        class _FakeChoice:
+            index = 0
+            finish_reason = "stop"
+
+            class message:
+                content = text_content
+                role = "assistant"
+                function_call = None
+                tool_calls = None
+
+        class _FakeUsage:
+            prompt_tokens = 0
+            completion_tokens = 0
+            total_tokens = 0
+
+        class _FakeResponse:
+            choices = [_FakeChoice()]
+            model = model_arg
+            usage = _FakeUsage()
+
+        return _FakeResponse()
+
+
+class _AsyncVertexChatShim:
+    """Async shim: exposes .completions as a property."""
+
+    def __init__(self, real_client: AsyncOpenAI, model: str):
+        self._client = real_client
+        self._model = model
+
+    @property
+    def completions(self):
+        return _AsyncVertexCompletionsAdapter(self._client, self._model)
+
+
+class _AsyncVertexAIClientAdapter:
+    """Async wrapper for Vertex AI — preserves the URL rewriting in async context."""
+
+    def __init__(self, real_client: AsyncOpenAI, model: str):
+        self._client = real_client
+        self._model = model
+
+    @property
+    def api_key(self) -> str:
+        return self._client.api_key
+
+    @property
+    def base_url(self):
+        return self._client.base_url
+
+    @property
+    def chat(self):
+        return _AsyncVertexChatShim(self._client, self._model)
+
+
 def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1223,6 +1572,13 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, _VertexAIClientAdapter):
+        # Wrap the async client with our async Vertex adapter so URL rewriting is preserved
+        async_client = AsyncOpenAI(
+            api_key=sync_client.api_key,
+            base_url=str(sync_client.base_url),
+        )
+        return _AsyncVertexAIClientAdapter(async_client, sync_client._model), model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1606,6 +1962,7 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
+    "gemini",
 )
 
 
@@ -1625,6 +1982,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_anthropic()
     if provider == "custom":
         return _try_custom_endpoint()
+    if provider == "gemini":
+        return _try_gemini_vision()
     return None, None
 
 

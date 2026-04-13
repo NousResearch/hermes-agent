@@ -6172,15 +6172,16 @@ class HermesCLI:
         else:
             print("  Recent sessions:")
         print()
-        print(f"  {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
-        print(f"  {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
-        for session in sessions:
+        print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
+        print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
+        for idx, session in enumerate(sessions, start=1):
             title = session.get("title") or "—"
             preview = (session.get("preview") or "")[:38]
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
         print()
-        print("  Use /resume <session id or title> to continue where you left off.")
+        print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
+        print("  Example: /resume 2")
         print()
         return True
 
@@ -6525,7 +6526,7 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
+            _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
@@ -6536,10 +6537,20 @@ class HermesCLI:
             _cprint(f"  {format_session_db_unavailable()}")
             return
 
-        # Resolve title or ID
-        from hermes_cli.main import _resolve_session_by_name_or_id
-        resolved = _resolve_session_by_name_or_id(target)
-        target_id = resolved or target
+        # Resolve numbered selection, title, or ID
+        if target.isdigit():
+            sessions = self._list_recent_sessions(limit=10)
+            index = int(target)
+            if index < 1 or index > len(sessions):
+                _cprint(f"  Resume index {index} is out of range.")
+                _cprint("  Use /resume with no arguments to see available sessions.")
+                return
+            selected = sessions[index - 1]
+            target_id = selected["id"]
+        else:
+            from hermes_cli.main import _resolve_session_by_name_or_id
+            resolved = _resolve_session_by_name_or_id(target)
+            target_id = resolved or target
 
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:

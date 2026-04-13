@@ -7,14 +7,12 @@ import {
   formatToolCall,
   parseToolTrailResultLine,
   pick,
-  scaleHex,
-  THINKING_COT_FADE,
   THINKING_COT_MAX,
-  thinkingCotTail,
+  thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool, ActivityItem } from '../types.js'
+import type { ActiveTool, ActivityItem, ThinkingMode } from '../types.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
@@ -49,10 +47,10 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
 
 type DetailRow = { color: string; content: ReactNode; dimColor?: boolean; key: string }
 
-function Detail({ color, content, dimColor, t }: DetailRow & { t: Theme }) {
+function Detail({ color, content, dimColor }: DetailRow) {
   return (
     <Text color={color} dimColor={dimColor}>
-      <Text dimColor> └ </Text>
+      <Text dimColor>└ </Text>
       {content}
     </Text>
   )
@@ -60,7 +58,15 @@ function Detail({ color, content, dimColor, t }: DetailRow & { t: Theme }) {
 
 // ── Thinking (pre-tool fallback) ─────────────────────────────────────
 
-export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: string; t: Theme }) {
+export const Thinking = memo(function Thinking({
+  mode = 'truncated',
+  reasoning,
+  t
+}: {
+  mode?: ThinkingMode
+  reasoning: string
+  t: Theme
+}) {
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
@@ -69,8 +75,7 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
     return () => clearInterval(id)
   }, [])
 
-  const tail = thinkingCotTail(reasoning)
-  const clipped = reasoning.length > THINKING_COT_MAX
+  const preview = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
 
   return (
     <Box flexDirection="column">
@@ -79,18 +84,10 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
         {VERBS[tick % VERBS.length] ?? 'thinking'}…
       </Text>
 
-      {tail ? (
-        <Text wrap="truncate-end">
-          {clipped &&
-            Array.from({ length: Math.min(THINKING_COT_FADE, tail.length) }, (_, i) => (
-              <Text color={scaleHex(t.color.dim, (i + 1) / (THINKING_COT_FADE + 1))} key={i}>
-                {tail[i]}
-              </Text>
-            ))}
-
-          <Text color={t.color.dim} dimColor>
-            {clipped ? tail.slice(THINKING_COT_FADE) : tail}
-          </Text>
+      {preview ? (
+        <Text color={t.color.dim} dimColor {...(mode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
+          <Text dimColor>└ </Text>
+          {preview}
         </Text>
       ) : null}
     </Box>
@@ -103,6 +100,7 @@ type Group = { color: string; content: ReactNode; details: DetailRow[]; key: str
 
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
+  thinkingMode = 'truncated',
   reasoning = '',
   t,
   tools = [],
@@ -110,6 +108,7 @@ export const ToolTrail = memo(function ToolTrail({
   activity = []
 }: {
   busy?: boolean
+  thinkingMode?: ThinkingMode
   reasoning?: string
   t: Theme
   tools?: ActiveTool[]
@@ -122,12 +121,15 @@ export const ToolTrail = memo(function ToolTrail({
     if (!tools.length) {
       return
     }
+
     const id = setInterval(() => setNow(Date.now()), 200)
 
     return () => clearInterval(id)
   }, [tools.length])
 
-  if (!busy && !trail.length && !tools.length && !activity.length) {
+  const reasoningTail = thinkingPreview(reasoning, thinkingMode, THINKING_COT_MAX)
+
+  if (!busy && !trail.length && !tools.length && !activity.length && !reasoningTail) {
     return null
   }
 
@@ -211,11 +213,7 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  // ── reasoning tail → child of last group ────────────────────────
-
-  const reasoningTail = thinkingCotTail(reasoning)
-
-  if (groups.length && reasoningTail) {
+  if (reasoningTail && groups.length) {
     detail({ color: t.color.dim, content: reasoningTail, dimColor: true, key: 'cot' })
   }
 
@@ -232,7 +230,10 @@ export const ToolTrail = memo(function ToolTrail({
 
   return (
     <Box flexDirection="column">
-      {busy && !groups.length && <Thinking reasoning={reasoning} t={t} />}
+      {busy && !groups.length && <Thinking mode={thinkingMode} reasoning={reasoning} t={t} />}
+      {!busy && !groups.length && reasoningTail && (
+        <Detail color={t.color.dim} content={reasoningTail} dimColor key="cot" />
+      )}
 
       {groups.map(g => (
         <Box flexDirection="column" key={g.key}>
@@ -242,7 +243,7 @@ export const ToolTrail = memo(function ToolTrail({
           </Text>
 
           {g.details.map(d => (
-            <Detail {...d} key={d.key} t={t} />
+            <Detail {...d} key={d.key} />
           ))}
         </Box>
       ))}

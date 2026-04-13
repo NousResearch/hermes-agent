@@ -45,6 +45,7 @@ import type {
   SessionInfo,
   SlashCatalog,
   SudoReq,
+  ThinkingMode,
   Usage
 } from './types.js'
 
@@ -351,6 +352,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [bellOnComplete, setBellOnComplete] = useState(false)
   const [clockNow, setClockNow] = useState(() => Date.now())
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('truncated')
 
   // ── Refs ─────────────────────────────────────────────────────────
 
@@ -390,6 +392,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const empty = !messages.length
   const isBlocked = blocked()
+  const hasAnyThinking = Boolean(reasoning.trim() || historyItems.some(m => m.thinking?.trim()))
 
   // ── Resize RPC ───────────────────────────────────────────────────
 
@@ -1177,6 +1180,16 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (ctrl(key, ch, 'l')) {
       setStatus('forging session…')
       newSession()
+
+      return
+    }
+
+    if (ctrl(key, ch, 't')) {
+      if (hasAnyThinking) {
+        setThinkingMode(mode => (mode === 'collapsed' ? 'truncated' : mode === 'truncated' ? 'full' : 'collapsed'))
+      } else {
+        sys('no thinking available')
+      }
 
       return
     }
@@ -2401,9 +2414,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const durationLabel = sid ? fmtDuration(clockNow - sessionStartedAt) : ''
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
-  const showProgressArea = Boolean(
-    (busy && !streaming) || (busy ? activity.length : 0) || tools.length || turnTrail.length
-  )
+
+  const hasReasoning = Boolean(reasoning.trim())
+
+  const showProgressArea = Boolean(busy || tools.length || turnTrail.length || hasReasoning)
+
   const showStreamingArea = Boolean(streaming)
 
   // ── Render ───────────────────────────────────────────────────────
@@ -2420,7 +2435,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           ) : m.kind === 'panel' && m.panelData ? (
             <Panel sections={m.panelData.sections} t={theme} title={m.panelData.title} />
           ) : (
-            <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
+            <MessageLine cols={cols} compact={compact} msg={m} t={theme} thinkingMode={thinkingMode} />
           )}
         </Box>
       ))}
@@ -2431,8 +2446,9 @@ export function App({ gw }: { gw: GatewayClient }) {
             <ToolTrail
               activity={busy ? activity : []}
               busy={busy && !streaming}
-              reasoning={busy && !streaming ? reasoning : ''}
+              reasoning={reasoning}
               t={theme}
+              thinkingMode={hasReasoning ? thinkingMode : 'truncated'}
               tools={tools}
               trail={turnTrail}
             />

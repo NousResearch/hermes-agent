@@ -2416,9 +2416,25 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             thread = await message.create_thread(name=thread_name, auto_archive_duration=1440)
             return thread
-        except Exception as e:
-            logger.warning("[%s] Auto-thread creation failed: %s", self.name, e)
-            return None
+        except Exception as direct_error:
+            display_name = getattr(getattr(message, "author", None), "display_name", None) or "unknown user"
+            reason = f"Auto-threaded from mention by {display_name}"
+            try:
+                seed_msg = await message.channel.send(f"\U0001f9f5 Thread created by Hermes: **{thread_name}**")
+                thread = await seed_msg.create_thread(
+                    name=thread_name,
+                    auto_archive_duration=1440,
+                    reason=reason,
+                )
+                return thread
+            except Exception as fallback_error:
+                logger.warning(
+                    "[%s] Auto-thread creation failed. Direct error: %s. Fallback error: %s",
+                    self.name,
+                    direct_error,
+                    fallback_error,
+                )
+                return None
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,

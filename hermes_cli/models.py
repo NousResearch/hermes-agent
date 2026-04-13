@@ -158,6 +158,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-turbo-preview",
         "kimi-k2-0905-preview",
     ],
+    "kimi-coding-cn": [
+        "kimi-k2.5",
+        "kimi-k2-thinking",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-0905-preview",
+    ],
     "moonshot": [
         "kimi-k2.5",
         "kimi-k2-thinking",
@@ -488,6 +494,7 @@ _PROVIDER_LABELS = {
     "gemini": "Google AI Studio",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
+    "kimi-coding-cn": "Kimi / Moonshot (China)",
     "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
@@ -519,6 +526,8 @@ _PROVIDER_ALIASES = {
     "google-ai-studio": "gemini",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "kimi-cn": "kimi-coding-cn",
+    "moonshot-cn": "kimi-coding-cn",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -841,7 +850,7 @@ def list_available_providers() -> list[dict[str, str]]:
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
-        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",

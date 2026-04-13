@@ -8932,7 +8932,9 @@ class HermesCLI:
                 paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
-                paste_file.write_text(text, encoding="utf-8")
+                # Sanitize lone surrogates that crash UTF-8 encoding (e.g. from Google Docs paste)
+                from run_agent import _sanitize_surrogates
+                paste_file.write_text(_sanitize_surrogates(text), encoding="utf-8")
                 # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
                 buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"

@@ -262,20 +262,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
-
-#### QQ Bot
-
-| Variable | Description |
-|----------|-------------|
-| `QQ_APP_ID` | QQ Bot App ID (from open.qq.com) |
-| `QQ_CLIENT_SECRET` | QQ Bot App Secret |
-| `QQ_SANDBOX` | Enable sandbox mode for testing (`true`/`false`) |
-| `QQ_ALLOWED_USERS` | Comma-separated QQ user IDs allowed to DM the bot |
-| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ user IDs allowed in group messages |
-| `QQ_ALLOW_ALL_USERS` | Allow all QQ users (`true`/`false`) |
-| `QQ_HOME_CHANNEL` | QQ group ID for cron delivery and notifications |
-| `QQ_HOME_CHANNEL_NAME` | Display name for the QQ home channel |
-
+| `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
+| `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |
+| `QQ_STT_API_KEY` | API key for external STT fallback provider (optional, used when QQ built-in ASR returns no text) |
+| `QQ_STT_BASE_URL` | Base URL for external STT provider (optional) |
+| `QQ_STT_MODEL` | Model name for external STT provider (optional) |
+| `QQ_ALLOWED_USERS` | Comma-separated QQ user openIDs allowed to message the bot |
+| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ group IDs for group @-message access |
+| `QQ_ALLOW_ALL_USERS` | Allow all users (`true`/`false`, overrides `QQ_ALLOWED_USERS`) |
+| `QQ_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

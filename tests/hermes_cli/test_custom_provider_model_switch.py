@@ -148,18 +148,19 @@ class TestCustomProviderModelSwitch:
         assert model.get("api_mode") == "anthropic_messages"
 
     def test_api_mode_cleared_when_not_specified(self, config_home):
-        """When custom_providers entry has no api_mode, stale api_mode is removed."""
+        """When custom_providers entry has no api_mode or api_key, stale values are removed."""
         import yaml
         from hermes_cli.main import _model_flow_named_custom
 
-        # Pre-seed a stale api_mode in config
+        # Pre-seed stale transport/auth fields in config
         config_path = config_home / "config.yaml"
-        config_path.write_text(yaml.dump({"model": {"api_mode": "anthropic_messages"}}))
+        config_path.write_text(
+            yaml.dump({"model": {"api_mode": "anthropic_messages", "api_key": "stale-key"}})
+        )
 
         provider_info = {
             "name": "My vLLM",
             "base_url": "https://vllm.example.com/v1",
-            "api_key": "***",
             "model": "llama-3",
         }
 
@@ -173,3 +174,4 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert "api_mode" not in model, "Stale api_mode should be removed"
+        assert "api_key" not in model, "Stale api_key should be removed"

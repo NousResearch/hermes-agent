@@ -364,6 +364,10 @@ PLATFORM_HINTS = {
         "documents. You can also include image URLs in markdown format ![alt](url) and they "
         "will be downloaded and sent as native media when possible."
     ),
+    "openilink": (
+        "You are chatting via OpeniLink Hub (WeChat). Markdown formatting is not supported — "
+        "use plain text. Keep responses concise and chat-friendly."
+    ),
     "wecom": (
         "You are on WeCom (企业微信 / Enterprise WeChat). Markdown formatting is supported. "
         "You CAN send media files natively — to deliver a file to the user, include "

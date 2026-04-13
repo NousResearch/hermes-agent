@@ -1499,6 +1499,7 @@ class GatewayRunner:
                        "WECOM_CALLBACK_ALLOWED_USERS",
                        "WEIXIN_ALLOWED_USERS",
                        "BLUEBUBBLES_ALLOWED_USERS",
+                       "OPENILINK_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1512,7 +1513,8 @@ class GatewayRunner:
                        "WECOM_ALLOW_ALL_USERS",
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
                        "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS")
+                       "BLUEBUBBLES_ALLOW_ALL_USERS",
+                       "OPENILINK_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2255,6 +2257,13 @@ class GatewayRunner:
                 return None
             return BlueBubblesAdapter(config)
 
+        elif platform == Platform.OPENILINK:
+            from gateway.platforms.openilink import OpeniLinkAdapter, check_openilink_requirements
+            if not check_openilink_requirements():
+                logger.warning("OpeniLink: aiohttp missing or OPENILINK_TOKEN/OPENILINK_HUB_URL not configured")
+                return None
+            return OpeniLinkAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -2296,6 +2305,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.OPENILINK: "OPENILINK_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -2313,6 +2323,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.OPENILINK: "OPENILINK_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -6467,7 +6478,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.OPENILINK, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:

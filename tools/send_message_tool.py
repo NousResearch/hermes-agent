@@ -160,6 +160,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
+        "openilink": Platform.OPENILINK,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

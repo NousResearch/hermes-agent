@@ -1913,6 +1913,28 @@ _PLATFORMS = [
              "help": "Phone number or Apple ID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "openilink",
+        "label": "OpeniLink Hub",
+        "emoji": "🔗",
+        "token_var": "OPENILINK_TOKEN",
+        "setup_instructions": [
+            "1. Deploy OpeniLink Hub: https://github.com/openilink/openilink-hub",
+            "2. In Hub, go to Apps → Hermes Agent → Install on your Bot",
+            "3. Copy the App Token from the installation page",
+            "4. Hermes connects to Hub via WebSocket and receives messages",
+            "5. Set OPENILINK_ALLOW_ALL_USERS=true to allow all users",
+        ],
+        "vars": [
+            {"name": "OPENILINK_HUB_URL", "prompt": "OpeniLink Hub URL (e.g. https://hub.example.com)", "password": False,
+             "help": "The URL of your OpeniLink Hub instance."},
+            {"name": "OPENILINK_TOKEN", "prompt": "App Token (from Hub installation page)", "password": True,
+             "help": "The token shown on the Hermes Agent app installation page in Hub."},
+            {"name": "OPENILINK_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated, or leave empty)", "password": False,
+             "is_allowlist": True,
+             "help": "Optional — pre-authorize specific WeChat user IDs."},
+        ],
+    },
 ]
 
 

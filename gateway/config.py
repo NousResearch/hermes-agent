@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    OPENILINK = "openilink"
 
 
 @dataclass
@@ -1108,6 +1109,19 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
+
+    # OpeniLink Hub
+    openilink_token = os.getenv("OPENILINK_TOKEN")
+    openilink_hub_url = os.getenv("OPENILINK_HUB_URL")
+    if openilink_token or openilink_hub_url:
+        if Platform.OPENILINK not in config.platforms:
+            config.platforms[Platform.OPENILINK] = PlatformConfig()
+        config.platforms[Platform.OPENILINK].enabled = True
+        if openilink_token:
+            config.platforms[Platform.OPENILINK].token = openilink_token
+        extra = config.platforms[Platform.OPENILINK].extra
+        if openilink_hub_url:
+            extra["hub_url"] = openilink_hub_url.rstrip("/")
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

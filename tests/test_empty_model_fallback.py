@@ -157,3 +157,39 @@ class TestResolveGatewayModel:
     def test_string_model_config(self):
         from gateway.run import _resolve_gateway_model
         assert _resolve_gateway_model({"model": "my-model"}) == "my-model"
+
+
+class TestGatewayRuntimeCustomProviderModel:
+    """A custom_providers entry with a ``model`` field propagates it to the
+    gateway agent (#9702): the runtime resolver emits the model and
+    _resolve_session_agent_runtime pops it before AIAgent construction."""
+
+    def _resolve(self, config_model):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        with patch("gateway.run._resolve_gateway_model", return_value=config_model), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value={}), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                 "provider": "custom",
+                 "api_key": "no-key-required",
+                 "base_url": "https://ollama.local/v1",
+                 "api_mode": "chat_completions",
+                 "model": "qwen3:32b",
+             }):
+            return runner._resolve_session_agent_runtime()
+
+    def test_runtime_model_used_when_config_model_empty(self):
+        model, kwargs = self._resolve("")
+        assert model == "qwen3:32b"
+        assert "model" not in kwargs
+        assert kwargs["provider"] == "custom"
+
+    def test_runtime_model_overrides_config_model(self):
+        """The runtime-supplied model is an explicit override — it wins over
+        the config model (matches the consumption logic on main)."""
+        model, kwargs = self._resolve("config/model")
+        assert model == "qwen3:32b"
+        assert "model" not in kwargs

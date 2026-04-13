@@ -1901,6 +1901,9 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
+        # Propagate model from custom_provider config so gateway agents pick
+        # it up without requiring a separate model.default in config.yaml.
+        "model": runtime.get("model"),
     }
 
 
@@ -1922,6 +1925,9 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
+        # Propagate model from custom_provider config so channel-override
+        # providers pick it up too (consumed and popped by the caller).
+        "model": runtime.get("model"),
     }
 
 

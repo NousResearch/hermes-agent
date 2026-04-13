@@ -3519,8 +3519,8 @@ class TestStreamingApiCall:
         call_kwargs = agent.client.chat.completions.create.call_args
         assert call_kwargs[1].get("stream") is True or call_kwargs.kwargs.get("stream") is True
 
-    def test_api_exception_falls_back_to_non_streaming(self, agent):
-        """When streaming fails before any deltas, fallback to non-streaming is attempted."""
+    def test_api_exception_propagates_no_non_streaming_fallback(self, agent):
+        """When streaming fails before any deltas, error propagates to the main retry loop."""
         agent.client.chat.completions.create.side_effect = ConnectionError("fail")
         # Prevent stream retry logic from replacing the mock client
         with patch.object(agent, "_replace_primary_openai_client", return_value=False):

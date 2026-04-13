@@ -972,6 +972,92 @@ def test_migrate_soul_rebrands_content(tmp_path):
     assert "You are Hermes" in result
 
 
+# ── Unicode / encoding regression tests (#8901) ────────────────
+
+
+def test_read_text_handles_non_utf8_bytes(tmp_path: Path):
+    """read_text() should replace invalid bytes instead of crashing."""
+    mod = load_module()
+    bad_file = tmp_path / "bad.md"
+    # Write raw GBK bytes that are invalid UTF-8
+    bad_file.write_bytes(b"hello \xb3\xc9\xb9\xa6 world")
+    result = mod.read_text(bad_file)
+    assert "hello" in result
+    assert "world" in result
+    # Invalid bytes should be replaced, not crash
+    assert "\ufffd" in result
+
+
+def test_load_yaml_file_handles_non_utf8(tmp_path: Path):
+    """load_yaml_file() should return {} for files with invalid encoding."""
+    mod = load_module()
+    bad_yaml = tmp_path / "bad.yaml"
+    bad_yaml.write_bytes(b"key: \xb3\xc9\xb9\xa6\n")
+    result = mod.load_yaml_file(bad_yaml)
+    assert isinstance(result, dict)
+
+
+def test_parse_env_file_handles_non_utf8(tmp_path: Path):
+    """parse_env_file() should not crash on non-UTF-8 .env files."""
+    mod = load_module()
+    bad_env = tmp_path / ".env"
+    bad_env.write_bytes(b"API_KEY=good_value\nBAD_KEY=\xb3\xc9\xb9\xa6\n")
+    result = mod.parse_env_file(bad_env)
+    assert "API_KEY" in result
+    assert result["API_KEY"] == "good_value"
+
+
+def test_load_openclaw_config_handles_non_utf8(tmp_path: Path):
+    """load_openclaw_config() should not crash on non-UTF-8 config files."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    # Write a config file with invalid UTF-8 bytes inside JSON
+    (source / "openclaw.json").write_bytes(b'{"name": "\xb3\xc9\xb9\xa6"}')
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=False,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=None,
+    )
+    result = migrator.load_openclaw_config()
+    assert isinstance(result, dict)
+
+
+def test_migrate_daily_memory_skips_unreadable_files(tmp_path: Path):
+    """migrate_daily_memory() should skip files it can't read, not crash."""
+    mod = load_module()
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "config.yaml").write_text("command_allowlist: []\n", encoding="utf-8")
+
+    mem_dir = source / "workspace" / "memory"
+    mem_dir.mkdir(parents=True)
+    # One good file and one with binary content
+    (mem_dir / "2024-01-01.md").write_text("# Memory\n\n- valid entry\n", encoding="utf-8")
+    (mem_dir / "2024-01-02.md").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary garbage")
+    (mem_dir / "2024-01-02.md").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00binary garbage")
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"memory"},
+    )
+    # Should not raise — binary file is handled gracefully
+    report = migrator.migrate()
+
+
 # ── migrate_model_config: alias resolution (issue #16745) ──────────────────
 
 def _run_model_migration(tmp_path: Path, openclaw_json: dict) -> dict:

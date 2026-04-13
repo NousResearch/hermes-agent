@@ -155,7 +155,7 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
 
     def _fake_apply(sid, session, raw):
         seen["args"] = (sid, session["session_key"], raw)
-        return "new/model"
+        return {"value": "new/model", "warning": "catalog unreachable"}
 
     monkeypatch.setattr(server, "_apply_model_switch", _fake_apply)
     resp = server.handle_request(
@@ -163,6 +163,7 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     )
 
     assert resp["result"]["value"] == "new/model"
+    assert resp["result"]["warning"] == "catalog unreachable"
     assert seen["args"] == ("sid", "session-key", "new/model")
 
 

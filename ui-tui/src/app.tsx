@@ -119,6 +119,7 @@ const stripTokens = (text: string, re: RegExp) =>
 
 const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?: number } | null | undefined) => {
   const dims = info?.width && info?.height ? `${info.width}x${info.height}` : ''
+
   const tok =
     typeof info?.token_estimate === 'number' && info.token_estimate > 0 ? `~${fmtK(info.token_estimate)} tok` : ''
 
@@ -1988,6 +1989,11 @@ export function App({ gw }: { gw: GatewayClient }) {
                 }
 
                 sys(`model → ${r.value}`)
+
+                if (r.warning) {
+                  sys(`warning: ${r.warning}`)
+                }
+
                 setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
               }
             )

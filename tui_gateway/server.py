@@ -327,11 +327,11 @@ def _restart_slash_worker(session: dict):
         session["slash_worker"] = None
 
 
-def _apply_model_switch(sid: str, session: dict, raw_input: str) -> str:
+def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     agent = session.get("agent")
     if not agent:
         os.environ["HERMES_MODEL"] = raw_input
-        return raw_input
+        return {"value": raw_input, "warning": ""}
 
     from hermes_cli.model_switch import switch_model
 
@@ -355,7 +355,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> str:
     os.environ["HERMES_MODEL"] = result.new_model
     _restart_slash_worker(session)
     _emit("session.info", sid, _session_info(agent))
-    return result.new_model
+    return {"value": result.new_model, "warning": result.warning_message or ""}
 
 
 def _compress_session_history(session: dict) -> tuple[int, dict]:
@@ -1273,10 +1273,11 @@ def _(rid, params: dict) -> dict:
             if not value:
                 return _err(rid, 4002, "model value required")
             if session:
-                value = _apply_model_switch(params.get("session_id", ""), session, value)
+                result = _apply_model_switch(params.get("session_id", ""), session, value)
             else:
                 os.environ["HERMES_MODEL"] = value
-            return _ok(rid, {"key": key, "value": value})
+                result = {"value": value, "warning": ""}
+            return _ok(rid, {"key": key, "value": result["value"], "warning": result["warning"]})
         except Exception as e:
             return _err(rid, 5001, str(e))
 

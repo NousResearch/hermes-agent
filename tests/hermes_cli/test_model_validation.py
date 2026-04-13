@@ -317,6 +317,27 @@ class TestCopilotNormalization:
         catalog = [{"id": "gpt-4.1"}, {"id": "gpt-5.4"}]
         assert normalize_copilot_model_id("openai/gpt-4.1-mini", catalog=catalog) == "gpt-4.1"
 
+    def test_normalize_preserves_1m_model(self):
+        """claude-opus-4.6-1m is a real Copilot catalog model — must NOT be stripped."""
+        assert normalize_copilot_model_id("claude-opus-4.6-1m") == "claude-opus-4.6-1m"
+
+    def test_normalize_preserves_1m_with_vendor_prefix(self):
+        assert normalize_copilot_model_id("anthropic/claude-opus-4.6-1m") == "claude-opus-4.6-1m"
+
+    def test_normalize_1m_with_catalog(self):
+        """With a live catalog containing the 1M model, normalization preserves it."""
+        catalog = [{"id": "claude-opus-4.6-1m"}, {"id": "claude-opus-4.6"}]
+        assert normalize_copilot_model_id("claude-opus-4.6-1m", catalog=catalog) == "claude-opus-4.6-1m"
+
+    def test_normalize_base_model_unchanged(self):
+        """Base claude-opus-4.6 (200K) should still resolve correctly."""
+        catalog = [{"id": "claude-opus-4.6-1m"}, {"id": "claude-opus-4.6"}]
+        assert normalize_copilot_model_id("claude-opus-4.6", catalog=catalog) == "claude-opus-4.6"
+
+    def test_normalize_sonnet_1m_falls_back_to_base(self):
+        """claude-sonnet-4.6-1m is NOT in Copilot catalog — should fall back."""
+        assert normalize_copilot_model_id("claude-sonnet-4.6-1m") == "claude-sonnet-4.6"
+
     def test_copilot_api_mode_gpt5_uses_responses(self):
         """GPT-5+ models should use Responses API (matching opencode)."""
         assert copilot_model_api_mode("gpt-5.4") == "codex_responses"
@@ -336,6 +357,7 @@ class TestCopilotNormalization:
         assert copilot_model_api_mode("gpt-4o-mini") == "chat_completions"
         assert copilot_model_api_mode("claude-sonnet-4.6") == "chat_completions"
         assert copilot_model_api_mode("claude-opus-4.6") == "chat_completions"
+        assert copilot_model_api_mode("claude-opus-4.6-1m") == "chat_completions"
         assert copilot_model_api_mode("gemini-2.5-pro") == "chat_completions"
 
     def test_copilot_api_mode_with_catalog_both_endpoints(self):

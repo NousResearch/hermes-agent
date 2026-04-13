@@ -297,6 +297,31 @@ class TestClassifyApiError:
         assert result.should_fallback is True
         assert result.retryable is False
 
+    def test_copilot_model_not_supported_is_retryable(self):
+        """Copilot returns model_not_supported intermittently for extended-context
+        models like claude-opus-4.6-1m — should retry, not abort."""
+        e = MockAPIError(
+            "The requested model is not supported.",
+            status_code=400,
+            body={"error": {"message": "The requested model is not supported.",
+                            "code": "model_not_supported"}},
+        )
+        result = classify_api_error(e, provider="copilot", model="claude-opus-4.6-1m")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is True
+
+    def test_non_copilot_model_not_supported_is_not_retryable(self):
+        """For non-Copilot providers, model_not_supported should not retry."""
+        e = MockAPIError(
+            "The requested model is not supported.",
+            status_code=400,
+            body={"error": {"message": "The requested model is not supported.",
+                            "code": "model_not_supported"}},
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.model_not_found
+        assert result.retryable is False
+
     def test_404_generic(self):
         e = MockAPIError("Not Found", status_code=404)
         result = classify_api_error(e)

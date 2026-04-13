@@ -146,6 +146,31 @@ class TestCopilotModelNormalization:
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
 
+# ── Copilot 1M context model preservation ─────────────────────────────
+
+class TestCopilot1MModelPreservation:
+    """claude-opus-4.6-1m is a real Copilot API model ID — must NOT be stripped."""
+
+    def test_copilot_preserves_1m_suffix(self):
+        result = normalize_model_for_provider("claude-opus-4.6-1m", "copilot")
+        assert result == "claude-opus-4.6-1m"
+
+    def test_copilot_strips_vendor_prefix_preserves_1m(self):
+        """anthropic/ prefix is stripped by normalize_model_for_provider
+        (issue #6879 fix strips vendor prefixes for Copilot), but -1m is preserved."""
+        result = normalize_model_for_provider("anthropic/claude-opus-4.6-1m", "copilot")
+        assert result == "claude-opus-4.6-1m"
+
+    def test_copilot_strips_copilot_prefix_preserves_1m(self):
+        result = normalize_model_for_provider("copilot/claude-opus-4.6-1m", "copilot")
+        assert result == "claude-opus-4.6-1m"
+
+    def test_copilot_base_model_unchanged(self):
+        """Base claude-opus-4.6 (200K) should still work."""
+        result = normalize_model_for_provider("claude-opus-4.6", "copilot")
+        assert result == "claude-opus-4.6"
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:

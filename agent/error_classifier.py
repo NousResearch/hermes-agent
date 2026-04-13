@@ -192,6 +192,7 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "no such model",
     "unknown model",
     "unsupported model",
+    "is not supported",
 ]
 
 # Auth patterns (non-status-code signals)
@@ -576,6 +577,18 @@ def _classify_400(
         )
 
     # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
+    # Copilot's "model_not_supported" for extended-context models (e.g.
+    # claude-opus-4.6-1m) is intermittent — the model exists in the catalog
+    # but only some backend nodes serve it.  Retry instead of aborting.
+    _is_copilot_intermittent = (
+        provider == "copilot"
+        and ("model_not_supported" in error_code or "not supported" in error_msg)
+    )
+    if _is_copilot_intermittent:
+        return result_fn(
+            FailoverReason.model_not_found,
+            retryable=True,
+        )
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -651,7 +664,7 @@ def _classify_by_error_code(
             should_fallback=True,
         )
 
-    if code_lower in ("model_not_found", "model_not_available", "invalid_model"):
+    if code_lower in ("model_not_found", "model_not_available", "model_not_supported", "invalid_model"):
         return result_fn(
             FailoverReason.model_not_found,
             retryable=False,

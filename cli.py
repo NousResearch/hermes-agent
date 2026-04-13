@@ -7842,6 +7842,17 @@ class HermesCLI:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
 
+            # Notify when iteration budget was hit
+            if result and not result.get("completed") and not result.get("interrupted"):
+                _api_calls = result.get("api_calls", 0)
+                if _api_calls >= getattr(self.agent, "max_iterations", 90):
+                    _max_iter = getattr(self.agent, "max_iterations", 90)
+                    _cprint(
+                        f"\n{_DIM}⚠ Iteration budget reached "
+                        f"({_api_calls}/{_max_iter}) — "
+                        f"response may be incomplete{_RST}"
+                    )
+
             # Speak response aloud if voice TTS is enabled
             # Skip batch TTS when streaming TTS already handled it
             if self._voice_tts and response and not use_streaming_tts:

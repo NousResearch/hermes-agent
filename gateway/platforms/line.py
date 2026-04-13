@@ -16,10 +16,13 @@ import hashlib
 import hmac
 import json
 import logging
+import mimetypes
 import os
+import secrets
 import time
 import uuid
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 from aiohttp import web
@@ -140,6 +143,9 @@ class LineAdapter(BasePlatformAdapter):
         self._last_loading_at: Dict[str, float] = {}
         self._loading_interval_seconds: float = 18.0
         self._loading_seconds: int = 20
+        # token -> (absolute_path, expires_at) for temporary media serving
+        self._media_tokens: Dict[str, Tuple[str, float]] = {}
+        self._media_ttl: int = 300  # seconds
 
     # ------------------------------------------------------------------
     # HTTP client helpers
@@ -207,6 +213,7 @@ class LineAdapter(BasePlatformAdapter):
         try:
             self._webhook_app = web.Application()
             self._webhook_app.router.add_post(self.webhook_path, self._handle_webhook)
+            self._webhook_app.router.add_get("/line/media/{token}/{filename}", self._handle_media)
 
             self._webhook_runner = web.AppRunner(self._webhook_app)
             await self._webhook_runner.setup()
@@ -381,7 +388,14 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[LINE] Failed to download %s %s: %s", media_type, message_id, e)
 
-        msg_type = MessageType.IMAGE if media_type == "image" else MessageType.TEXT
+        if media_type == "image":
+            msg_type = MessageType.PHOTO
+        elif media_type == "audio":
+            msg_type = MessageType.VOICE
+        elif media_type in ("video", "file"):
+            msg_type = MessageType.DOCUMENT
+        else:
+            msg_type = MessageType.TEXT
         source_obj = self.build_source(
             chat_id=chat_id,
             chat_name=chat_id,
@@ -514,6 +528,55 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[LINE] Failed to send typing indicator: %s", e)
 
+    # ------------------------------------------------------------------
+    # Temporary media serving (required for LINE image messages)
+    # ------------------------------------------------------------------
+
+    def _register_media(self, file_path: str) -> str:
+        """Register a local file for temporary HTTPS serving; return an opaque token."""
+        now = time.time()
+        # Evict expired tokens to prevent unbounded growth
+        expired = [t for t, (_, exp) in self._media_tokens.items() if now > exp]
+        for t in expired:
+            del self._media_tokens[t]
+
+        token = secrets.token_urlsafe(32)
+        self._media_tokens[token] = (str(Path(file_path).resolve()), now + self._media_ttl)
+        return token
+
+    def _media_url(self, token: str, filename: str) -> str:
+        """Build the public HTTPS URL for a registered media token."""
+        host = self.webhook_host
+        port = self.webhook_port
+        base = f"https://{host}" if port == 443 else f"https://{host}:{port}"
+        return f"{base}/line/media/{token}/{filename}"
+
+    async def _handle_media(self, request: web.Request) -> web.Response:
+        """Serve a registered local file over HTTPS for LINE's image API."""
+        token = request.match_info["token"]
+        entry = self._media_tokens.get(token)
+        if not entry:
+            raise web.HTTPNotFound()
+
+        file_path, expires_at = entry
+        if time.time() > expires_at:
+            del self._media_tokens[token]
+            raise web.HTTPGone()
+
+        path = Path(file_path)
+        if not path.exists() or not path.is_file():
+            raise web.HTTPNotFound()
+
+        content_type, _ = mimetypes.guess_type(str(path))
+        return web.FileResponse(
+            path,
+            headers={"Content-Type": content_type or "application/octet-stream"},
+        )
+
+    # ------------------------------------------------------------------
+    # Image sending
+    # ------------------------------------------------------------------
+
     async def send_image(
         self,
         chat_id: str,
@@ -521,7 +584,19 @@ class LineAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an image via LINE Push API."""
+        """Send an image via LINE Push API.
+
+        ``image_url`` must be a publicly accessible HTTPS URL — LINE's API
+        requires ``originalContentUrl`` and ``previewImageUrl`` to be HTTPS.
+        For local files use :meth:`send_image_file` instead.
+        """
+        if not image_url.startswith("https://"):
+            logger.error(
+                "[LINE] send_image requires an HTTPS URL; got %.80s — use send_image_file for local paths",
+                image_url,
+            )
+            return SendResult(success=False, error="LINE image URLs must use HTTPS")
+
         messages = []
         if caption:
             messages.append({"type": "text", "text": caption[:MAX_MESSAGE_LENGTH]})
@@ -541,7 +616,39 @@ class LineAdapter(BasePlatformAdapter):
                 return SendResult(success=True)
             return SendResult(success=False, error=f"HTTP {resp.status_code}")
         except Exception as e:
+            logger.error("[LINE] send_image error: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,  # noqa: ARG002 — LINE Push API has no reply_to for images
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file to LINE as a native image message.
+
+        LINE's API does not accept binary uploads for image messages — it
+        requires publicly accessible HTTPS URLs.  This method registers the
+        local file on the webhook server under a short-lived token and passes
+        the resulting URL to :meth:`send_image`.
+        """
+        path = Path(image_path)
+        if not path.exists() or not path.is_file():
+            logger.error("[LINE] send_image_file: file not found: %s", image_path)
+            return SendResult(success=False, error=f"File not found: {image_path}")
+
+        token = self._register_media(str(path))
+        image_url = self._media_url(token, path.name)
+        logger.debug("[LINE] serving local image via %s (token expires in %ds)", image_url, self._media_ttl)
+        return await self.send_image(
+            chat_id=chat_id,
+            image_url=image_url,
+            caption=caption,
+            metadata=metadata,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic chat info for the given chat_id."""

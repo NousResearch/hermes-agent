@@ -3,6 +3,9 @@ import base64
 import hashlib
 import hmac
 import json
+import os
+import tempfile
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -289,3 +292,213 @@ class TestLineDocumentCaching:
         assert params == ["data", "filename"], (
             f"cache_document_from_bytes signature changed: {params}"
         )
+
+
+class TestLineInboundImageType:
+    def test_image_event_yields_photo_message_type(self):
+        """Inbound LINE image webhook must map to MessageType.PHOTO so the
+        vision pipeline in gateway/run.py picks it up correctly."""
+        from gateway.platforms.base import MessageType
+
+        # The adapter maps LINE's "image" media type to MessageType.PHOTO.
+        # Verify the enum value exists and is distinct from TEXT/DOCUMENT.
+        assert MessageType.PHOTO != MessageType.TEXT
+        assert MessageType.PHOTO != MessageType.DOCUMENT
+
+    def test_line_adapter_source_code_maps_image_to_photo(self):
+        """The LineAdapter source must assign MessageType.PHOTO (not .IMAGE) for the
+        'image' media type so inbound images reach the vision pipeline."""
+        import inspect
+        from gateway.platforms import line as line_module
+
+        source = inspect.getsource(line_module.LineAdapter)
+        # The adapter must reference MessageType.PHOTO, not MessageType.IMAGE
+        assert "MessageType.PHOTO" in source, (
+            "LineAdapter must map LINE 'image' events to MessageType.PHOTO"
+        )
+        assert "MessageType.IMAGE" not in source, (
+            "LineAdapter must not use MessageType.IMAGE — use MessageType.PHOTO"
+        )
+
+
+class TestLineSendImage:
+    def test_send_image_rejects_non_https_url(self):
+        """send_image() must refuse http:// and local paths — LINE requires HTTPS."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        for bad_url in ("http://example.com/img.jpg", "/tmp/foo.jpg", "file:///tmp/foo.jpg"):
+            result = asyncio.get_event_loop().run_until_complete(
+                adapter.send_image("U123", bad_url)
+            )
+            assert not result.success, f"Expected failure for {bad_url!r}"
+            assert "HTTPS" in result.error or "https" in result.error.lower()
+
+    def test_send_image_accepts_https_url(self):
+        """send_image() must call LINE Push API for a valid HTTPS URL."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.object(adapter, "_ensure_client", return_value=mock_client):
+            result = asyncio.get_event_loop().run_until_complete(
+                adapter.send_image("U123", "https://example.com/image.jpg")
+            )
+
+        assert result.success
+        call_args = mock_client.post.call_args
+        payload = call_args.kwargs.get("json") or call_args.args[1] if len(call_args.args) > 1 else call_args.kwargs["json"]
+        image_msg = next(m for m in payload["messages"] if m["type"] == "image")
+        assert image_msg["originalContentUrl"].startswith("https://")
+        assert image_msg["previewImageUrl"].startswith("https://")
+
+
+class TestLineSendImageFile:
+    def test_send_image_file_missing_path_returns_failure(self):
+        """send_image_file() must return failure when the file does not exist."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send_image_file("U123", "/nonexistent/path/image.jpg")
+        )
+        assert not result.success
+        assert "not found" in result.error.lower() or "File" in result.error
+
+    def test_send_image_file_registers_token_and_calls_send_image(self):
+        """send_image_file() must register a media token and delegate to send_image()
+        with an HTTPS URL built from webhook_host/port."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config(webhook_host="mybot.example.com", webhook_port=443))
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            f.write(b"\xff\xd8\xff\xe0" + b"\x00" * 100)  # minimal JPEG header
+            tmp_path = f.name
+
+        try:
+            captured = {}
+
+            async def fake_send_image(**kwargs):
+                captured["url"] = kwargs["image_url"]
+                return MagicMock(success=True)
+
+            with patch.object(adapter, "send_image", side_effect=fake_send_image):
+                asyncio.get_event_loop().run_until_complete(
+                    adapter.send_image_file("U123", tmp_path)
+                )
+
+            assert "url" in captured, "send_image was not called"
+            url = captured["url"]
+            assert url.startswith("https://mybot.example.com/line/media/"), (
+                f"Unexpected URL: {url}"
+            )
+            assert url.endswith(os.path.basename(tmp_path))
+            # Token must be registered in the adapter
+            assert len(adapter._media_tokens) == 1
+        finally:
+            os.unlink(tmp_path)
+
+    def test_send_image_file_no_text_fallback(self):
+        """send_image_file() must NOT fall back to the '🖼️ Image:' text message."""
+        import asyncio
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        sent_texts = []
+
+        async def fake_send(_chat_id, content, **_kwargs):
+            sent_texts.append(content)
+            return MagicMock(success=True)
+
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
+            f.write(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+            tmp_path = f.name
+
+        try:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=mock_resp)
+
+            with patch.object(adapter, "_ensure_client", return_value=mock_client), \
+                 patch.object(adapter, "send", side_effect=fake_send):
+                asyncio.get_event_loop().run_until_complete(
+                    adapter.send_image_file("U123", tmp_path)
+                )
+
+            # No text message containing the file path should have been sent
+            for text in sent_texts:
+                assert "🖼️" not in text and tmp_path not in text, (
+                    f"Leaked file path as text: {text!r}"
+                )
+        finally:
+            os.unlink(tmp_path)
+
+
+class TestLineMediaEndpoint:
+    def test_register_media_returns_token(self):
+        """_register_media must return a non-empty token and store the path."""
+        import time
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            token = adapter._register_media(tmp_path)
+            assert token and len(token) > 10
+            assert token in adapter._media_tokens
+            stored_path, expires_at = adapter._media_tokens[token]
+            assert stored_path.endswith(os.path.basename(tmp_path))
+            assert expires_at > time.time()
+        finally:
+            os.unlink(tmp_path)
+
+    def test_register_media_evicts_expired_tokens(self):
+        """_register_media must remove expired tokens on each call."""
+        import time
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config())
+        # Inject an already-expired token
+        adapter._media_tokens["stale"] = ("/some/path.jpg", time.time() - 1)
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            tmp_path = f.name
+
+        try:
+            adapter._register_media(tmp_path)
+            assert "stale" not in adapter._media_tokens
+        finally:
+            os.unlink(tmp_path)
+
+    def test_media_url_uses_webhook_host_and_port(self):
+        """_media_url must build an HTTPS URL from webhook_host and webhook_port."""
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config(webhook_host="mybot.example.com", webhook_port=443))
+        url = adapter._media_url("tok123", "photo.jpg")
+        assert url == "https://mybot.example.com/line/media/tok123/photo.jpg"
+
+    def test_media_url_includes_port_when_not_443(self):
+        """Non-443 ports must be included explicitly in the URL."""
+        from gateway.platforms.line import LineAdapter
+
+        adapter = LineAdapter(_make_config(webhook_host="mybot.example.com", webhook_port=8443))
+        url = adapter._media_url("tok123", "photo.jpg")
+        assert url == "https://mybot.example.com:8443/line/media/tok123/photo.jpg"

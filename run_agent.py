@@ -3384,11 +3384,11 @@ class AIAgent:
     def _recover_embedded_tool_calls(self, content: str) -> tuple[str, list | None]:
         """Recover tool calls leaked into assistant text by buggy providers."""
         text = content or ""
-        if "<tool_call" not in text and "<minimax:tool_call" not in text:
+        if "tool_call" not in text:
             return text, None
 
         block_re = re.compile(
-            r"<(?:\w+:)?tool_call>\s*(.*?)\s*</(?:\w+:)?tool_call>",
+            r"<(?:\w+:)?tool_call(?:s)?>\s*(.*?)\s*</(?:\w+:)?tool_call(?:s)?>",
             re.DOTALL | re.IGNORECASE,
         )
 
@@ -3396,82 +3396,131 @@ class AIAgent:
         cleaned_parts = []
         last_end = 0
 
-        for match_index, match in enumerate(block_re.finditer(text)):
-            cleaned_parts.append(text[last_end:match.start()])
-            block = (match.group(1) or "").strip()
-            last_end = match.end()
+        def _normalize_value(value: str) -> str:
+            return re.sub(r"\s+", " ", value).strip()
 
-            block = re.sub(r"^(?:<(?:\w+:)?tool_call>\s*)+", "", block, flags=re.IGNORECASE)
-
-            parsed_name = None
-            parsed_args = None
-
-            if block.startswith("{"):
-                try:
-                    data = json.loads(block)
-                    if isinstance(data, dict):
-                        parsed_name = data.get("name")
-                        parsed_args = data.get("arguments")
-                except Exception:
-                    malformed_name = re.search(r'"name"\s*:\s*"([^"]+)"', block, flags=re.IGNORECASE)
-                    if malformed_name:
-                        parsed_name = malformed_name.group(1).strip() or None
-
-            invoke_match = re.search(
-                r"<invoke(?:\s+name=[\"']([^\"']+)[\"'])?\s*>",
-                block,
-                flags=re.IGNORECASE,
+        def _append_recovered(tool_name: str, tool_args, match_index: int) -> None:
+            arguments_json = tool_args if isinstance(tool_args, str) else json.dumps(tool_args, ensure_ascii=False)
+            repaired_name = self._repair_tool_call(tool_name.strip()) or tool_name.strip()
+            recovered.append(
+                SimpleNamespace(
+                    id=self._deterministic_call_id(repaired_name, arguments_json, match_index + len(recovered)),
+                    type="function",
+                    function=SimpleNamespace(name=repaired_name, arguments=arguments_json),
+                )
             )
-            if parsed_name is None and invoke_match:
-                parsed_name = invoke_match.group(1) or None
 
-            params = {}
-            for param_match in re.finditer(
-                r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
-                block,
-                flags=re.DOTALL | re.IGNORECASE,
-            ):
-                key = (param_match.group(1) or "").strip()
-                value = re.sub(r"\s+", " ", (param_match.group(2) or "")).strip()
-                if key:
-                    params[key] = value
-
-            inline_param_match = re.search(
+        def _extract_params(block: str) -> dict[str, str]:
+            params = {
+                key.strip(): _normalize_value(value)
+                for key, value in re.findall(
+                    r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
+                    block,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                if key.strip()
+            }
+            inline = re.search(
                 r'"parameter\s+name="\s*([^"]+)\s*">\s*([^<]+)',
                 block,
                 flags=re.DOTALL | re.IGNORECASE,
             )
-            if inline_param_match:
-                key = (inline_param_match.group(1) or "").strip()
-                value = re.sub(r"\s+", " ", (inline_param_match.group(2) or "")).strip()
+            if inline:
+                key = (inline.group(1) or "").strip()
+                value = _normalize_value(inline.group(2) or "")
                 if key and key not in params:
                     params[key] = value
+            return params
 
+        def _parse_json_payload(block: str):
+            if not block.startswith(("{", "[")):
+                return None
+            try:
+                data = json.loads(block)
+            except Exception:
+                if not block.startswith("{"):
+                    return None
+                malformed_name = re.search(r'"name"\s*:\s*"([^"]+)"', block, flags=re.IGNORECASE)
+                malformed_command = re.search(
+                    r'"command"\s*:\s*"(.+?)(?:</parameter>|<(?:/)?(?:invoke|tool|(?:\w+:)?tool_call)\b)',
+                    block,
+                    flags=re.DOTALL | re.IGNORECASE,
+                )
+                parsed_name = malformed_name.group(1).strip() if malformed_name else None
+                parsed_args = None
+                if malformed_command:
+                    command_value = _normalize_value(malformed_command.group(1))
+                    if command_value:
+                        parsed_args = {"command": command_value}
+                return [(parsed_name, parsed_args)] if parsed_name else None
+
+            if isinstance(data, dict):
+                return [(data.get("name"), data.get("arguments"))]
+            if isinstance(data, list):
+                return [
+                    (item.get("name"), item.get("arguments"))
+                    for item in data
+                    if isinstance(item, dict)
+                ] or None
+            return None
+
+        def _parse_single_block(block: str):
+            parsed_name = None
+            parsed_args = None
+            json_payload = _parse_json_payload(block)
+            if json_payload:
+                parsed_name, parsed_args = json_payload[0]
+
+            if parsed_name is None:
+                invoke_match = re.search(
+                    r"<invoke(?:\s+name=[\"']([^\"']+)[\"'])?\s*>",
+                    block,
+                    flags=re.IGNORECASE,
+                )
+                if invoke_match:
+                    parsed_name = invoke_match.group(1) or None
+
+            params = _extract_params(block)
             if parsed_name is None and params.keys() == {"command"}:
                 parsed_name = "terminal"
             if params:
                 parsed_args = params
 
             if not isinstance(parsed_name, str) or not parsed_name.strip() or parsed_args is None:
+                return None
+            return parsed_name.strip(), parsed_args
+
+        for match_index, match in enumerate(block_re.finditer(text)):
+            cleaned_parts.append(text[last_end:match.start()])
+            block = (match.group(1) or "").strip()
+            last_end = match.end()
+
+            block = re.sub(r"^(?:<(?:\w+:)?tool_call(?:s)?>\s*)+", "", block, flags=re.IGNORECASE)
+
+            json_payload = _parse_json_payload(block)
+            if json_payload and len(json_payload) > 1:
+                recovered_any = False
+                for parsed_name, parsed_args in json_payload:
+                    if isinstance(parsed_name, str) and parsed_name.strip() and parsed_args is not None:
+                        _append_recovered(parsed_name, parsed_args, match_index)
+                        recovered_any = True
+                if recovered_any:
+                    continue
+
+            parsed = _parse_single_block(block)
+            if parsed is None:
                 cleaned_parts.append(match.group(0))
                 continue
 
-            arguments_json = parsed_args if isinstance(parsed_args, str) else json.dumps(parsed_args, ensure_ascii=False)
-            repaired_name = self._repair_tool_call(parsed_name.strip()) or parsed_name.strip()
-            recovered.append(
-                SimpleNamespace(
-                    id=self._deterministic_call_id(repaired_name, arguments_json, match_index),
-                    type="function",
-                    function=SimpleNamespace(name=repaired_name, arguments=arguments_json),
-                )
-            )
+            parsed_name, parsed_args = parsed
+            _append_recovered(parsed_name, parsed_args, match_index)
 
         if not recovered:
             return text, None
 
         cleaned_parts.append(text[last_end:])
         cleaned = "".join(cleaned_parts)
-        cleaned = re.sub(r"</(?:\w+:)?tool_call>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</(?:\w+:)?tool_call(?:s)?>\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"</tool>\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
         return cleaned, recovered

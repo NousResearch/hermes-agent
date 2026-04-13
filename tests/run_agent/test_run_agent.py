@@ -247,6 +247,44 @@ class TestEmbeddedToolCallRecovery:
             "command": 'mkdir -p "/Users/nopenotagain/Hermetius/0x1-proof-kernel-fast lane/0x1/models/lambda-RLM"'
         }
 
+    def test_recovers_json_arguments_command_cut_off_by_parameter_close(self, agent):
+        leaked = (
+            "<tool_call>\n"
+            '{"name": "terminal", "arguments": {"command": "curl -L '
+            '\\"https://github.com/RamXX/zettelvault/archive/refs/heads/main.tar.gz\\" | '
+            'tar xz --strip-components=1 -C '
+            '\\"/Users/nopenotagain/Hermetius/0x1-proof-kernel-fastlane/0x1/right/absorb\\" '
+            '&& ls -la '
+            '\\"/Users/nopenotagain/Hermetius/0x1-proof-kernel-fastlane/0x1/right/absorb/zettelvault/\\" '
+            '2>/dev/null | head -20</parameter>\n'
+            "</invoke>\n"
+            "</minimax:tool_call>"
+        )
+
+        content, tool_calls = agent._recover_embedded_tool_calls(leaked)
+
+        assert content == ""
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+        assert "zettelvault/archive/refs/heads/main.tar.gz" in json.loads(tool_calls[0].function.arguments)["command"]
+
+    def test_recovers_plural_tool_calls_wrapper_with_json_list(self, agent):
+        leaked = (
+            "Best Practices\n"
+            "<tool_calls>\n"
+            '[{"name": "session_search", "arguments": {"limit": 5}}]\n'
+            "</tool_calls>"
+        )
+
+        content, tool_calls = agent._recover_embedded_tool_calls(leaked)
+
+        assert "Best Practices" in content
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "session_search"
+        assert json.loads(tool_calls[0].function.arguments) == {"limit": 5}
+
 
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)

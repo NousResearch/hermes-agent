@@ -309,15 +309,8 @@ compression:
   # compression of older turns.
   protect_last_n: 20
 
-  # Model to use for generating summaries (fast/cheap recommended)
-  # This model compresses the middle turns into a concise summary.
-  # IMPORTANT: it receives the full middle section of the conversation, so it
-  # MUST support a context length at least as large as your main model's.
-  summary_model: "google/gemini-3-flash-preview"
-  
-  # Provider for the summary model (default: "auto")
-  # Options: "auto", "openrouter", "nous", "main"
-  # summary_provider: "auto"
+  # To pin a specific model/provider for compression summaries, use the
+  # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

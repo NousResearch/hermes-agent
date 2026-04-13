@@ -27,10 +27,6 @@ Per-task overrides are configured in config.yaml under the ``auxiliary:`` sectio
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
 Default "auto" follows the chains above.
 
-Legacy env var overrides (AUXILIARY_{TASK}_PROVIDER, AUXILIARY_{TASK}_MODEL,
-AUXILIARY_{TASK}_BASE_URL, etc.) are still read as a backward-compat fallback
-but config.yaml takes priority.  New configuration should always use config.yaml.
-
 Payment / credit exhaustion fallback:
   When a resolved provider returns HTTP 402 or a credit-related error,
   call_llm() automatically retries with the next available provider in the
@@ -753,30 +749,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 # ── Provider resolution helpers ─────────────────────────────────────────────
 
-def _get_auxiliary_provider(task: str = "") -> str:
-    """Read the provider override for a specific auxiliary task.
-
-    Checks AUXILIARY_{TASK}_PROVIDER first (e.g. AUXILIARY_VISION_PROVIDER),
-    then CONTEXT_{TASK}_PROVIDER (for the compression section's summary_provider),
-    then falls back to "auto".  Returns one of: "auto", "openrouter", "nous", "main".
-    """
-    if task:
-        for prefix in ("AUXILIARY_", "CONTEXT_"):
-            val = os.getenv(f"{prefix}{task.upper()}_PROVIDER", "").strip().lower()
-            if val and val != "auto":
-                return val
-    return "auto"
-
-
-def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
-    """Read an auxiliary env override from AUXILIARY_* or CONTEXT_* prefixes."""
-    if not task:
-        return None
-    for prefix in ("AUXILIARY_", "CONTEXT_"):
-        val = os.getenv(f"{prefix}{task.upper()}_{suffix}", "").strip()
-        if val:
-            return val
-    return None
 
 
 def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1591,8 +1563,8 @@ def get_text_auxiliary_client(
         task: Optional task name ("compression", "web_extract") to check
               for a task-specific provider override.
 
-    Callers may override the returned model with a per-task env var
-    (e.g. CONTEXT_COMPRESSION_MODEL, AUXILIARY_WEB_EXTRACT_MODEL).
+    Callers may override the returned model via config.yaml
+    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -2011,9 +1983,8 @@ def _resolve_task_provider_model(
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Config file (auxiliary.{task}.* or compression.*)
-      3. Env var overrides (backward-compat: AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      4. "auto" (full auto-detection chain)
+      2. Config file (auxiliary.{task}.provider/model/base_url)
+      3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
     be None (use provider default). When base_url is set, provider is forced
@@ -2044,22 +2015,8 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
-        # Backwards compat: compression section has its own keys.
-        # The auxiliary.compression defaults to provider="auto", so treat
-        # both None and "auto" as "not explicitly configured".
-        if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
-            comp = config.get("compression", {}) if isinstance(config, dict) else {}
-            if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
-                _sbu = comp.get("summary_base_url") or ""
-                cfg_base_url = cfg_base_url or _sbu.strip() or None
-
-    # Env vars are backward-compat fallback only — config.yaml is primary.
-    env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
-    env_api_mode = _get_auxiliary_env_override(task, "API_MODE") if task else None
-    resolved_model = model or cfg_model or env_model
-    resolved_api_mode = cfg_api_mode or env_api_mode
+    resolved_model = model or cfg_model
+    resolved_api_mode = cfg_api_mode
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
@@ -2072,17 +2029,6 @@ def _resolve_task_provider_model(
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
-
-        # Env vars are backward-compat fallback for users who haven't
-        # migrated to config.yaml yet.
-        env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
-        env_api_key = _get_auxiliary_env_override(task, "API_KEY")
-        if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key, resolved_api_mode
-
-        env_provider = _get_auxiliary_provider(task)
-        if env_provider != "auto":
-            return env_provider, resolved_model, None, None, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 

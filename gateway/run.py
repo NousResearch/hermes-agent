@@ -5943,7 +5943,7 @@ class GatewayRunner:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
-        """Handle /resume command — switch to a previously-named session."""
+        """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
             return "Session database not available."
 
@@ -5951,14 +5951,15 @@ class GatewayRunner:
         session_key = self._session_key_for_source(source)
         name = event.get_command_args().strip()
 
+        def _list_titled_sessions() -> list[dict]:
+            user_source = source.platform.value if source.platform else None
+            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            return [s for s in sessions if s.get("title")][:10]
+
         if not name:
             # List recent titled sessions for this user/platform
             try:
-                user_source = source.platform.value if source.platform else None
-                sessions = self._session_db.list_sessions_rich(
-                    source=user_source, limit=10
-                )
-                titled = [s for s in sessions if s.get("title")]
+                titled = _list_titled_sessions()
                 if not titled:
                     return (
                         "No named sessions found.\n"
@@ -5966,19 +5967,36 @@ class GatewayRunner:
                         "then `/resume My Session` to return to it later."
                     )
                 lines = ["📋 **Named Sessions**\n"]
-                for s in titled[:10]:
+                for idx, s in enumerate(titled, start=1):
                     title = s["title"]
                     preview = s.get("preview", "")[:40]
                     preview_part = f" — _{preview}_" if preview else ""
-                    lines.append(f"• **{title}**{preview_part}")
-                lines.append("\nUsage: `/resume <session name>`")
+                    lines.append(f"{idx}. **{title}**{preview_part}")
+                lines.append("\nUsage: `/resume 1` or `/resume <session name>`")
                 return "\n".join(lines)
             except Exception as e:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
-        target_id = self._session_db.resolve_session_by_title(name)
+        # Resolve a numbered choice or a title to a session ID
+        if name.isdigit():
+            try:
+                titled = _list_titled_sessions()
+            except Exception as e:
+                logger.debug("Failed to list titled sessions for numeric resume: %s", e)
+                return f"Could not list sessions: {e}"
+            index = int(name)
+            if index < 1 or index > len(titled):
+                return (
+                    f"Resume index {index} is out of range.\n"
+                    "Use `/resume` with no arguments to see available sessions."
+                )
+            target = titled[index - 1]
+            target_id = target.get("id")
+            name = target.get("title") or name
+        else:
+            target_id = self._session_db.resolve_session_by_title(name)
+
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"

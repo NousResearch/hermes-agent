@@ -1371,6 +1371,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AZURE_FOUNDRY_API_KEY": {
+        "description": "Azure Foundry API key for custom Azure endpoints",
+        "prompt": "Azure Foundry API Key",
+        "url": "https://ai.azure.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "AZURE_FOUNDRY_BASE_URL": {
+        "description": "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
+        "prompt": "Azure Foundry base URL",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

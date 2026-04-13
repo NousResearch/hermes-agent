@@ -13,7 +13,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from hermes_constants import get_hermes_home, display_hermes_home
+from hermes_constants import get_hermes_home
 
 
 # ---------------------------------------------------------------------------

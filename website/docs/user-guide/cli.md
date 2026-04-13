@@ -234,6 +234,14 @@ display:
 
 Queue mode is useful when you want to prepare follow-up messages without accidentally canceling in-flight work. Unknown values fall back to `"interrupt"`.
 
+You can also change it inside the CLI:
+
+```text
+/busy queue
+/busy interrupt
+/busy status
+```
+
 ### Suspending to Background
 
 On Unix systems, press **`Ctrl+Z`** to suspend Hermes to the background — just like any terminal process. The shell prints a confirmation:

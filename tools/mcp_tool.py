@@ -968,6 +968,43 @@ class MCPServerTask:
                     self._ready.set()
                     await self._shutdown_event.wait()
 
+    async def _run_sse(self, config: dict):
+        """Connect via SSE transport directly (explicit detection).
+
+        Used when the server is explicitly configured with ``transport: sse``
+        or the URL path ends with ``/sse``.  Bypasses Streamable HTTP entirely
+        and connects straight to the SSE endpoint with keepalive support.
+
+        Based on work by @amiller in #5981.
+        """
+        if not _MCP_SSE_AVAILABLE:
+            raise ImportError(
+                f"MCP server '{self.name}' requires SSE transport but "
+                "mcp.client.sse is not available. Upgrade the mcp package "
+                "to get SSE support."
+            )
+
+        url = config["url"]
+        headers = dict(config.get("headers") or {})
+        connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+
+        # OAuth 2.1 PKCE
+        _oauth_auth = None
+        if self._auth_type == "oauth":
+            try:
+                from tools.mcp_oauth import build_oauth_auth
+                _oauth_auth = build_oauth_auth(self.name, url)
+            except Exception as exc:
+                logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+
+        sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
+        if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
+            sampling_kwargs["message_handler"] = self._make_message_handler()
+
+        await self._run_http_sse(
+            url, headers, connect_timeout, _oauth_auth, sampling_kwargs
+        )
+
     async def _sse_keepalive(self, session, interval: float = 60.0):
         """Send periodic pings to keep the SSE connection alive.
 
@@ -1078,7 +1115,12 @@ class MCPServerTask:
         while True:
             try:
                 if self._is_http():
-                    await self._run_http(config)
+                    # If explicitly SSE (config or URL path), go straight to SSE.
+                    # Otherwise try Streamable HTTP with SSE fallback.
+                    if self._is_sse():
+                        await self._run_sse(config)
+                    else:
+                        await self._run_http(config)
                 else:
                     await self._run_stdio(config)
                 # Normal exit (shutdown requested) -- break out
@@ -1991,7 +2033,13 @@ def get_mcp_status() -> List[dict]:
         active_servers = dict(_servers)
 
     for name, cfg in configured.items():
-        transport = "http" if "url" in cfg else "stdio"
+        # Determine transport type: sse, http, or stdio
+        if "url" in cfg:
+            _tmp = MCPServerTask(name)
+            _tmp._config = cfg
+            transport = "sse" if _tmp._is_sse() else "http"
+        else:
+            transport = "stdio"
         server = active_servers.get(name)
         if server and server.session is not None:
             entry = {

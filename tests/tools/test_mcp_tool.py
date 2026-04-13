@@ -2901,3 +2901,115 @@ class TestMCPBuiltinCollisionGuard:
         assert mock_registry.get_toolset_for_tool("mcp_srv_do_thing") == "mcp-srv"
 
         _servers.pop("srv", None)
+
+
+# ---------------------------------------------------------------------------
+# SSE transport detection tests (based on work by @amiller in #5981)
+# ---------------------------------------------------------------------------
+
+class TestSSEConfig:
+    """Tests for SSE transport detection and handling."""
+
+    def test_is_sse_with_transport_config(self):
+        """Explicit transport: sse config is detected."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("sse-srv")
+        server._config = {"url": "https://example.com/mcp/sse", "transport": "sse"}
+        assert server._is_sse() is True
+
+    def test_is_sse_from_url_path(self):
+        """URL ending in /sse is auto-detected as SSE."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("auto-sse")
+        server._config = {"url": "https://example.com/mcp/sse"}
+        assert server._is_sse() is True
+
+    def test_is_sse_from_url_with_trailing_slash(self):
+        """URL ending in /sse/ (trailing slash) is still detected as SSE."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("trailing")
+        server._config = {"url": "https://example.com/mcp/sse/"}
+        assert server._is_sse() is True
+
+    def test_is_sse_from_url_with_query_params(self):
+        """URL with /sse path and query params is detected as SSE."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("query")
+        server._config = {"url": "https://example.com/mcp/sse?key=abc123"}
+        assert server._is_sse() is True
+
+    def test_not_sse_for_plain_http_url(self):
+        """Regular /mcp URL is NOT SSE."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("http-srv")
+        server._config = {"url": "https://example.com/mcp"}
+        assert server._is_sse() is False
+
+    def test_not_sse_for_stdio_config(self):
+        """Stdio config (no url) is not SSE."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("stdio-srv")
+        server._config = {"command": "npx", "args": []}
+        assert server._is_sse() is False
+
+    def test_sse_unavailable_raises(self):
+        """_run_sse raises ImportError when SSE client is not available."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("sse-srv")
+        config = {"url": "https://example.com/mcp/sse"}
+        async def _test():
+            with patch("tools.mcp_tool._MCP_SSE_AVAILABLE", False):
+                with pytest.raises(ImportError, match="SSE transport"):
+                    await server._run_sse(config)
+        asyncio.run(_test())
+
+    def test_sse_and_http_both_true_for_sse_url(self):
+        """An SSE URL satisfies both _is_http() and _is_sse()."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("sse-srv")
+        server._config = {"url": "https://example.com/mcp/sse"}
+        assert server._is_http() is True
+        assert server._is_sse() is True
+
+    def test_http_only_for_non_sse_url(self):
+        """A non-SSE HTTP URL satisfies _is_http() but not _is_sse()."""
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask("http-srv")
+        server._config = {"url": "https://example.com/mcp"}
+        assert server._is_http() is True
+        assert server._is_sse() is False
+
+
+class TestGetMcpStatusTransport:
+    """Tests for transport field in get_mcp_status()."""
+
+    def test_sse_transport_detected_in_status(self):
+        """SSE URL shows transport='sse' in status output."""
+        from tools.mcp_tool import get_mcp_status, _servers
+        config = {"mcp_servers": {"my-sse": {"url": "https://example.com/mcp/sse"}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.dict(_servers, {}, clear=True):
+            status = get_mcp_status()
+        assert len(status) == 1
+        assert status[0]["name"] == "my-sse"
+        assert status[0]["transport"] == "sse"
+
+    def test_http_transport_in_status(self):
+        """Regular HTTP URL shows transport='http' in status output."""
+        from tools.mcp_tool import get_mcp_status, _servers
+        config = {"mcp_servers": {"my-http": {"url": "https://example.com/mcp"}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.dict(_servers, {}, clear=True):
+            status = get_mcp_status()
+        assert len(status) == 1
+        assert status[0]["transport"] == "http"
+
+    def test_stdio_transport_in_status(self):
+        """Stdio server shows transport='stdio' in status output."""
+        from tools.mcp_tool import get_mcp_status, _servers
+        config = {"mcp_servers": {"my-stdio": {"command": "npx", "args": ["-y", "test"]}}}
+        with patch("hermes_cli.config.load_config", return_value=config), \
+             patch.dict(_servers, {}, clear=True):
+            status = get_mcp_status()
+        assert len(status) == 1
+        assert status[0]["transport"] == "stdio"

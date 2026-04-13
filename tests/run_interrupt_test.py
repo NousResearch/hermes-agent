@@ -12,7 +12,8 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unittest.mock import MagicMock, patch
-from run_agent import AIAgent, IterationBudget
+from run_agent import AIAgent
+from agent.budget import IterationBudget
 from tools.delegate_tool import _run_single_child
 from tools.interrupt import set_interrupt, is_interrupted
 

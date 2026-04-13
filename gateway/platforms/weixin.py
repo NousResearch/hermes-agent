@@ -850,7 +850,10 @@ async def qr_login(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
 
-    async with aiohttp.ClientSession() as session:
+    import ssl as _ssl, certifi as _certifi
+    _ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
+    _connector = aiohttp.TCPConnector(ssl=_ssl_ctx)
+    async with aiohttp.ClientSession(connector=_connector) as session:
         try:
             qr_resp = await _api_get(
                 session,
@@ -868,6 +871,10 @@ async def qr_login(
             logger.error("weixin: QR response missing qrcode")
             return None
 
+        # qrcode_url is the full scannable liteapp URL; qrcode_value is just the hex token
+        # WeChat needs to scan the full URL, not the raw hex string
+        qr_scan_data = qrcode_url if qrcode_url else qrcode_value
+
         print("\n请使用微信扫描以下二维码：")
         if qrcode_url:
             print(qrcode_url)
@@ -875,11 +882,11 @@ async def qr_login(
             import qrcode
 
             qr = qrcode.QRCode()
-            qr.add_data(qrcode_url or qrcode_value)
+            qr.add_data(qr_scan_data)
             qr.make(fit=True)
             qr.print_ascii(invert=True)
-        except Exception:
-            print("（终端二维码渲染失败，请直接打开上面的二维码链接）")
+        except Exception as _qr_exc:
+            print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
         deadline = time.time() + timeout_seconds
         current_base_url = ILINK_BASE_URL
@@ -925,8 +932,17 @@ async def qr_login(
                     )
                     qrcode_value = str(qr_resp.get("qrcode") or "")
                     qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
+                    qr_scan_data = qrcode_url if qrcode_url else qrcode_value
                     if qrcode_url:
                         print(qrcode_url)
+                    try:
+                        import qrcode as _qrcode
+                        qr = _qrcode.QRCode()
+                        qr.add_data(qr_scan_data)
+                        qr.make(fit=True)
+                        qr.print_ascii(invert=True)
+                    except Exception:
+                        pass
                 except Exception as exc:
                     logger.error("weixin: QR refresh failed: %s", exc)
                     return None
@@ -1047,7 +1063,9 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._session = aiohttp.ClientSession()
+        import ssl as _ssl, certifi as _certifi
+        _ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
+        self._session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_ssl_ctx))
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1624,7 +1642,9 @@ async def send_weixin_direct(
     token_store.restore(account_id)
     context_token = token_store.get(account_id, chat_id)
 
-    async with aiohttp.ClientSession() as session:
+    import ssl as _ssl, certifi as _certifi
+    _ssl_ctx = _ssl.create_default_context(cafile=_certifi.where())
+    async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=_ssl_ctx)) as session:
         adapter = WeixinAdapter(
             PlatformConfig(
                 enabled=True,

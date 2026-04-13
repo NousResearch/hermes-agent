@@ -15,6 +15,7 @@ import importlib.util
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import copy
 from pathlib import Path
@@ -2956,6 +2957,36 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
     return None
 
 
+def _launch_chat_process(chat_argv: list[str]) -> bool:
+    """Launch ``hermes chat`` with a fresh TTY-backed stdin when possible.
+
+    The setup wizard is often run from the curl installer, which invokes the
+    wizard with ``stdin`` redirected from ``/dev/tty``. Re-execing directly from
+    that process can leave prompt_toolkit with a broken fd 0 on macOS + uv-
+    managed Python. Spawning a child process with a newly opened ``/dev/tty``
+    avoids inheriting the problematic stdin state.
+    """
+    try:
+        if os.name != "nt":
+            tty_fd = os.open("/dev/tty", os.O_RDWR)
+            try:
+                subprocess.run(
+                    chat_argv,
+                    check=False,
+                    stdin=tty_fd,
+                    stdout=tty_fd,
+                    stderr=tty_fd,
+                )
+            finally:
+                os.close(tty_fd)
+        else:
+            subprocess.run(chat_argv, check=False)
+        return True
+    except OSError as exc:
+        logger.debug("Could not launch Hermes chat automatically: %s", exc)
+        return False
+
+
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
@@ -2967,7 +2998,8 @@ def _offer_launch_chat():
         print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
         return
 
-    os.execvp(chat_argv[0], chat_argv)
+    if not _launch_chat_process(chat_argv):
+        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

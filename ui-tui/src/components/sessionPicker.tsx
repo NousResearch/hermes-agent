@@ -2,6 +2,7 @@ import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
+import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
 interface SessionItem {
@@ -41,16 +42,30 @@ export function SessionPicker({
   t: Theme
 }) {
   const [items, setItems] = useState<SessionItem[]>([])
+  const [err, setErr] = useState('')
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     gw.request('session.list', { limit: 20 })
-      .then((r: any) => {
-        setItems(r.sessions ?? [])
+      .then((raw: any) => {
+        const r = asRpcResult(raw)
+
+        if (!r) {
+          setErr('invalid response: session.list')
+          setLoading(false)
+
+          return
+        }
+
+        setItems((r?.sessions ?? []) as SessionItem[])
+        setErr('')
         setLoading(false)
       })
-      .catch(() => setLoading(false))
+      .catch((e: unknown) => {
+        setErr(rpcErrorMessage(e))
+        setLoading(false)
+      })
   }, [gw])
 
   useInput((ch, key) => {
@@ -79,6 +94,15 @@ export function SessionPicker({
 
   if (loading) {
     return <Text color={t.color.dim}>loading sessions…</Text>
+  }
+
+  if (err) {
+    return (
+      <Box flexDirection="column">
+        <Text color={t.color.label}>error: {err}</Text>
+        <Text color={t.color.dim}>Esc to cancel</Text>
+      </Box>
+    )
   }
 
   if (!items.length) {

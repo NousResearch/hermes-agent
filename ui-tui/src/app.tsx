@@ -20,6 +20,7 @@ import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
+import { asRpcResult, rpcErrorMessage } from './lib/rpc.js'
 import {
   buildToolTrailLine,
   compactPreview,
@@ -515,10 +516,21 @@ export function App({ gw }: { gw: GatewayClient }) {
   }, [])
 
   const rpc = useCallback(
-    (method: string, params: Record<string, unknown> = {}) =>
-      gw.request(method, params).catch((e: Error) => {
-        sys(`error: ${e.message}`)
-      }),
+    async (method: string, params: Record<string, unknown> = {}) => {
+      try {
+        const result = asRpcResult(await gw.request(method, params))
+
+        if (result) {
+          return result
+        }
+
+        sys(`error: invalid response: ${method}`)
+      } catch (e) {
+        sys(`error: ${rpcErrorMessage(e)}`)
+      }
+
+      return null
+    },
     [gw, sys]
   )
 
@@ -579,7 +591,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         if (configMtimeRef.current && next && next !== configMtimeRef.current) {
           configMtimeRef.current = next
-          rpc('reload.mcp', { session_id: sid }).then(() => pushActivity('MCP reloaded after config change'))
+          rpc('reload.mcp', { session_id: sid }).then(r => {
+            if (!r) {
+              return
+            }
+
+            pushActivity('MCP reloaded after config change')
+          })
           rpc('config.get', { key: 'full' }).then((cfg: any) => {
             setBellOnComplete(!!cfg?.config?.display?.bell_on_complete)
           })
@@ -675,7 +693,16 @@ export function App({ gw }: { gw: GatewayClient }) {
       setPicker(false)
       setStatus('resuming…')
       gw.request('session.resume', { cols: colsRef.current, session_id: id })
-        .then((r: any) => {
+        .then((raw: any) => {
+          const r = asRpcResult(raw)
+
+          if (!r) {
+            sys('error: invalid response: session.resume')
+            setStatus('ready')
+
+            return
+          }
+
           resetSession()
           setSid(r.session_id)
           setSessionStartedAt(Date.now())
@@ -892,7 +919,15 @@ export function App({ gw }: { gw: GatewayClient }) {
     setStatus('running…')
 
     gw.request('shell.exec', { command: cmd })
-      .then((r: any) => {
+      .then((raw: any) => {
+        const r = asRpcResult(raw)
+
+        if (!r) {
+          sys('error: invalid response: shell.exec')
+
+          return
+        }
+
         const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
 
         if (out) {
@@ -944,7 +979,11 @@ export function App({ gw }: { gw: GatewayClient }) {
       matches.map(m =>
         gw
           .request('shell.exec', { command: m[1]! })
-          .then((r: any) => [r.stdout, r.stderr].filter(Boolean).join('\n').trim())
+          .then((raw: any) => {
+            const r = asRpcResult(raw)
+
+            return [r?.stdout, r?.stderr].filter(Boolean).join('\n').trim()
+          })
           .catch(() => '(error)')
       )
     ).then(results => {
@@ -1252,6 +1291,10 @@ export function App({ gw }: { gw: GatewayClient }) {
         setVoiceProcessing(true)
         rpc('voice.record', { action: 'stop' })
           .then((r: any) => {
+            if (!r) {
+              return
+            }
+
             const transcript = String(r?.text || '').trim()
 
             if (transcript) {
@@ -1267,7 +1310,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           })
       } else {
         rpc('voice.record', { action: 'start' })
-          .then(() => {
+          .then(r => {
+            if (!r) {
+              return
+            }
+
             setVoiceRecording(true)
             setStatus('recording…')
           })
@@ -1315,7 +1362,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (STARTUP_RESUME_ID) {
             setStatus('resuming…')
             gw.request('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
-              .then((r: any) => {
+              .then((raw: any) => {
+                const r = asRpcResult(raw)
+
+                if (!r) {
+                  throw new Error('invalid response: session.resume')
+                }
+
                 resetSession()
                 setSid(r.session_id)
                 setInfo(r.info ?? null)
@@ -1329,9 +1382,10 @@ export function App({ gw }: { gw: GatewayClient }) {
                 setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
                 setStatus('ready')
               })
-              .catch(() => {
+              .catch((e: unknown) => {
+                sys(`resume failed: ${rpcErrorMessage(e)}`)
                 setStatus('forging session…')
-                newSession('resume failed, started a new session')
+                newSession('started a new session')
               })
           } else {
             setStatus('forging session…')
@@ -1823,6 +1877,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           rpc('session.undo', { session_id: sid }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             if (r.removed > 0) {
               setMessages(prev => {
                 const q = [...prev]
@@ -1879,6 +1937,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) => {
+            if (!r?.task_id) {
+              return
+            }
+
             setBgTasks(prev => new Set(prev).add(r.task_id))
             sys(`bg ${r.task_id} started`)
           })
@@ -1892,7 +1954,11 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => {
+          rpc('prompt.btw', { session_id: sid, text: arg }).then(r => {
+            if (!r) {
+              return
+            }
+
             setBgTasks(prev => new Set(prev).add('btw:x'))
             sys('btw running…')
           })
@@ -1901,7 +1967,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'model':
           if (!arg) {
-            rpc('config.get', { key: 'provider' }).then((r: any) =>
+            rpc('config.get', { key: 'provider' }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
               panel('Model', [
                 {
                   rows: [
@@ -1910,10 +1980,14 @@ export function App({ gw }: { gw: GatewayClient }) {
                   ]
                 }
               ])
-            )
+            })
           } else {
             rpc('config.set', { session_id: sid, key: 'model', value: arg.replace('--global', '').trim() }).then(
               (r: any) => {
+                if (!r?.value) {
+                  return
+                }
+
                 sys(`model → ${r.value}`)
                 setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
               }
@@ -1940,62 +2014,100 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'provider':
           gw.request('slash.exec', { command: 'provider', session_id: sid })
             .then((r: any) => page(r?.output || '(no output)', 'Provider'))
-            .catch(() => sys('provider command failed'))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
 
         case 'skin':
           if (arg) {
-            rpc('config.set', { key: 'skin', value: arg }).then((r: any) => sys(`skin → ${r.value}`))
+            rpc('config.set', { key: 'skin', value: arg }).then((r: any) => {
+              if (!r?.value) {
+                return
+              }
+
+              sys(`skin → ${r.value}`)
+            })
           } else {
-            rpc('config.get', { key: 'skin' }).then((r: any) => sys(`skin: ${r.value || 'default'}`))
+            rpc('config.get', { key: 'skin' }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
+              sys(`skin: ${r.value || 'default'}`)
+            })
           }
 
           return true
 
         case 'yolo':
-          rpc('config.set', { session_id: sid, key: 'yolo' }).then((r: any) =>
+          rpc('config.set', { session_id: sid, key: 'yolo' }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             sys(`yolo ${r.value === '1' ? 'on' : 'off'}`)
-          )
+          })
 
           return true
 
         case 'reasoning':
-          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg || 'medium' }).then((r: any) =>
+          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg || 'medium' }).then((r: any) => {
+            if (!r?.value) {
+              return
+            }
+
             sys(`reasoning: ${r.value}`)
-          )
+          })
 
           return true
 
         case 'verbose':
-          rpc('config.set', { session_id: sid, key: 'verbose', value: arg || 'cycle' }).then((r: any) =>
+          rpc('config.set', { session_id: sid, key: 'verbose', value: arg || 'cycle' }).then((r: any) => {
+            if (!r?.value) {
+              return
+            }
+
             sys(`verbose: ${r.value}`)
-          )
+          })
 
           return true
 
         case 'personality':
           if (arg) {
-            rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
+            rpc('config.set', { key: 'personality', value: arg }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
               sys(`personality: ${r.value || 'default'}`)
-            )
+            })
           } else {
             gw.request('slash.exec', { command: 'personality', session_id: sid })
               .then((r: any) => panel('Personality', [{ text: r?.output || '(no output)' }]))
-              .catch(() => sys('personality command failed'))
+              .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           }
 
           return true
 
         case 'compress':
-          rpc('session.compress', { session_id: sid }).then((r: any) =>
+          rpc('session.compress', { session_id: sid }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             sys(`compressed${r.usage?.total ? ' · ' + fmtK(r.usage.total) + ' tok' : ''}`)
-          )
+          })
 
           return true
 
         case 'stop':
-          rpc('process.stop', {}).then((r: any) => sys(`killed ${r.killed ?? 0} process(es)`))
+          rpc('process.stop', {}).then((r: any) => {
+            if (!r) {
+              return
+            }
+
+            sys(`killed ${r.killed ?? 0} process(es)`)
+          })
 
           return true
 
@@ -2017,14 +2129,24 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'reload-mcp':
 
         case 'reload_mcp':
-          rpc('reload.mcp', { session_id: sid }).then(() => sys('MCP reloaded'))
+          rpc('reload.mcp', { session_id: sid }).then(r => {
+            if (!r) {
+              return
+            }
+
+            sys('MCP reloaded')
+          })
 
           return true
 
         case 'title':
-          rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then((r: any) =>
+          rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             sys(`title: ${r.title || '(none)'}`)
-          )
+          })
 
           return true
 
@@ -2075,18 +2197,34 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'save':
-          rpc('session.save', { session_id: sid }).then((r: any) => sys(`saved: ${r.file}`))
+          rpc('session.save', { session_id: sid }).then((r: any) => {
+            if (!r?.file) {
+              return
+            }
+
+            sys(`saved: ${r.file}`)
+          })
 
           return true
 
         case 'history':
-          rpc('session.history', { session_id: sid }).then((r: any) => sys(`${r.count} messages`))
+          rpc('session.history', { session_id: sid }).then((r: any) => {
+            if (typeof r?.count !== 'number') {
+              return
+            }
+
+            sys(`${r.count} messages`)
+          })
 
           return true
 
         case 'profile':
           rpc('config.get', { key: 'profile' }).then((r: any) => {
-            const text = r.display || r.home
+            if (!r) {
+              return
+            }
+
+            const text = r.display || r.home || '(unknown profile)'
             const lines = text.split('\n').filter(Boolean)
 
             if (lines.length <= 2) {
@@ -2111,7 +2249,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'insights':
-          rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) =>
+          rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             panel('Insights', [
               {
                 rows: [
@@ -2121,7 +2263,7 @@ export function App({ gw }: { gw: GatewayClient }) {
                 ]
               }
             ])
-          )
+          })
 
           return true
         case 'rollback': {
@@ -2129,6 +2271,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           if (!sub || sub === 'list') {
             rpc('rollback.list', { session_id: sid }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
               if (!r.checkpoints?.length) {
                 return sys('no checkpoints')
               }
@@ -2151,7 +2297,13 @@ export function App({ gw }: { gw: GatewayClient }) {
               session_id: sid,
               hash,
               ...(sub === 'diff' || !filePath ? {} : { file_path: filePath })
-            }).then((r: any) => sys(r.rendered || r.diff || r.message || 'done'))
+            }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
+              sys(r.rendered || r.diff || r.message || 'done')
+            })
           }
 
           return true
@@ -2159,15 +2311,23 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'browser': {
           const [act, ...bArgs] = (arg || 'status').split(/\s+/)
-          rpc('browser.manage', { action: act, ...(bArgs[0] ? { url: bArgs[0] } : {}) }).then((r: any) =>
+          rpc('browser.manage', { action: act, ...(bArgs[0] ? { url: bArgs[0] } : {}) }).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             sys(r.connected ? `browser: ${r.url}` : 'browser: disconnected')
-          )
+          })
 
           return true
         }
 
         case 'plugins':
           rpc('plugins.list', {}).then((r: any) => {
+            if (!r) {
+              return
+            }
+
             if (!r.plugins?.length) {
               return sys('no plugins')
             }
@@ -2185,6 +2345,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           if (!sub || sub === 'list') {
             rpc('skills.manage', { action: 'list' }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
               const sk = r.skills as Record<string, string[]> | undefined
 
               if (!sk || !Object.keys(sk).length) {
@@ -2206,6 +2370,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (sub === 'browse') {
             const pg = parseInt(sArgs[0] ?? '1', 10) || 1
             rpc('skills.manage', { action: 'browse', page: pg }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
               if (!r.items?.length) {
                 return sys('no skills found in the hub')
               }
@@ -2238,7 +2406,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => sys(r?.output || '/skills: no output'))
-            .catch(() => sys(`skills: ${sub} failed`))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
         }
@@ -2248,6 +2416,10 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'tasks':
           rpc('agents.list', {})
             .then((r: any) => {
+              if (!r) {
+                return
+              }
+
               const procs = r.processes ?? []
               const running = procs.filter((p: any) => p.status === 'running')
               const finished = procs.filter((p: any) => p.status !== 'running')
@@ -2273,7 +2445,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
               panel('Agents', sections)
             })
-            .catch(() => sys('agents command failed'))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
 
@@ -2281,6 +2453,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (!arg || arg === 'list') {
             rpc('cron.manage', { action: 'list' })
               .then((r: any) => {
+                if (!r) {
+                  return
+                }
+
                 const jobs = r.jobs ?? []
 
                 if (!jobs.length) {
@@ -2296,11 +2472,11 @@ export function App({ gw }: { gw: GatewayClient }) {
                   }
                 ])
               })
-              .catch(() => sys('cron command failed'))
+              .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           } else {
             gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
               .then((r: any) => sys(r?.output || '(no output)'))
-              .catch(() => sys('cron command failed'))
+              .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           }
 
           return true
@@ -2308,6 +2484,10 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'config':
           rpc('config.show', {})
             .then((r: any) => {
+              if (!r) {
+                return
+              }
+
               panel(
                 'Config',
                 (r.sections ?? []).map((s: any) => ({
@@ -2316,13 +2496,17 @@ export function App({ gw }: { gw: GatewayClient }) {
                 }))
               )
             })
-            .catch(() => sys('config command failed'))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
 
         case 'tools':
           rpc('tools.list', { session_id: sid })
             .then((r: any) => {
+              if (!r) {
+                return
+              }
+
               if (!r.toolsets?.length) {
                 return sys('no tools')
               }
@@ -2335,13 +2519,17 @@ export function App({ gw }: { gw: GatewayClient }) {
                 }))
               )
             })
-            .catch(() => sys('tools command failed'))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
 
         case 'toolsets':
           rpc('toolsets.list', { session_id: sid })
             .then((r: any) => {
+              if (!r) {
+                return
+              }
+
               if (!r.toolsets?.length) {
                 return sys('no toolsets')
               }
@@ -2358,16 +2546,24 @@ export function App({ gw }: { gw: GatewayClient }) {
                 }
               ])
             })
-            .catch(() => sys('toolsets command failed'))
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
 
         default:
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => sys(r?.output || `/${name}: no output`))
-            .catch(() => {
+            .catch((e: unknown) => {
               gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
-                .then((d: any) => {
+                .then((raw: any) => {
+                  const d = asRpcResult(raw)
+
+                  if (!d?.type) {
+                    sys(`error: ${rpcErrorMessage(e)}`)
+
+                    return
+                  }
+
                   if (d.type === 'exec') {
                     sys(d.output || '(no output)')
                   } else if (d.type === 'alias') {
@@ -2376,10 +2572,15 @@ export function App({ gw }: { gw: GatewayClient }) {
                     sys(d.output || '(no output)')
                   } else if (d.type === 'skill') {
                     sys(`⚡ loading skill: ${d.name}`)
-                    send(d.message)
+
+                    if (typeof d.message === 'string' && d.message.trim()) {
+                      send(d.message)
+                    } else {
+                      sys(`/${name}: skill payload missing message`)
+                    }
                   }
                 })
-                .catch(() => sys(`unknown command: /${name}`))
+                .catch(() => sys(`error: ${rpcErrorMessage(e)}`))
             })
 
           return true

@@ -71,13 +71,13 @@ _PROVIDER_ALIASES = {
 }
 
 
-def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
+def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
     if normalized.startswith("custom:"):
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix if not for_vision else "custom"
+        normalized = suffix
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
@@ -1603,7 +1603,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
-    return _normalize_aux_provider(provider, for_vision=True)
+    return _normalize_aux_provider(provider)
 
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -1686,6 +1686,7 @@ def resolve_vision_provider_client(
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
         )
         if client is None:
             return "custom", None, None
@@ -1710,7 +1711,8 @@ def resolve_vision_provider_client(
                 # Use provider-specific vision model if available, otherwise main model.
                 vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model)
+                    main_provider, vision_model,
+                    api_mode=resolved_api_mode)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using active provider %s (%s)",
@@ -1734,7 +1736,8 @@ def resolve_vision_provider_client(
         sync_client, default_model = _resolve_strict_vision_backend(requested)
         return _finalize(requested, sync_client, default_model)
 
-    client, final_model = _get_cached_client(requested, resolved_model, async_mode)
+    client, final_model = _get_cached_client(requested, resolved_model, async_mode,
+                                             api_mode=resolved_api_mode)
     if client is None:
         return requested, None, None
     return requested, client, final_model

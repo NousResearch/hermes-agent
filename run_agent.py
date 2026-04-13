@@ -604,6 +604,8 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        max_api_retries: int = 3,
+        max_stream_retries: int = 1,
     ):
         """
         Initialize the AI Agent.
@@ -648,6 +650,8 @@ class AIAgent:
 
         self.model = model
         self.max_iterations = max_iterations
+        self.max_api_retries = max_api_retries
+        self.max_stream_retries = max_stream_retries
         # Shared iteration budget — parent creates, children inherit.
         # Consumed by every LLM turn across parent + all subagents.
         self.iteration_budget = iteration_budget or IterationBudget(max_iterations)
@@ -4308,7 +4312,7 @@ class AIAgent:
         import httpx as _httpx
 
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
-        max_stream_retries = 1
+        max_stream_retries = self.max_stream_retries
         has_tool_calls = False
         first_delta_fired = False
         # Accumulate streamed text so we can recover if get_final_response()
@@ -5294,7 +5298,7 @@ class AIAgent:
         def _call():
             import httpx as _httpx
 
-            _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", 2))
+            _max_stream_retries = int(os.getenv("HERMES_STREAM_RETRIES", self.max_stream_retries))
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):

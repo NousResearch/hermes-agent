@@ -2731,6 +2731,8 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
+                max_api_retries=int(CLI_CONFIG.get("agent", {}).get("max_api_retries", 3)),
+                max_stream_retries=int(CLI_CONFIG.get("agent", {}).get("max_stream_retries", 2)),
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,

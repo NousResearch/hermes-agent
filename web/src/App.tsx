@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
@@ -36,8 +36,15 @@ const PAGE_COMPONENTS: Record<PageId, React.FC> = {
 export default function App() {
   const [page, setPage] = useState<PageId>("status");
   const [animKey, setAnimKey] = useState(0);
+  const initialRef = useRef(true);
 
   useEffect(() => {
+    // Skip the animation key bump on initial mount to avoid re-mounting
+    // the default page component (which causes duplicate API requests).
+    if (initialRef.current) {
+      initialRef.current = false;
+      return;
+    }
     setAnimKey((k) => k + 1);
   }, [page]);
 

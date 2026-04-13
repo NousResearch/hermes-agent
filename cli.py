@@ -6068,7 +6068,7 @@ class HermesCLI:
         # rich-text editors (Google Docs, Word, etc.).  Lone surrogates are invalid
         # UTF-8 and crash JSON serialization in the OpenAI SDK.
         if isinstance(message, str):
-            from run_agent import _sanitize_surrogates
+            from agent.prompt_utils import _sanitize_surrogates
             message = _sanitize_surrogates(message)
 
         # Add user message to history

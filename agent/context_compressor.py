@@ -619,6 +619,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         the cut is placed right after the head so compression still runs.
 
         Never cuts inside a tool_call/result group.
+
+        **User-message protection**: The most recent user message and every
+        message after it are always kept in the tail regardless of the
+        token budget.  This prevents the current user request from being
+        summarised away, which causes the model to respond to stale context
+        instead of the user's latest message.  (#7133)
         """
         if token_budget is None:
             token_budget = self.tail_token_budget
@@ -629,6 +635,20 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
+        # ── User-message anchor ──────────────────────────────────────
+        # Find the most recent user message.  Everything from that index
+        # onward MUST remain in the tail so the model never loses the
+        # current user request.  The token-budget walk below is capped
+        # at this boundary — it can include more messages (if budget
+        # allows) but never fewer.
+        last_user_idx = n  # default: no anchor (shouldn't happen)
+        for i in range(n - 1, head_end - 1, -1):
+            if messages[i].get("role") == "user":
+                last_user_idx = i
+                break
+        # The anchor is the *furthest-back* index that the tail must cover.
+        user_anchor = min(last_user_idx, n - min_tail) if min_tail > 0 else last_user_idx
+
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
             content = msg.get("content") or ""
@@ -638,8 +658,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
                     msg_tokens += len(args) // _CHARS_PER_TOKEN
-            # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
-            if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
+            # Stop once we exceed the soft ceiling (unless we haven't
+            # reached either the min_tail or the user-message anchor)
+            must_include = (n - i) < min_tail or i >= user_anchor
+            if accumulated + msg_tokens > soft_ceiling and not must_include:
                 break
             accumulated += msg_tokens
             cut_idx = i
@@ -648,6 +670,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         fallback_cut = n - min_tail
         if cut_idx > fallback_cut:
             cut_idx = fallback_cut
+
+        # Ensure the user-message anchor is always in the tail
+        if cut_idx > user_anchor:
+            cut_idx = user_anchor
 
         # If the token budget would protect everything (small conversations),
         # force a cut after the head so compression can still remove middle turns.

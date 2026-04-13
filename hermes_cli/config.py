@@ -702,7 +702,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -1546,6 +1546,51 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     return missing
 
 
+def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
+    """Normalize ``providers`` config entries back into ``custom_providers`` form.
+
+    Runtime code still expects the legacy list shape in several places. This
+    helper keeps the field mapping in one place so config migrations and
+    runtime compatibility fallbacks stay aligned.
+    """
+    if not isinstance(providers_dict, dict):
+        return []
+
+    custom_providers: List[Dict[str, Any]] = []
+    for key, entry in providers_dict.items():
+        if not isinstance(entry, dict):
+            continue
+
+        base_url = str(entry.get("api", "") or "").strip()
+        if not base_url:
+            continue
+
+        name = str(entry.get("name", "") or "").strip() or str(key).strip()
+        if not name:
+            continue
+
+        custom_entry: Dict[str, Any] = {
+            "name": name,
+            "base_url": base_url,
+        }
+
+        api_key = str(entry.get("api_key", "") or "").strip()
+        if api_key:
+            custom_entry["api_key"] = api_key
+
+        api_mode = str(entry.get("transport", "") or "").strip()
+        if api_mode:
+            custom_entry["api_mode"] = api_mode
+
+        model_name = str(entry.get("default_model", "") or "").strip()
+        if model_name:
+            custom_entry["model"] = model_name
+
+        custom_providers.append(custom_entry)
+
+    return custom_providers
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1863,8 +1908,6 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
-                # Remove the old list
-                del config["custom_providers"]
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
@@ -1974,6 +2017,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
+
+    # ── Version 16 → 17: restore custom_providers for runtime compatibility ──
+    if current_ver < 17:
+        config = load_config()
+        if "custom_providers" not in config:
+            restored = providers_dict_to_custom_providers(config.get("providers"))
+            if restored:
+                config["custom_providers"] = restored
+                save_config(config)
+                results["config_added"].append("custom_providers (restored from providers)")
+                if not quiet:
+                    print(
+                        "  ✓ Restored custom_providers from providers for runtime compatibility"
+                    )
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

@@ -424,6 +424,103 @@ class TestAnthropicTokenMigration:
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
 
 
+class TestCustomProviderCompatibilityMigration:
+    """Custom provider migrations must preserve the runtime-compatible shape."""
+
+    def test_v11_upgrade_keeps_custom_providers_alongside_providers(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "model": {
+                        "default": "openai/gpt-5.4",
+                        "provider": "openrouter",
+                    },
+                    "custom_providers": [
+                        {
+                            "name": "OpenAI Direct",
+                            "base_url": "https://api.openai.com/v1",
+                            "api_key": "direct-key",
+                            "api_mode": "codex_responses",
+                            "model": "gpt-5-mini",
+                        }
+                    ],
+                    "fallback_providers": [
+                        {"provider": "openai-direct", "model": "gpt-5-mini"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 17
+        assert raw["providers"]["openai-direct"] == {
+            "api": "https://api.openai.com/v1",
+            "api_key": "direct-key",
+            "default_model": "gpt-5-mini",
+            "name": "OpenAI Direct",
+            "transport": "codex_responses",
+        }
+        assert raw["custom_providers"] == [
+            {
+                "name": "OpenAI Direct",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "direct-key",
+                "api_mode": "codex_responses",
+                "model": "gpt-5-mini",
+            }
+        ]
+        assert raw["fallback_providers"] == [
+            {"provider": "openai-direct", "model": "gpt-5-mini"}
+        ]
+
+    def test_v16_upgrade_restores_custom_providers_from_providers_dict(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 16,
+                    "providers": {
+                        "openai-direct": {
+                            "api": "https://api.openai.com/v1",
+                            "api_key": "direct-key",
+                            "default_model": "gpt-5-mini",
+                            "name": "OpenAI Direct",
+                            "transport": "codex_responses",
+                        }
+                    },
+                    "fallback_providers": [
+                        {"provider": "openai-direct", "model": "gpt-5-mini"}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 17
+        assert raw["custom_providers"] == [
+            {
+                "name": "OpenAI Direct",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "direct-key",
+                "api_mode": "codex_responses",
+                "model": "gpt-5-mini",
+            }
+        ]
+        assert raw["fallback_providers"] == [
+            {"provider": "openai-direct", "model": "gpt-5-mini"}
+        ]
+
+
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
 
@@ -441,6 +538,6 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 16
+        assert raw["_config_version"] == 17
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True

@@ -119,6 +119,11 @@ def test_resolve_runtime_provider_falls_back_when_pool_empty(monkeypatch):
 
 
 def test_resolve_runtime_provider_codex(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("P", (), {"has_credentials": lambda self: False})(),
+    )
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
     monkeypatch.setattr(
         rp,
@@ -567,6 +572,45 @@ def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     assert resolved["source"] == "custom_provider:Local"
 
 
+def test_named_custom_provider_uses_providers_dict_when_list_missing(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "openai-direct": {
+                    "api": "https://api.openai.com/v1",
+                    "api_key": "dir-key",
+                    "default_model": "gpt-5-mini",
+                    "name": "OpenAI Direct",
+                    "transport": "codex_responses",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="openai-direct")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.openai.com/v1"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "openai-direct"
+    assert resolved["source"] == "custom_provider:OpenAI Direct"
+    assert resolved["model"] == "gpt-5-mini"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -611,6 +655,39 @@ def test_named_custom_provider_does_not_shadow_builtin_provider(monkeypatch):
                     "api_key": "shadow-key",
                 }
             ]
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_nous_runtime_credentials",
+        lambda **kwargs: {
+            "base_url": "https://inference-api.nousresearch.com/v1",
+            "api_key": "nous-key",
+            "source": "portal",
+            "expires_at": None,
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="nous")
+
+    assert resolved["provider"] == "nous"
+    assert resolved["base_url"] == "https://inference-api.nousresearch.com/v1"
+    assert resolved["api_key"] == "nous-key"
+    assert resolved["requested_provider"] == "nous"
+
+
+def test_named_custom_provider_from_providers_dict_does_not_shadow_builtin(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "nous": {
+                    "api": "http://localhost:1234/v1",
+                    "api_key": "shadow-key",
+                    "name": "nous",
+                }
+            }
         },
     )
     monkeypatch.setattr(

@@ -107,6 +107,25 @@ class TestResolveProviderClientMainAlias:
         assert client is not None
         assert "beans.local" in str(client.base_url)
 
+    def test_main_resolves_to_named_provider_from_providers_dict(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "my-model", "provider": "openai-direct"},
+            "providers": {
+                "openai-direct": {
+                    "api": "http://direct.local/v1",
+                    "api_key": "k",
+                    "name": "OpenAI Direct",
+                    "transport": "codex_responses",
+                    "default_model": "gpt-5-mini",
+                }
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("main", "override-model")
+        assert client is not None
+        assert model == "override-model"
+        assert "direct.local" in str(client.base_url)
+
 
 class TestResolveProviderClientNamedCustom:
     """resolve_provider_client should resolve named custom providers directly."""
@@ -136,6 +155,25 @@ class TestResolveProviderClientNamedCustom:
         assert client is not None
         # Should use _read_main_model() fallback
         assert model == "main-model"
+
+    def test_named_custom_provider_from_providers_dict(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "main-model"},
+            "providers": {
+                "openai-direct": {
+                    "api": "http://direct.local/v1",
+                    "api_key": "k",
+                    "name": "OpenAI Direct",
+                    "transport": "codex_responses",
+                    "default_model": "gpt-5-mini",
+                }
+            },
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        client, model = resolve_provider_client("openai-direct", "my-model")
+        assert client is not None
+        assert model == "my-model"
+        assert "direct.local" in str(client.base_url)
 
     def test_named_custom_no_api_key_uses_fallback(self, tmp_path):
         _write_config(tmp_path, {

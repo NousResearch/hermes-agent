@@ -1213,6 +1213,9 @@ class AIAgent:
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
         compression_summary_model = _compression_cfg.get("summary_model") or None
+        _compression_summary_models = _compression_cfg.get("summary_models")
+        if not isinstance(_compression_summary_models, dict):
+            _compression_summary_models = {}
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
@@ -1230,6 +1233,7 @@ class AIAgent:
 
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
+        self._compression_summary_models = _compression_summary_models
 
         # Check custom_providers per-model context_length
         if _config_context_length is None:
@@ -1302,6 +1306,7 @@ class AIAgent:
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
                 summary_model_override=compression_summary_model,
+                summary_models=_compression_summary_models,
                 quiet_mode=self.quiet_mode,
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),

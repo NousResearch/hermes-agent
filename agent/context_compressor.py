@@ -79,6 +79,29 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
 
+    def _resolve_summary_model(self, main_model: str) -> str:
+        """Resolve the summarization model for a given main model.
+
+        Checks ``self.summary_models`` for a per-model override first
+        (longest-prefix match), then falls back to the global
+        ``self._global_summary_model`` (from ``compression.summary_model``).
+        """
+        if not self.summary_models or not main_model:
+            return self._global_summary_model or ""
+        # Exact match first
+        if main_model in self.summary_models:
+            return self.summary_models[main_model]
+        # Longest-prefix match (e.g. "gpt-5.4" matches "gpt-5.4-0620")
+        best_match = ""
+        best_key = ""
+        for key, val in self.summary_models.items():
+            if main_model.startswith(key) and len(key) > len(best_key):
+                best_key = key
+                best_match = val
+        if best_match:
+            return best_match
+        return self._global_summary_model or ""
+
     def update_model(
         self,
         model: str,
@@ -99,6 +122,8 @@ class ContextCompressor(ContextEngine):
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        # Re-resolve summary model for the new main model
+        self.summary_model = self._resolve_summary_model(model)
 
     def __init__(
         self,
@@ -109,6 +134,7 @@ class ContextCompressor(ContextEngine):
         summary_target_ratio: float = 0.20,
         quiet_mode: bool = False,
         summary_model_override: str = None,
+        summary_models: dict = None,
         base_url: str = "",
         api_key: str = "",
         config_context_length: int | None = None,
@@ -125,6 +151,10 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+
+        # Per-model summary routing: maps main model name (or prefix) to the
+        # summarization model to use.  Empty dict = no per-model overrides.
+        self.summary_models: dict = summary_models or {}
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -152,18 +182,21 @@ class ContextCompressor(ContextEngine):
             logger.info(
                 "Context compressor initialized: model=%s context_length=%d "
                 "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
+                "provider=%s base_url=%s summary_models=%s",
                 model, self.context_length, self.threshold_tokens,
                 threshold_percent * 100, self.summary_target_ratio * 100,
                 self.tail_token_budget,
                 provider or "none", base_url or "none",
+                self.summary_models or "{}",
             )
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
 
-        self.summary_model = summary_model_override or ""
+        # Resolve summary model: per-model override > global override
+        self._global_summary_model = summary_model_override or ""
+        self.summary_model = self._resolve_summary_model(model)
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None

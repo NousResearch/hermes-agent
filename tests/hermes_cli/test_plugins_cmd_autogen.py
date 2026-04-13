@@ -289,3 +289,85 @@ class TestAutogenIntegratedWithInstall:
         assert (target / "__init__.py").exists()
         assert (target / "plugin.yaml").exists()
         assert (target / ".hermes-autogen" / "shim.lock").exists()
+
+
+class TestReadAutogenLock:
+    def test_reads_valid_lock(self, tmp_path):
+        import json
+        from hermes_cli.plugins_cmd import _read_autogen_lock
+
+        plugin_dir = tmp_path / "testplug"
+        plugin_dir.mkdir()
+        lock_dir = plugin_dir / ".hermes-autogen"
+        lock_dir.mkdir()
+        lock_data = {"schema_version": 1, "generated_files": []}
+        (lock_dir / "shim.lock").write_text(json.dumps(lock_data))
+
+        result = _read_autogen_lock(plugin_dir)
+        assert result == lock_data
+
+    def test_missing_lock_returns_none(self, tmp_path):
+        from hermes_cli.plugins_cmd import _read_autogen_lock
+
+        plugin_dir = tmp_path / "testplug"
+        plugin_dir.mkdir()
+
+        assert _read_autogen_lock(plugin_dir) is None
+
+    def test_corrupt_json_returns_none_with_warning(self, tmp_path, caplog):
+        import logging
+        from hermes_cli.plugins_cmd import _read_autogen_lock
+
+        plugin_dir = tmp_path / "testplug"
+        plugin_dir.mkdir()
+        lock_dir = plugin_dir / ".hermes-autogen"
+        lock_dir.mkdir()
+        (lock_dir / "shim.lock").write_text("{not valid json")
+
+        with caplog.at_level(logging.WARNING):
+            result = _read_autogen_lock(plugin_dir)
+
+        assert result is None
+
+
+class TestCleanupAutogenFiles:
+    def test_removes_all_generated_files_and_sidecar(self, tmp_path):
+        import json
+        from hermes_cli.plugins_cmd import _cleanup_autogen_files
+
+        plugin_dir = tmp_path / "testplug"
+        plugin_dir.mkdir()
+        (plugin_dir / "__init__.py").write_text("shim code")
+        (plugin_dir / "plugin.yaml").write_text("name: foo")
+        lock_dir = plugin_dir / ".hermes-autogen"
+        lock_dir.mkdir()
+        (lock_dir / "shim.lock").write_text(json.dumps({
+            "schema_version": 1,
+            "generated_files": [
+                {"path": "__init__.py", "shim_version": "v1", "generated_at": "x"},
+                {"path": "plugin.yaml", "shim_version": "v1", "generated_at": "x"},
+            ],
+        }))
+
+        lock = {
+            "schema_version": 1,
+            "generated_files": [
+                {"path": "__init__.py"},
+                {"path": "plugin.yaml"},
+            ],
+        }
+        _cleanup_autogen_files(plugin_dir, lock)
+
+        assert not (plugin_dir / "__init__.py").exists()
+        assert not (plugin_dir / "plugin.yaml").exists()
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+    def test_missing_file_is_tolerated(self, tmp_path):
+        from hermes_cli.plugins_cmd import _cleanup_autogen_files
+
+        plugin_dir = tmp_path / "testplug"
+        plugin_dir.mkdir()
+        lock = {"generated_files": [{"path": "__init__.py"}]}
+
+        # Should not raise
+        _cleanup_autogen_files(plugin_dir, lock)

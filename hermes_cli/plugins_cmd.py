@@ -309,6 +309,37 @@ def _read_manifest(plugin_dir: Path) -> dict:
         return {}
 
 
+def _read_autogen_lock(plugin_dir: Path):
+    """Read .hermes-autogen/shim.lock, returning None on missing or corrupt file."""
+    import logging
+    _log = logging.getLogger(__name__)
+
+    lock_file = plugin_dir / ".hermes-autogen" / "shim.lock"
+    if not lock_file.exists():
+        return None
+    try:
+        return _json_autogen.loads(lock_file.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        _log.warning(
+            "Corrupt autogen lock file at %s: %s. Treating as absent.",
+            lock_file, e,
+        )
+        return None
+
+
+def _cleanup_autogen_files(plugin_dir: Path, lock: dict) -> None:
+    """Remove all files listed in the lock, plus the .hermes-autogen/ sidecar."""
+    for entry in lock.get("generated_files", []):
+        (plugin_dir / entry["path"]).unlink(missing_ok=True)
+    sidecar = plugin_dir / ".hermes-autogen"
+    if sidecar.exists():
+        try:
+            (sidecar / "shim.lock").unlink(missing_ok=True)
+            sidecar.rmdir()
+        except OSError:
+            pass  # non-empty or permission issue, leave alone
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 

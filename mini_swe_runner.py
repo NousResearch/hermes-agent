@@ -306,11 +306,15 @@ class MiniSWERunner:
             "into functions. After calling & executing the functions, you will be provided with function results within "
             "<tool_response> </tool_response> XML tags. Here are the available tools:\n"
             f"<tools>\n{self._format_tools_for_system_message()}\n</tools>\n"
+            "CRITICAL RULES FOR TOOL CALLING:\n"
+            "1. You MUST ONLY use the tools explicitly defined inside the <tools> tags. NEVER hallucinate or invent tool names.\n"
+            "2. DO NOT return an empty response. You must either call a valid tool or provide a conversational response.\n"
+            "3. If a tool call requires parameters, ensure they are formatted as valid JSON.\n"
             "For each function call return a JSON object, with the following pydantic model json schema for each:\n"
             "{'title': 'FunctionCall', 'type': 'object', 'properties': {'name': {'title': 'Name', 'type': 'string'}, "
             "'arguments': {'title': 'Arguments', 'type': 'object'}}, 'required': ['name', 'arguments']}\n"
             "Each function call should be enclosed within <tool_call> </tool_call> XML tags.\n"
-            "Example:\n<tool_call>\n{'name': <function-name>,'arguments': <args-dict>}\n</tool_call>"
+            "Example:\n<tool_call>\n{\"name\": \"function-name\",\"arguments\": {\"arg1\": \"value\"}}\n</tool_call>"
         )
         
         trajectory.append({"from": "system", "value": system_msg})
@@ -420,11 +424,11 @@ class MiniSWERunner:
 
 When you need to run commands, use the 'terminal' tool with your bash command.
 
-**Important:**
-- When you have completed the task successfully, run: echo "MINI_SWE_AGENT_FINAL_OUTPUT" followed by a summary
-- Be concise and efficient in your approach
-- Install any needed tools with apt-get or pip
-- Avoid interactive commands (no vim, nano, less, etc.)
+**CRITICAL RULES:**
+1. ONLY use the tools provided to you. NEVER invent, hallucinate, or guess tool names.
+2. NEVER return an empty response. You must always explain your reasoning or call a tool.
+3. When you have completed the task successfully, run: echo "MINI_SWE_AGENT_FINAL_OUTPUT" followed by a summary.
+4. Avoid interactive commands (no vim, nano, less, etc.).
 
 Complete the user's task step by step."""
         

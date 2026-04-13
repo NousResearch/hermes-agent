@@ -1018,7 +1018,10 @@ async def _send_line(pconfig, chat_id, message, media_files=None):
             elif ext in _AUDIO_EXTS:
                 result = await adapter.send_voice(chat_id, media_path)
             else:
-                result = await adapter.send_document(chat_id, media_path)
+                # LINE Messaging API does not support sending arbitrary files.
+                # Notify the user and treat as a non-fatal skip.
+                filename = os.path.basename(media_path)
+                result = await adapter.send(chat_id, f"[File: {filename} — LINE does not support sending this file type]")
             if not result.success:
                 return _error(f"LINE media send failed: {result.error}")
             last_result = result

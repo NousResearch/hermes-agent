@@ -22,7 +22,6 @@ import secrets
 import struct
 import tempfile
 import time
-import uuid
 import zlib
 from pathlib import Path
 from typing import Any, Dict, Optional, Set, Tuple
@@ -156,10 +155,14 @@ class LineAdapter(BasePlatformAdapter):
             extra.get("webhook_host")
             or os.getenv("LINE_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         )
-        self.webhook_port: int = int(
-            extra.get("webhook_port")
-            or os.getenv("LINE_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
-        )
+        try:
+            self.webhook_port: int = int(
+                extra.get("webhook_port")
+                or os.getenv("LINE_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
+            )
+        except (ValueError, TypeError):
+            logger.warning("[LINE] Invalid webhook_port value, using default %d", DEFAULT_WEBHOOK_PORT)
+            self.webhook_port = DEFAULT_WEBHOOK_PORT
         self.webhook_path: str = (
             extra.get("webhook_path")
             or os.getenv("LINE_WEBHOOK_PATH", DEFAULT_WEBHOOK_PATH)
@@ -309,9 +312,16 @@ class LineAdapter(BasePlatformAdapter):
         logger.info("[LINE] webhook received: destination=%s events=%d", payload.get("destination", ""), len(events))
         for event in events:
             logger.info("[LINE] webhook event type=%s source_type=%s", event.get("type", ""), event.get("source", {}).get("type", ""))
-            asyncio.create_task(self._process_event(event))
+            asyncio.create_task(self._safe_process_event(event))
 
         return web.Response(status=200, text="OK")
+
+    async def _safe_process_event(self, event: dict) -> None:
+        """Wrapper for _process_event that logs unhandled exceptions."""
+        try:
+            await self._process_event(event)
+        except Exception:
+            logger.exception("[LINE] Unhandled error processing event: %s", event.get("type", "?"))
 
     async def _process_event(self, event: dict) -> None:
         """Process a single LINE webhook event."""
@@ -614,6 +624,18 @@ class LineAdapter(BasePlatformAdapter):
         if not path.exists() or not path.is_file():
             raise web.HTTPNotFound()
 
+        # Defence-in-depth: verify the resolved path is within an allowed root
+        # (system temp dir or HERMES_HOME) to guard against any accidental
+        # escalation — all paths reach here only via _register_media which is
+        # called from internal code, so this is a belt-and-suspenders check.
+        resolved = path.resolve()
+        tmp_root = Path(tempfile.gettempdir()).resolve()
+        from hermes_constants import get_hermes_home
+        hermes_root = Path(get_hermes_home()).resolve()
+        if not (resolved.is_relative_to(tmp_root) or resolved.is_relative_to(hermes_root)):
+            logger.warning("[LINE] Refusing to serve file outside allowed roots: %s", resolved)
+            raise web.HTTPForbidden()
+
         content_type, _ = mimetypes.guess_type(str(path))
         return web.FileResponse(
             path,
@@ -637,7 +659,7 @@ class LineAdapter(BasePlatformAdapter):
         requires ``originalContentUrl`` and ``previewImageUrl`` to be HTTPS.
         For local files use :meth:`send_image_file` instead.
         """
-        if not image_url.startswith("https://"):
+        if not image_url.lower().startswith("https://"):
             logger.error(
                 "[LINE] send_image requires an HTTPS URL; got %.80s — use send_image_file for local paths",
                 image_url,

@@ -450,3 +450,37 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
         assert raw["display"]["still_working_interval"] == 600
         assert raw["display"]["still_working_overrides"] == {}
+
+    def test_migrate_to_v17_also_moves_legacy_compression_summary_settings(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 16,
+                    "display": {"tool_progress": "off"},
+                    "compression": {
+                        "target_ratio": 0.2,
+                        "summary_model": "openai/gpt-5.4-mini",
+                        "summary_provider": "openrouter",
+                        "summary_base_url": "https://example.invalid/v1",
+                    },
+                    "auxiliary": {"compression": {"provider": "auto"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 17
+        assert raw["display"]["still_working_interval"] == 600
+        assert raw["display"]["still_working_overrides"] == {}
+        assert raw["compression"]["target_ratio"] == 0.2
+        assert "summary_model" not in raw["compression"]
+        assert "summary_provider" not in raw["compression"]
+        assert "summary_base_url" not in raw["compression"]
+        assert raw["auxiliary"]["compression"]["model"] == "openai/gpt-5.4-mini"
+        assert raw["auxiliary"]["compression"]["provider"] == "openrouter"
+        assert raw["auxiliary"]["compression"]["base_url"] == "https://example.invalid/v1"

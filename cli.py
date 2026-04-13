@@ -2041,22 +2041,38 @@ class HermesCLI:
 
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
-                return self._trim_status_bar_text(text, width)
-            if width < 76:
+            elif width < 76:
                 parts = [f"⚕ {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
-                return self._trim_status_bar_text(" · ".join(parts), width)
-
-            if snapshot["context_length"]:
-                ctx_total = _format_context_length(snapshot["context_length"])
-                ctx_used = format_token_count_compact(snapshot["context_tokens"])
-                context_label = f"{ctx_used}/{ctx_total}"
+                text = " · ".join(parts)
             else:
-                context_label = "ctx --"
-
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
-            parts.append(duration_label)
-            return self._trim_status_bar_text(" │ ".join(parts), width)
+                if snapshot["context_length"]:
+                    ctx_total = _format_context_length(snapshot["context_length"])
+                    ctx_used = format_token_count_compact(snapshot["context_tokens"])
+                    context_label = f"{ctx_used}/{ctx_total}"
+                else:
+                    context_label = "ctx --"
+                parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+                parts.append(duration_label)
+                text = " │ ".join(parts)
+            try:
+                from hermes_cli.plugins import invoke_hook_modifying as _invoke_hook_modifying
+                _hook_state = _invoke_hook_modifying(
+                    "on_status_bar_render",
+                    initial={
+                        "status_text": text,
+                        "width": width,
+                        "snapshot": snapshot,
+                        "model": snapshot.get("model", ""),
+                        "session_id": getattr(self, "session_id", None) or "",
+                        "iteration": snapshot.get("api_calls", 0),
+                    },
+                )
+                if isinstance(_hook_state.get("status_text"), str) and _hook_state.get("status_text"):
+                    text = _hook_state["status_text"]
+            except Exception:
+                pass
+            return self._trim_status_bar_text(text, width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 

@@ -295,6 +295,73 @@ class TestPluginHooks:
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
+    def test_legacy_hook_alias_maps_to_canonical(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "alias_plugin",
+            register_body='ctx.register_hook("pre_tool_call", lambda **kw: {"ok": True})',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        # Invoke canonical name, should still hit legacy registration.
+        results = mgr.invoke_hook("before_tool_call", tool_name="x", args={}, task_id="")
+        assert results == [{"ok": True}]
+
+    def test_modifying_hooks_run_in_priority_order(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "high_plugin",
+            register_body=(
+                'ctx.register_hook("before_tool_call", '
+                'lambda **kw: {"args": {"from": "high"}}, priority=100)'
+            ),
+        )
+        _make_plugin_dir(
+            plugins_dir,
+            "low_plugin",
+            register_body=(
+                'ctx.register_hook("before_tool_call", '
+                'lambda **kw: {"args": {"from": "low"}}, priority=1)'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        state = mgr.invoke_hook_modifying(
+            "before_tool_call",
+            initial={"args": {"from": "initial"}, "block": False},
+        )
+        assert state["args"] == {"from": "low"}
+
+    def test_claiming_hook_returns_first_handled(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "first_decline",
+            register_body=(
+                'ctx.register_hook("before_agent_reply", lambda **kw: {"handled": False}, priority=100)'
+            ),
+        )
+        _make_plugin_dir(
+            plugins_dir,
+            "second_claim",
+            register_body=(
+                'ctx.register_hook("before_agent_reply", '
+                'lambda **kw: {"handled": True, "reply": "override"}, priority=50)'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        result = mgr.invoke_hook_claiming("before_agent_reply", assistant_response="base")
+        assert result == {"handled": True, "reply": "override"}
+
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

@@ -7888,6 +7888,19 @@ class AIAgent:
             )
 
             if _preflight_tokens >= self.context_compressor.threshold_tokens:
+                try:
+                    from hermes_cli.plugins import invoke_hook_observe as _invoke_hook_observe
+                    _invoke_hook_observe(
+                        "on_context_window_update",
+                        event_type="threshold_crossed",
+                        session_id=self.session_id,
+                        model=self.model,
+                        before={"message_count": len(messages), "approx_tokens": _preflight_tokens},
+                        after={"message_count": len(messages), "approx_tokens": _preflight_tokens},
+                        threshold_tokens=self.context_compressor.threshold_tokens,
+                    )
+                except Exception:
+                    pass
                 logger.info(
                     "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                     f"{_preflight_tokens:,}",
@@ -7904,6 +7917,7 @@ class AIAgent:
                 # context windows (each pass summarises the middle N turns).
                 for _pass in range(3):
                     _orig_len = len(messages)
+                    _before_tokens = _preflight_tokens
                     messages, active_system_prompt = self._compress_context(
                         messages, system_message, approx_tokens=_preflight_tokens,
                         task_id=effective_task_id,
@@ -7922,44 +7936,66 @@ class AIAgent:
                         system_prompt=active_system_prompt or "",
                         tools=self.tools or None,
                     )
+                    try:
+                        from hermes_cli.plugins import invoke_hook_observe as _invoke_hook_observe
+                        _invoke_hook_observe(
+                            "on_context_window_update",
+                            event_type="compressed",
+                            session_id=self.session_id,
+                            model=self.model,
+                            before={"message_count": _orig_len, "approx_tokens": _before_tokens},
+                            after={"message_count": len(messages), "approx_tokens": _preflight_tokens},
+                            pass_index=_pass + 1,
+                        )
+                    except Exception:
+                        pass
                     if _preflight_tokens < self.context_compressor.threshold_tokens:
                         break  # Under threshold
 
-        # Plugin hook: pre_llm_call
-        # Fired once per turn before the tool-calling loop.  Plugins can
-        # return a dict with a ``context`` key (or a plain string) whose
-        # value is appended to the current turn's user message.
-        #
-        # Context is ALWAYS injected into the user message, never the
-        # system prompt.  This preserves the prompt cache prefix — the
-        # system prompt stays identical across turns so cached tokens
-        # are reused.  The system prompt is Hermes's territory; plugins
-        # contribute context alongside the user's input.
-        #
-        # All injected context is ephemeral (not persisted to session DB).
+        # Plugin hook: before_agent_start (legacy alias: pre_llm_call)
+        # Fired once per turn before the tool-calling loop.
         _plugin_user_context = ""
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _pre_results = _invoke_hook(
-                "pre_llm_call",
-                session_id=self.session_id,
-                user_message=original_user_message,
-                conversation_history=list(messages),
-                is_first_turn=(not bool(conversation_history)),
-                model=self.model,
-                platform=getattr(self, "platform", None) or "",
-                sender_id=getattr(self, "_user_id", None) or "",
+            from hermes_cli.plugins import invoke_hook_modifying as _invoke_hook_modifying
+            _hook_state = _invoke_hook_modifying(
+                "before_agent_start",
+                initial={
+                    "session_id": self.session_id,
+                    "user_message": original_user_message,
+                    "conversation_history": list(messages),
+                    "is_first_turn": (not bool(conversation_history)),
+                    "model": self.model,
+                    "platform": getattr(self, "platform", None) or "",
+                    "sender_id": getattr(self, "_user_id", None) or "",
+                    "prepend_user_context": "",
+                    "ephemeral_system_append": "",
+                    "model_override": "",
+                    "provider_override": "",
+                },
             )
             _ctx_parts: list[str] = []
-            for r in _pre_results:
-                if isinstance(r, dict) and r.get("context"):
-                    _ctx_parts.append(str(r["context"]))
-                elif isinstance(r, str) and r.strip():
-                    _ctx_parts.append(r)
-            if _ctx_parts:
-                _plugin_user_context = "\n\n".join(_ctx_parts)
+            if _hook_state.get("prepend_user_context"):
+                _ctx_parts.append(str(_hook_state["prepend_user_context"]))
+            if _hook_state.get("context"):
+                _ctx_parts.append(str(_hook_state["context"]))
+            _plugin_user_context = "\n\n".join(p for p in _ctx_parts if p)
+
+            _ephemeral_append = str(_hook_state.get("ephemeral_system_append") or "").strip()
+            if _ephemeral_append:
+                self.ephemeral_system_prompt = (
+                    (self.ephemeral_system_prompt + "\n\n" + _ephemeral_append).strip()
+                    if self.ephemeral_system_prompt
+                    else _ephemeral_append
+                )
+
+            _model_override = str(_hook_state.get("model_override") or "").strip()
+            if _model_override:
+                self.model = _model_override
+            _provider_override = str(_hook_state.get("provider_override") or "").strip()
+            if _provider_override:
+                self.provider = _provider_override
         except Exception as exc:
-            logger.warning("pre_llm_call hook failed: %s", exc)
+            logger.warning("before_agent_start hook failed: %s", exc)
 
         # Main conversation loop
         api_call_count = 0
@@ -10447,6 +10483,33 @@ class AIAgent:
             )
         else:
             logger.info(_diag_msg, *_diag_args)
+
+        # Plugin hook: before_agent_reply
+        # Allows plugins to short-circuit or rewrite the outgoing reply.
+        if final_response is not None and not interrupted:
+            try:
+                from hermes_cli.plugins import invoke_hook_claiming as _invoke_hook_claiming
+                _claim = _invoke_hook_claiming(
+                    "before_agent_reply",
+                    assistant_response=final_response,
+                    session_id=self.session_id,
+                    user_message=original_user_message,
+                    conversation_history=list(messages),
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+                if _claim and _claim.get("handled"):
+                    _reply = _claim.get("reply")
+                    if isinstance(_reply, dict):
+                        final_response = str(_reply.get("text", ""))
+                    elif _reply is not None:
+                        final_response = str(_reply)
+                    elif "assistant_response" in _claim:
+                        final_response = str(_claim.get("assistant_response") or "")
+                    else:
+                        final_response = ""
+            except Exception as exc:
+                logger.warning("before_agent_reply hook failed: %s", exc)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

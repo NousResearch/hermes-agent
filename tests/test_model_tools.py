@@ -1,7 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
-from unittest.mock import call, patch
+from unittest.mock import ANY, patch
 
 import pytest
 
@@ -43,8 +43,18 @@ class TestHandleFunctionCall:
     def test_tool_hooks_receive_session_and_tool_call_ids(self):
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("hermes_cli.plugins.invoke_hook_modifying") as mock_pre_hook,
+            patch("hermes_cli.plugins.invoke_hook_observe") as mock_post_hook,
         ):
+            mock_pre_hook.return_value = {
+                "tool_name": "web_search",
+                "args": {"q": "test"},
+                "task_id": "task-1",
+                "session_id": "session-1",
+                "tool_call_id": "call-1",
+                "block": False,
+                "reason": "",
+            }
             result = handle_function_call(
                 "web_search",
                 {"q": "test"},
@@ -54,25 +64,29 @@ class TestHandleFunctionCall:
             )
 
         assert result == '{"ok":true}'
-        assert mock_invoke_hook.call_args_list == [
-            call(
-                "pre_tool_call",
-                tool_name="web_search",
-                args={"q": "test"},
-                task_id="task-1",
-                session_id="session-1",
-                tool_call_id="call-1",
-            ),
-            call(
-                "post_tool_call",
-                tool_name="web_search",
-                args={"q": "test"},
-                result='{"ok":true}',
-                task_id="task-1",
-                session_id="session-1",
-                tool_call_id="call-1",
-            ),
-        ]
+        mock_pre_hook.assert_called_once_with(
+            "before_tool_call",
+            initial={
+                "tool_name": "web_search",
+                "args": {"q": "test"},
+                "task_id": "task-1",
+                "session_id": "session-1",
+                "tool_call_id": "call-1",
+                "block": False,
+                "reason": "",
+            },
+            stop_fn=ANY,
+        )
+        mock_post_hook.assert_called_once_with(
+            "after_tool_call",
+            tool_name="web_search",
+            args={"q": "test"},
+            result='{"ok":true}',
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+            duration_ms=ANY,
+        )
 
 
 # =========================================================================

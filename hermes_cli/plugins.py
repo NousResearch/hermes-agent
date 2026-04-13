@@ -52,10 +52,13 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_HOOKS: Set[str] = {
-    "pre_tool_call",
-    "post_tool_call",
-    "pre_llm_call",
+_CANONICAL_HOOKS: Set[str] = {
+    "before_tool_call",
+    "after_tool_call",
+    "before_agent_start",
+    "before_agent_reply",
+    "on_context_window_update",
+    "on_status_bar_render",
     "post_llm_call",
     "pre_api_request",
     "post_api_request",
@@ -64,6 +67,14 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize",
     "on_session_reset",
 }
+
+_HOOK_ALIASES: Dict[str, str] = {
+    "pre_tool_call": "before_tool_call",
+    "post_tool_call": "after_tool_call",
+    "pre_llm_call": "before_agent_start",
+}
+
+VALID_HOOKS: Set[str] = _CANONICAL_HOOKS | set(_HOOK_ALIASES.keys())
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
@@ -115,6 +126,16 @@ class LoadedPlugin:
     hooks_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
+
+
+@dataclass
+class HookRegistration:
+    """Runtime registration for a single hook callback."""
+
+    plugin_name: str
+    hook_name: str
+    callback: Callable
+    priority: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +267,7 @@ class PluginContext:
 
     # -- hook registration --------------------------------------------------
 
-    def register_hook(self, hook_name: str, callback: Callable) -> None:
+    def register_hook(self, hook_name: str, callback: Callable, priority: int = 0) -> None:
         """Register a lifecycle hook callback.
 
         Unknown hook names produce a warning but are still stored so
@@ -260,8 +281,22 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
-        self._manager._hooks.setdefault(hook_name, []).append(callback)
-        logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        canonical_name = self._manager._canonicalize_hook_name(hook_name)
+        self._manager._hooks.setdefault(canonical_name, []).append(
+            HookRegistration(
+                plugin_name=self.manifest.name,
+                hook_name=canonical_name,
+                callback=callback,
+                priority=priority,
+            )
+        )
+        logger.debug(
+            "Plugin %s registered hook: %s (canonical=%s, priority=%s)",
+            self.manifest.name,
+            hook_name,
+            canonical_name,
+            priority,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +308,22 @@ class PluginManager:
 
     def __init__(self) -> None:
         self._plugins: Dict[str, LoadedPlugin] = {}
-        self._hooks: Dict[str, List[Callable]] = {}
+        self._hooks: Dict[str, List[HookRegistration]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+
+    def _canonicalize_hook_name(self, hook_name: str) -> str:
+        """Normalize legacy hook names to canonical names."""
+        return _HOOK_ALIASES.get(hook_name, hook_name)
+
+    def _get_sorted_hooks(self, hook_name: str) -> List[HookRegistration]:
+        canonical_name = self._canonicalize_hook_name(hook_name)
+        hooks = list(self._hooks.get(canonical_name, []))
+        hooks.sort(key=lambda h: h.priority, reverse=True)
+        return hooks
 
     # -----------------------------------------------------------------------
     # Public
@@ -425,16 +470,11 @@ class PluginManager:
                         for n in p.tools_registered
                     }
                 ]
-                loaded.hooks_registered = list(
+                loaded.hooks_registered = sorted(
                     {
-                        h
-                        for h, cbs in self._hooks.items()
-                        if cbs  # non-empty
-                    }
-                    - {
-                        h
-                        for name, p in self._plugins.items()
-                        for h in p.hooks_registered
+                        hook_name
+                        for hook_name, regs in self._hooks.items()
+                        if any(reg.plugin_name == manifest.name for reg in regs)
                     }
                 )
                 loaded.enabled = True
@@ -517,21 +557,67 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
-        callbacks = self._hooks.get(hook_name, [])
+        callbacks = self._get_sorted_hooks(hook_name)
         results: List[Any] = []
-        for cb in callbacks:
+        for reg in callbacks:
             try:
-                ret = cb(**kwargs)
+                ret = reg.callback(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
-                    hook_name,
-                    getattr(cb, "__name__", repr(cb)),
+                    self._canonicalize_hook_name(hook_name),
+                    getattr(reg.callback, "__name__", repr(reg.callback)),
                     exc,
                 )
         return results
+
+    def invoke_hook_observe(self, hook_name: str, **kwargs: Any) -> None:
+        """Run all callbacks for observers; ignore all return values."""
+        self.invoke_hook(hook_name, **kwargs)
+
+    def invoke_hook_modifying(
+        self,
+        hook_name: str,
+        initial: Dict[str, Any],
+        stop_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+    ) -> Dict[str, Any]:
+        """Run hooks sequentially and merge dict-like modifications."""
+        state: Dict[str, Any] = dict(initial)
+        callbacks = self._get_sorted_hooks(hook_name)
+        for reg in callbacks:
+            try:
+                ret = reg.callback(**state)
+                if isinstance(ret, dict):
+                    state.update(ret)
+                    if stop_fn and stop_fn(state):
+                        break
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    self._canonicalize_hook_name(hook_name),
+                    getattr(reg.callback, "__name__", repr(reg.callback)),
+                    exc,
+                )
+        return state
+
+    def invoke_hook_claiming(self, hook_name: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
+        """Run hooks until a callback returns {'handled': True}."""
+        callbacks = self._get_sorted_hooks(hook_name)
+        for reg in callbacks:
+            try:
+                ret = reg.callback(**kwargs)
+                if isinstance(ret, dict) and ret.get("handled") is True:
+                    return ret
+            except Exception as exc:
+                logger.warning(
+                    "Hook '%s' callback %s raised: %s",
+                    self._canonicalize_hook_name(hook_name),
+                    getattr(reg.callback, "__name__", repr(reg.callback)),
+                    exc,
+                )
+        return None
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -582,6 +668,25 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def invoke_hook_observe(hook_name: str, **kwargs: Any) -> None:
+    """Invoke observer hooks (return values ignored)."""
+    get_plugin_manager().invoke_hook_observe(hook_name, **kwargs)
+
+
+def invoke_hook_modifying(
+    hook_name: str,
+    initial: Dict[str, Any],
+    stop_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Dict[str, Any]:
+    """Invoke modifying hooks and merge dict-like return values."""
+    return get_plugin_manager().invoke_hook_modifying(hook_name, initial=initial, stop_fn=stop_fn)
+
+
+def invoke_hook_claiming(hook_name: str, **kwargs: Any) -> Optional[Dict[str, Any]]:
+    """Invoke claiming hooks and return first handled result."""
+    return get_plugin_manager().invoke_hook_claiming(hook_name, **kwargs)
 
 
 def get_plugin_tool_names() -> Set[str]:

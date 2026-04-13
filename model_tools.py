@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
@@ -497,18 +498,34 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        hook_state = {
+            "tool_name": function_name,
+            "args": function_args,
+            "task_id": task_id or "",
+            "session_id": session_id or "",
+            "tool_call_id": tool_call_id or "",
+            "block": False,
+            "reason": "",
+        }
         try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "pre_tool_call",
-                tool_name=function_name,
-                args=function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
+            from hermes_cli.plugins import invoke_hook_modifying
+            hook_state = invoke_hook_modifying(
+                "before_tool_call",
+                initial=hook_state,
+                stop_fn=lambda state: bool(state.get("block")),
             )
         except Exception:
             pass
+
+        if hook_state.get("block"):
+            reason = str(hook_state.get("reason") or "Blocked by plugin hook")
+            return json.dumps(
+                {"error": reason, "blocked": True, "tool_name": function_name},
+                ensure_ascii=False,
+            )
+
+        function_args = hook_state.get("args", function_args)
+        _tool_started = time.time()
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
@@ -527,15 +544,16 @@ def handle_function_call(
             )
 
         try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "post_tool_call",
+            from hermes_cli.plugins import invoke_hook_observe
+            invoke_hook_observe(
+                "after_tool_call",
                 tool_name=function_name,
                 args=function_args,
                 result=result,
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=int((time.time() - _tool_started) * 1000),
             )
         except Exception:
             pass

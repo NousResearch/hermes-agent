@@ -237,9 +237,12 @@ def register(ctx):
 
 | Hook | Fires when | Returns |
 |------|-----------|---------|
-| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | ignored |
-| [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
+| [`before_tool_call`](#pre_tool_call) (`pre_tool_call` alias) | Before any tool executes | can modify/block call |
+| [`after_tool_call`](#post_tool_call) (`post_tool_call` alias) | After any tool returns | ignored |
+| [`before_agent_start`](#pre_llm_call) (`pre_llm_call` alias) | Once per turn, before the tool-calling loop | context injection / startup modifiers |
+| `before_agent_reply` | Before final reply is returned | first `{handled:true}` wins |
+| `on_context_window_update` | When compression/context window changes | ignored |
+| `on_status_bar_render` | Before TUI status text renders | can rewrite `status_text` |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |

@@ -80,6 +80,22 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_status_bar_render_hook_can_override_text(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+        cli_obj.session_id = "s1"
+        with patch("hermes_cli.plugins.invoke_hook_modifying") as mock_hook:
+            mock_hook.return_value = {"status_text": "HOOKED STATUS"}
+            text = cli_obj._build_status_bar_text(width=120)
+        assert text == "HOOKED STATUS"
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 

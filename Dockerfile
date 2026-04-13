@@ -3,8 +3,6 @@ FROM ghcr.io/astral-sh/uv:latest@sha256:90bbb3c16635e9627f49eec6539f956d70746c40
 FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_runtime
 FROM python:slim-trixie@sha256:fb83750094b46fd6b8adaa80f66e2302ecbe45d513f6cece637a841e1025b4ca
 
-WORKDIR /opt/hermes
-
 ENV PYTHONUNBUFFERED=1
 
 # Store Playwright browsers outside the volume mount so the build-time
@@ -31,6 +29,8 @@ COPY --from=uv_runtime /uv /usr/local/bin/uv
 COPY --from=uv_runtime /uvx /usr/local/bin/uvx
 COPY --from=gosu_runtime /gosu /usr/local/bin/
 
+WORKDIR /opt/hermes
+
 # Install top-level Node.js dependencies.
 COPY package*.json ./
 RUN npm ci --no-audit &&\
@@ -49,6 +49,8 @@ RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm ci --no-audit &&\
     npm cache clean --force
 
+# Hand ownership to hermes user, then install Python deps in a virtualenv
+RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
 # Configure the optional Python extras to install.
@@ -56,9 +58,8 @@ ARG EXTRAS="messaging,cron,cli,modal,tts-premium,voice,pty,honcho,mcp,homeassist
 
 # Copy the application source as `hermes` and install Hermes into the virtual environment.
 COPY . .
-RUN chown -R hermes:hermes /opt/hermes
 RUN uv venv && \
-    uv pip install -e ".[$EXTRAS]" --no-cache
+    uv pip install --no-cache -e ".[$EXTRAS]"
 
 USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh

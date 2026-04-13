@@ -45,13 +45,23 @@ def run_migrate(args):
     try:
         if action == "export":
             export_bundle(getattr(args, "output", None), getattr(args, "preset", "safe"))
+            return True
         elif action == "import":
-            import_bundle = _lazy_import_import()
-            import_bundle(
-                getattr(args, "input", None),
-                dry_run=getattr(args, "dry_run", False),
-                interactive=interactive,
-            )
+            try:
+                import_bundle_fn = _lazy_import_import()
+                import_bundle_fn(
+                    getattr(args, "input", None),
+                    dry_run=getattr(args, "dry_run", False),
+                    interactive=interactive,
+                )
+                return True
+            except NotImplementedError:
+                print(color(
+                    "\n  migrate import is not yet available in this PR.\n"
+                    "  It will be included in a separate PR: feat/hermes-migrate-import",
+                    Colors.YELLOW,
+                ))
+                return False
         elif action == "verify":
             _, verify_bundle = _lazy_import_verify()
             return verify_bundle(getattr(args, "input", None))

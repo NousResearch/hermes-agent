@@ -1937,6 +1937,56 @@ class APIServerAdapter(BasePlatformAdapter):
         self._ws_symbols_cache.pop(repo, None)
         return web.json_response({"status": "ok", "repo": repo})
 
+    async def _handle_ws_git_log(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/git/log?limit=50 — commit history."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        limit = int(request.rel_url.query.get("limit", "50"))
+        fmt = "%H|%h|%an|%ae|%aI|%s|%P"
+        rc, out, err = await self._ws_run(["git", "log", f"--format={fmt}", f"-n{limit}"], workspace)
+        if rc != 0:
+            return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+        commits = []
+        for line in out.strip().splitlines():
+            parts = line.split("|", 6)
+            if len(parts) >= 6:
+                commits.append({
+                    "hash": parts[0],
+                    "shortHash": parts[1],
+                    "author": parts[2],
+                    "email": parts[3],
+                    "date": parts[4],
+                    "message": parts[5],
+                    "parents": parts[6].split() if len(parts) > 6 and parts[6] else [],
+                })
+        return web.json_response({"status": "ok", "commits": commits})
+
+    async def _handle_ws_git_files(self, request: "web.Request") -> "web.Response":
+        """GET /ws/{repo}/git/files?commit=<hash> — files changed in a commit."""
+        repo = request.match_info["repo"]
+        workspace = self._ws_find_repo(repo)
+        if not workspace:
+            return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
+
+        commit_hash = request.rel_url.query.get("commit", "HEAD")
+        rc, out, err = await self._ws_run(
+            ["git", "diff-tree", "--no-commit-id", "-r", "--name-status", commit_hash], workspace
+        )
+        if rc != 0:
+            return web.json_response({"status": "error", "message": err.strip()}, status=500)
+
+        files = []
+        status_map = {"A": "added", "M": "modified", "D": "deleted", "R": "renamed"}
+        for line in out.strip().splitlines():
+            parts = line.split("\t", 2)
+            if len(parts) >= 2:
+                files.append({"status": status_map.get(parts[0][0], parts[0]), "path": parts[-1]})
+        return web.json_response({"status": "ok", "files": files})
+
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
@@ -1980,6 +2030,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/ws/{repo}/git/push", self._handle_ws_git_push)
             self._app.router.add_post("/ws/{repo}/git/pull", self._handle_ws_git_pull)
             self._app.router.add_post("/ws/{repo}/git/pr", self._handle_ws_git_pr)
+            self._app.router.add_get("/ws/{repo}/git/log", self._handle_ws_git_log)
+            self._app.router.add_get("/ws/{repo}/git/files", self._handle_ws_git_files)
             # Sylang symbol graph — batch file delivery (no LLM, fast)
             self._app.router.add_get("/ws/{repo}/symbols", self._handle_ws_symbols)
             self._app.router.add_post("/ws/{repo}/symbols/invalidate", self._handle_ws_symbols_invalidate)

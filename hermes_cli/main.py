@@ -1045,6 +1045,7 @@ def select_provider_and_model(args=None):
         "gemini": "Google AI Studio",
         "zai": "Z.AI / GLM",
         "kimi-coding": "Kimi / Moonshot",
+        "kimi-coding-cn": "Kimi / Moonshot (China)",
         "minimax": "MiniMax",
         "minimax-cn": "MiniMax (China)",
         "opencode-zen": "OpenCode Zen",
@@ -1078,7 +1079,8 @@ def select_provider_and_model(args=None):
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
         ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
-        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
+        ("kimi-coding", "Kimi / Moonshot (Moonshot AI international API)"),
+        ("kimi-coding-cn", "Kimi / Moonshot China (api.moonshot.cn, for mainland China)"),
         ("minimax", "MiniMax (global direct API)"),
         ("minimax-cn", "MiniMax China (domestic direct API)"),
         ("kilocode", "Kilo Code (Kilo Gateway API)"),
@@ -1197,8 +1199,8 @@ def select_provider_and_model(args=None):
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
         _model_flow_anthropic(config, current_model)
-    elif selected_provider == "kimi-coding":
-        _model_flow_kimi(config, current_model)
+    elif selected_provider in ("kimi-coding", "kimi-coding-cn"):
+        _model_flow_kimi(config, current_model, provider_id=selected_provider)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -2347,7 +2349,7 @@ def _model_flow_copilot_acp(config, current_model=""):
     print(f"Default model set to: {selected} (via {pconfig.name})")
 
 
-def _model_flow_kimi(config, current_model=""):
+def _model_flow_kimi(config, current_model="", provider_id="kimi-coding"):
     """Kimi / Moonshot model selection with automatic endpoint routing.
 
     - sk-kimi-* keys   → api.kimi.com/coding/v1  (Kimi Coding Plan)
@@ -2361,7 +2363,7 @@ def _model_flow_kimi(config, current_model=""):
     )
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
 
-    provider_id = "kimi-coding"
+    provider_id = provider_id or "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
@@ -4594,7 +4596,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )

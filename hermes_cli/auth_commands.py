@@ -36,25 +36,23 @@ _OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
 
 
 def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key) tuples for custom_providers in config."""
+    """Return list of (display_name, pool_key, provider_key) tuples."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
         return []
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        return []
     result = []
-    for entry in custom_providers:
+    for entry in get_compatible_custom_providers(config):
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
         pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
-        result.append((name.strip(), pool_key))
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        result.append((name.strip(), pool_key, provider_key))
     return result
 
 
@@ -66,8 +64,10 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
-    for display_name, pool_key in _get_custom_provider_names():
+    for display_name, pool_key, provider_key in _get_custom_provider_names():
         if _normalize_custom_pool_name(display_name) == normalized:
+            return pool_key
+        if provider_key and provider_key.strip().lower() == normalized:
             return pool_key
     return None
 
@@ -405,7 +405,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
     known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
-        custom_display = [name for name, _key in custom_names]
+        custom_display = [name for name, _key, _provider_key in custom_names]
         print(f"\nKnown providers: {', '.join(known)}")
         print(f"Custom endpoints: {', '.join(custom_display)}")
     else:

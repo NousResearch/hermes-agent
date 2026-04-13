@@ -148,25 +148,6 @@ def managed_error(action: str = "modify configuration"):
 # Container-aware CLI (NixOS container mode)
 # =============================================================================
 
-def _is_inside_container() -> bool:
-    """Detect if we're already running inside a Docker/Podman container."""
-    # Standard Docker/Podman indicators
-    if os.path.exists("/.dockerenv"):
-        return True
-    # Podman uses /run/.containerenv
-    if os.path.exists("/run/.containerenv"):
-        return True
-    # Check cgroup for container runtime evidence (works for both Docker & Podman)
-    try:
-        with open("/proc/1/cgroup", "r") as f:
-            cgroup = f.read()
-            if "docker" in cgroup or "podman" in cgroup or "/lxc/" in cgroup:
-                return True
-    except OSError:
-        pass
-    return False
-
-
 def get_container_exec_info() -> Optional[dict]:
     """Read container mode metadata from HERMES_HOME/.container-mode.
 
@@ -181,7 +162,8 @@ def get_container_exec_info() -> Optional[dict]:
     if os.environ.get("HERMES_DEV") == "1":
         return None
 
-    if _is_inside_container():
+    from hermes_constants import is_container
+    if is_container():
         return None
 
     container_mode_file = get_hermes_home() / ".container-mode"
@@ -355,6 +337,10 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Periodic "still working" notification interval (seconds).
+        # Sends a status message every N seconds so the user knows the
+        # agent hasn't died during long tasks.  0 = disable notifications.
+        "gateway_notify_interval": 600,
     },
     
     "terminal": {
@@ -428,9 +414,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "summary_model": "",          # empty = use main configured model
-        "summary_provider": "auto",
-        "summary_base_url": None,
+
     },
     "smart_model_routing": {
         "enabled": False,
@@ -716,7 +700,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 16,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -829,6 +813,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Kimi base URL (leave empty for default)",
         "url": None,
         "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_CN_API_KEY": {
+        "description": "Kimi / Moonshot China API key",
+        "prompt": "Kimi (China) API key",
+        "url": "https://platform.moonshot.cn/",
+        "password": True,
         "category": "provider",
         "advanced": True,
     },
@@ -1560,6 +1552,136 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     return missing
 
 
+def _normalize_custom_provider_entry(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Return a runtime-compatible custom provider entry or ``None``."""
+    if not isinstance(entry, dict):
+        return None
+
+    base_url = ""
+    for url_key in ("api", "url", "base_url"):
+        raw_url = entry.get(url_key)
+        if isinstance(raw_url, str) and raw_url.strip():
+            base_url = raw_url.strip()
+            break
+    if not base_url:
+        return None
+
+    name = ""
+    raw_name = entry.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        name = raw_name.strip()
+    elif provider_key.strip():
+        name = provider_key.strip()
+    if not name:
+        return None
+
+    normalized: Dict[str, Any] = {
+        "name": name,
+        "base_url": base_url,
+    }
+
+    provider_key = provider_key.strip()
+    if provider_key:
+        normalized["provider_key"] = provider_key
+
+    api_key = entry.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        normalized["api_key"] = api_key.strip()
+
+    key_env = entry.get("key_env")
+    if isinstance(key_env, str) and key_env.strip():
+        normalized["key_env"] = key_env.strip()
+
+    api_mode = entry.get("api_mode") or entry.get("transport")
+    if isinstance(api_mode, str) and api_mode.strip():
+        normalized["api_mode"] = api_mode.strip()
+
+    model_name = entry.get("model") or entry.get("default_model")
+    if isinstance(model_name, str) and model_name.strip():
+        normalized["model"] = model_name.strip()
+
+    models = entry.get("models")
+    if isinstance(models, dict) and models:
+        normalized["models"] = models
+
+    context_length = entry.get("context_length")
+    if isinstance(context_length, int) and context_length > 0:
+        normalized["context_length"] = context_length
+
+    rate_limit_delay = entry.get("rate_limit_delay")
+    if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
+        normalized["rate_limit_delay"] = rate_limit_delay
+
+    return normalized
+
+
+def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
+    """Normalize ``providers`` config entries into the legacy custom-provider shape."""
+    if not isinstance(providers_dict, dict):
+        return []
+
+    custom_providers: List[Dict[str, Any]] = []
+    for key, entry in providers_dict.items():
+        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        if normalized is not None:
+            custom_providers.append(normalized)
+
+    return custom_providers
+
+
+def get_compatible_custom_providers(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Return a deduplicated custom-provider view across legacy and v12+ config.
+
+    ``custom_providers`` remains the on-disk legacy format, while ``providers``
+    is the newer keyed schema.  Runtime and picker flows still need a single
+    list-shaped view, but we should not materialise that compatibility layer
+    back into config.yaml because it duplicates entries in UIs.
+    """
+    if config is None:
+        config = load_config()
+
+    compatible: List[Dict[str, Any]] = []
+    seen_provider_keys: set = set()
+    seen_name_url_pairs: set = set()
+
+    def _append_if_new(entry: Optional[Dict[str, Any]]) -> None:
+        if entry is None:
+            return
+        provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+        name = str(entry.get("name", "") or "").strip().lower()
+        base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        pair = (name, base_url)
+
+        if provider_key and provider_key in seen_provider_keys:
+            return
+        if name and base_url and pair in seen_name_url_pairs:
+            return
+
+        compatible.append(entry)
+        if provider_key:
+            seen_provider_keys.add(provider_key)
+        if name and base_url:
+            seen_name_url_pairs.add(pair)
+
+    custom_providers = config.get("custom_providers")
+    if custom_providers is not None:
+        if not isinstance(custom_providers, list):
+            return []
+        for entry in custom_providers:
+            _append_if_new(_normalize_custom_provider_entry(entry))
+
+    for entry in providers_dict_to_custom_providers(config.get("providers")):
+        _append_if_new(entry)
+
+    return compatible
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1877,8 +1999,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
-                # Remove the old list
-                del config["custom_providers"]
+                # Remove the old list — runtime reads via get_compatible_custom_providers()
+                config.pop("custom_providers", None)
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
@@ -1988,6 +2110,43 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
                 print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
             results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
+
+    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
+    if current_ver < 17:
+        config = read_raw_config()
+        comp = config.get("compression", {})
+        if isinstance(comp, dict):
+            s_model = comp.pop("summary_model", None)
+            s_provider = comp.pop("summary_provider", None)
+            s_base_url = comp.pop("summary_base_url", None)
+            migrated_keys = []
+            # Migrate non-empty, non-default values to auxiliary.compression
+            if s_model and str(s_model).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("model"):
+                    aux_comp["model"] = str(s_model).strip()
+                    migrated_keys.append(f"model={s_model}")
+            if s_provider and str(s_provider).strip() not in ("", "auto"):
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
+                    aux_comp["provider"] = str(s_provider).strip()
+                    migrated_keys.append(f"provider={s_provider}")
+            if s_base_url and str(s_base_url).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("base_url"):
+                    aux_comp["base_url"] = str(s_base_url).strip()
+                    migrated_keys.append(f"base_url={s_base_url}")
+            if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
+                config["compression"] = comp
+                save_config(config)
+                if not quiet:
+                    if migrated_keys:
+                        print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
+                    else:
+                        print("  ✓ Removed unused compression.summary_* keys")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -2301,6 +2460,7 @@ _FALLBACK_COMMENT = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
@@ -2344,6 +2504,7 @@ _COMMENTED_SECTIONS = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
@@ -2398,7 +2559,13 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env."""
+    """Load environment variables from ~/.hermes/.env.
+
+    Sanitizes lines before parsing so that corrupted files (e.g.
+    concatenated KEY=VALUE pairs on a single line) are handled
+    gracefully instead of producing mangled values such as duplicated
+    bot tokens.  See #8908.
+    """
     env_path = get_env_path()
     env_vars = {}
     
@@ -2407,17 +2574,21 @@ def load_env() -> Dict[str, str]:
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
         open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
         with open(env_path, **open_kw) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
-                    env_vars[key.strip()] = value.strip().strip('"\'')
+            raw_lines = f.readlines()
+        # Sanitize before parsing: split concatenated lines & drop stale
+        # placeholders so corrupted .env files don't produce invalid tokens.
+        lines = _sanitize_env_lines(raw_lines)
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, _, value = line.partition('=')
+                env_vars[key.strip()] = value.strip().strip('"\'')
     
     return env_vars
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before writing.
+    """Fix corrupted .env lines before reading or writing.
 
     Handles two known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
@@ -2650,6 +2821,28 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+
+    Adds/updates vars that changed and removes vars that were deleted from
+    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
+    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    """
+    env_vars = load_env()
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    # Remove known Hermes vars that are no longer in .env
+    for key in known_keys:
+        if key not in env_vars and key in os.environ:
+            del os.environ[key]
+            count += 1
+    return count
+
+
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
     # Check environment first
@@ -2772,10 +2965,11 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        _sm = compression.get('summary_model', '') or '(main model)'
+        _aux_comp = config.get('auxiliary', {}).get('compression', {})
+        _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
-        comp_provider = compression.get('summary_provider', 'auto')
-        if comp_provider != 'auto':
+        comp_provider = _aux_comp.get('provider', 'auto')
+        if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
     
     # Auxiliary models

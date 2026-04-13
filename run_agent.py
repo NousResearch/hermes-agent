@@ -1748,10 +1748,25 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+
+            # Read user-configured context_length for the compression model.
+            # Custom endpoints often don't support /models API queries so
+            # get_model_context_length() falls through to the 128K default,
+            # ignoring the explicit config value.  Pass it as the highest-
+            # priority hint so the configured value is always respected.
+            _aux_cfg = (self.config or {}).get("auxiliary", {}).get("compression", {})
+            _aux_context_config = _aux_cfg.get("context_length") if isinstance(_aux_cfg, dict) else None
+            if _aux_context_config is not None:
+                try:
+                    _aux_context_config = int(_aux_context_config)
+                except (TypeError, ValueError):
+                    _aux_context_config = None
+
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=_aux_context_config,
             )
 
             threshold = self.context_compressor.threshold_tokens
@@ -1872,12 +1887,13 @@ class AIAgent:
         if not content:
             return ""
         # Strip all reasoning tag variants: <think>, <thinking>, <THINKING>,
-        # <reasoning>, <REASONING_SCRATCHPAD>
+        # <reasoning>, <REASONING_SCRATCHPAD>, <thought> (Gemma 4)
         content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL)
         content = re.sub(r'<thinking>.*?</thinking>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
-        content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
+        content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        content = re.sub(r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
 
     def _looks_like_codex_intermediate_ack(
@@ -8224,7 +8240,8 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
                         
-                        # This is often rate limiting or provider returning malformed response
+                        # Invalid response — could be rate limiting, provider timeout,
+                        # upstream server error, or malformed response.
                         retry_count += 1
                         
                         # Eager fallback: empty/malformed responses are a common
@@ -8260,11 +8277,44 @@ class AIAgent:
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
+                        # Extract error code from response for contextual diagnostics
+                        _resp_error_code = None
+                        if response and hasattr(response, 'error') and response.error:
+                            _code_raw = getattr(response.error, 'code', None)
+                            if _code_raw is None and isinstance(response.error, dict):
+                                _code_raw = response.error.get('code')
+                            if _code_raw is not None:
+                                try:
+                                    _resp_error_code = int(_code_raw)
+                                except (TypeError, ValueError):
+                                    pass
+
+                        # Build a human-readable failure hint from the error code
+                        # and response time, instead of always assuming rate limiting.
+                        if _resp_error_code == 524:
+                            _failure_hint = f"upstream provider timed out (Cloudflare 524, {api_duration:.0f}s)"
+                        elif _resp_error_code == 504:
+                            _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
+                        elif _resp_error_code == 429:
+                            _failure_hint = f"rate limited by upstream provider (429)"
+                        elif _resp_error_code in (500, 502):
+                            _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
+                        elif _resp_error_code in (503, 529):
+                            _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
+                        elif _resp_error_code is not None:
+                            _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
+                        elif api_duration < 10:
+                            _failure_hint = f"fast response ({api_duration:.1f}s) — likely rate limited"
+                        elif api_duration > 60:
+                            _failure_hint = f"slow response ({api_duration:.0f}s) — likely upstream timeout"
+                        else:
+                            _failure_hint = f"response time {api_duration:.1f}s"
+
                         self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
                         self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
                         cleaned_provider_error = self._clean_error_message(error_msg)
                         self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
-                        self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
+                        self._vprint(f"{self.log_prefix}   ⏱️  {_failure_hint}", force=True)
                         
                         if retry_count >= max_retries:
                             # Try fallback before giving up
@@ -8281,14 +8331,13 @@ class AIAgent:
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
+                                "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
                                 "failed": True  # Mark as failure for filtering
                             }
                         
-                        # Longer backoff for rate limiting (likely cause of None choices)
-                        # Jittered exponential: 5s base, 120s cap + random jitter
+                        # Backoff before retry — jittered exponential: 5s base, 120s cap
                         wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
+                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
@@ -8299,7 +8348,7 @@ class AIAgent:
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
                                 return {
-                                    "final_response": f"Operation interrupted: retrying API call after rate limit (retry {retry_count}/{max_retries}).",
+                                    "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                     "messages": messages,
                                     "api_calls": api_call_count,
                                     "completed": False,
@@ -9702,12 +9751,25 @@ class AIAgent:
                     
                     # Pop thinking-only prefill message(s) before appending
                     # (tool-call path — same rationale as the final-response path).
+                    _had_prefill = False
                     while (
                         messages
                         and isinstance(messages[-1], dict)
                         and messages[-1].get("_thinking_prefill")
                     ):
                         messages.pop()
+                        _had_prefill = True
+
+                    # Reset prefill counter when tool calls follow a prefill
+                    # recovery.  Without this, the counter accumulates across
+                    # the whole conversation — a model that intermittently
+                    # empties (empty → prefill → tools → empty → prefill →
+                    # tools) burns both prefill attempts and the third empty
+                    # gets zero recovery.  Resetting here treats each tool-
+                    # call success as a fresh start.
+                    if _had_prefill:
+                        self._thinking_prefill_retries = 0
+                        self._empty_content_retries = 0
 
                     messages.append(assistant_msg)
                     self._emit_interim_assistant_message(assistant_msg)
@@ -9883,16 +9945,23 @@ class AIAgent:
                             self._save_session_log(messages)
                             continue
 
-                        # ── Empty response retry (no reasoning) ──────
-                        # Model returned nothing — no content, no
-                        # structured reasoning, no tool calls.  Common
-                        # with open models (transient provider issues,
-                        # rate limits, sampling flukes).  Retry up to 3
-                        # times before attempting fallback.  Skip when
-                        # content has inline <think> tags (model chose
-                        # to reason, just no visible text).
-                        _truly_empty = not final_response.strip()
-                        if _truly_empty and not _has_structured and self._empty_content_retries < 3:
+                        # ── Empty response retry ──────────────────────
+                        # Model returned nothing usable.  Retry up to 3
+                        # times before attempting fallback.  This covers
+                        # both truly empty responses (no content, no
+                        # reasoning) AND reasoning-only responses after
+                        # prefill exhaustion — models like mimo-v2-pro
+                        # always populate reasoning fields via OpenRouter,
+                        # so the old `not _has_structured` guard blocked
+                        # retries for every reasoning model after prefill.
+                        _truly_empty = not self._strip_think_blocks(
+                            final_response
+                        ).strip()
+                        _prefill_exhausted = (
+                            _has_structured
+                            and self._thinking_prefill_retries >= 2
+                        )
+                        if _truly_empty and (not _has_structured or _prefill_exhausted) and self._empty_content_retries < 3:
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "

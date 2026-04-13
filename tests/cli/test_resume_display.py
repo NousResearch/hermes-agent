@@ -180,32 +180,70 @@ class TestDisplayResumedHistory:
         assert 200 <= a_count <= 310  # roughly 300 chars (±panel padding)
 
     def test_long_assistant_message_truncated(self):
+        """Non-last assistant messages are still truncated."""
         cli = _make_cli()
         long_text = "B" * 400
         cli.conversation_history = [
             {"role": "user", "content": "Tell me a lot."},
             {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "And more?"},
+            {"role": "assistant", "content": "Short final reply."},
         ]
         output = self._capture_display(cli)
 
-        assert "..." in output
+        # The non-last assistant message should be truncated
         assert "B" * 400 not in output
+        # The last assistant message shown in full
+        assert "Short final reply." in output
 
     def test_multiline_assistant_truncated(self):
+        """Non-last multiline assistant messages are truncated to 3 lines."""
         cli = _make_cli()
         multi = "\n".join([f"Line {i}" for i in range(20)])
         cli.conversation_history = [
             {"role": "user", "content": "Show me lines."},
             {"role": "assistant", "content": multi},
+            {"role": "user", "content": "What else?"},
+            {"role": "assistant", "content": "Done."},
         ]
         output = self._capture_display(cli)
 
-        # First 3 lines should be there
+        # First 3 lines of non-last assistant should be there
         assert "Line 0" in output
         assert "Line 1" in output
         assert "Line 2" in output
-        # Line 19 should NOT be there (truncated after 3 lines)
+        # Line 19 should NOT be in the truncated message
         assert "Line 19" not in output
+
+    def test_last_assistant_response_shown_in_full(self):
+        """The last assistant response is shown un-truncated so the user
+        knows where they left off without wasting tokens re-asking."""
+        cli = _make_cli()
+        long_text = "X" * 500
+        cli.conversation_history = [
+            {"role": "user", "content": "Tell me everything."},
+            {"role": "assistant", "content": long_text},
+        ]
+        output = self._capture_display(cli)
+
+        # Full 500-char text should be present (may be line-wrapped by Rich)
+        x_count = output.count("X")
+        assert x_count >= 490  # allow small Rich formatting variance
+
+    def test_last_assistant_multiline_shown_in_full(self):
+        """The last assistant response shows all lines, not just 3."""
+        cli = _make_cli()
+        multi = "\n".join([f"Line {i}" for i in range(20)])
+        cli.conversation_history = [
+            {"role": "user", "content": "Show me everything."},
+            {"role": "assistant", "content": multi},
+        ]
+        output = self._capture_display(cli)
+
+        # All 20 lines should be present since it's the last response
+        assert "Line 0" in output
+        assert "Line 10" in output
+        assert "Line 19" in output
 
     def test_large_history_shows_truncation_indicator(self):
         cli = _make_cli()

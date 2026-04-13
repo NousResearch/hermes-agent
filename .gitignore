@@ -58,3 +58,4 @@ mini-swe-agent/
 # Nix
 .direnv/
 result
+website/static/api/skills-index.json

@@ -506,6 +506,30 @@ class TestSegmentBreakOnToolBoundary:
         assert sent_texts[0].startswith(prefix)
         assert sum(len(t) for t in sent_texts[1:]) == len(tail)
 
+    @pytest.mark.asyncio
+    async def test_initial_split_passes_chunk_position_metadata(self):
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 610
+        adapter.truncate_message = MagicMock(return_value=["First chunk (1/2)", "Second chunk (2/2)"])
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("x" * 620)
+        consumer.finish()
+        await consumer.run()
+
+        assert adapter.send.call_count == 2
+        first_meta = adapter.send.call_args_list[0].kwargs["metadata"]
+        second_meta = adapter.send.call_args_list[1].kwargs["metadata"]
+        assert first_meta["_discord_chunk_position"] == {"index": 1, "total": 2}
+        assert second_meta["_discord_chunk_position"] == {"index": 2, "total": 2}
+
 
 class TestInterimCommentaryMessages:
     @pytest.mark.asyncio

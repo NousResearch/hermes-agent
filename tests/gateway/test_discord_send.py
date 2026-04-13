@@ -78,3 +78,89 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     assert channel.send.await_count == 2
     assert send_calls[0]["reference"] is ref_msg
     assert send_calls[1]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_formats_continuation_chunks_without_trailing_parenthesized_suffix():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=1234)
+    sent_chunks = []
+
+    async def fake_send(*, content, reference=None):
+        sent_chunks.append({"content": content, "reference": reference})
+        return sent_msg
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+    adapter.truncate_message = lambda content, max_len: ["First chunk (1/2)", "Second chunk (2/2)"]
+
+    result = await adapter.send("555", "Long answer")
+
+    assert result.success is True
+    assert sent_chunks == [
+        {"content": "First chunk", "reference": None},
+        {"content": "↪ Continued 2/2\nSecond chunk", "reference": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_formats_prechunked_stream_continuation_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=5678)
+    sent_chunks = []
+
+    async def fake_send(*, content, reference=None):
+        sent_chunks.append({"content": content, "reference": reference})
+        return sent_msg
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "Pre-chunked second chunk (2/2)",
+        metadata={"_discord_chunk_position": {"index": 2, "total": 2}},
+    )
+
+    assert result.success is True
+    assert sent_chunks == [
+        {"content": "↪ Continued 2/2\nPre-chunked second chunk", "reference": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_keeps_continuation_chunks_within_discord_limit():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=9012)
+    sent_chunks = []
+
+    async def fake_send(*, content, reference=None):
+        if len(content) > adapter.MAX_MESSAGE_LENGTH:
+            raise RuntimeError(
+                "400 Bad Request (error code: 50035): Invalid Form Body\n"
+                "In content: Must be 2000 or fewer in length."
+            )
+        sent_chunks.append({"content": content, "reference": reference})
+        return sent_msg
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "a" * 5000)
+
+    assert result.success is True
+    assert len(sent_chunks) >= 3
+    assert all(len(chunk["content"]) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent_chunks)
+    assert sent_chunks[1]["content"].startswith("↪ Continued 2/")

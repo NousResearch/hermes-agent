@@ -45,6 +45,8 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
+_RAW_CHUNK_SUFFIX_RE = re.compile(r"\s+\((\d+)/(\d+)\)$")
+
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -762,6 +764,63 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    @staticmethod
+    def _strip_chunk_suffix(text: str) -> str:
+        return _RAW_CHUNK_SUFFIX_RE.sub("", text)
+
+    @classmethod
+    def _format_chunk_for_discord(cls, text: str, index: int, total: int) -> str:
+        clean = cls._strip_chunk_suffix(text)
+        if total <= 1 or index <= 1:
+            return clean
+        return f"↪ Continued {index}/{total}\n{clean}"
+
+    @classmethod
+    def _continuation_prefix_budget(cls, total: int) -> int:
+        if total <= 1:
+            return 0
+        return len(f"↪ Continued {total}/{total}\n")
+
+    def _truncate_message_for_discord(self, formatted: str) -> list[str]:
+        chunk_limit = self.MAX_MESSAGE_LENGTH
+        while True:
+            chunks = self.truncate_message(formatted, chunk_limit)
+            total = len(chunks)
+            adjusted_limit = max(
+                1,
+                self.MAX_MESSAGE_LENGTH - self._continuation_prefix_budget(total),
+            )
+            if total <= 1 or adjusted_limit >= chunk_limit:
+                return chunks
+            chunk_limit = adjusted_limit
+
+    def _format_chunks_for_discord(
+        self,
+        chunks: list[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> list[str]:
+        if not chunks:
+            return chunks
+        if len(chunks) > 1:
+            total = len(chunks)
+            return [
+                self._format_chunk_for_discord(chunk, idx, total)
+                for idx, chunk in enumerate(chunks, start=1)
+            ]
+
+        indicator = None
+        if isinstance(metadata, dict):
+            indicator = metadata.get("_discord_chunk_position")
+        if isinstance(indicator, dict):
+            try:
+                idx = int(indicator.get("index", 1))
+                total = int(indicator.get("total", 1))
+            except Exception:
+                return chunks
+            return [self._format_chunk_for_discord(chunks[0], idx, total)]
+
+        return chunks
+
     async def send(
         self,
         chat_id: str,
@@ -800,7 +859,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._truncate_message_for_discord(formatted)
+            chunks = self._format_chunks_for_discord(chunks, metadata)
 
             message_ids = []
             reference = None

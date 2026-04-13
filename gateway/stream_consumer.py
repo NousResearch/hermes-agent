@@ -188,8 +188,18 @@ class GatewayStreamConsumer:
                         chunks = self.adapter.truncate_message(
                             self._accumulated, _safe_limit
                         )
-                        for chunk in chunks:
-                            await self._send_new_chunk(chunk, self._message_id)
+                        total_chunks = len(chunks)
+                        for idx, chunk in enumerate(chunks, start=1):
+                            chunk_meta = dict(self.metadata) if self.metadata else {}
+                            chunk_meta["_discord_chunk_position"] = {
+                                "index": idx,
+                                "total": total_chunks,
+                            }
+                            await self._send_new_chunk(
+                                chunk,
+                                self._message_id,
+                                metadata=chunk_meta,
+                            )
                         self._accumulated = ""
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
@@ -308,7 +318,12 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
-    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
+    async def _send_new_chunk(
+        self,
+        text: str,
+        reply_to_id: Optional[str],
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
         Returns the message_id so callers can thread subsequent chunks.
@@ -317,7 +332,7 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            meta = dict(self.metadata) if self.metadata else {}
+            meta = dict(metadata) if metadata else (dict(self.metadata) if self.metadata else {})
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,

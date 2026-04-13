@@ -30,10 +30,68 @@ const dim = (s: string) => DIM + s + DIM_OFF
 let _seg: Intl.Segmenter | null = null
 const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
 
+function graphemeStops(s: string) {
+  const stops = [0]
+
+  for (const { index } of seg().segment(s)) {
+    if (index > 0) {
+      stops.push(index)
+    }
+  }
+
+  if (stops.at(-1) !== s.length) {
+    stops.push(s.length)
+  }
+
+  return stops
+}
+
+function snapPos(s: string, p: number) {
+  const pos = Math.max(0, Math.min(p, s.length))
+  let last = 0
+
+  for (const stop of graphemeStops(s)) {
+    if (stop > pos) {
+      break
+    }
+
+    last = stop
+  }
+
+  return last
+}
+
+function prevPos(s: string, p: number) {
+  const pos = snapPos(s, p)
+  let prev = 0
+
+  for (const stop of graphemeStops(s)) {
+    if (stop >= pos) {
+      return prev
+    }
+
+    prev = stop
+  }
+
+  return prev
+}
+
+function nextPos(s: string, p: number) {
+  const pos = snapPos(s, p)
+
+  for (const stop of graphemeStops(s)) {
+    if (stop > pos) {
+      return stop
+    }
+  }
+
+  return s.length
+}
+
 // ── Word movement ────────────────────────────────────────────────────
 
 function wordLeft(s: string, p: number) {
-  let i = p - 1
+  let i = snapPos(s, p) - 1
 
   while (i > 0 && /\s/.test(s[i]!)) {
     i--
@@ -47,7 +105,7 @@ function wordLeft(s: string, p: number) {
 }
 
 function wordRight(s: string, p: number) {
-  let i = p
+  let i = snapPos(s, p)
 
   while (i < s.length && !/\s/.test(s[i]!)) {
     i++
@@ -252,7 +310,7 @@ export function TextInput({
 
   const commit = (next: string, nextCur: number, track = true) => {
     const prev = vRef.current
-    const c = Math.max(0, Math.min(nextCur, next.length))
+    const c = snapPos(next, nextCur)
 
     if (track && next !== prev) {
       undo.current.push({ cursor: curRef.current, value: prev })
@@ -316,11 +374,10 @@ export function TextInput({
 
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
-      // Some terminals normalize Ctrl+V to "v"; others deliver raw ^V (\x16).
-      const ctrlPaste = k.ctrl && (inp.toLowerCase() === 'v' || event.keypress.raw === '\x16')
-      const metaPaste = k.meta && inp.toLowerCase() === 'v'
+      const raw = event.keypress.raw
+      const metaPaste = raw === '\x1bv' || raw === '\x1bV'
 
-      if (ctrlPaste || metaPaste) {
+      if (metaPaste) {
         return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 
@@ -366,9 +423,9 @@ export function TextInput({
       } else if (k.end || (k.ctrl && inp === 'e')) {
         c = v.length
       } else if (k.leftArrow) {
-        c = mod ? wordLeft(v, c) : Math.max(0, c - 1)
+        c = mod ? wordLeft(v, c) : prevPos(v, c)
       } else if (k.rightArrow) {
-        c = mod ? wordRight(v, c) : Math.min(v.length, c + 1)
+        c = mod ? wordRight(v, c) : nextPos(v, c)
       } else if (k.meta && inp === 'b') {
         c = wordLeft(v, c)
       } else if (k.meta && inp === 'f') {
@@ -382,15 +439,16 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
         } else {
-          v = v.slice(0, c - 1) + v.slice(c)
-          c--
+          const t = prevPos(v, c)
+          v = v.slice(0, t) + v.slice(c)
+          c = t
         }
       } else if (k.delete && fwdDel.current && c < v.length) {
         if (mod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
         } else {
-          v = v.slice(0, c) + v.slice(c + 1)
+          v = v.slice(0, c) + v.slice(nextPos(v, c))
         }
       } else if (k.ctrl && inp === 'w' && c > 0) {
         const t = wordLeft(v, c)

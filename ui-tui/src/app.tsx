@@ -9,6 +9,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Banner, Panel, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
+import { ModelPicker } from './components/modelPicker.js'
+import { PasteShelf } from './components/pasteShelf.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
@@ -124,6 +126,16 @@ const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?
     typeof info?.token_estimate === 'number' && info.token_estimate > 0 ? `~${fmtK(info.token_estimate)} tok` : ''
 
   return [dims, tok].filter(Boolean).join(' · ')
+}
+
+const looksLikeSlashCommand = (text: string) => {
+  if (!text.startsWith('/')) {
+    return false
+  }
+
+  const first = text.split(/\s+/, 1)[0] || ''
+
+  return !first.slice(1).includes('/')
 }
 
 const toTranscriptMessages = (rows: unknown): Msg[] => {
@@ -347,6 +359,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [approval, setApproval] = useState<ApprovalReq | null>(null)
   const [sudo, setSudo] = useState<SudoReq | null>(null)
   const [secret, setSecret] = useState<SecretReq | null>(null)
+  const [modelPicker, setModelPicker] = useState(false)
   const [picker, setPicker] = useState(false)
   const [reasoning, setReasoning] = useState('')
   const [reasoningActive, setReasoningActive] = useState(false)
@@ -386,10 +399,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const reasoningStreamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
+  const sidRef = useRef<string | null>(sid)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const configMtimeRef = useRef(0)
   colsRef.current = cols
   busyRef.current = busy
+  sidRef.current = sid
   reasoningRef.current = reasoning
 
   // ── Hooks ────────────────────────────────────────────────────────
@@ -433,7 +448,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   )
 
   function blocked() {
-    return !!(clarify || approval || picker || secret || sudo || pager)
+    return !!(clarify || approval || modelPicker || picker || secret || sudo || pager)
   }
 
   const empty = !messages.length
@@ -487,6 +502,15 @@ export function App({ gw }: { gw: GatewayClient }) {
       appendMessage({ role: 'system', text: '', kind: 'panel', panelData: { title, sections } })
     },
     [appendMessage]
+  )
+
+  const maybeWarn = useCallback(
+    (value: any) => {
+      if (value?.warning) {
+        sys(`warning: ${value.warning}`)
+      }
+    },
+    [sys]
   )
 
   const pushActivity = useCallback((text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) => {
@@ -553,25 +577,29 @@ export function App({ gw }: { gw: GatewayClient }) {
       setTrail(turnToolsRef.current.filter(l => !sameToolTrailGroup(label, l)))
       setTurnTrail(turnToolsRef.current)
 
-      gw.request('clarify.respond', { answer, request_id: clarify.requestId }).catch(() => {})
+      rpc('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+        if (!r) {
+          return
+        }
 
-      if (answer) {
-        persistedToolLabelsRef.current.add(label)
-        appendMessage({
-          role: 'system',
-          text: '',
-          kind: 'trail',
-          tools: [buildToolTrailLine('clarify', clarify.question)]
-        })
-        appendMessage({ role: 'user', text: answer })
-      } else {
-        sys('prompt cancelled')
-      }
+        if (answer) {
+          persistedToolLabelsRef.current.add(label)
+          appendMessage({
+            role: 'system',
+            text: '',
+            kind: 'trail',
+            tools: [buildToolTrailLine('clarify', clarify.question)]
+          })
+          appendMessage({ role: 'user', text: answer })
+          setStatus('running…')
+        } else {
+          sys('prompt cancelled')
+        }
 
-      setClarify(null)
-      setStatus('running…')
+        setClarify(null)
+      })
     },
-    [appendMessage, clarify, gw, sys]
+    [appendMessage, clarify, rpc, sys]
   )
 
   useEffect(() => {
@@ -650,6 +678,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     setVoiceRecording(false)
     setVoiceProcessing(false)
     setSid(null as any) // will be set by caller
+    setInfo(null)
     setHistoryItems([])
     setMessages([])
     setPastes([])
@@ -661,11 +690,64 @@ export function App({ gw }: { gw: GatewayClient }) {
     protocolWarnedRef.current = false
   }
 
+  const resetVisibleHistory = (info: SessionInfo | null = null) => {
+    idle()
+    setReasoning('')
+    setMessages([])
+    setHistoryItems(info ? [introMsg(info)] : [])
+    setInfo(info)
+    setUsage(info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+    setActivity([])
+    setLastUserMsg('')
+    turnToolsRef.current = []
+    persistedToolLabelsRef.current.clear()
+  }
+
+  const trimLastExchange = (items: Msg[]) => {
+    const q = [...items]
+
+    while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
+      q.pop()
+    }
+
+    if (q.at(-1)?.role === 'user') {
+      q.pop()
+    }
+
+    return q
+  }
+
+  const guardBusySessionSwitch = useCallback(
+    (what = 'switch sessions') => {
+      if (!busyRef.current) {
+        return false
+      }
+
+      sys(`interrupt the current turn before trying to ${what}`)
+
+      return true
+    },
+    [sys]
+  )
+
+  const closeSession = useCallback(
+    (targetSid?: string | null) => {
+      if (!targetSid) {
+        return Promise.resolve(null)
+      }
+
+      return rpc('session.close', { session_id: targetSid })
+    },
+    [rpc]
+  )
+
   // ── Session management ───────────────────────────────────────────
 
   const newSession = useCallback(
-    (msg?: string) =>
-      rpc('session.create', { cols: colsRef.current }).then((r: any) => {
+    async (msg?: string) => {
+      await closeSession(sidRef.current)
+
+      return rpc('session.create', { cols: colsRef.current }).then((r: any) => {
         if (!r) {
           setStatus('ready')
 
@@ -696,45 +778,49 @@ export function App({ gw }: { gw: GatewayClient }) {
         if (msg) {
           sys(msg)
         }
-      }),
-    [rpc, sys]
+      })
+    },
+    [closeSession, rpc, sys]
   )
 
   const resumeById = useCallback(
     (id: string) => {
       setPicker(false)
       setStatus('resuming…')
-      gw.request('session.resume', { cols: colsRef.current, session_id: id })
-        .then((raw: any) => {
-          const r = asRpcResult(raw)
+      closeSession(sidRef.current === id ? null : sidRef.current).then(() =>
+        gw
+          .request('session.resume', { cols: colsRef.current, session_id: id })
+          .then((raw: any) => {
+            const r = asRpcResult(raw)
 
-          if (!r) {
-            sys('error: invalid response: session.resume')
+            if (!r) {
+              sys('error: invalid response: session.resume')
+              setStatus('ready')
+
+              return
+            }
+
+            resetSession()
+            setSid(r.session_id)
+            setSessionStartedAt(Date.now())
+            setInfo(r.info ?? null)
+            const resumed = toTranscriptMessages(r.messages)
+
+            if (r.info?.usage) {
+              setUsage(prev => ({ ...prev, ...r.info.usage }))
+            }
+
+            setMessages(resumed)
+            setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
             setStatus('ready')
-
-            return
-          }
-
-          resetSession()
-          setSid(r.session_id)
-          setSessionStartedAt(Date.now())
-          setInfo(r.info ?? null)
-          const resumed = toTranscriptMessages(r.messages)
-
-          if (r.info?.usage) {
-            setUsage(prev => ({ ...prev, ...r.info.usage }))
-          }
-
-          setMessages(resumed)
-          setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
-          setStatus('ready')
-        })
-        .catch((e: Error) => {
-          sys(`error: ${e.message}`)
-          setStatus('ready')
-        })
+          })
+          .catch((e: Error) => {
+            sys(`error: ${e.message}`)
+            setStatus('ready')
+          })
+      )
     },
-    [gw, sys]
+    [closeSession, gw, sys]
   )
 
   // ── Paste pipeline ───────────────────────────────────────────────
@@ -815,13 +901,13 @@ export function App({ gw }: { gw: GatewayClient }) {
         return null
       }
 
-      if (bracketed) {
-        void paste(true)
-      }
-
       const cleanedText = stripTrailingPasteNewlines(text)
 
-      if (!cleanedText) {
+      if (!cleanedText || !/[^\n]/.test(cleanedText)) {
+        if (bracketed) {
+          void paste(true)
+        }
+
         return null
       }
 
@@ -904,7 +990,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       })
     }
 
-    gw.request('input.detect_drop', { session_id: sid, text: payload.text })
+    gw.request('input.detect_drop', { session_id: sid, text })
       .then((r: any) => {
         if (r?.matched) {
           if (r.is_image) {
@@ -1029,7 +1115,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const dispatchSubmission = useCallback(
     (full: string) => {
-      if (!full.trim() || !sid) {
+      if (!full.trim()) {
+        return
+      }
+
+      if (!sid) {
+        sys('session not ready yet')
+
         return
       }
 
@@ -1040,7 +1132,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         historyDraftRef.current = ''
       }
 
-      if (full.startsWith('/')) {
+      if (looksLikeSlashCommand(full)) {
         appendMessage({ role: 'system', text: full, kind: 'slash' })
         pushHistory(full)
         slashRef.current(full)
@@ -1137,17 +1229,34 @@ export function App({ gw }: { gw: GatewayClient }) {
         if (clarify) {
           answerClarify('')
         } else if (approval) {
-          gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {})
-          setApproval(null)
-          sys('denied')
+          rpc('approval.respond', { choice: 'deny', session_id: sid }).then(r => {
+            if (!r) {
+              return
+            }
+
+            setApproval(null)
+            sys('denied')
+          })
         } else if (sudo) {
-          gw.request('sudo.respond', { request_id: sudo.requestId, password: '' }).catch(() => {})
-          setSudo(null)
-          sys('sudo cancelled')
+          rpc('sudo.respond', { request_id: sudo.requestId, password: '' }).then(r => {
+            if (!r) {
+              return
+            }
+
+            setSudo(null)
+            sys('sudo cancelled')
+          })
         } else if (secret) {
-          gw.request('secret.respond', { request_id: secret.requestId, value: '' }).catch(() => {})
-          setSecret(null)
-          sys('secret entry cancelled')
+          rpc('secret.respond', { request_id: secret.requestId, value: '' }).then(r => {
+            if (!r) {
+              return
+            }
+
+            setSecret(null)
+            sys('secret entry cancelled')
+          })
+        } else if (modelPicker) {
+          setModelPicker(false)
         } else if (picker) {
           setPicker(false)
         }
@@ -1164,11 +1273,12 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (!inputBuf.length && key.tab && completions.length) {
+    if (key.tab && completions.length) {
       const row = completions[compIdx]
 
-      if (row) {
-        setInput(input.slice(0, compReplace) + row.text)
+      if (row?.text) {
+        const text = input.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
+        setInput(input.slice(0, compReplace) + text)
       }
 
       return
@@ -1255,6 +1365,10 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (ctrl(key, ch, 'l')) {
+      if (guardBusySessionSwitch()) {
+        return
+      }
+
       setStatus('forging session…')
       newSession()
 
@@ -1319,6 +1433,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const onEvent = useCallback(
     (ev: GatewayEvent) => {
+      if (ev.session_id && sidRef.current && ev.session_id !== sidRef.current && !ev.type.startsWith('gateway.')) {
+        return
+      }
+
       const p = ev.payload as any
 
       switch (ev.type) {
@@ -1342,8 +1460,12 @@ export function App({ gw }: { gw: GatewayClient }) {
                 skillCount: (r.skill_count ?? 0) as number,
                 sub: (r.sub ?? {}) as Record<string, string[]>
               })
+
+              if (r.warning) {
+                pushActivity(String(r.warning), 'warn')
+              }
             })
-            .catch(() => {})
+            .catch((e: unknown) => pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'warn'))
 
           if (STARTUP_RESUME_ID) {
             setStatus('resuming…')
@@ -1397,6 +1519,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'thinking.delta':
+          if (p && Object.prototype.hasOwnProperty.call(p, 'text')) {
+            setStatus(p.text ? String(p.text) : busyRef.current ? 'running…' : 'ready')
+          }
+
           break
 
         case 'message.start':
@@ -1438,17 +1564,41 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'gateway.stderr':
           if (p?.line) {
-            pushActivity(String(p.line).slice(0, 120), 'error')
+            const line = String(p.line).slice(0, 120)
+            const tone = /\b(error|traceback|exception|failed|spawn)\b/i.test(line) ? 'error' : 'warn'
+            pushActivity(line, tone)
           }
+
+          break
+
+        case 'gateway.start_timeout':
+          setStatus('gateway startup timeout')
+          pushActivity(
+            `gateway startup timed out${p?.python || p?.cwd ? ` · ${String(p?.python || '')} ${String(p?.cwd || '')}`.trim() : ''} · /logs to inspect`,
+            'error'
+          )
 
           break
 
         case 'gateway.protocol_error':
           setStatus('protocol warning')
 
+          if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current)
+          }
+
+          statusTimerRef.current = setTimeout(() => {
+            statusTimerRef.current = null
+            setStatus(busyRef.current ? 'running…' : 'ready')
+          }, 4000)
+
           if (!protocolWarnedRef.current) {
             protocolWarnedRef.current = true
             pushActivity('protocol noise detected · /logs to inspect', 'warn')
+          }
+
+          if (p?.preview) {
+            pushActivity(`protocol noise: ${String(p.preview).slice(0, 120)}`, 'warn')
           }
 
           break
@@ -1663,11 +1813,13 @@ export function App({ gw }: { gw: GatewayClient }) {
       bellOnComplete,
       dequeue,
       endReasoningPhase,
+      gw,
       newSession,
       pruneTransient,
       pulseReasoningStreaming,
       pushActivity,
       pushTrail,
+      rpc,
       sendQueued,
       sys,
       stdout
@@ -1681,7 +1833,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     const exitHandler = () => {
       setStatus('gateway exited')
-      exit()
+      setSid(null)
+      setBusy(false)
+      pushActivity('gateway exited · /logs to inspect', 'error')
+      sys('error: gateway exited')
     }
 
     gw.on('event', handler)
@@ -1691,14 +1846,16 @@ export function App({ gw }: { gw: GatewayClient }) {
     return () => {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
+      gw.kill()
     }
-  }, [gw, exit])
+  }, [gw, pushActivity, sys])
 
   // ── Slash commands ───────────────────────────────────────────────
 
   const slash = useCallback(
     (cmd: string): boolean => {
-      const [name, ...rest] = cmd.slice(1).split(/\s+/)
+      const [rawName, ...rest] = cmd.slice(1).split(/\s+/)
+      const name = rawName.toLowerCase()
       const arg = rest.join(' ')
 
       switch (name) {
@@ -1729,18 +1886,30 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'clear':
+          if (guardBusySessionSwitch('switch sessions')) {
+            return true
+          }
+
           setStatus('forging session…')
           newSession()
 
           return true
 
         case 'new':
+          if (guardBusySessionSwitch('switch sessions')) {
+            return true
+          }
+
           setStatus('forging session…')
           newSession('new session started')
 
           return true
 
         case 'resume':
+          if (guardBusySessionSwitch('switch sessions')) {
+            return true
+          }
+
           if (arg) {
             resumeById(arg)
           } else {
@@ -1750,13 +1919,33 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'compact':
-          setCompact(c => (arg ? true : !c))
-          sys(arg ? `compact on, focus: ${arg}` : `compact ${compact ? 'off' : 'on'}`)
+          if (arg && !['on', 'off', 'toggle'].includes(arg.trim().toLowerCase())) {
+            sys('usage: /compact [on|off|toggle]')
+
+            return true
+          }
+
+          {
+            const mode = arg.trim().toLowerCase()
+            setCompact(current => {
+              const next = mode === 'on' ? true : mode === 'off' ? false : !current
+              queueMicrotask(() => sys(`compact ${next ? 'on' : 'off'}`))
+
+              return next
+            })
+          }
 
           return true
         case 'copy': {
           const all = messages.filter(m => m.role === 'assistant')
-          const target = all[arg ? Math.min(parseInt(arg), all.length) - 1 : all.length - 1]
+
+          if (arg && Number.isNaN(parseInt(arg, 10))) {
+            sys('usage: /copy [number]')
+
+            return true
+          }
+
+          const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
           if (!target) {
             sys('nothing to copy')
@@ -1765,7 +1954,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           writeOsc52Clipboard(target.text)
-          sys('copied to clipboard')
+          sys('sent OSC52 copy sequence (terminal support required)')
 
           return true
         }
@@ -1815,7 +2004,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               return true
             }
 
-            const re = new RegExp(`\\s*\\[\\[paste:${id}\\]\\]\\s*`, 'g')
+            const re = new RegExp(`\\s*\\[\\[paste:${id}(?:[^\\n]*?)\\]\\]\\s*`, 'g')
             setPastes(prev => prev.filter(p => p.id !== id))
             setInput(v => stripTokens(v, re))
             setInputBuf(prev => prev.map(l => stripTokens(l, re)).filter(Boolean))
@@ -1854,8 +2043,12 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'statusbar':
 
         case 'sb':
-          setStatusBar(v => !v)
-          sys(`status bar ${statusBar ? 'off' : 'on'}`)
+          setStatusBar(current => {
+            const next = !current
+            queueMicrotask(() => sys(`status bar ${next ? 'on' : 'off'}`))
+
+            return next
+          })
 
           return true
 
@@ -1873,6 +2066,8 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'undo':
           if (!sid) {
+            sys('nothing to undo')
+
             return true
           }
 
@@ -1882,19 +2077,8 @@ export function App({ gw }: { gw: GatewayClient }) {
             }
 
             if (r.removed > 0) {
-              setMessages(prev => {
-                const q = [...prev]
-
-                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-                  q.pop()
-                }
-
-                if (q.at(-1)?.role === 'user') {
-                  q.pop()
-                }
-
-                return q
-              })
+              setMessages(prev => trimLastExchange(prev))
+              setHistoryItems(prev => trimLastExchange(prev))
               sys(`undid ${r.removed} messages`)
             } else {
               sys('nothing to undo')
@@ -1911,18 +2095,25 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           if (sid) {
-            gw.request('session.undo', { session_id: sid }).catch(() => {})
+            rpc('session.undo', { session_id: sid }).then((r: any) => {
+              if (!r) {
+                return
+              }
+
+              if (r.removed <= 0) {
+                sys('nothing to retry')
+
+                return
+              }
+
+              setMessages(prev => trimLastExchange(prev))
+              setHistoryItems(prev => trimLastExchange(prev))
+              send(lastUserMsg)
+            })
+
+            return true
           }
 
-          setMessages(prev => {
-            const q = [...prev]
-
-            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-              q.pop()
-            }
-
-            return q
-          })
           send(lastUserMsg)
 
           return true
@@ -1966,37 +2157,28 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'model':
+          if (guardBusySessionSwitch('change models')) {
+            return true
+          }
+
           if (!arg) {
-            rpc('config.get', { key: 'provider' }).then((r: any) => {
+            setModelPicker(true)
+          } else {
+            rpc('config.set', { session_id: sid, key: 'model', value: arg.trim() }).then((r: any) => {
               if (!r) {
                 return
               }
 
-              panel('Model', [
-                {
-                  rows: [
-                    ['Model', r.model],
-                    ['Provider', r.provider]
-                  ]
-                }
-              ])
-            })
-          } else {
-            rpc('config.set', { session_id: sid, key: 'model', value: arg.replace('--global', '').trim() }).then(
-              (r: any) => {
-                if (!r?.value) {
-                  return
-                }
+              if (!r.value) {
+                sys('error: invalid response: model switch')
 
-                sys(`model → ${r.value}`)
-
-                if (r.warning) {
-                  sys(`warning: ${r.warning}`)
-                }
-
-                setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
+                return
               }
-            )
+
+              sys(`model → ${r.value}`)
+              maybeWarn(r)
+              setInfo(prev => (prev ? { ...prev, model: r.value } : { model: r.value, skills: {}, tools: {} }))
+            })
           }
 
           return true
@@ -2019,7 +2201,12 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'provider':
           gw.request('slash.exec', { command: 'provider', session_id: sid })
-            .then((r: any) => page(r?.output || '(no output)', 'Provider'))
+            .then((r: any) => {
+              page(
+                r?.warning ? `warning: ${r.warning}\n\n${r?.output || '(no output)'}` : r?.output || '(no output)',
+                'Provider'
+              )
+            })
             .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
@@ -2057,13 +2244,23 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'reasoning':
-          rpc('config.set', { session_id: sid, key: 'reasoning', value: arg || 'medium' }).then((r: any) => {
-            if (!r?.value) {
-              return
-            }
+          if (!arg) {
+            rpc('config.get', { key: 'reasoning' }).then((r: any) => {
+              if (!r?.value) {
+                return
+              }
 
-            sys(`reasoning: ${r.value}`)
-          })
+              sys(`reasoning: ${r.value} · display ${r.display || 'hide'}`)
+            })
+          } else {
+            rpc('config.set', { session_id: sid, key: 'reasoning', value: arg }).then((r: any) => {
+              if (!r?.value) {
+                return
+              }
+
+              sys(`reasoning: ${r.value}`)
+            })
+          }
 
           return true
 
@@ -2080,28 +2277,61 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'personality':
           if (arg) {
-            rpc('config.set', { key: 'personality', value: arg }).then((r: any) => {
+            rpc('config.set', { session_id: sid, key: 'personality', value: arg }).then((r: any) => {
               if (!r) {
                 return
               }
 
-              sys(`personality: ${r.value || 'default'}`)
+              if (r.history_reset) {
+                resetVisibleHistory(r.info ?? null)
+              }
+
+              sys(`personality: ${r.value || 'default'}${r.history_reset ? ' · transcript cleared' : ''}`)
+              maybeWarn(r)
             })
           } else {
             gw.request('slash.exec', { command: 'personality', session_id: sid })
-              .then((r: any) => panel('Personality', [{ text: r?.output || '(no output)' }]))
+              .then((r: any) => {
+                panel('Personality', [
+                  {
+                    text: r?.warning
+                      ? `warning: ${r.warning}\n\n${r?.output || '(no output)'}`
+                      : r?.output || '(no output)'
+                  }
+                ])
+              })
               .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           }
 
           return true
 
         case 'compress':
-          rpc('session.compress', { session_id: sid }).then((r: any) => {
+          rpc('session.compress', { session_id: sid, ...(arg ? { focus_topic: arg } : {}) }).then((r: any) => {
             if (!r) {
               return
             }
 
-            sys(`compressed${r.usage?.total ? ' · ' + fmtK(r.usage.total) + ' tok' : ''}`)
+            if (Array.isArray(r.messages)) {
+              const resumed = toTranscriptMessages(r.messages)
+              setMessages(resumed)
+              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+            }
+
+            if (r.info) {
+              setInfo(r.info)
+            }
+
+            if (r.usage) {
+              setUsage(prev => ({ ...prev, ...r.usage }))
+            }
+
+            if ((r.removed ?? 0) <= 0) {
+              sys('nothing to compress')
+
+              return
+            }
+
+            sys(`compressed ${r.removed} messages${r.usage?.total ? ' · ' + fmtK(r.usage.total) + ' tok' : ''}`)
           })
 
           return true
@@ -2112,7 +2342,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               return
             }
 
-            sys(`killed ${r.killed ?? 0} process(es)`)
+            sys(`killed ${r.killed ?? 0} registered process(es)`)
           })
 
           return true
@@ -2120,15 +2350,19 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'branch':
 
         case 'fork':
-          rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
-            if (r?.session_id) {
-              setSid(r.session_id)
-              setSessionStartedAt(Date.now())
-              setHistoryItems([])
-              setMessages([])
-              sys(`branched → ${r.title}`)
-            }
-          })
+          {
+            const prevSid = sid
+            rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
+              if (r?.session_id) {
+                void closeSession(prevSid)
+                setSid(r.session_id)
+                setSessionStartedAt(Date.now())
+                setHistoryItems([])
+                setMessages([])
+                sys(`branched → ${r.title}`)
+              }
+            })
+          }
 
           return true
 
@@ -2249,7 +2483,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             }
 
             setVoiceEnabled(!!r?.enabled)
-            sys(`voice${arg === 'on' || arg === 'off' ? '' : ':'} ${r.enabled ? 'on' : 'off'}`)
+            sys(`voice: ${r.enabled ? 'on' : 'off'}`)
           })
 
           return true
@@ -2411,7 +2645,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
-            .then((r: any) => sys(r?.output || '/skills: no output'))
+            .then((r: any) => {
+              sys(
+                r?.warning
+                  ? `warning: ${r.warning}\n${r?.output || '/skills: no output'}`
+                  : r?.output || '/skills: no output'
+              )
+            })
             .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
           return true
@@ -2481,7 +2721,9 @@ export function App({ gw }: { gw: GatewayClient }) {
               .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           } else {
             gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
-              .then((r: any) => sys(r?.output || '(no output)'))
+              .then((r: any) => {
+                sys(r?.warning ? `warning: ${r.warning}\n${r?.output || '(no output)'}` : r?.output || '(no output)')
+              })
               .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
           }
 
@@ -2558,14 +2800,20 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         default:
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
-            .then((r: any) => sys(r?.output || `/${name}: no output`))
-            .catch((e: unknown) => {
+            .then((r: any) => {
+              sys(
+                r?.warning
+                  ? `warning: ${r.warning}\n${r?.output || `/${name}: no output`}`
+                  : r?.output || `/${name}: no output`
+              )
+            })
+            .catch(() => {
               gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
                 .then((raw: any) => {
                   const d = asRpcResult(raw)
 
                   if (!d?.type) {
-                    sys(`error: ${rpcErrorMessage(e)}`)
+                    sys('error: invalid response: command.dispatch')
 
                     return
                   }
@@ -2586,7 +2834,7 @@ export function App({ gw }: { gw: GatewayClient }) {
                     }
                   }
                 })
-                .catch(() => sys(`error: ${rpcErrorMessage(e)}`))
+                .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
             })
 
           return true
@@ -2595,8 +2843,10 @@ export function App({ gw }: { gw: GatewayClient }) {
     [
       catalog,
       compact,
+      guardBusySessionSwitch,
       gw,
       lastUserMsg,
+      maybeWarn,
       messages,
       newSession,
       page,
@@ -2604,6 +2854,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       pastes,
       pushActivity,
       rpc,
+      resetVisibleHistory,
       send,
       sid,
       statusBar,
@@ -2755,10 +3006,15 @@ export function App({ gw }: { gw: GatewayClient }) {
           <PromptBox color={theme.color.bronze}>
             <ApprovalPrompt
               onChoice={choice => {
-                gw.request('approval.respond', { choice, session_id: sid }).catch(() => {})
-                setApproval(null)
-                sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
-                setStatus('running…')
+                rpc('approval.respond', { choice, session_id: sid }).then(r => {
+                  if (!r) {
+                    return
+                  }
+
+                  setApproval(null)
+                  sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
+                  setStatus('running…')
+                })
               }}
               req={approval}
               t={theme}
@@ -2773,9 +3029,14 @@ export function App({ gw }: { gw: GatewayClient }) {
               icon="🔐"
               label="sudo password required"
               onSubmit={pw => {
-                gw.request('sudo.respond', { request_id: sudo.requestId, password: pw }).catch(() => {})
-                setSudo(null)
-                setStatus('running…')
+                rpc('sudo.respond', { request_id: sudo.requestId, password: pw }).then(r => {
+                  if (!r) {
+                    return
+                  }
+
+                  setSudo(null)
+                  setStatus('running…')
+                })
               }}
               t={theme}
             />
@@ -2789,9 +3050,14 @@ export function App({ gw }: { gw: GatewayClient }) {
               icon="🔑"
               label={secret.prompt}
               onSubmit={val => {
-                gw.request('secret.respond', { request_id: secret.requestId, value: val }).catch(() => {})
-                setSecret(null)
-                setStatus('running…')
+                rpc('secret.respond', { request_id: secret.requestId, value: val }).then(r => {
+                  if (!r) {
+                    return
+                  }
+
+                  setSecret(null)
+                  setStatus('running…')
+                })
               }}
               sub={`for ${secret.envVar}`}
               t={theme}
@@ -2805,11 +3071,28 @@ export function App({ gw }: { gw: GatewayClient }) {
           </PromptBox>
         )}
 
+        {modelPicker && (
+          <PromptBox color={theme.color.bronze}>
+            <ModelPicker
+              gw={gw}
+              onCancel={() => setModelPicker(false)}
+              onSelect={value => {
+                setModelPicker(false)
+                slash(`/model ${value}`)
+              }}
+              sessionId={sid}
+              t={theme}
+            />
+          </PromptBox>
+        )}
+
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
+
+        <PasteShelf draft={[...inputBuf, input].join('\n')} pastes={pastes} t={theme} />
 
         {bgTasks.size > 0 && (
           <Text color={theme.color.dim} dimColor>
-            {bgTasks.size} background {bgTasks.size === 1 ? 'task' : 'tasks'} running · /stop to cancel
+            {bgTasks.size} background {bgTasks.size === 1 ? 'task' : 'tasks'} running
           </Text>
         )}
 

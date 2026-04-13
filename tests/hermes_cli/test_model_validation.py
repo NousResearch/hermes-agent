@@ -437,33 +437,33 @@ class TestValidateApiNotFound:
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
         assert result["accepted"] is False
+        assert result["persist"] is False
         assert "Similar models" in result["message"]
 
 
-# -- validate — API unreachable — accept and persist everything ----------------
+# -- validate — API unreachable — reject with guidance ----------------
 
 class TestValidateApiFallback:
-    def test_any_model_accepted_when_api_down(self):
+    def test_any_model_rejected_when_api_down(self):
         result = _validate("anthropic/claude-opus-4.6", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
-    def test_unknown_model_also_accepted_when_api_down(self):
-        """No hardcoded catalog gatekeeping — accept, persist, and warn."""
+    def test_unknown_model_also_rejected_when_api_down(self):
         result = _validate("anthropic/claude-next-gen", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "could not reach" in result["message"].lower()
 
-    def test_zai_model_accepted_when_api_down(self):
+    def test_zai_model_rejected_when_api_down(self):
         result = _validate("glm-5", provider="zai", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
-    def test_unknown_provider_accepted_when_api_down(self):
+    def test_unknown_provider_rejected_when_api_down(self):
         result = _validate("some-model", provider="totally-unknown", api_models=None)
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
@@ -483,7 +483,7 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]

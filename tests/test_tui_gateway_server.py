@@ -167,11 +167,87 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert seen["args"] == ("sid", "session-key", "new/model")
 
 
+def test_config_set_model_global_persists(monkeypatch):
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-old"
+
+        def switch_model(self, **kwargs):
+            return None
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="anthropic/claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="sk-new",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+    )
+    seen = {}
+    saved = {}
+
+    def _switch_model(**kwargs):
+        seen.update(kwargs)
+        return result
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+
+    resp = server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"session_id": "sid", "key": "model", "value": "anthropic/claude-sonnet-4.6 --global"}}
+    )
+
+    assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
+    assert seen["is_global"] is True
+    assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
+    assert saved["model"]["provider"] == "anthropic"
+    assert saved["model"]["base_url"] == "https://api.anthropic.com"
+
+
+def test_config_set_personality_rejects_unknown_name(monkeypatch):
+    monkeypatch.setattr(server, "_available_personalities", lambda cfg=None: {"helpful": "You are helpful."})
+    resp = server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"key": "personality", "value": "bogus"}}
+    )
+
+    assert "error" in resp
+    assert "Unknown personality" in resp["error"]["message"]
+
+
+def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
+    session = _session(agent=types.SimpleNamespace(), history=[{"role": "user", "text": "hi"}], history_version=4)
+    new_agent = types.SimpleNamespace(model="x")
+    emits = []
+
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_available_personalities", lambda cfg=None: {"helpful": "You are helpful."})
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: new_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+
+    resp = server.handle_request(
+        {"id": "1", "method": "config.set", "params": {"session_id": "sid", "key": "personality", "value": "helpful"}}
+    )
+
+    assert resp["result"]["history_reset"] is True
+    assert resp["result"]["info"] == {"model": "x"}
+    assert session["history"] == []
+    assert session["history_version"] == 5
+    assert ("session.info", "sid", {"model": "x"}) in emits
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)
 
-    monkeypatch.setattr(server, "_compress_session_history", lambda session: (2, {"total": 42}))
+    monkeypatch.setattr(server, "_compress_session_history", lambda session, focus_topic=None: (2, {"total": 42}))
     monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
 
     with patch("tui_gateway.server._emit") as emit:
@@ -264,6 +340,36 @@ def test_image_attach_appends_local_image(monkeypatch):
     assert resp["result"]["attached"] is True
     assert resp["result"]["name"] == "cat.png"
     assert len(server._sessions["sid"]["attached_images"]) == 1
+
+
+def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"quick_commands": {"boom": {"type": "exec", "command": "boom"}}})
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(returncode=1, stdout="", stderr="failed"),
+    )
+
+    resp = server.handle_request({"id": "1", "method": "command.dispatch", "params": {"name": "boom"}})
+
+    assert "error" in resp
+    assert "failed" in resp["error"]["message"]
+
+
+def test_plugins_list_surfaces_loader_error(monkeypatch):
+    with patch("hermes_cli.plugins.get_plugin_manager", side_effect=Exception("boom")):
+        resp = server.handle_request({"id": "1", "method": "plugins.list", "params": {}})
+
+    assert "error" in resp
+    assert "boom" in resp["error"]["message"]
+
+
+def test_complete_slash_surfaces_completer_error(monkeypatch):
+    with patch("hermes_cli.commands.SlashCommandCompleter", side_effect=Exception("no completer")):
+        resp = server.handle_request({"id": "1", "method": "complete.slash", "params": {"text": "/mo"}})
+
+    assert "error" in resp
+    assert "no completer" in resp["error"]["message"]
 
 
 def test_input_detect_drop_attaches_image(monkeypatch):

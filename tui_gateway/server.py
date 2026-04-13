@@ -183,8 +183,17 @@ def handle_request(req: dict) -> dict | None:
 
 
 def _sess(params, rid):
-    s = _sessions.get(params.get("session_id", ""))
+    s = _sessions.get(params.get("session_id") or "")
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
+
+
+def _normalize_completion_path(path_part: str) -> str:
+    expanded = os.path.expanduser(path_part)
+    if os.name != "nt":
+        normalized = expanded.replace("\\", "/")
+        if len(normalized) >= 3 and normalized[1] == ":" and normalized[2] == "/" and normalized[0].isalpha():
+            return f"/mnt/{normalized[0].lower()}/{normalized[3:]}"
+    return expanded
 
 
 # ── Config I/O ────────────────────────────────────────────────────────
@@ -327,38 +336,75 @@ def _restart_slash_worker(session: dict):
         session["slash_worker"] = None
 
 
-def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
-    agent = session.get("agent")
-    if not agent:
-        os.environ["HERMES_MODEL"] = raw_input
-        return {"value": raw_input, "warning": ""}
+def _persist_model_switch(result) -> None:
+    from hermes_cli.config import save_config
 
-    from hermes_cli.model_switch import switch_model
+    cfg = _load_cfg()
+    model_cfg = cfg.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+        cfg["model"] = model_cfg
+
+    model_cfg["default"] = result.new_model
+    model_cfg["provider"] = result.target_provider
+    if result.base_url:
+        model_cfg["base_url"] = result.base_url
+    else:
+        model_cfg.pop("base_url", None)
+    save_config(cfg)
+
+
+def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
+    from hermes_cli.model_switch import parse_model_flags, switch_model
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    model_input, explicit_provider, persist_global = parse_model_flags(raw_input)
+    if not model_input:
+        raise ValueError("model value required")
+
+    agent = session.get("agent")
+    if agent:
+        current_provider = getattr(agent, "provider", "") or ""
+        current_model = getattr(agent, "model", "") or ""
+        current_base_url = getattr(agent, "base_url", "") or ""
+        current_api_key = getattr(agent, "api_key", "") or ""
+    else:
+        runtime = resolve_runtime_provider(requested=None)
+        current_provider = str(runtime.get("provider", "") or "")
+        current_model = _resolve_model()
+        current_base_url = str(runtime.get("base_url", "") or "")
+        current_api_key = str(runtime.get("api_key", "") or "")
 
     result = switch_model(
-        raw_input=raw_input,
-        current_provider=getattr(agent, "provider", "") or "",
-        current_model=getattr(agent, "model", "") or "",
-        current_base_url=getattr(agent, "base_url", "") or "",
-        current_api_key=getattr(agent, "api_key", "") or "",
+        raw_input=model_input,
+        current_provider=current_provider,
+        current_model=current_model,
+        current_base_url=current_base_url,
+        current_api_key=current_api_key,
+        is_global=persist_global,
+        explicit_provider=explicit_provider,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
-    agent.switch_model(
-        new_model=result.new_model,
-        new_provider=result.target_provider,
-        api_key=result.api_key,
-        base_url=result.base_url,
-        api_mode=result.api_mode,
-    )
+    if agent:
+        agent.switch_model(
+            new_model=result.new_model,
+            new_provider=result.target_provider,
+            api_key=result.api_key,
+            base_url=result.base_url,
+            api_mode=result.api_mode,
+        )
+        _restart_slash_worker(session)
+        _emit("session.info", sid, _session_info(agent))
+
     os.environ["HERMES_MODEL"] = result.new_model
-    _restart_slash_worker(session)
-    _emit("session.info", sid, _session_info(agent))
+    if persist_global:
+        _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}
 
 
-def _compress_session_history(session: dict) -> tuple[int, dict]:
+def _compress_session_history(session: dict, focus_topic: str | None = None) -> tuple[int, dict]:
     from agent.model_metadata import estimate_messages_tokens_rough
 
     agent = session["agent"]
@@ -370,6 +416,7 @@ def _compress_session_history(session: dict) -> tuple[int, dict]:
         history,
         getattr(agent, "_cached_system_prompt", "") or "",
         approx_tokens=approx_tokens,
+        focus_topic=focus_topic or None,
     )
     session["history"] = compressed
     session["history_version"] = int(session.get("history_version", 0)) + 1
@@ -617,21 +664,91 @@ def _resolve_personality_prompt(cfg: dict) -> str:
     if not name or name in ("default", "none", "neutral"):
         return ""
     try:
-        from hermes_cli.config import load_config as _load_full_cfg
-        personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
+        from cli import load_cli_config
+
+        personalities = load_cli_config().get("agent", {}).get("personalities", {})
     except Exception:
-        personalities = cfg.get("agent", {}).get("personalities", {})
+        try:
+            from hermes_cli.config import load_config as _load_full_cfg
+
+            personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
+        except Exception:
+            personalities = cfg.get("agent", {}).get("personalities", {})
     pval = personalities.get(name)
     if pval is None:
         return ""
-    if isinstance(pval, dict):
-        parts = [pval.get("system_prompt", "")]
-        if pval.get("tone"):
-            parts.append(f'Tone: {pval["tone"]}')
-        if pval.get("style"):
-            parts.append(f'Style: {pval["style"]}')
+    return _render_personality_prompt(pval)
+
+
+def _render_personality_prompt(value) -> str:
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
         return "\n".join(p for p in parts if p)
-    return str(pval)
+    return str(value)
+
+
+def _available_personalities(cfg: dict | None = None) -> dict:
+    try:
+        from cli import load_cli_config
+
+        return load_cli_config().get("agent", {}).get("personalities", {}) or {}
+    except Exception:
+        try:
+            from hermes_cli.config import load_config as _load_full_cfg
+
+            return _load_full_cfg().get("agent", {}).get("personalities", {}) or {}
+        except Exception:
+            cfg = cfg or _load_cfg()
+            return cfg.get("agent", {}).get("personalities", {}) or {}
+
+
+def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
+    raw = str(value or "").strip()
+    name = raw.lower()
+    if not name or name in ("none", "default", "neutral"):
+        return "", ""
+
+    personalities = _available_personalities(cfg)
+    if name not in personalities:
+        names = sorted(personalities)
+        available = ", ".join(f"`{n}`" for n in names)
+        base = f"Unknown personality: `{raw}`."
+        if available:
+            base += f"\n\nAvailable: `none`, {available}"
+        else:
+            base += "\n\nNo personalities configured."
+        raise ValueError(base)
+
+    return name, _render_personality_prompt(personalities[name])
+
+
+def _apply_personality_to_session(sid: str, session: dict, new_prompt: str) -> tuple[bool, dict | None]:
+    if not session:
+        return False, None
+
+    try:
+        new_agent = _make_agent(sid, session["session_key"], session_id=session["session_key"])
+        session["agent"] = new_agent
+        with session["history_lock"]:
+            session["history"] = []
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(new_agent)
+        _emit("session.info", sid, info)
+        _restart_slash_worker(session)
+        return True, info
+    except Exception:
+        if session.get("agent"):
+            agent = session["agent"]
+            agent.ephemeral_system_prompt = new_prompt or None
+            agent._cached_system_prompt = None
+            info = _session_info(agent)
+            _emit("session.info", sid, info)
+            return False, info
+        return False, None
 
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
@@ -893,9 +1010,11 @@ def _(rid, params: dict) -> dict:
         return err
     try:
         with session["history_lock"]:
-            removed, usage = _compress_session_history(session)
-        _emit("session.info", params.get("session_id", ""), _session_info(session["agent"]))
-        return _ok(rid, {"status": "compressed", "removed": removed, "usage": usage})
+            removed, usage = _compress_session_history(session, str(params.get("focus_topic", "") or "").strip())
+            messages = list(session.get("history", []))
+        info = _session_info(session["agent"])
+        _emit("session.info", params.get("session_id", ""), info)
+        return _ok(rid, {"status": "compressed", "removed": removed, "usage": usage, "info": info, "messages": messages})
     except Exception as e:
         return _err(rid, 5005, str(e))
 
@@ -906,7 +1025,7 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     import time as _time
-    filename = f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
+    filename = os.path.abspath(f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json")
     try:
         with open(filename, "w") as f:
             json.dump({"model": getattr(session["agent"], "model", ""), "messages": session.get("history", [])},
@@ -914,6 +1033,27 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"file": filename})
     except Exception as e:
         return _err(rid, 5011, str(e))
+
+
+@method("session.close")
+def _(rid, params: dict) -> dict:
+    sid = params.get("session_id", "")
+    session = _sessions.pop(sid, None)
+    if not session:
+        return _ok(rid, {"closed": False})
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session["session_key"])
+    except Exception:
+        pass
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+    return _ok(rid, {"closed": True})
 
 
 @method("session.branch")
@@ -1087,6 +1227,7 @@ def _(rid, params: dict) -> dict:
 
     # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
     if not save_clipboard_image(img_path):
+        session["image_counter"] = max(0, session["image_counter"] - 1)
         msg = "Clipboard has image but extraction failed" if has_clipboard_image() else "No image found in clipboard"
         return _ok(rid, {"attached": False, "message": msg})
 
@@ -1182,6 +1323,9 @@ def _(rid, params: dict) -> dict:
 
 @method("prompt.background")
 def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
     text, parent = params.get("text", ""), params.get("session_id", "")
     if not text:
         return _err(rid, 4012, "text required")
@@ -1275,8 +1419,7 @@ def _(rid, params: dict) -> dict:
             if session:
                 result = _apply_model_switch(params.get("session_id", ""), session, value)
             else:
-                os.environ["HERMES_MODEL"] = value
-                result = {"value": value, "warning": ""}
+                result = _apply_model_switch("", {"agent": None}, value)
             return _ok(rid, {"key": key, "value": result["value"], "warning": result["warning"]})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -1368,25 +1511,12 @@ def _(rid, params: dict) -> dict:
                     nv = value
                 _save_cfg(cfg)
             elif key == "personality":
-                pname = value if value not in ("none", "default", "neutral") else ""
-                _write_config_key("display.personality", pname)
-                cfg = _load_cfg()
-                new_prompt = _resolve_personality_prompt(cfg)
-                _write_config_key("agent.system_prompt", new_prompt)
-                nv = value
                 sid_key = params.get("session_id", "")
-                if session:
-                    try:
-                        new_agent = _make_agent(sid_key, session["session_key"], session_id=session["session_key"])
-                        session["agent"] = new_agent
-                        with session["history_lock"]:
-                            session["history"] = []
-                            session["history_version"] = int(session.get("history_version", 0)) + 1
-                    except Exception:
-                        if session.get("agent"):
-                            agent = session["agent"]
-                            agent.ephemeral_system_prompt = new_prompt or None
-                            agent._cached_system_prompt = None
+                pname, new_prompt = _validate_personality(str(value or ""), cfg)
+                _write_config_key("display.personality", pname)
+                _write_config_key("agent.system_prompt", new_prompt)
+                nv = str(value or "default")
+                history_reset, info = _apply_personality_to_session(sid_key, session, new_prompt)
             else:
                 _write_config_key(f"display.{key}", value)
                 nv = value
@@ -1394,7 +1524,9 @@ def _(rid, params: dict) -> dict:
                     _emit("skin.changed", "", resolve_skin())
             resp = {"key": key, "value": nv}
             if key == "personality":
-                resp["cleared"] = True
+                resp["history_reset"] = history_reset
+                if info is not None:
+                    resp["info"] = info
             return _ok(rid, resp)
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -1425,6 +1557,11 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _load_cfg().get("display", {}).get("skin", "default")})
     if key == "personality":
         return _ok(rid, {"value": _load_cfg().get("display", {}).get("personality", "default")})
+    if key == "reasoning":
+        cfg = _load_cfg()
+        effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
+        display = "show" if bool(cfg.get("display", {}).get("show_reasoning", False)) else "hide"
+        return _ok(rid, {"value": effort, "display": display})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -1510,14 +1647,15 @@ def _(rid, params: dict) -> dict:
             cat_map[cat].append([name, desc])
 
         skill_count = 0
+        warning = ""
         try:
             from agent.skill_commands import scan_skill_commands
             for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
                 all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
                 skill_count += 1
-        except Exception:
-            pass
+        except Exception as e:
+            warning = f"skill discovery unavailable: {e}"
 
         for cat in cat_order:
             categories.append({"name": cat, "pairs": cat_map[cat]})
@@ -1529,6 +1667,7 @@ def _(rid, params: dict) -> dict:
             "canon": canon,
             "categories": categories,
             "skill_count": skill_count,
+            "warning": warning,
         })
     except Exception as e:
         return _err(rid, 5020, str(e))
@@ -1611,7 +1750,10 @@ def _(rid, params: dict) -> dict:
         qc = qcmds[name]
         if qc.get("type") == "exec":
             r = subprocess.run(qc.get("command", ""), shell=True, capture_output=True, text=True, timeout=30)
-            return _ok(rid, {"type": "exec", "output": (r.stdout or r.stderr)[:4000]})
+            output = ((r.stdout or "") + ("\n" if r.stdout and r.stderr else "") + (r.stderr or "")).strip()[:4000]
+            if r.returncode != 0:
+                return _err(rid, 4018, output or f"quick command failed with exit code {r.returncode}")
+            return _ok(rid, {"type": "exec", "output": output})
         if qc.get("type") == "alias":
             return _ok(rid, {"type": "alias", "target": qc.get("target", "")})
 
@@ -1692,15 +1834,18 @@ def _(rid, params: dict) -> dict:
             prefix_tag = ""
             path_part = query if not is_context else query
 
-        expanded = os.path.expanduser(path_part)
+        expanded = _normalize_completion_path(path_part)
         if expanded.endswith("/"):
             search_dir, match = expanded, ""
         else:
             search_dir = os.path.dirname(expanded) or "."
             match = os.path.basename(expanded)
 
+        if not os.path.isdir(search_dir):
+            return _ok(rid, {"items": []})
+
         match_lower = match.lower()
-        for entry in sorted(os.listdir(search_dir))[:200]:
+        for entry in sorted(os.listdir(search_dir)):
             if match and not entry.lower().startswith(match_lower):
                 continue
             if is_context and not prefix_tag and entry.startswith("."):
@@ -1725,8 +1870,8 @@ def _(rid, params: dict) -> dict:
             items.append({"text": text, "display": entry + suffix, "meta": "dir" if is_dir else ""})
             if len(items) >= 30:
                 break
-    except Exception:
-        pass
+    except Exception as e:
+        return _err(rid, 5021, str(e))
 
     return _ok(rid, {"items": items})
 
@@ -1742,39 +1887,83 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.document import Document
         from prompt_toolkit.formatted_text import to_plain_text
 
-        completer = SlashCommandCompleter()
+        from agent.skill_commands import get_skill_commands
+
+        completer = SlashCommandCompleter(skill_commands_provider=lambda: get_skill_commands())
         doc = Document(text, len(text))
         items = [
             {"text": c.text, "display": c.display or c.text,
              "meta": to_plain_text(c.display_meta) if c.display_meta else ""}
             for c in completer.get_completions(doc, None)
         ][:30]
+        text_lower = text.lower()
+        extras = [
+            {"text": "/compact", "display": "/compact", "meta": "Toggle compact display mode"},
+            {"text": "/logs", "display": "/logs", "meta": "Show recent gateway log lines"},
+        ]
+        for extra in extras:
+            if extra["text"].startswith(text_lower) and not any(item["text"] == extra["text"] for item in items):
+                items.append(extra)
         return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
-    except Exception:
-        return _ok(rid, {"items": []})
+    except Exception as e:
+        return _err(rid, 5020, str(e))
+
+
+@method("model.options")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.models import provider_model_ids
+
+        session = _sessions.get(params.get("session_id", ""))
+        agent = session.get("agent") if session else None
+        cfg = _load_cfg()
+        current_provider = getattr(agent, "provider", "") or ""
+        current_model = getattr(agent, "model", "") or _resolve_model()
+        providers = list_authenticated_providers(
+            current_provider=current_provider,
+            user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
+            custom_providers=cfg.get("custom_providers") if isinstance(cfg.get("custom_providers"), list) else [],
+            max_models=50,
+        )
+        for provider in providers:
+            try:
+                models = provider_model_ids(provider.get("slug"))
+                if models:
+                    provider["models"] = models
+                    provider["total_models"] = len(models)
+            except Exception as e:
+                provider["warning"] = f"model catalog unavailable: {e}"
+        return _ok(rid, {"providers": providers, "model": current_model, "provider": current_provider})
+    except Exception as e:
+        return _err(rid, 5033, str(e))
 
 
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
-def _mirror_slash_side_effects(sid: str, session: dict, command: str):
+def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
-        return
+        return ""
     name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
 
     try:
         if name == "model" and arg and agent:
-            _apply_model_switch(sid, session, arg)
-        elif name in ("personality", "prompt") and agent:
+            result = _apply_model_switch(sid, session, arg)
+            return result.get("warning", "")
+        elif name == "personality" and arg and agent:
+            _, new_prompt = _validate_personality(arg, _load_cfg())
+            _apply_personality_to_session(sid, session, new_prompt)
+        elif name == "prompt" and agent:
             cfg = _load_cfg()
             new_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
             with session["history_lock"]:
-                _compress_session_history(session)
+                _compress_session_history(session, arg)
             _emit("session.info", sid, _session_info(agent))
         elif name == "fast" and agent:
             mode = arg.lower()
@@ -1788,8 +1977,9 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str):
         elif name == "stop":
             from tools.process_registry import ProcessRegistry
             ProcessRegistry().kill_all()
-    except Exception:
-        pass
+    except Exception as e:
+        return f"live session sync failed: {e}"
+    return ""
 
 
 @method("slash.exec")
@@ -1812,8 +2002,11 @@ def _(rid, params: dict) -> dict:
 
     try:
         output = worker.run(cmd)
-        _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
-        return _ok(rid, {"output": output or "(no output)"})
+        warning = _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
+        payload = {"output": output or "(no output)"}
+        if warning:
+            payload["warning"] = warning
+        return _ok(rid, payload)
     except Exception as e:
         try:
             worker.close()
@@ -1829,9 +2022,14 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
     if action == "status":
-        return _ok(rid, {"enabled": os.environ.get("HERMES_VOICE", "0") == "1"})
+        env = os.environ.get("HERMES_VOICE", "").strip()
+        if env in {"0", "1"}:
+            return _ok(rid, {"enabled": env == "1"})
+        return _ok(rid, {"enabled": bool(_load_cfg().get("display", {}).get("voice_enabled", False))})
     if action in ("on", "off"):
-        os.environ["HERMES_VOICE"] = "1" if action == "on" else "0"
+        enabled = action == "on"
+        os.environ["HERMES_VOICE"] = "1" if enabled else "0"
+        _write_config_key("display.voice_enabled", enabled)
         return _ok(rid, {"enabled": action == "on"})
     return _err(rid, 4013, f"unknown voice action: {action}")
 
@@ -1965,12 +2163,34 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"connected": bool(url), "url": url})
     if action == "connect":
         url = params.get("url", "http://localhost:9222")
-        os.environ["BROWSER_CDP_URL"] = url
         try:
+            import urllib.request
+            from urllib.parse import urlparse
             from tools.browser_tool import cleanup_all_browsers
+
+            parsed = urlparse(url if "://" in url else f"http://{url}")
+            if parsed.scheme not in {"http", "https", "ws", "wss"}:
+                return _err(rid, 4015, f"unsupported browser url: {url}")
+            probe_root = (
+                f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
+            )
+            probe_urls = [f"{probe_root.rstrip('/')}/json/version", f"{probe_root.rstrip('/')}/json"]
+            ok = False
+            for probe in probe_urls:
+                try:
+                    with urllib.request.urlopen(probe, timeout=2.0) as resp:
+                        if 200 <= getattr(resp, "status", 200) < 300:
+                            ok = True
+                            break
+                except Exception:
+                    continue
+            if not ok:
+                return _err(rid, 5031, f"could not reach browser CDP at {url}")
+
+            os.environ["BROWSER_CDP_URL"] = url
             cleanup_all_browsers()
-        except Exception:
-            pass
+        except Exception as e:
+            return _err(rid, 5031, str(e))
         return _ok(rid, {"connected": True, "url": url})
     if action == "disconnect":
         os.environ.pop("BROWSER_CDP_URL", None)
@@ -1990,8 +2210,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"plugins": [
             {"name": n, "version": getattr(i, "version", "?"), "enabled": getattr(i, "enabled", True)}
             for n, i in get_plugin_manager()._plugins.items()]})
-    except Exception:
-        return _ok(rid, {"plugins": []})
+    except Exception as e:
+        return _err(rid, 5032, str(e))
 
 
 @method("config.show")

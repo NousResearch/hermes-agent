@@ -243,4 +243,4 @@ export const userDisplay = (text: string): string => {
 }
 
 export const isPasteBackedText = (text: string): boolean =>
-  /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)\]/.test(text)
+  /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)(?:[^\n]*?)\]/.test(text)

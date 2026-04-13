@@ -22,10 +22,8 @@ const STATUS_VARIANT: Record<string, "success" | "warning" | "destructive"> = {
   scheduled: "success",
   paused: "warning",
   error: "destructive",
-  exhausted: "destructive",
+  completed: "destructive",
 };
-
-
 
 export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);

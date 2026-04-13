@@ -1,4 +1,5 @@
 import { INTERPOLATION_RE, LONG_MSG } from '../constants.js'
+import type { ThinkingMode } from '../types.js'
 
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g
@@ -40,6 +41,12 @@ export const compactPreview = (s: string, max: number) => {
   const one = s.replace(/\s+/g, ' ').trim()
 
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
+}
+
+export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number) => {
+  const text = reasoning.replace(/\n/g, ' ').trim()
+
+  return !text || mode === 'collapsed' ? '' : mode === 'full' ? text : compactPreview(text, max)
 }
 
 export const toolTrailLabel = (name: string) =>
@@ -109,21 +116,6 @@ export const lastCotTrailIndex = (trail: readonly string[]) => {
 }
 
 export const THINKING_COT_MAX = 160
-export const THINKING_COT_FADE = 5
-
-export const thinkingCotTail = (reasoning: string) => reasoning.replace(/\n/g, ' ').slice(-THINKING_COT_MAX)
-
-/** Scale #RRGGBB by k ∈ [0,1] — used for left-edge fade toward terminal bg. */
-export const scaleHex = (hex: string, k: number) => {
-  const h = hex.replace('#', '')
-
-  const ch = (o: number) =>
-    Math.round(parseInt(h.slice(o, o + 2), 16) * k)
-      .toString(16)
-      .padStart(2, '0')
-
-  return `#${ch(0)}${ch(2)}${ch(4)}`
-}
 
 export const estimateRows = (text: string, w: number, compact = false) => {
   let fence: { char: '`' | '~'; len: number } | null = null

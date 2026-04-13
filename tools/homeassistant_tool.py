@@ -274,6 +274,12 @@ def _handle_call_service(args: dict, **kw) -> str:
         return tool_error(f"Invalid entity_id format: {entity_id}")
 
     data = args.get("data")
+    if isinstance(data, str):
+        try:
+            data = json.loads(data) if data.strip() else None
+        except json.JSONDecodeError as e:
+            return tool_error(f"Invalid JSON string in 'data' parameter: {e}")
+
     try:
         result = _run_async(_async_call_service(domain, service, entity_id, data))
         return json.dumps({"result": result})
@@ -450,12 +456,12 @@ HA_CALL_SERVICE_SCHEMA = {
                 ),
             },
             "data": {
-                "type": "object",
+                "type": "string",
                 "description": (
-                    "Additional service data. Examples: "
-                    '{"brightness": 255, "color_name": "blue"} for lights, '
-                    '{"temperature": 22, "hvac_mode": "heat"} for climate, '
-                    '{"volume_level": 0.5} for media players.'
+                    "Additional service data provided as a valid JSON string. Examples: "
+                    '\'{"brightness": 255, "color_name": "blue"}\' for lights, '
+                    '\'{"temperature": 22, "hvac_mode": "heat"}\' for climate, '
+                    '\'{"volume_level": 0.5}\' for media players.'
                 ),
             },
         },

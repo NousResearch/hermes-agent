@@ -1216,6 +1216,22 @@ def _nous_poller(session_id: str) -> None:
             "base_url": full_state.get("inference_base_url"),
         })
         pool.add_entry(entry)
+        # Also persist to auth store so get_nous_auth_status() sees it
+        # (matches what _login_nous in auth.py does for the CLI flow).
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store, _save_provider_state, _save_auth_store,
+                _auth_store_lock,
+            )
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                _save_provider_state(auth_store, "nous", full_state)
+                _save_auth_store(auth_store)
+        except Exception as store_exc:
+            _log.warning(
+                "oauth/device: credential pool saved but auth store write failed "
+                "(session=%s): %s", session_id, store_exc,
+            )
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)

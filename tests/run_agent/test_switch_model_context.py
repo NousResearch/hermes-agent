@@ -1,9 +1,13 @@
 """Tests that switch_model preserves config_context_length."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
 
 
 def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
@@ -72,3 +76,56 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+# ---------------------------------------------------------------------------
+# _check_minimum_context_length — minimum-floor reject and config override
+# ---------------------------------------------------------------------------
+
+def _make_agent_for_min_check(*, ctx_length: int, config_override) -> AIAgent:
+    """Build an AIAgent stub that exposes only what _check_minimum_context_length reads."""
+    agent = AIAgent.__new__(AIAgent)
+    agent.model = "fake-local-model"
+    agent.context_compressor = SimpleNamespace(context_length=ctx_length)
+    agent._config_context_length = config_override
+    return agent
+
+
+def test_check_minimum_context_length_rejects_low_context_without_override():
+    """A model below MINIMUM_CONTEXT_LENGTH with no config override raises."""
+    low_ctx = MINIMUM_CONTEXT_LENGTH - 1
+    agent = _make_agent_for_min_check(ctx_length=low_ctx, config_override=None)
+    with pytest.raises(ValueError, match=r"below the minimum"):
+        agent._check_minimum_context_length()
+
+
+def test_check_minimum_context_length_accepts_low_context_with_override():
+    """When the user explicitly sets model.context_length, the floor is bypassed.
+
+    The error message itself promises 'set model.context_length in config.yaml
+    to override' — without this bypass the override silently fails for any
+    value below the floor (the exact case it exists to handle, e.g.
+    hermes-brain:qwen3-14b-ctx32k at 32768 tokens).
+    """
+    low_ctx = 32_768
+    agent = _make_agent_for_min_check(ctx_length=low_ctx, config_override=low_ctx)
+    # Must not raise.
+    agent._check_minimum_context_length()
+
+
+def test_check_minimum_context_length_accepts_above_floor_without_override():
+    """Models at or above the minimum pass without an override."""
+    agent = _make_agent_for_min_check(
+        ctx_length=MINIMUM_CONTEXT_LENGTH, config_override=None
+    )
+    agent._check_minimum_context_length()
+
+
+def test_check_minimum_context_length_accepts_zero_context_length():
+    """A zero/missing context_length (compressor not yet initialized) is a no-op.
+
+    The check guards on ``ctx and ctx < MINIMUM_CONTEXT_LENGTH`` — a 0 short-
+    circuits because the value is meaningless, not because it's "fine".
+    """
+    agent = _make_agent_for_min_check(ctx_length=0, config_override=None)
+    agent._check_minimum_context_length()

@@ -135,10 +135,21 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        #
+        # Exception: opt-in tiny models — when the model's *total* context is
+        # below the floor (only reachable via explicit ``model.context_length``
+        # in config.yaml; the run_agent reject-block otherwise blocks startup),
+        # applying the floor would put the threshold at or above total context
+        # and compression would never fire. In that regime, use the raw
+        # percentage as the threshold so compression still kicks in roughly
+        # half-full as intended.
+        if self.context_length >= MINIMUM_CONTEXT_LENGTH:
+            self.threshold_tokens = max(
+                int(self.context_length * threshold_percent),
+                MINIMUM_CONTEXT_LENGTH,
+            )
+        else:
+            self.threshold_tokens = int(self.context_length * threshold_percent)
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context

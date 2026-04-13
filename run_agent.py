@@ -1312,17 +1312,8 @@ class AIAgent:
         self.compression_enabled = compression_enabled
 
         # Reject models whose context window is below the minimum required
-        # for reliable tool-calling workflows (64K tokens).
-        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
-        _ctx = getattr(self.context_compressor, "context_length", 0)
-        if _ctx and _ctx < MINIMUM_CONTEXT_LENGTH:
-            raise ValueError(
-                f"Model {self.model} has a context window of {_ctx:,} tokens, "
-                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-                f"by Hermes Agent.  Choose a model with at least "
-                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-                f"model.context_length in config.yaml to override."
-            )
+        # for reliable tool-calling workflows.
+        self._check_minimum_context_length()
 
         # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand)
         self._context_engine_tool_names: set = set()
@@ -1475,6 +1466,27 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
+    def _check_minimum_context_length(self) -> None:
+        """Reject models with context windows below MINIMUM_CONTEXT_LENGTH.
+
+        Bypassed when the user has explicitly set ``model.context_length`` in
+        config.yaml — that opt-in is treated as "user knows what they're doing
+        and accepts the risk", which the error message itself promises. Without
+        this bypass the override silently fails for any value below the floor,
+        which is precisely the case it's meant to enable.
+        """
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+        ctx = getattr(self.context_compressor, "context_length", 0)
+        user_override = getattr(self, "_config_context_length", None)
+        if ctx and ctx < MINIMUM_CONTEXT_LENGTH and user_override is None:
+            raise ValueError(
+                f"Model {self.model} has a context window of {ctx:,} tokens, "
+                f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
+                f"by Hermes Agent.  Choose a model with at least "
+                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
+                f"model.context_length in config.yaml to override."
+            )
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 

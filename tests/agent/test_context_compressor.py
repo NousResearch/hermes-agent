@@ -621,6 +621,29 @@ class TestSummaryTargetRatio:
         # 50% of 200K = 100K, which is above the 64K floor
         assert c.threshold_tokens == 100_000
 
+    def test_threshold_floor_skipped_for_opt_in_tiny_models(self):
+        """When the user has opted into a sub-64K model via config override,
+        the 64K floor must be skipped — otherwise the threshold would equal
+        or exceed total context and compression would never fire.
+
+        Concrete example: hermes-brain:qwen3-14b-ctx32k at 32_768 tokens
+        should compress at ~16_384 tokens (50% of 32_768), not 32_768.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=32_768):
+            c = ContextCompressor(
+                model="hermes-brain:qwen3-14b-ctx32k",
+                quiet_mode=True,
+                config_context_length=32_768,
+            )
+        assert c.context_length == 32_768
+        # Raw percentage applies, no 64K floor.
+        assert c.threshold_tokens == 16_384, (
+            f"Expected threshold 16384 (50% of 32768), got {c.threshold_tokens}. "
+            "The MINIMUM_CONTEXT_LENGTH floor must not apply when the model's "
+            "total context is itself below the floor — otherwise compression "
+            "never fires on opt-in tiny models."
+        )
+
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):

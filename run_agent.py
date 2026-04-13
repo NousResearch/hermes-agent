@@ -3381,6 +3381,101 @@ class AIAgent:
 
         return None
 
+    def _recover_embedded_tool_calls(self, content: str) -> tuple[str, list | None]:
+        """Recover tool calls leaked into assistant text by buggy providers."""
+        text = content or ""
+        if "<tool_call" not in text and "<minimax:tool_call" not in text:
+            return text, None
+
+        block_re = re.compile(
+            r"<(?:\w+:)?tool_call>\s*(.*?)\s*</(?:\w+:)?tool_call>",
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        recovered = []
+        cleaned_parts = []
+        last_end = 0
+
+        for match_index, match in enumerate(block_re.finditer(text)):
+            cleaned_parts.append(text[last_end:match.start()])
+            block = (match.group(1) or "").strip()
+            last_end = match.end()
+
+            block = re.sub(r"^(?:<(?:\w+:)?tool_call>\s*)+", "", block, flags=re.IGNORECASE)
+
+            parsed_name = None
+            parsed_args = None
+
+            if block.startswith("{"):
+                try:
+                    data = json.loads(block)
+                    if isinstance(data, dict):
+                        parsed_name = data.get("name")
+                        parsed_args = data.get("arguments")
+                except Exception:
+                    malformed_name = re.search(r'"name"\s*:\s*"([^"]+)"', block, flags=re.IGNORECASE)
+                    if malformed_name:
+                        parsed_name = malformed_name.group(1).strip() or None
+
+            invoke_match = re.search(
+                r"<invoke(?:\s+name=[\"']([^\"']+)[\"'])?\s*>",
+                block,
+                flags=re.IGNORECASE,
+            )
+            if parsed_name is None and invoke_match:
+                parsed_name = invoke_match.group(1) or None
+
+            params = {}
+            for param_match in re.finditer(
+                r"<parameter\s+name=[\"']([^\"']+)[\"']\s*>(.*?)</parameter>",
+                block,
+                flags=re.DOTALL | re.IGNORECASE,
+            ):
+                key = (param_match.group(1) or "").strip()
+                value = re.sub(r"\s+", " ", (param_match.group(2) or "")).strip()
+                if key:
+                    params[key] = value
+
+            inline_param_match = re.search(
+                r'"parameter\s+name="\s*([^"]+)\s*">\s*([^<]+)',
+                block,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+            if inline_param_match:
+                key = (inline_param_match.group(1) or "").strip()
+                value = re.sub(r"\s+", " ", (inline_param_match.group(2) or "")).strip()
+                if key and key not in params:
+                    params[key] = value
+
+            if parsed_name is None and params.keys() == {"command"}:
+                parsed_name = "terminal"
+            if params:
+                parsed_args = params
+
+            if not isinstance(parsed_name, str) or not parsed_name.strip() or parsed_args is None:
+                cleaned_parts.append(match.group(0))
+                continue
+
+            arguments_json = parsed_args if isinstance(parsed_args, str) else json.dumps(parsed_args, ensure_ascii=False)
+            repaired_name = self._repair_tool_call(parsed_name.strip()) or parsed_name.strip()
+            recovered.append(
+                SimpleNamespace(
+                    id=self._deterministic_call_id(repaired_name, arguments_json, match_index),
+                    type="function",
+                    function=SimpleNamespace(name=repaired_name, arguments=arguments_json),
+                )
+            )
+
+        if not recovered:
+            return text, None
+
+        cleaned_parts.append(text[last_end:])
+        cleaned = "".join(cleaned_parts)
+        cleaned = re.sub(r"</(?:\w+:)?tool_call>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</tool>\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+        return cleaned, recovered
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -9425,6 +9520,14 @@ class AIAgent:
                         assistant_message.content = "\n".join(parts)
                     else:
                         assistant_message.content = str(raw)
+
+                recovered_content, recovered_tool_calls = self._recover_embedded_tool_calls(
+                    assistant_message.content or ""
+                )
+                assistant_message.content = recovered_content
+                if recovered_tool_calls and not getattr(assistant_message, "tool_calls", None):
+                    assistant_message.tool_calls = recovered_tool_calls
+                    finish_reason = "tool_calls"
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook

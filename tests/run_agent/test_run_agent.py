@@ -180,6 +180,74 @@ class TestProviderModelNormalization:
         assert agent.model == "anthropic/claude-sonnet-4.6"
 
 
+class TestEmbeddedToolCallRecovery:
+    def test_recovers_json_tool_call_block_from_assistant_text(self, agent):
+        content, tool_calls = agent._recover_embedded_tool_calls(
+            'Let me check.\n<tool_call>{"name":"terminal","arguments":{"command":"pwd"}}</tool_call>'
+        )
+
+        assert "Let me check." in content
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+        assert json.loads(tool_calls[0].function.arguments) == {"command": "pwd"}
+
+    def test_recovers_malformed_minimax_parameter_block(self, agent):
+        leaked = (
+            "<tool_call>\n"
+            "<tool_call>\n"
+            '<parameter name="command">head -5 /Users/nopenotagain/.hermes/skills/tool-use/SKILL.md</parameter>\n'
+            "</invoke>\n"
+            "</minimax:tool_call>"
+        )
+
+        content, tool_calls = agent._recover_embedded_tool_calls(leaked)
+
+        assert content == ""
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+        assert json.loads(tool_calls[0].function.arguments) == {
+            "command": "head -5 /Users/nopenotagain/.hermes/skills/tool-use/SKILL.md"
+        }
+
+    def test_recovers_malformed_minimax_name_plus_parameter_block(self, agent):
+        leaked = (
+            "<tool_call>\n"
+            '{"name": "session_search">\n'
+            '<parameter name="limit">5</parameter>\n'
+            "</tool_call>\n"
+            "</minimax:tool_call>"
+        )
+
+        content, tool_calls = agent._recover_embedded_tool_calls(leaked)
+
+        assert content == ""
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "session_search"
+        assert json.loads(tool_calls[0].function.arguments) == {"limit": "5"}
+
+    def test_recovers_inline_parameter_name_variant(self, agent):
+        leaked = (
+            "<tool_call>\n"
+            '{"name": "terminal", "parameter name="command">mkdir -p '
+            '"/Users/nopenotagain/Hermetius/0x1-proof-kernel-fast lane/0x1/models/lambda-RLM"</parameter>\n'
+            "</tool>\n"
+            "</minimax:tool_call>"
+        )
+
+        content, tool_calls = agent._recover_embedded_tool_calls(leaked)
+
+        assert content == ""
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "terminal"
+        assert json.loads(tool_calls[0].function.arguments) == {
+            "command": 'mkdir -p "/Users/nopenotagain/Hermetius/0x1-proof-kernel-fast lane/0x1/models/lambda-RLM"'
+        }
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

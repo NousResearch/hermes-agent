@@ -659,6 +659,7 @@ DEFAULT_CONFIG = {
         "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
+        "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -724,7 +725,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================

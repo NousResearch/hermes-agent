@@ -14,6 +14,8 @@ import os
 import secrets
 import sys
 import time
+import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -243,6 +245,197 @@ def _build_schema_from_config(
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
 
 
+def _candidate_webui_state_dirs() -> List[Path]:
+    """Return plausible Hermes WebUI state directories.
+
+    The dashboard often runs inside a Hermes profile where HOME points at
+    ~/.hermes/profiles/<name>/home. Hermes WebUI state, however, usually lives
+    under the base ~/.hermes tree, so we derive both profile-local and base-home
+    candidates.
+    """
+    hermes_home = get_hermes_home().resolve()
+    base_hermes_home = hermes_home
+    if hermes_home.parent.name == "profiles":
+        base_hermes_home = hermes_home.parent.parent
+
+    home_candidates = [Path.home().resolve()]
+    profile_home = Path(os.getenv("HOME", "")).expanduser().resolve() if os.getenv("HOME") else None
+    if profile_home and profile_home not in home_candidates:
+        home_candidates.append(profile_home)
+    if base_hermes_home.parent not in home_candidates:
+        home_candidates.append(base_hermes_home.parent)
+
+    candidates: list[Path] = []
+    raw_candidates = [
+        os.getenv("HERMES_WEBUI_STATE_DIR"),
+        str(base_hermes_home / "webui-mvp"),
+        str(base_hermes_home / "webui"),
+        str(hermes_home / "webui-mvp"),
+        str(hermes_home / "webui"),
+    ] + [
+        str(home / ".hermes" / suffix)
+        for home in home_candidates
+        for suffix in ("webui-mvp", "webui")
+    ]
+    seen: set[str] = set()
+    for raw in raw_candidates:
+        if not raw:
+            continue
+        path = Path(raw).expanduser().resolve()
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(path)
+    return candidates
+
+
+
+def _load_webui_session_snapshot(session_id: str) -> Optional[Dict[str, Any]]:
+    """Load a Hermes WebUI session JSON snapshot by ID, if available."""
+    for state_dir in _candidate_webui_state_dirs():
+        session_path = state_dir / "sessions" / f"{session_id}.json"
+        if not session_path.exists():
+            continue
+        try:
+            return json.loads(session_path.read_text(encoding="utf-8"))
+        except Exception:
+            _log.warning("Failed to load WebUI session snapshot: %s", session_path, exc_info=True)
+            return None
+    return None
+
+
+
+def _normalize_message_content(content: Any) -> Optional[str]:
+    """Convert structured message content into plain text for the dashboard."""
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and item.get("text"):
+                    parts.append(str(item.get("text")))
+                elif item.get("content"):
+                    parts.append(str(item.get("content")))
+            elif item is not None:
+                parts.append(str(item))
+        text = "\n".join(part for part in parts if part)
+        return text or None
+    if isinstance(content, dict):
+        if content.get("type") == "text" and content.get("text"):
+            return str(content.get("text"))
+        if content.get("content"):
+            return str(content.get("content"))
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except Exception:
+            return str(content)
+    return str(content)
+
+
+
+def _normalize_webui_messages(messages: Any) -> List[Dict[str, Any]]:
+    """Normalize Hermes WebUI JSON messages to the admin dashboard API shape."""
+    normalized: list[dict[str, Any]] = []
+    for raw in messages or []:
+        if not isinstance(raw, dict):
+            continue
+        tool_calls = raw.get("tool_calls")
+        if isinstance(tool_calls, str):
+            try:
+                tool_calls = json.loads(tool_calls)
+            except Exception:
+                tool_calls = []
+        normalized.append(
+            {
+                "role": raw.get("role") or "system",
+                "content": _normalize_message_content(raw.get("content")),
+                "tool_calls": tool_calls,
+                "tool_name": raw.get("tool_name"),
+                "tool_call_id": raw.get("tool_call_id"),
+                "timestamp": raw.get("timestamp") or raw.get("_ts"),
+            }
+        )
+    return normalized
+
+
+
+def _session_preview_from_messages(messages: List[Dict[str, Any]]) -> str:
+    for msg in messages:
+        if msg.get("role") != "user":
+            continue
+        text = (msg.get("content") or "").strip()
+        if text:
+            return text[:60] + ("..." if len(text) > 60 else "")
+    return ""
+
+
+
+def _coerce_session_timestamp(value: Any) -> Optional[float]:
+    """Coerce WebUI/session timestamp values to epoch seconds when possible."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+
+def _hydrate_webui_session_record(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill preview/timestamps for state.db-backed WebUI sessions."""
+    if session.get("source") != "webui":
+        return session
+    snapshot = _load_webui_session_snapshot(session.get("id", ""))
+    if not snapshot:
+        return session
+    messages = _normalize_webui_messages(snapshot.get("messages"))
+    if not session.get("preview"):
+        session["preview"] = _session_preview_from_messages(messages)
+    snapshot_updated_at = _coerce_session_timestamp(snapshot.get("updated_at"))
+    if snapshot_updated_at is not None:
+        session["last_active"] = snapshot_updated_at
+    return session
+
+
+
+def _normalize_cron_job(job: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate cron.jobs records into the shape expected by the dashboard SPA."""
+    schedule = job.get("schedule")
+    if isinstance(schedule, dict):
+        schedule_text = job.get("schedule_display") or schedule.get("display") or schedule.get("expr") or schedule.get("run_at") or ""
+    else:
+        schedule_text = str(schedule or job.get("schedule_display") or "")
+
+    if job.get("state") == "paused" or job.get("enabled") is False:
+        status = "paused"
+    elif job.get("last_status") == "error":
+        status = "error"
+    else:
+        status = "enabled"
+
+    return {
+        **job,
+        "schedule": schedule_text,
+        "status": status,
+        "error": job.get("last_error") or job.get("error"),
+    }
+
+
 class ConfigUpdate(BaseModel):
     config: dict
 
@@ -342,6 +535,7 @@ async def get_sessions():
             sessions = db.list_sessions_rich(limit=20)
             now = time.time()
             for s in sessions:
+                _hydrate_webui_session_record(s)
                 s["is_active"] = (
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
@@ -580,6 +774,12 @@ async def get_session_messages(session_id: str):
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         messages = db.get_messages(sid)
+        if not messages:
+            session = db.get_session(sid)
+            if session and session.get("source") == "webui":
+                snapshot = _load_webui_session_snapshot(sid)
+                if snapshot:
+                    messages = _normalize_webui_messages(snapshot.get("messages"))
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()
@@ -653,7 +853,7 @@ class CronJobUpdate(BaseModel):
 @app.get("/api/cron/jobs")
 async def list_cron_jobs():
     from cron.jobs import list_jobs
-    return list_jobs(include_disabled=True)
+    return [_normalize_cron_job(job) for job in list_jobs(include_disabled=True)]
 
 
 @app.get("/api/cron/jobs/{job_id}")
@@ -662,7 +862,7 @@ async def get_cron_job(job_id: str):
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _normalize_cron_job(job)
 
 
 @app.post("/api/cron/jobs")
@@ -671,7 +871,7 @@ async def create_cron_job(body: CronJobCreate):
     try:
         job = create_job(prompt=body.prompt, schedule=body.schedule,
                          name=body.name, deliver=body.deliver)
-        return job
+        return _normalize_cron_job(job)
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
         raise HTTPException(status_code=400, detail=str(e))
@@ -683,7 +883,7 @@ async def update_cron_job(job_id: str, body: CronJobUpdate):
     job = update_job(job_id, body.updates)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _normalize_cron_job(job)
 
 
 @app.post("/api/cron/jobs/{job_id}/pause")
@@ -692,7 +892,7 @@ async def pause_cron_job(job_id: str):
     job = pause_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _normalize_cron_job(job)
 
 
 @app.post("/api/cron/jobs/{job_id}/resume")
@@ -701,7 +901,7 @@ async def resume_cron_job(job_id: str):
     job = resume_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _normalize_cron_job(job)
 
 
 @app.post("/api/cron/jobs/{job_id}/trigger")
@@ -710,7 +910,7 @@ async def trigger_cron_job(job_id: str):
     job = trigger_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    return _normalize_cron_job(job)
 
 
 @app.delete("/api/cron/jobs/{job_id}")

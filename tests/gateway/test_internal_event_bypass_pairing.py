@@ -100,6 +100,40 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_watch_notification_is_sent_directly_not_via_agent(monkeypatch, tmp_path):
+    """Watch-pattern notifications should go straight to the chat.
+
+    Regression test for the bug where watch matches were injected as synthetic
+    user turns, causing the agent to respond conversationally to
+    ``[SYSTEM: Background process ... matched watch pattern ...]`` messages.
+    """
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        thread_id="456",
+        chat_type="group",
+        user_id="user-1",
+        user_name="Jordan",
+    )
+    event = MessageEvent(text="original request", source=source)
+    synth = "[SYSTEM: Background process proc_1 matched watch pattern \"ready\"]"
+
+    await runner._inject_watch_notification(synth, event)
+
+    adapter.send.assert_awaited_once_with("123", synth, metadata={"thread_id": "456"})
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run

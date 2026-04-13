@@ -505,10 +505,113 @@ class TestNewEndpoints:
         resp = self.client.get("/api/logs?file=nonexistent")
         assert resp.status_code == 400
 
+    def test_get_sessions_hydrates_webui_preview_from_snapshot(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        webui_state = tmp_path / "webui-mvp"
+        session_dir = webui_state / "sessions"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_WEBUI_STATE_DIR", str(webui_state))
+
+        db = SessionDB()
+        try:
+            db.ensure_session("webui123", source="webui", model="gpt-5.4")
+            db.set_session_title("webui123", None)
+            db._execute_write(
+                lambda conn: conn.execute(
+                    "UPDATE sessions SET message_count = ? WHERE id = ?",
+                    (3, "webui123"),
+                )
+            )
+        finally:
+            db.close()
+
+        (session_dir / "webui123.json").write_text(json.dumps({
+            "session_id": "webui123",
+            "updated_at": "2026-04-12T13:35:28.927929+00:00",
+            "messages": [
+                {"role": "user", "content": "This came from the web ui snapshot and should show up"},
+                {"role": "assistant", "content": "Acknowledged"},
+            ],
+        }), encoding="utf-8")
+
+        resp = self.client.get("/api/sessions")
+        assert resp.status_code == 200
+        session = next(s for s in resp.json() if s["id"] == "webui123")
+        assert session["preview"].startswith("This came from the web ui snapshot")
+        assert session["last_active"] == 1776000928.927929
+
+    def test_get_session_messages_falls_back_to_webui_snapshot(self, tmp_path, monkeypatch):
+        from hermes_state import SessionDB
+
+        webui_state = tmp_path / "webui-mvp"
+        session_dir = webui_state / "sessions"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_WEBUI_STATE_DIR", str(webui_state))
+
+        db = SessionDB()
+        try:
+            db.ensure_session("webui456", source="webui", model="gpt-5.4")
+        finally:
+            db.close()
+
+        (session_dir / "webui456.json").write_text(json.dumps({
+            "session_id": "webui456",
+            "messages": [
+                {"role": "user", "content": "Show this in the dashboard"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Here is the answer."},
+                    ],
+                    "tool_calls": [
+                        {"id": "call_1", "function": {"name": "search_files", "arguments": "{}"}}
+                    ],
+                },
+            ],
+        }), encoding="utf-8")
+
+        resp = self.client.get("/api/sessions/webui456/messages")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["session_id"] == "webui456"
+        assert len(data["messages"]) == 2
+        assert data["messages"][0]["content"] == "Show this in the dashboard"
+        assert data["messages"][1]["content"] == "Here is the answer."
+        assert data["messages"][1]["tool_calls"][0]["function"]["name"] == "search_files"
+
     def test_cron_list(self):
         resp = self.client.get("/api/cron/jobs")
         assert resp.status_code == 200
         assert isinstance(resp.json(), list)
+
+    def test_cron_list_normalizes_dashboard_shape(self, monkeypatch):
+        import cron.jobs as cron_jobs
+
+        monkeypatch.setattr(
+            cron_jobs,
+            "list_jobs",
+            lambda include_disabled=True: [{
+                "id": "job-1",
+                "name": "Nightly report",
+                "prompt": "Run nightly report",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "display": "0 9 * * *"},
+                "schedule_display": "0 9 * * *",
+                "enabled": False,
+                "state": "paused",
+                "last_status": "ok",
+                "deliver": "discord",
+                "last_run_at": "2026-04-12T09:00:00-07:00",
+                "next_run_at": "2026-04-13T09:00:00-07:00",
+            }],
+        )
+
+        resp = self.client.get("/api/cron/jobs")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data[0]["schedule"] == "0 9 * * *"
+        assert data[0]["status"] == "paused"
+        assert data[0]["deliver"] == "discord"
 
     def test_cron_job_not_found(self):
         resp = self.client.get("/api/cron/jobs/nonexistent-id")

@@ -7141,10 +7141,12 @@ class GatewayRunner:
         return user_text
 
     async def _inject_watch_notification(self, synth_text: str, original_event) -> None:
-        """Inject a watch-pattern notification as a synthetic message event.
+        """Deliver a watch-pattern notification directly to the originating chat.
 
-        Uses the source from the original user event to route the notification
-        back to the correct chat/adapter.
+        Watch-pattern matches are operator status signals, not new user turns.
+        Routing them back through ``adapter.handle_message()`` causes the agent to
+        answer the synthetic ``[SYSTEM: ...]`` text conversationally in-channel,
+        which is noisy and misleading. Deliver the notification directly instead.
         """
         source = getattr(original_event, "source", None)
         if not source:
@@ -7158,17 +7160,11 @@ class GatewayRunner:
         if not adapter:
             return
         try:
-            from gateway.platforms.base import MessageEvent, MessageType
-            synth_event = MessageEvent(
-                text=synth_text,
-                message_type=MessageType.TEXT,
-                source=source,
-                internal=True,
-            )
-            logger.info("Watch pattern notification — injecting for %s", platform_name)
-            await adapter.handle_message(synth_event)
+            send_meta = {"thread_id": source.thread_id} if source.thread_id else None
+            logger.info("Watch pattern notification — direct send for %s", platform_name)
+            await adapter.send(source.chat_id, synth_text, metadata=send_meta)
         except Exception as e:
-            logger.error("Watch notification injection error: %s", e)
+            logger.error("Watch notification delivery error: %s", e)
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """
@@ -8087,7 +8083,11 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
-                result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
+                result = agent.run_conversation(
+                    message,
+                    conversation_history=agent_history,
+                    task_id=session_id,
+                )
             finally:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)

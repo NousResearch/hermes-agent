@@ -1006,6 +1006,17 @@ def list_authenticated_providers(
             if default_model:
                 models_list.append(default_model)
 
+            # Also include models from the "models" field (dict or list)
+            cfg_models = entry.get("models")
+            if isinstance(cfg_models, dict):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
+            elif isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if isinstance(m, str) and m not in models_list:
+                        models_list.append(m)
+
             results.append({
                 "slug": slug,
                 "name": display_name,

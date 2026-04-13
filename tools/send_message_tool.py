@@ -385,6 +385,20 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
+    # --- LINE: use adapter send + send_image_file for media ---
+    if platform == Platform.LINE:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_line(
+                pconfig, chat_id, chunk,
+                media_files=media_files if is_last else [],
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
@@ -974,7 +988,7 @@ async def _send_bluebubbles(extra, chat_id, message):
         return _error(f"BlueBubbles send failed: {e}")
 
 
-async def _send_line(pconfig, chat_id, message):
+async def _send_line(pconfig, chat_id, message, media_files=None):
     """Send via LINE Messaging API using the adapter's Push API."""
     try:
         from gateway.platforms.line import LineAdapter, check_line_requirements
@@ -983,12 +997,37 @@ async def _send_line(pconfig, chat_id, message):
     except ImportError:
         return {"error": "LINE adapter not available."}
 
+    media_files = media_files or []
+
     try:
         adapter = LineAdapter(pconfig)
-        result = await adapter.send(chat_id, message)
-        if not result.success:
-            return _error(f"LINE send failed: {result.error}")
-        return {"success": True, "platform": "line", "chat_id": chat_id, "message_id": result.message_id}
+        last_result = None
+
+        if message.strip():
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"LINE send failed: {result.error}")
+            last_result = result
+
+        for media_path, is_voice in media_files:
+            if not os.path.exists(media_path):
+                return _error(f"Media file not found: {media_path}")
+            ext = os.path.splitext(media_path)[1].lower()
+            if ext in _IMAGE_EXTS:
+                result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in _VIDEO_EXTS:
+                result = await adapter.send_document(chat_id, media_path)
+            elif ext in _AUDIO_EXTS:
+                result = await adapter.send_voice(chat_id, media_path)
+            else:
+                result = await adapter.send_document(chat_id, media_path)
+            if not result.success:
+                return _error(f"LINE media send failed: {result.error}")
+            last_result = result
+
+        if last_result is None:
+            return _error("LINE: nothing to send")
+        return {"success": True, "platform": "line", "chat_id": chat_id, "message_id": last_result.message_id}
     except Exception as e:
         return _error(f"LINE send failed: {e}")
 

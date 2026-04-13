@@ -8702,6 +8702,26 @@ class HermesCLI:
         except Exception:
             _voice_key = "c-b"
 
+        # --- Ctrl+W word boundary: configurable via display.ctrlw_word_boundary ---
+        # Default "whitespace" matches prompt_toolkit's built-in unix_word_rubout.
+        # Set to "alphanumeric" to split on / . : - etc (same as Meta+Backspace),
+        # which is much more usable for URLs and file paths.
+        from prompt_toolkit.key_binding.bindings.named_commands import unix_word_rubout as _uwrt
+        _ctrlw_boundary = load_config().get("display", {}).get("ctrlw_word_boundary", "whitespace")
+
+        @kb.add('c-w')
+        def handle_ctrl_w(event):
+            """Ctrl+W — delete word before cursor.
+
+            Word boundary is controlled by display.ctrlw_word_boundary:
+            - "whitespace" (default): deletes to previous space (current behavior)
+            - "alphanumeric": deletes to previous non-alphanumeric char (URL-friendly)
+            """
+            if _ctrlw_boundary == "alphanumeric":
+                _uwrt(event, WORD=False)  # split on non-alphanumeric
+            else:
+                _uwrt(event, WORD=True)   # split on whitespace only
+
         @kb.add(_voice_key)
         def handle_voice_record(event):
             """Toggle voice recording when voice mode is active.

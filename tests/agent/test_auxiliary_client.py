@@ -944,6 +944,46 @@ model:
         }
 
 
+def test_resolve_provider_client_supports_copilot_acp_external_process():
+    fake_client = MagicMock()
+
+    with patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4-mini"), \
+         patch("agent.auxiliary_client.CodexAuxiliaryClient", MagicMock()), \
+         patch("agent.copilot_acp_client.CopilotACPClient", return_value=fake_client) as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is fake_client
+    assert model == "gpt-5.4-mini"
+    assert mock_acp.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp.call_args.kwargs["command"] == "/usr/bin/copilot"
+    assert mock_acp.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_resolve_provider_client_copilot_acp_requires_explicit_or_configured_model():
+    with patch("agent.auxiliary_client._read_main_model", return_value=""), \
+         patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is None
+    assert model is None
+    mock_acp.assert_not_called()
+
+
 class TestAuxiliaryMaxTokensParam:
     def test_codex_fallback_uses_max_tokens(self, monkeypatch):
         """Codex adapter translates max_tokens internally, so we return max_tokens."""

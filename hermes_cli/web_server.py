@@ -891,15 +891,21 @@ _OAUTH_SESSION_TTL_SECONDS = 15 * 60
 _oauth_sessions: Dict[str, Dict[str, Any]] = {}
 _oauth_sessions_lock = threading.Lock()
 
-# Import OAuth constants from canonical source instead of duplicating
-from agent.anthropic_adapter import (
-    _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
-    _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
-    _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
-    _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
-    _generate_pkce as _generate_pkce_pair,
-)
-_ANTHROPIC_OAUTH_AUTHORIZE_URL = "https://console.anthropic.com/oauth/authorize"
+# Import OAuth constants from canonical source instead of duplicating.
+# Guarded so hermes web still starts if anthropic_adapter is unavailable;
+# Phase 2 endpoints will return 501 in that case.
+try:
+    from agent.anthropic_adapter import (
+        _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
+        _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+        _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
+        _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
+        _generate_pkce as _generate_pkce_pair,
+    )
+    _ANTHROPIC_OAUTH_AVAILABLE = True
+except ImportError:
+    _ANTHROPIC_OAUTH_AVAILABLE = False
+_ANTHROPIC_OAUTH_AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 
 
 def _gc_oauth_sessions() -> None:
@@ -978,6 +984,8 @@ def _save_anthropic_oauth_creds(access_token: str, refresh_token: str, expires_a
 
 def _start_anthropic_pkce() -> Dict[str, Any]:
     """Begin PKCE flow. Returns the auth URL the UI should open."""
+    if not _ANTHROPIC_OAUTH_AVAILABLE:
+        raise HTTPException(status_code=501, detail="Anthropic OAuth not available (missing adapter)")
     verifier, challenge = _generate_pkce_pair()
     sid, sess = _new_oauth_session("anthropic", "pkce")
     sess["verifier"] = verifier

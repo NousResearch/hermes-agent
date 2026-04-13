@@ -287,6 +287,118 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    # CCAPI — multimodal AI gateway aggregating OpenAI, Anthropic, Google, DeepSeek,
+    # MiniMax, Moonshot, Qwen, GLM, and more. OpenAI-compatible API.
+    # Docs: https://docs.ccapi.ai
+    "ccapi": [
+        # Claude (Anthropic)
+        "claude-opus-4-6",
+        "claude-opus-4-5",
+        "claude-opus-4-1",
+        "claude-opus-4-0",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4-0",
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+        # Claude thinking (extended reasoning)
+        "claude-opus-4-6-thinking",
+        "claude-opus-4-5-thinking",
+        "claude-opus-4-1-thinking",
+        "claude-opus-4-0-thinking",
+        "claude-opus-4-20250514-thinking",
+        "claude-sonnet-4-6-thinking",
+        "claude-sonnet-4-5-thinking",
+        "claude-sonnet-4-0-thinking",
+        "claude-sonnet-4-20250514-thinking",
+        "claude-haiku-4-5-thinking",
+        "claude-haiku-4-5-20251001-thinking",
+        "claude-3-5-haiku-latest",
+        "claude-3-5-haiku-20241022",
+        # OpenAI GPT
+        "gpt-4.1",
+        "gpt-4.1-mini",
+        "gpt-4.1-nano",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "gpt-5",
+        "gpt-5-chat-latest",
+        "gpt-5-codex",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5-pro",
+        "gpt-5.1",
+        "gpt-5.1-chat-latest",
+        "gpt-5.2",
+        "gpt-5.2-chat-latest",
+        "gpt-5.2-codex",
+        "gpt-5.2-pro",
+        "gpt-5.3-codex",
+        "gpt-5.4",
+        "gpt-5.4-pro",
+        "gpt-5.4-nano",
+        "gpt-oss-120b",
+        # OpenAI o-series (reasoning models)
+        "o1",
+        "o3",
+        "o3-mini",
+        "o3-pro",
+        "o4-mini",
+        # Google Gemini
+        "gemini-2.0-flash",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3-flash-preview",
+        "gemini-3-pro-preview",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite-preview",
+        # Google Gemini Vision (multimodal — support image input)
+        "gemini-2.5-flash-image",
+        "gemini-2.5-pro-image",
+        "gemini-3-pro-image-preview",
+        "gemini-3.1-flash-image-preview",
+        # Google Gemini nano-banana (DOMestic models)
+        "nano-banana",
+        "nano-banana-pro-1k",
+        "nano-banana-pro-2k",
+        "nano-banana-pro-4k",
+        "nano-banana-2-0.5k",
+        "nano-banana-2-1k",
+        "nano-banana-2-2k",
+        "nano-banana-2-4k",
+        # DeepSeek
+        "deepseek-v3.2",
+        # MiniMax
+        "minimax-m2.7",
+        "minimax-m2.7-highspeed",
+        "minimax-m2.5",
+        # Moonshot / Kimi
+        "kimi-k2.5",
+        # Qwen / Alibaba
+        "qwen3.5-plus",
+        # GLM / ZAI
+        "glm-5-turbo",
+        # Seedance by Doubao (video generation)
+        "doubao-seedance-2-0-260128",
+        "doubao-seedance-1-5-pro-251215",
+        "doubao-seedance-1-0-pro-250528",
+        "doubao-seedance-1-0-pro-fast-251015",
+        "doubao-seedance-1-0-lite-t2v-250428",
+        "doubao-seedance-1-0-lite-i2v-250428",
+        "doubao-seedream-5-0",
+        # Vidu (video generation)
+        "viduq1",
+        "viduq2",
+        "viduq2-pro",
+        "viduq2-pro-fast",
+        "viduq2-turbo",
+        "viduq3-pro",
+        "viduq3-turbo",
+        "vidu2.0",
+        # Qwen Image
+        "z-image-turbo",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -500,6 +612,7 @@ _PROVIDER_LABELS = {
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
     "xiaomi": "Xiaomi MiMo",
+    "ccapi": "CCAPI",
     "custom": "Custom endpoint",
 }
 

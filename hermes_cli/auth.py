@@ -258,6 +258,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "ccapi": ProviderConfig(
+        id="ccapi",
+        name="CCAPI",
+        auth_type="api_key",
+        inference_base_url="https://api.ccapi.ai/v1",
+        api_key_env_vars=("CCAPI_API_KEY",),
+        base_url_env_var="CCAPI_BASE_URL",
+    ),
 }
 
 

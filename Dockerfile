@@ -11,16 +11,16 @@ ENV PYTHONUNBUFFERED=1
 # install survives the /opt/data volume overlay at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 
-# Install system dependencies in one layer, clear APT cache
+# Install system dependencies in one layer and clear the APT cache.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         git curl ripgrep ffmpeg procps systemctl &&\
     rm -rf /var/lib/apt/lists/*
 
-# Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
+# Create the non-root runtime user; UID can be overridden via HERMES_UID at runtime.
 RUN useradd -u 10000 -m -d /opt/data hermes
 
-# Copy Node.js and uv from upstream images instead of installing them with apt/curl.
+# Copy Node.js, uv, and gosu from upstream images instead of installing them in-place.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node_runtime /usr/local/bin/npm /usr/local/bin/npm
 COPY --from=node_runtime /usr/local/bin/npx /usr/local/bin/npx
@@ -31,13 +31,13 @@ COPY --from=uv_runtime /uv /usr/local/bin/uv
 COPY --from=uv_runtime /uvx /usr/local/bin/uvx
 COPY --from=gosu_runtime /gosu /usr/local/bin/
 
-# Install root Node.js dependencies.
+# Install top-level Node.js dependencies.
 COPY package*.json ./
 RUN npm ci --no-audit &&\
     npm cache clean --force &&\
     rm -rf /tmp/*
 
-# Install the shell chromium browser.
+# Install the Playwright Chromium shell browser.
 RUN npx playwright install chromium --with-deps --only-shell &&\
     rm -rf /var/lib/apt/lists/* &&\
     npm cache clean --force
@@ -49,13 +49,12 @@ RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm ci --no-audit &&\
     npm cache clean --force
 
-    
 USER hermes
 
-# Configure optional Python extras to install.
+# Configure the optional Python extras to install.
 ARG EXTRAS="messaging,cron,cli,modal,tts-premium,voice,pty,honcho,mcp,homeassistant,acp,slack"
 
-# Copy the application source and install Hermes.
+# Copy the application source as `hermes` and install Hermes into the virtual environment.
 COPY . .
 RUN chown -R hermes:hermes /opt/hermes
 RUN uv venv && \
@@ -63,7 +62,6 @@ RUN uv venv && \
 
 USER root
 RUN chmod +x /opt/hermes/docker/entrypoint.sh
-
 
 ENV HERMES_HOME=/opt/data
 VOLUME [ "/opt/data" ]

@@ -2894,7 +2894,7 @@ class AIAgent:
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
-        _set_interrupt(True, self._execution_thread_id)
+        _set_interrupt(True, getattr(self, "_execution_thread_id", None))
         # Propagate interrupt to any running child agents (subagent delegation)
         with self._active_children_lock:
             children_copy = list(self._active_children)
@@ -2910,7 +2910,7 @@ class AIAgent:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
-        _set_interrupt(False, self._execution_thread_id)
+        _set_interrupt(False, getattr(self, "_execution_thread_id", None))
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -6074,6 +6074,7 @@ class AIAgent:
             ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
             if ephemeral_out is not None:
                 self._ephemeral_max_output_tokens = None  # consume immediately
+            request_overrides = getattr(self, "request_overrides", None) or {}
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
@@ -6084,7 +6085,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                fast_mode=request_overrides.get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -6141,8 +6142,9 @@ class AIAgent:
             elif not is_github_responses:
                 kwargs["include"] = []
 
-            if self.request_overrides:
-                kwargs.update(self.request_overrides)
+            request_overrides = getattr(self, "request_overrides", None) or {}
+            if request_overrides:
+                kwargs.update(request_overrides)
 
             if self.max_tokens is not None and not is_codex_backend:
                 kwargs["max_output_tokens"] = self.max_tokens
@@ -6325,8 +6327,9 @@ class AIAgent:
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
-        if self.request_overrides:
-            api_kwargs.update(self.request_overrides)
+        request_overrides = getattr(self, "request_overrides", None) or {}
+        if request_overrides:
+            api_kwargs.update(request_overrides)
 
         return api_kwargs
 
@@ -7549,9 +7552,10 @@ class AIAgent:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
-            if self.prefill_messages:
+            prefill_messages = getattr(self, "prefill_messages", None) or []
+            if prefill_messages:
                 sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
+                for idx, pfm in enumerate(prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             summary_extra_body = {}
@@ -8123,9 +8127,10 @@ class AIAgent:
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
-            if self.prefill_messages:
+            prefill_messages = getattr(self, "prefill_messages", None) or []
+            if prefill_messages:
                 sys_offset = 1 if effective_system else 0
-                for idx, pfm in enumerate(self.prefill_messages):
+                for idx, pfm in enumerate(prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             # Apply Anthropic prompt caching for Claude models via OpenRouter.

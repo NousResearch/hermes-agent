@@ -10,6 +10,7 @@ import pytest
 
 from agent.auxiliary_client import (
     get_text_auxiliary_client,
+    get_vision_auxiliary_client,
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,

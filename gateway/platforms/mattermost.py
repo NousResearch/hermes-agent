@@ -18,11 +18,11 @@ import json
 import logging
 import os
 import re
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -96,10 +96,8 @@ class MattermostAdapter(BasePlatformAdapter):
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
 
-        # Dedup cache: post_id → timestamp (prevent reprocessing)
-        self._seen_posts: Dict[str, float] = {}
-        self._SEEN_MAX = 2000
-        self._SEEN_TTL = 300  # 5 minutes
+        # Dedup cache (prevent reprocessing)
+        self._dedup = MessageDeduplicator()
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -407,6 +405,11 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
         import asyncio
         import aiohttp
 
@@ -430,7 +433,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     ct = resp.content_type or "application/octet-stream"
                     break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                last_exc = exc
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
@@ -600,10 +602,8 @@ class MattermostAdapter(BasePlatformAdapter):
         post_id = post.get("id", "")
 
         # Dedup.
-        self._prune_seen()
-        if post_id in self._seen_posts:
+        if self._dedup.is_duplicate(post_id):
             return
-        self._seen_posts[post_id] = time.time()
 
         # Build message event.
         channel_id = post.get("channel_id", "")
@@ -701,6 +701,15 @@ class MattermostAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 
+        # Set message type based on downloaded media types.
+        if media_types and msg_type == MessageType.TEXT:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            elif media_types:
+                msg_type = MessageType.DOCUMENT
+
         source = self.build_source(
             chat_id=channel_id,
             chat_type=chat_type,
@@ -721,13 +730,4 @@ class MattermostAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
-    def _prune_seen(self) -> None:
-        """Remove expired entries from the dedup cache."""
-        if len(self._seen_posts) < self._SEEN_MAX:
-            return
-        now = time.time()
-        self._seen_posts = {
-            pid: ts
-            for pid, ts in self._seen_posts.items()
-            if now - ts < self._SEEN_TTL
-        }
+

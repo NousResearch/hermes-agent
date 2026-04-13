@@ -125,7 +125,9 @@ class TestSendMatrix:
         url = call_kwargs[0][0]
         assert url.startswith("https://matrix.example.com/_matrix/client/v3/rooms/!room:example.com/send/m.room.message/")
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer syt_tok"
-        assert call_kwargs[1]["json"] == {"msgtype": "m.text", "body": "hello matrix"}
+        payload = call_kwargs[1]["json"]
+        assert payload["msgtype"] == "m.text"
+        assert payload["body"] == "hello matrix"
 
     def test_http_error(self):
         resp = _make_aiohttp_resp(403, text_data="Forbidden")
@@ -313,6 +315,29 @@ class TestSendDingtalk:
 
         assert "error" in result
         assert "DingTalk send failed" in result["error"]
+
+    def test_http_error_redacts_access_token_in_exception_text(self):
+        token = "supersecret-access-token-123456789"
+        resp = self._make_httpx_resp(status_code=401)
+        resp.raise_for_status = MagicMock(
+            side_effect=Exception(
+                f"POST https://oapi.dingtalk.com/robot/send?access_token={token} returned 401"
+            )
+        )
+        client_ctx, _ = self._make_httpx_client(resp)
+
+        with patch("httpx.AsyncClient", return_value=client_ctx):
+            result = asyncio.run(
+                _send_dingtalk(
+                    {"webhook_url": f"https://oapi.dingtalk.com/robot/send?access_token={token}"},
+                    "ch",
+                    "hi",
+                )
+            )
+
+        assert "error" in result
+        assert token not in result["error"]
+        assert "access_token=***" in result["error"]
 
     def test_missing_config(self):
         with patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": ""}, clear=False):

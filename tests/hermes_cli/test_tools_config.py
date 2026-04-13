@@ -72,6 +72,45 @@ def test_get_platform_tools_keeps_enabled_mcp_servers_with_explicit_builtin_sele
     assert "web-search-prime" in enabled
 
 
+def test_get_platform_tools_no_mcp_sentinel_excludes_all_mcp_servers():
+    """The 'no_mcp' sentinel in platform_toolsets excludes all MCP servers."""
+    config = {
+        "platform_toolsets": {"cli": ["web", "terminal", "no_mcp"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "web-search-prime": {"url": "https://api.z.ai/api/mcp/web_search_prime/mcp"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    assert "web" in enabled
+    assert "terminal" in enabled
+    assert "exa" not in enabled
+    assert "web-search-prime" not in enabled
+    assert "no_mcp" not in enabled
+
+
+def test_get_platform_tools_no_mcp_sentinel_does_not_affect_other_platforms():
+    """The 'no_mcp' sentinel only affects the platform it's configured on."""
+    config = {
+        "platform_toolsets": {
+            "api_server": ["web", "terminal", "no_mcp"],
+        },
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+        },
+    }
+
+    # api_server should exclude MCP
+    api_enabled = _get_platform_tools(config, "api_server")
+    assert "exa" not in api_enabled
+
+    # cli (not configured with no_mcp) should include MCP
+    cli_enabled = _get_platform_tools(config, "cli")
+    assert "exa" in cli_enabled
+
+
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "auth.json").write_text(
@@ -80,8 +119,7 @@ def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("AUXILIARY_VISION_PROVIDER", raising=False)
-    monkeypatch.delenv("CONTEXT_VISION_PROVIDER", raising=False)
+
     monkeypatch.setattr(
         "agent.auxiliary_client.resolve_vision_provider_client",
         lambda: ("openai-codex", object(), "gpt-4.1"),
@@ -315,6 +353,14 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
+    # import) from adding extra platforms. The loop in tools_command runs
+    # apply_nous_managed_defaults per platform; a second iteration sees values
+    # set by the first as "explicit" and skips them.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_auth_status",
         lambda: {"logged_in": True},
@@ -330,7 +376,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 
     assert config["web"]["backend"] == "firecrawl"
     assert config["tts"]["provider"] == "openai"
-    assert config["browser"]["cloud_provider"] == "browserbase"
+    assert config["browser"]["cloud_provider"] == "browser-use"
     assert configured == []
 
 # ── Platform / toolset consistency ────────────────────────────────────────────
@@ -381,3 +427,31 @@ class TestPlatformToolsetConsistency:
                 f"Platform {platform!r} in tools_config but missing from "
                 f"skills_config PLATFORMS"
             )
+
+
+def test_numeric_mcp_server_name_does_not_crash_sorted():
+    """YAML parses bare numeric keys (e.g. ``12306:``) as int.
+
+    _get_platform_tools must normalise them to str so that sorted()
+    on the returned set never raises TypeError on mixed int/str.
+
+    Regression test for https://github.com/NousResearch/hermes-agent/issues/6901
+    """
+    config = {
+        "platform_toolsets": {"cli": ["web", 12306]},
+        "mcp_servers": {
+            12306: {"url": "https://example.com/mcp"},
+            "normal-server": {"url": "https://example.com/mcp2"},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # All names must be str — no int leaking through
+    assert all(isinstance(name, str) for name in enabled), (
+        f"Non-string toolset names found: {enabled}"
+    )
+    assert "12306" in enabled
+
+    # sorted() must not raise TypeError
+    sorted(enabled)

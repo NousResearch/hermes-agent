@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from tools.binary_extensions import BINARY_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -251,23 +252,43 @@ class FileOperations(ABC):
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """Read a file with pagination support."""
         ...
-    
+
+    @abstractmethod
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Returns ReadResult with .content = full file text, .error set on
+        failure. Always reads to EOF regardless of file size.
+        """
+        ...
+
     @abstractmethod
     def write_file(self, path: str, content: str) -> WriteResult:
         """Write content to a file, creating directories as needed."""
         ...
-    
+
     @abstractmethod
-    def patch_replace(self, path: str, old_string: str, new_string: str, 
+    def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """Replace text in a file using fuzzy matching."""
         ...
-    
+
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch."""
         ...
-    
+
+    @abstractmethod
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file. Returns WriteResult with .error set on failure."""
+        ...
+
+    @abstractmethod
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
+        ...
+
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
@@ -279,26 +300,6 @@ class FileOperations(ABC):
 # =============================================================================
 # Shell-based Implementation
 # =============================================================================
-
-# Binary file extensions (fast path check)
-BINARY_EXTENSIONS = {
-    # Images
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tiff', '.tif',
-    '.svg',  # SVG is text but often treated as binary
-    # Audio/Video
-    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.webm',
-    # Archives
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
-    # Documents
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    # Compiled/Binary
-    '.exe', '.dll', '.so', '.dylib', '.o', '.a', '.pyc', '.pyo', '.class',
-    '.wasm', '.bin',
-    # Fonts
-    '.ttf', '.otf', '.woff', '.woff2', '.eot',
-    # Other
-    '.db', '.sqlite', '.sqlite3',
-}
 
 # Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
@@ -385,9 +386,7 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
-            if not content_sample:
-                return False
-            non_printable = sum(1 for c in content_sample[:1000] 
+            non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
         
@@ -555,73 +554,6 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
-    # Images larger than this are too expensive to inline as base64 in the
-    # conversation context. Return metadata only and suggest vision_analyze.
-    MAX_IMAGE_BYTES = 512 * 1024  # 512 KB
-
-    def _read_image(self, path: str) -> ReadResult:
-        """Read an image file, returning base64 content."""
-        # Get file size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        try:
-            file_size = int(stat_result.stdout.strip())
-        except ValueError:
-            file_size = 0
-        
-        if file_size > self.MAX_IMAGE_BYTES:
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                hint=(
-                    f"Image is too large to inline ({file_size:,} bytes). "
-                    "Use vision_analyze to inspect the image, or reference it by path."
-                ),
-            )
-        
-        # Get base64 content
-        b64_cmd = f"base64 -w 0 {self._escape_shell_arg(path)} 2>/dev/null"
-        b64_result = self._exec(b64_cmd, timeout=30)
-        
-        if b64_result.exit_code != 0:
-            return ReadResult(
-                is_image=True,
-                is_binary=True,
-                file_size=file_size,
-                error=f"Failed to read image: {b64_result.stdout}"
-            )
-        
-        # Try to get dimensions (requires ImageMagick)
-        dimensions = None
-        if self._has_command('identify'):
-            dim_cmd = f"identify -format '%wx%h' {self._escape_shell_arg(path)} 2>/dev/null"
-            dim_result = self._exec(dim_cmd)
-            if dim_result.exit_code == 0:
-                dimensions = dim_result.stdout.strip()
-        
-        # Determine MIME type from extension
-        ext = os.path.splitext(path)[1].lower()
-        mime_types = {
-            '.png': 'image/png',
-            '.jpg': 'image/jpeg',
-            '.jpeg': 'image/jpeg',
-            '.gif': 'image/gif',
-            '.webp': 'image/webp',
-            '.bmp': 'image/bmp',
-            '.ico': 'image/x-icon',
-        }
-        mime_type = mime_types.get(ext, 'application/octet-stream')
-        
-        return ReadResult(
-            is_image=True,
-            is_binary=True,
-            file_size=file_size,
-            base64_content=b64_result.stdout,
-            mime_type=mime_type,
-            dimensions=dimensions
-        )
-    
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         # Get directory and filename
@@ -647,10 +579,62 @@ class ShellFileOperations(FileOperations):
             similar_files=similar[:5]  # Limit to 5 suggestions
         )
     
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Uses cat so the full file is returned regardless of size.
+        """
+        path = self._expand_path(path)
+        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+        stat_result = self._exec(stat_cmd)
+        if stat_result.exit_code != 0:
+            return self._suggest_similar_files(path)
+        try:
+            file_size = int(stat_result.stdout.strip())
+        except ValueError:
+            file_size = 0
+        if self._is_image(path):
+            return ReadResult(is_image=True, is_binary=True, file_size=file_size)
+        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+        if self._is_likely_binary(path, sample_result.stdout):
+            return ReadResult(
+                is_binary=True, file_size=file_size,
+                error="Binary file — cannot display as text."
+            )
+        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
+        if cat_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        return ReadResult(content=cat_result.stdout, file_size=file_size)
+
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file via rm."""
+        path = self._expand_path(path)
+        if _is_write_denied(path):
+            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+        return WriteResult()
+
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move a file via mv."""
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
+        for p in (src, dst):
+            if _is_write_denied(p):
+                return WriteResult(error=f"Move denied: {p} is a protected path")
+        result = self._exec(
+            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
+        )
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+        return WriteResult()
+
     # =========================================================================
     # WRITE Implementation
     # =========================================================================
-    
+
     def write_file(self, path: str, content: str) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
@@ -742,7 +726,7 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
-        new_content, match_count, error = fuzzy_find_and_replace(
+        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
         
@@ -824,7 +808,7 @@ class ShellFileOperations(FileOperations):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         
         # Run linter
-        cmd = linter_cmd.format(file=self._escape_shell_arg(path))
+        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
         
         return LintResult(

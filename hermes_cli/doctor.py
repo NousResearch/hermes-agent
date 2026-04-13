@@ -51,7 +51,34 @@ _PROVIDER_ENV_HINTS = (
     "AI_GATEWAY_API_KEY",
     "OPENCODE_ZEN_API_KEY",
     "OPENCODE_GO_API_KEY",
+    "XIAOMI_API_KEY",
 )
+
+
+from hermes_constants import is_termux as _is_termux
+
+
+def _python_install_cmd() -> str:
+    return "python -m pip install" if _is_termux() else "uv pip install"
+
+
+def _system_package_install_cmd(pkg: str) -> str:
+    if _is_termux():
+        return f"pkg install {pkg}"
+    if sys.platform == "darwin":
+        return f"brew install {pkg}"
+    return f"sudo apt install {pkg}"
+
+
+def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
+    steps: list[str] = []
+    step = 1
+    if not node_installed:
+        steps.append(f"{step}) pkg install nodejs")
+        step += 1
+    steps.append(f"{step}) npm install -g agent-browser")
+    steps.append(f"{step + 1}) agent-browser install")
+    return steps
 
 
 def _has_provider_env_config(content: str) -> bool:
@@ -200,7 +227,7 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: uv pip install {module}")
+            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
     
     for module, name in optional_packages:
         try:
@@ -309,8 +336,8 @@ def run_doctor(args):
                             model_section[k] = raw_config.pop(k)
                         else:
                             raw_config.pop(k)
-                    with open(config_path, "w") as f:
-                        yaml.dump(raw_config, f, default_flow_style=False)
+                    from utils import atomic_yaml_write
+                    atomic_yaml_write(config_path, raw_config)
                     check_ok("Migrated stale root-level keys into model section")
                     fixed_count += 1
                 else:
@@ -503,7 +530,7 @@ def run_doctor(args):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
-        check_info("Install for faster search: sudo apt install ripgrep")
+        check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
@@ -526,7 +553,10 @@ def run_doctor(args):
         if shutil.which("docker"):
             check_ok("docker", "(optional)")
         else:
-            check_warn("docker not found", "(optional)")
+            if _is_termux():
+                check_info("Docker backend is not available inside Termux (expected on Android)")
+            else:
+                check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -574,9 +604,23 @@ def run_doctor(args):
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            if _is_termux():
+                check_info("agent-browser is not installed (expected in the tested Termux path)")
+                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+                check_info("Termux browser setup:")
+                for step in _termux_browser_setup_steps(node_installed=True):
+                    check_info(step)
+            else:
+                check_warn("agent-browser not installed", "(run: npm install)")
     else:
-        check_warn("Node.js not found", "(optional, needed for browser tools)")
+        if _is_termux():
+            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
+            check_info("Install Node.js on Termux with: pkg install nodejs")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=False):
+                check_info(step)
+        else:
+            check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     if shutil.which("npm"):
@@ -642,7 +686,8 @@ def run_doctor(args):
     else:
         check_warn("OpenRouter API", "(not configured)")
     
-    anthropic_key = os.getenv("ANTHROPIC_TOKEN") or os.getenv("ANTHROPIC_API_KEY")
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_key = get_anthropic_key()
     if anthropic_key:
         print("  Checking Anthropic API...", end="", flush=True)
         try:
@@ -679,9 +724,9 @@ def run_doctor(args):
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("Alibaba/DashScope", ("DASHSCOPE_API_KEY",),                         "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models", "DASHSCOPE_BASE_URL", True),
-        # MiniMax APIs don't support /models endpoint — https://github.com/NousResearch/hermes-agent/issues/811
-        ("MiniMax",          ("MINIMAX_API_KEY",),                            None,                                  "MINIMAX_BASE_URL", False),
-        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         None,                                  "MINIMAX_CN_BASE_URL", False),
+        # MiniMax: the /anthropic endpoint doesn't support /models, but the /v1 endpoint does.
+        ("MiniMax",          ("MINIMAX_API_KEY",),                            "https://api.minimax.io/v1/models",    "MINIMAX_BASE_URL", True),
+        ("MiniMax (China)",  ("MINIMAX_CN_API_KEY",),                         "https://api.minimaxi.com/v1/models",  "MINIMAX_CN_BASE_URL", True),
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
@@ -706,10 +751,15 @@ def run_doctor(args):
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
+                # Anthropic-compat endpoints (/anthropic) don't support /models.
+                # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                if _base and _base.rstrip("/").endswith("/anthropic"):
+                    from agent.auxiliary_client import _to_openai_base_url
+                    _base = _to_openai_base_url(_base)
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.0"
+                    _headers["User-Agent"] = "KimiCLI/1.30.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,
@@ -739,8 +789,9 @@ def run_doctor(args):
                 __import__("tinker_atropos")
                 check_ok("tinker-atropos", "(RL training backend)")
             except ImportError:
-                check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
-                issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
+                install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
+                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
+                issues.append(f"Install tinker-atropos: {install_cmd}")
         else:
             check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
     else:
@@ -812,69 +863,83 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     # =========================================================================
-    # Honcho memory
+    # Memory Provider (only check the active provider, if any)
     # =========================================================================
     print()
-    print(color("◆ Honcho Memory", Colors.CYAN, Colors.BOLD))
+    print(color("◆ Memory Provider", Colors.CYAN, Colors.BOLD))
 
+    _active_memory_provider = ""
     try:
-        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-        hcfg = HonchoClientConfig.from_global_config()
-        _honcho_cfg_path = resolve_config_path()
+        import yaml as _yaml
+        _mem_cfg_path = HERMES_HOME / "config.yaml"
+        if _mem_cfg_path.exists():
+            with open(_mem_cfg_path) as _f:
+                _raw_cfg = _yaml.safe_load(_f) or {}
+            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
+    except Exception:
+        pass
 
-        if not _honcho_cfg_path.exists():
-            check_warn("Honcho config not found", "run: hermes memory setup")
-        elif not hcfg.enabled:
-            check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
-        elif not (hcfg.api_key or hcfg.base_url):
-            check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
-            issues.append("No Honcho API key — run 'hermes memory setup'")
-        else:
-            from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
-            reset_honcho_client()
-            try:
-                get_honcho_client(hcfg)
-                check_ok(
-                    "Honcho connected",
-                    f"workspace={hcfg.workspace_id} mode={hcfg.memory_mode} freq={hcfg.write_frequency}",
-                )
-            except Exception as _e:
-                check_fail("Honcho connection failed", str(_e))
-                issues.append(f"Honcho unreachable: {_e}")
-    except ImportError:
-        check_warn("honcho-ai not installed", "pip install honcho-ai")
-    except Exception as _e:
-        check_warn("Honcho check failed", str(_e))
+    if not _active_memory_provider:
+        check_ok("Built-in memory active", "(no external provider configured — this is fine)")
+    elif _active_memory_provider == "honcho":
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+            hcfg = HonchoClientConfig.from_global_config()
+            _honcho_cfg_path = resolve_config_path()
 
-    # =========================================================================
-    # Mem0 memory
-    # =========================================================================
-    print()
-    print(color("◆ Mem0 Memory", Colors.CYAN, Colors.BOLD))
-
-    try:
-        from plugins.memory.mem0 import _load_config as _load_mem0_config
-        mem0_cfg = _load_mem0_config()
-        mem0_key = mem0_cfg.get("api_key", "")
-        if mem0_key:
-            check_ok("Mem0 API key configured")
-            check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-            # Check if mem0.json exists but is missing api_key (the bug we fixed)
-            mem0_json = HERMES_HOME / "mem0.json"
-            if mem0_json.exists():
+            if not _honcho_cfg_path.exists():
+                check_warn("Honcho config not found", "run: hermes memory setup")
+            elif not hcfg.enabled:
+                check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
+            elif not (hcfg.api_key or hcfg.base_url):
+                check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
+                issues.append("No Honcho API key — run 'hermes memory setup'")
+            else:
+                from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
+                reset_honcho_client()
                 try:
-                    import json as _json
-                    file_cfg = _json.loads(mem0_json.read_text())
-                    if not file_cfg.get("api_key") and mem0_key:
-                        check_info("api_key from .env (not in mem0.json) — this is fine")
-                except Exception:
-                    pass
-        else:
-            check_warn("Mem0 not configured", "(set MEM0_API_KEY in .env or run hermes memory setup)")
-    except ImportError:
-        check_warn("Mem0 plugin not loadable", "(optional)")
-    except Exception as _e:
-        check_warn("Mem0 check failed", str(_e))
+                    get_honcho_client(hcfg)
+                    check_ok(
+                        "Honcho connected",
+                        f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
+                    )
+                except Exception as _e:
+                    check_fail("Honcho connection failed", str(_e))
+                    issues.append(f"Honcho unreachable: {_e}")
+        except ImportError:
+            check_fail("honcho-ai not installed", "pip install honcho-ai")
+            issues.append("Honcho is set as memory provider but honcho-ai is not installed")
+        except Exception as _e:
+            check_warn("Honcho check failed", str(_e))
+    elif _active_memory_provider == "mem0":
+        try:
+            from plugins.memory.mem0 import _load_config as _load_mem0_config
+            mem0_cfg = _load_mem0_config()
+            mem0_key = mem0_cfg.get("api_key", "")
+            if mem0_key:
+                check_ok("Mem0 API key configured")
+                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+            else:
+                check_fail("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)")
+                issues.append("Mem0 is set as memory provider but API key is missing")
+        except ImportError:
+            check_fail("Mem0 plugin not loadable", "pip install mem0ai")
+            issues.append("Mem0 is set as memory provider but mem0ai is not installed")
+        except Exception as _e:
+            check_warn("Mem0 check failed", str(_e))
+    else:
+        # Generic check for other memory providers (openviking, hindsight, etc.)
+        try:
+            from plugins.memory import load_memory_provider
+            _provider = load_memory_provider(_active_memory_provider)
+            if _provider and _provider.is_available():
+                check_ok(f"{_active_memory_provider} provider active")
+            elif _provider:
+                check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
+            else:
+                check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
+        except Exception as _e:
+            check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     # =========================================================================
     # Profiles
@@ -920,8 +985,8 @@ def run_doctor(args):
                         pass
     except ImportError:
         pass
-    except Exception as _e:
-        logger.debug("Profile health check failed: %s", _e)
+    except Exception:
+        pass
 
     # =========================================================================
     # Summary

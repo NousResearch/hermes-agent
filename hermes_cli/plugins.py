@@ -36,8 +36,9 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
+from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 
 try:
@@ -60,6 +61,8 @@ VALID_HOOKS: Set[str] = {
     "post_api_request",
     "on_session_start",
     "on_session_end",
+    "on_session_finalize",
+    "on_session_reset",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -95,7 +98,7 @@ class PluginManifest:
     version: str = ""
     description: str = ""
     author: str = ""
-    requires_env: List[str] = field(default_factory=list)
+    requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -198,8 +201,7 @@ class PluginContext:
 
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
-        as the default dispatch function via ``set_defaults(func=...)``.
-        """
+        as the default dispatch function via ``set_defaults(func=...)``."""
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,
@@ -209,6 +211,38 @@ class PluginContext:
             "plugin": self.manifest.name,
         }
         logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
+    # -- context engine registration -----------------------------------------
+
+    def register_context_engine(self, engine) -> None:
+        """Register a context engine to replace the built-in ContextCompressor.
+
+        Only one context engine plugin is allowed. If a second plugin tries
+        to register one, it is rejected with a warning.
+
+        The engine must be an instance of ``agent.context_engine.ContextEngine``.
+        """
+        if self._manager._context_engine is not None:
+            logger.warning(
+                "Plugin '%s' tried to register a context engine, but one is "
+                "already registered. Only one context engine plugin is allowed.",
+                self.manifest.name,
+            )
+            return
+        # Defer the import to avoid circular deps at module level
+        from agent.context_engine import ContextEngine
+        if not isinstance(engine, ContextEngine):
+            logger.warning(
+                "Plugin '%s' tried to register a context engine that does not "
+                "inherit from ContextEngine. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        self._manager._context_engine = engine
+        logger.info(
+            "Plugin '%s' registered context engine: %s",
+            self.manifest.name, engine.name,
+        )
 
     # -- hook registration --------------------------------------------------
 
@@ -242,6 +276,7 @@ class PluginManager:
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
+        self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
 
@@ -258,8 +293,7 @@ class PluginManager:
         manifests: List[PluginManifest] = []
 
         # 1. User plugins (~/.hermes/plugins/)
-        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-        user_dir = Path(hermes_home) / "plugins"
+        user_dir = get_hermes_home() / "plugins"
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
         # 2. Project plugins (./.hermes/plugins/)
@@ -562,6 +596,11 @@ def get_plugin_cli_commands() -> Dict[str, dict]:
     suitable for wiring into argparse subparsers.
     """
     return dict(get_plugin_manager()._cli_commands)
+
+
+def get_plugin_context_engine():
+    """Return the plugin-registered context engine, or None."""
+    return get_plugin_manager()._context_engine
 
 
 def get_plugin_toolsets() -> List[tuple]:

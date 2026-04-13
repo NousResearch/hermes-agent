@@ -504,7 +504,8 @@ class TestMattermostFileUpload:
         self.adapter._session = MagicMock()
 
     @pytest.mark.asyncio
-    async def test_send_image_downloads_and_uploads(self):
+    @patch("tools.url_safety.is_safe_url", return_value=True)
+    async def test_send_image_downloads_and_uploads(self, _mock_safe):
         """send_image should download the URL, upload via /api/v4/files, then post."""
         # Mock the download (GET)
         mock_dl_resp = AsyncMock()
@@ -613,25 +614,27 @@ class TestMattermostDedup:
         assert self.adapter.handle_message.call_count == 2
 
     def test_prune_seen_clears_expired(self):
-        """_prune_seen should remove entries older than _SEEN_TTL."""
+        """Dedup cache should remove entries older than TTL on overflow."""
         now = time.time()
+        dedup = self.adapter._dedup
         # Fill with enough expired entries to trigger pruning
-        for i in range(self.adapter._SEEN_MAX + 10):
-            self.adapter._seen_posts[f"old_{i}"] = now - 600  # 10 min ago
+        for i in range(dedup._max_size + 10):
+            dedup._seen[f"old_{i}"] = now - 600  # 10 min ago (older than default TTL)
 
         # Add a fresh one
-        self.adapter._seen_posts["fresh"] = now
+        dedup._seen["fresh"] = now
 
-        self.adapter._prune_seen()
+        # Trigger pruning by calling is_duplicate with a new entry (over max_size)
+        dedup.is_duplicate("trigger_prune")
 
         # Old entries should be pruned, fresh one kept
-        assert "fresh" in self.adapter._seen_posts
-        assert len(self.adapter._seen_posts) < self.adapter._SEEN_MAX
+        assert "fresh" in dedup._seen
+        assert len(dedup._seen) < dedup._max_size + 10
 
     def test_seen_cache_tracks_post_ids(self):
-        """Posts are tracked in _seen_posts dict."""
-        self.adapter._seen_posts["test_post"] = time.time()
-        assert "test_post" in self.adapter._seen_posts
+        """Posts are tracked in the dedup cache."""
+        self.adapter._dedup._seen["test_post"] = time.time()
+        assert "test_post" in self.adapter._dedup._seen
 
 
 # ---------------------------------------------------------------------------

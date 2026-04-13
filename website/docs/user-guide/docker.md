@@ -21,7 +21,7 @@ If this is your first time running Hermes Agent, create a data directory on the 
 mkdir -p ~/.hermes
 docker run -it --rm \
   -v ~/.hermes:/opt/data \
-  nousresearch/hermes-agent
+  nousresearch/hermes-agent setup
 ```
 
 This drops you into the setup wizard, which will prompt you for your API keys and write them to `~/.hermes/.env`. You only need to do this once. It is highly recommended to set up a chat system for the gateway to work with at this point.

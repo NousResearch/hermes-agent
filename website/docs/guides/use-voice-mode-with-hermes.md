@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 8
 title: "Use Voice Mode with Hermes"
 description: "A practical guide to setting up and using Hermes voice mode across CLI, Telegram, Discord, and Discord voice channels"
 ---
@@ -145,6 +145,7 @@ ELEVENLABS_API_KEY=***
 - `neutts` → free local/on-device TTS
 - `elevenlabs` → best quality
 - `openai` → good middle ground
+- `mistral` → multilingual, native Opus
 
 ### If you use `hermes setup`
 

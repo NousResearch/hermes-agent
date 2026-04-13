@@ -31,12 +31,25 @@ Set it to `false` only if you explicitly want one shared conversation per chat.
 
 ## Step 1: Create a Feishu / Lark App
 
+### Recommended: Scan-to-Create (one command)
+
+```bash
+hermes gateway setup
+```
+
+Select **Feishu / Lark** and scan the QR code with your Feishu or Lark mobile app. Hermes will automatically create a bot application with the correct permissions and save the credentials.
+
+### Alternative: Manual Setup
+
+If scan-to-create is not available, the wizard falls back to manual input:
+
 1. Open the Feishu or Lark developer console:
    - Feishu: [https://open.feishu.cn/](https://open.feishu.cn/)
    - Lark: [https://open.larksuite.com/](https://open.larksuite.com/)
 2. Create a new app.
 3. In **Credentials & Basic Info**, copy the **App ID** and **App Secret**.
 4. Enable the **Bot** capability for the app.
+5. Run `hermes gateway setup`, select **Feishu / Lark**, and enter the credentials when prompted.
 
 :::warning
 Keep the App Secret private. Anyone with it can impersonate your app.
@@ -212,7 +225,24 @@ When users click buttons or interact with interactive cards sent by the bot, the
 
 Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
 
-To use this feature, enable the **Interactive Card** event in your Feishu app's event subscriptions (`card.action.trigger`).
+This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
+
+### Required Feishu App Configuration
+
+Interactive cards require **three** configuration steps in the Feishu Developer Console. Missing any of them causes error **200340** when users click card buttons.
+
+1. **Subscribe to the card action event:**
+   In **Event Subscriptions**, add `card.action.trigger` to your subscribed events.
+
+2. **Enable the Interactive Card capability:**
+   In **App Features > Bot**, ensure the **Interactive Card** toggle is enabled. This tells Feishu that your app can receive card action callbacks.
+
+3. **Configure the Card Request URL (webhook mode only):**
+   In **App Features > Bot > Message Card Request URL**, set the URL to the same endpoint as your event webhook (e.g. `https://your-server:8765/feishu/webhook`). In WebSocket mode this is handled automatically by the SDK.
+
+:::warning
+Without all three steps, Feishu will successfully *send* interactive cards (sending only requires `im:message:send` permission), but clicking any button will return error 200340. The card appears to work — the error only surfaces when a user interacts with it.
+:::
 
 ## Media Support
 
@@ -310,6 +340,58 @@ Additional webhook protections:
 - **Body read timeout:** 30 seconds
 - **Content-Type enforcement:** Only `application/json` is accepted
 
+## WebSocket Tuning
+
+When using `websocket` mode, you can customize reconnect and ping behavior:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
+      ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
+```
+
+| Setting | Config key | Default | Description |
+|---------|-----------|---------|-------------|
+| Reconnect interval | `ws_reconnect_interval` | 120s | How long to wait between reconnection attempts |
+| Ping interval | `ws_ping_interval` | _(SDK default)_ | Frequency of WebSocket keepalive pings |
+
+## Per-Group Access Control
+
+Beyond the global `FEISHU_GROUP_POLICY`, you can set fine-grained rules per group chat using `group_rules` in config.yaml:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      default_group_policy: "open"     # Default for groups not in group_rules
+      admins:                          # Users who can manage bot settings
+        - "ou_admin_open_id"
+      group_rules:
+        "oc_group_chat_id_1":
+          policy: "allowlist"          # open | allowlist | blacklist | admin_only | disabled
+          allowlist:
+            - "ou_user_open_id_1"
+            - "ou_user_open_id_2"
+        "oc_group_chat_id_2":
+          policy: "admin_only"
+        "oc_group_chat_id_3":
+          policy: "blacklist"
+          blacklist:
+            - "ou_blocked_user"
+```
+
+| Policy | Description |
+|--------|-------------|
+| `open` | Anyone in the group can use the bot |
+| `allowlist` | Only users in the group's `allowlist` can use the bot |
+| `blacklist` | Everyone except users in the group's `blacklist` can use the bot |
+| `admin_only` | Only users in the global `admins` list can use the bot in this group |
+| `disabled` | Bot ignores all messages in this group |
+
+Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
+
 ## Deduplication
 
 Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedup state is persisted across restarts to `~/.hermes/feishu_seen_message_ids.json`.
@@ -343,6 +425,8 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
 
+WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -358,6 +442,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
+| Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
 ## Toolset

@@ -20,8 +20,7 @@ Other modules import from this file.  No parallel registries.
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -59,6 +58,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "qwen-oauth": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="https://portal.qwen.ai/v1",
+        base_url_env_var="HERMES_QWEN_BASE_URL",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",
@@ -83,11 +88,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="KIMI_BASE_URL",
     ),
     "minimax": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
     ),
     "minimax-cn": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": HermesOverlay(
@@ -122,6 +127,15 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "xai": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
+    "xiaomi": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="XIAOMI_BASE_URL",
+    ),
 }
 
 
@@ -143,10 +157,6 @@ class ProviderDef:
     doc: str = ""
     source: str = ""                      # "models.dev", "hermes", "user-config"
 
-    @property
-    def is_user_defined(self) -> bool:
-        return self.source == "user-config"
-
 
 # -- Aliases ------------------------------------------------------------------
 # Maps human-friendly / legacy names to canonical provider IDs.
@@ -161,6 +171,10 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+
+    # xai
+    "x-ai": "xai",
+    "x.ai": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -212,6 +226,10 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # xiaomi
+    "mimo": "xiaomi",
+    "xiaomi-mimo": "xiaomi",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -232,6 +250,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
 }
 
@@ -255,12 +274,6 @@ def normalize_provider(name: str) -> str:
     """
     key = name.strip().lower()
     return ALIASES.get(key, key)
-
-
-def get_overlay(provider_id: str) -> Optional[HermesOverlay]:
-    """Get Hermes overlay for a provider, if one exists."""
-    canonical = normalize_provider(provider_id)
-    return HERMES_OVERLAYS.get(canonical)
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:
@@ -345,56 +358,6 @@ def get_label(provider_id: str) -> str:
     return canonical
 
 
-# Build LABELS dict for backward compat
-def _build_labels() -> Dict[str, str]:
-    """Build labels dict from overlays + overrides. Lazy, cached."""
-    labels: Dict[str, str] = {}
-    for pid in HERMES_OVERLAYS:
-        labels[pid] = get_label(pid)
-    labels.update(_LABEL_OVERRIDES)
-    return labels
-
-# Lazy-built on first access
-_labels_cache: Optional[Dict[str, str]] = None
-
-@property
-def LABELS() -> Dict[str, str]:
-    """Backward-compatible labels dict."""
-    global _labels_cache
-    if _labels_cache is None:
-        _labels_cache = _build_labels()
-    return _labels_cache
-
-# For direct import compat, expose as module-level dict
-# Built on demand by get_label() calls
-LABELS: Dict[str, str] = {
-    # Static entries for backward compat — get_label() is the proper API
-    "openrouter": "OpenRouter",
-    "nous": "Nous Portal",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "github-copilot": "GitHub Copilot",
-    "anthropic": "Anthropic",
-    "zai": "Z.AI / GLM",
-    "kimi-for-coding": "Kimi / Moonshot",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax (China)",
-    "deepseek": "DeepSeek",
-    "alibaba": "Alibaba Cloud (DashScope)",
-    "vercel": "Vercel AI Gateway",
-    "opencode": "OpenCode Zen",
-    "opencode-go": "OpenCode Go",
-    "kilo": "Kilo Gateway",
-    "huggingface": "Hugging Face",
-    "local": "Local endpoint",
-    "custom": "Custom endpoint",
-    # Legacy Hermes IDs (point to same providers)
-    "ai-gateway": "Vercel AI Gateway",
-    "kilocode": "Kilo Gateway",
-    "copilot": "GitHub Copilot",
-    "kimi-coding": "Kimi / Moonshot",
-    "opencode-zen": "OpenCode Zen",
-}
 
 
 def is_aggregator(provider: str) -> bool:
@@ -467,9 +430,64 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
+def custom_provider_slug(display_name: str) -> str:
+    """Build a canonical slug for a custom_providers entry.
+
+    Matches the convention used by runtime_provider and credential_pool
+    (``custom:<normalized-name>``).  Centralised here so all call-sites
+    produce identical slugs.
+    """
+    return "custom:" + display_name.strip().lower().replace(" ", "-")
+
+
+def resolve_custom_provider(
+    name: str,
+    custom_providers: Optional[List[Dict[str, Any]]],
+) -> Optional[ProviderDef]:
+    """Resolve a provider from the user's config.yaml ``custom_providers`` list."""
+    if not custom_providers or not isinstance(custom_providers, list):
+        return None
+
+    requested = (name or "").strip().lower()
+    if not requested:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+
+        display_name = (entry.get("name") or "").strip()
+        api_url = (
+            entry.get("base_url", "")
+            or entry.get("url", "")
+            or entry.get("api", "")
+            or ""
+        ).strip()
+        if not display_name or not api_url:
+            continue
+
+        slug = custom_provider_slug(display_name)
+        if requested not in {display_name.lower(), slug}:
+            continue
+
+        return ProviderDef(
+            id=slug,
+            name=display_name,
+            transport="openai_chat",
+            api_key_env_vars=(),
+            base_url=api_url,
+            is_aggregator=False,
+            auth_type="api_key",
+            source="user-config",
+        )
+
+    return None
+
+
 def resolve_provider_full(
     name: str,
     user_providers: Optional[Dict[str, Any]] = None,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
     """Full resolution chain: built-in → models.dev → user config.
 
@@ -478,6 +496,7 @@ def resolve_provider_full(
     Args:
         name: Provider name or alias.
         user_providers: The ``providers:`` dict from config.yaml (optional).
+        custom_providers: The ``custom_providers:`` list from config.yaml (optional).
 
     Returns:
         ProviderDef if found, else None.
@@ -499,6 +518,11 @@ def resolve_provider_full(
         user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
         if user_pdef is not None:
             return user_pdef
+
+    # 2b. Saved custom providers from config
+    custom_pdef = resolve_custom_provider(name, custom_providers)
+    if custom_pdef is not None:
+        return custom_pdef
 
     # 3. Try models.dev directly (for providers not in our ALIASES)
     try:

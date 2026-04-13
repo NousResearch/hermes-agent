@@ -9,6 +9,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/termux',
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
@@ -74,6 +75,13 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'Management',
+          items: [
+            'user-guide/features/web-dashboard',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Advanced',
           items: [
             'user-guide/features/rl-training',
@@ -107,6 +115,9 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/dingtalk',
         'user-guide/messaging/feishu',
         'user-guide/messaging/wecom',
+        'user-guide/messaging/wecom-callback',
+        'user-guide/messaging/weixin',
+        'user-guide/messaging/bluebubbles',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],
@@ -132,13 +143,18 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'guides/tips',
-        'guides/build-a-hermes-plugin',
+        'guides/local-llm-on-mac',
         'guides/daily-briefing-bot',
         'guides/team-telegram-assistant',
         'guides/python-library',
         'guides/use-mcp-with-hermes',
         'guides/use-soul-with-hermes',
         'guides/use-voice-mode-with-hermes',
+        'guides/build-a-hermes-plugin',
+        'guides/automate-with-cron',
+        'guides/cron-troubleshooting',
+        'guides/work-with-skills',
+        'guides/delegation-patterns',
         'guides/migrate-from-openclaw',
       ],
     },
@@ -167,7 +183,9 @@ const sidebars: SidebarsConfig = {
           items: [
             'developer-guide/adding-tools',
             'developer-guide/adding-providers',
+            'developer-guide/adding-platform-adapters',
             'developer-guide/memory-provider-plugin',
+            'developer-guide/context-engine-plugin',
             'developer-guide/creating-skills',
             'developer-guide/extending-the-cli',
           ],

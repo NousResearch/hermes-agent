@@ -70,7 +70,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. |
 | `skills` | No | List of skill names to load for the agent run. |
-| `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, or `log` (default). |
+| `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, `whatsapp`, `matrix`, `mattermost`, `homeassistant`, `email`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 
 ### Full example
@@ -112,12 +112,37 @@ Prompts use dot-notation to access nested fields in the webhook payload:
 
 - `{pull_request.title}` resolves to `payload["pull_request"]["title"]`
 - `{repository.full_name}` resolves to `payload["repository"]["full_name"]`
+- `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context.
 - Missing keys are left as the literal `{key}` string (no error)
 - Nested dicts and lists are JSON-serialized and truncated at 2000 characters
+
+You can mix `{__raw__}` with regular template variables:
+
+```yaml
+prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
+```
 
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Forum Topic Delivery
+
+When delivering webhook responses to Telegram, you can target a specific forum topic by including `message_thread_id` (or `thread_id`) in `deliver_extra`:
+
+```yaml
+webhooks:
+  routes:
+    alerts:
+      events: ["alert"]
+      prompt: "Alert: {__raw__}"
+      deliver: "telegram"
+      deliver_extra:
+        chat_id: "-1001234567890"
+        message_thread_id: "42"
+```
+
+If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
 
 ---
 
@@ -200,8 +225,18 @@ The `deliver` field controls where the agent's response goes after processing th
 | `slack` | Routes the response to Slack. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 | `signal` | Routes the response to Signal. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 | `sms` | Routes the response to SMS via Twilio. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `whatsapp` | Routes the response to WhatsApp. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `matrix` | Routes the response to Matrix. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `mattermost` | Routes the response to Mattermost. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `homeassistant` | Routes the response to Home Assistant. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `email` | Routes the response to Email. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `dingtalk` | Routes the response to DingTalk. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `feishu` | Routes the response to Feishu/Lark. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `wecom` | Routes the response to WeCom. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `weixin` | Routes the response to Weixin (WeChat). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
+| `bluebubbles` | Routes the response to BlueBubbles (iMessage). Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 
-For cross-platform delivery (telegram, discord, slack, signal, sms), the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+For cross-platform delivery, the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
 
 ---
 

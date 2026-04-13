@@ -32,18 +32,25 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "AUXILIARY_VISION_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
     "WECOM_BOT_ID", "WECOM_SECRET",
+    "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
+    "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
+    "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT",
+    "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
+    "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
+    "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
+    "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
-    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
+    "MATRIX_RECOVERY_KEY",
 })
 import yaml
 
@@ -138,6 +145,55 @@ def managed_error(action: str = "modify configuration"):
 
 
 # =============================================================================
+# Container-aware CLI (NixOS container mode)
+# =============================================================================
+
+def get_container_exec_info() -> Optional[dict]:
+    """Read container mode metadata from HERMES_HOME/.container-mode.
+
+    Returns a dict with keys: backend, container_name, exec_user, hermes_bin
+    or None if container mode is not active, we're already inside the
+    container, or HERMES_DEV=1 is set.
+
+    The .container-mode file is written by the NixOS activation script when
+    container.enable = true. It tells the host CLI to exec into the container
+    instead of running locally.
+    """
+    if os.environ.get("HERMES_DEV") == "1":
+        return None
+
+    from hermes_constants import is_container
+    if is_container():
+        return None
+
+    container_mode_file = get_hermes_home() / ".container-mode"
+
+    try:
+        info = {}
+        with open(container_mode_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, _, value = line.partition("=")
+                    info[key.strip()] = value.strip()
+    except FileNotFoundError:
+        return None
+    # All other exceptions (PermissionError, malformed data, etc.) propagate
+
+    backend = info.get("backend", "docker")
+    container_name = info.get("container_name", "hermes-agent")
+    exec_user = info.get("exec_user", "hermes")
+    hermes_bin = info.get("hermes_bin", "/data/current-package/bin/hermes")
+
+    return {
+        "backend": backend,
+        "container_name": container_name,
+        "exec_user": exec_user,
+        "hermes_bin": hermes_bin,
+    }
+
+
+# =============================================================================
 # Config paths
 # =============================================================================
 
@@ -157,15 +213,39 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory to owner-only access (0700 by default). No-op on Windows.
+
+    Skipped in managed mode — the NixOS module sets group-readable
+    permissions (0750) so interactive users in the hermes group can
+    share state with the gateway service.
+
+    The mode can be overridden via the HERMES_HOME_MODE environment variable
+    (e.g. HERMES_HOME_MODE=0701) for deployments where a web server (nginx,
+    caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
+    The execute-only bit on a directory permits cd-through without exposing
+    directory listings.
+    """
+    if is_managed():
+        return
     try:
-        os.chmod(path, 0o700)
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        mode = int(mode_str, 8) if mode_str else 0o700
+    except ValueError:
+        mode = 0o700
+    try:
+        os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600). No-op on Windows.
+
+    Skipped in managed mode — the NixOS activation script sets
+    group-readable permissions (0640) on config files.
+    """
+    if is_managed():
+        return
     try:
         if os.path.exists(str(path)):
             os.chmod(path, 0o600)
@@ -183,14 +263,44 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions."""
+    """Ensure ~/.hermes directory structure exists with secure permissions.
+
+    In managed mode (NixOS), dirs are created by the activation script with
+    setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
+    any files created (e.g. SOUL.md) are group-writable (0660).
+    """
     home = get_hermes_home()
-    home.mkdir(parents=True, exist_ok=True)
-    _secure_dir(home)
+    if is_managed():
+        old_umask = os.umask(0o007)
+        try:
+            _ensure_hermes_home_managed(home)
+        finally:
+            os.umask(old_umask)
+    else:
+        home.mkdir(parents=True, exist_ok=True)
+        _secure_dir(home)
+        for subdir in ("cron", "sessions", "logs", "memories"):
+            d = home / subdir
+            d.mkdir(parents=True, exist_ok=True)
+            _secure_dir(d)
+        _ensure_default_soul_md(home)
+
+
+def _ensure_hermes_home_managed(home: Path):
+    """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
+    if not home.is_dir():
+        raise RuntimeError(
+            f"HERMES_HOME {home} does not exist. "
+            "Run 'sudo nixos-rebuild switch' first."
+        )
     for subdir in ("cron", "sessions", "logs", "memories"):
         d = home / subdir
-        d.mkdir(parents=True, exist_ok=True)
-        _secure_dir(d)
+        if not d.is_dir():
+            raise RuntimeError(
+                f"{d} does not exist. "
+                "Run 'sudo nixos-rebuild switch' first."
+            )
+    # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
 
@@ -211,12 +321,26 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Graceful drain timeout for gateway stop/restart (seconds).
+        # The gateway stops accepting new work, waits for running agents
+        # to finish, then interrupts any remaining runs after the timeout.
+        # 0 = no drain, interrupt immediately.
+        "restart_drain_timeout": 60,
+        "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Staged inactivity warning: send a warning to the user at this
+        # threshold before escalating to a full timeout.  The warning fires
+        # once per run and does not interrupt the agent.  0 = disable warning.
+        "gateway_timeout_warning": 900,
+        # Periodic "still working" notification interval (seconds).
+        # Sends a status message every N seconds so the user knows the
+        # agent hasn't died during long tasks.  0 = disable notifications.
+        "gateway_notify_interval": 600,
     },
     
     "terminal": {
@@ -290,9 +414,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "summary_model": "",          # empty = use main configured model
-        "summary_provider": "auto",
-        "summary_base_url": None,
+
     },
     "smart_model_routing": {
         "enabled": False,
@@ -313,7 +435,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
+            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -378,8 +500,11 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
     # Privacy settings
@@ -389,7 +514,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -403,6 +528,10 @@ DEFAULT_CONFIG = {
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
         },
+        "mistral": {
+            "model": "voxtral-mini-tts-2603",
+            "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
+        },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
             "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
@@ -413,12 +542,16 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+        "mistral": {
+            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
         },
     },
 
@@ -436,6 +569,16 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
+    # Context engine -- controls how the context window is managed when
+    # approaching the model's token limit.
+    # "compressor" = built-in lossy summarization (default).
+    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
+    # for Lossless Context Management).  The engine must be installed as
+    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    "context": {
+        "engine": "compressor",
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -460,6 +603,8 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
+                                 # "low", "minimal", "none" (empty = inherit parent's level)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -487,6 +632,7 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
     },
@@ -545,8 +691,16 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Network settings — workarounds for connectivity issues.
+    "network": {
+        # Force IPv4 connections.  On servers with broken or unreachable IPv6,
+        # Python tries AAAA records first and hangs for the full TCP timeout
+        # before falling back to IPv4.  Set to true to skip IPv6 entirely.
+        "force_ipv4": False,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -723,6 +877,14 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "HERMES_QWEN_BASE_URL": {
+        "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
+        "prompt": "Qwen Portal base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "OPENCODE_ZEN_API_KEY": {
         "description": "OpenCode Zen API key (pay-as-you-go access to curated models)",
         "prompt": "OpenCode Zen API key",
@@ -765,6 +927,21 @@ OPTIONAL_ENV_VARS = {
     "HF_BASE_URL": {
         "description": "Hugging Face Inference Providers base URL override",
         "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XIAOMI_API_KEY": {
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "prompt": "Xiaomi MiMo API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_BASE_URL": {
+        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -868,6 +1045,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "FIRECRAWL_BROWSER_TTL": {
+        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "prompt": "Browser session TTL (seconds)",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
@@ -912,6 +1096,13 @@ OPTIONAL_ENV_VARS = {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
+        "password": True,
+        "category": "tool",
+    },
+    "MISTRAL_API_KEY": {
+        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
+        "prompt": "Mistral API key",
+        "url": "https://console.mistral.ai/",
         "password": True,
         "category": "tool",
     },
@@ -963,6 +1154,13 @@ OPTIONAL_ENV_VARS = {
     "DISCORD_ALLOWED_USERS": {
         "description": "Comma-separated Discord user IDs allowed to use the bot",
         "prompt": "Allowed Discord user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_REPLY_TO_MODE": {
+        "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
+        "prompt": "Discord reply mode (off/first/all)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1072,6 +1270,43 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "MATRIX_DEVICE_ID": {
+        "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
+        "prompt": "Matrix device ID (stable across restarts)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_RECOVERY_KEY": {
+        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
+        "prompt": "Matrix recovery key",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "BLUEBUBBLES_SERVER_URL": {
+        "description": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
+        "prompt": "BlueBubbles server URL",
+        "url": "https://bluebubbles.app/",
+        "password": False,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_PASSWORD": {
+        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
+        "prompt": "BlueBubbles server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_ALLOWED_USERS": {
+        "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
+        "prompt": "Allowed iMessage addresses (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -1089,8 +1324,8 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_KEY": {
-        "description": "Bearer token for API server authentication. If empty, all requests are allowed (local use only).",
-        "prompt": "API server auth key (optional)",
+        "description": "Bearer token for API server authentication. Required for non-loopback binding; server refuses to start without it. On loopback (127.0.0.1), all requests are allowed if empty.",
+        "prompt": "API server auth key (required for network access)",
         "url": None,
         "password": True,
         "category": "messaging",
@@ -1105,8 +1340,16 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_HOST": {
-        "description": "Host/bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access — requires API_SERVER_KEY for security.",
+        "description": "Host/bind address for the API server (default: 127.0.0.1). Use 0.0.0.0 for network access — server refuses to start without API_SERVER_KEY.",
         "prompt": "API server host",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "API_SERVER_MODEL_NAME": {
+        "description": "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' for the default profile). Useful for multi-user setups with OpenWebUI.",
+        "prompt": "API server model name",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1143,7 +1386,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access",
+        "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
         "prompt": "Sudo password",
         "url": None,
         "password": True,
@@ -1264,6 +1507,43 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     return missing
 
 
+def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
+    """Return skill-declared config vars that are missing or empty in config.yaml.
+
+    Scans all enabled skills for ``metadata.hermes.config`` entries, then checks
+    which ones are absent or empty under ``skills.config.<key>`` in the user's
+    config.yaml.  Returns a list of dicts suitable for prompting.
+    """
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
+    except Exception:
+        return []
+
+    all_vars = discover_all_skill_config_vars()
+    if not all_vars:
+        return []
+
+    config = load_config()
+    missing: List[Dict[str, Any]] = []
+    for var in all_vars:
+        # Skill config is stored under skills.config.<logical_key>
+        storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+        parts = storage_key.split(".")
+        current = config
+        value = None
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                value = current
+            else:
+                value = None
+                break
+        # Missing = key doesn't exist or is empty string
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(var)
+    return missing
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1285,12 +1565,12 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "models",
+    "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
 }
 
@@ -1590,6 +1870,146 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
 
+    # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
+    # These env vars were written by the old setup wizard but nothing reads
+    # them anymore (config.yaml is the sole source of truth since March 2026).
+    # Stale entries cause user confusion — see issue report.
+    if current_ver < 13:
+        for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
+            try:
+                old_val = get_env_value(dead_var)
+                if old_val:
+                    save_env_value(dead_var, "")
+                    if not quiet:
+                        print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+            except Exception:
+                pass
+
+    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
+    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
+    # that was provider-agnostic.  When the provider was "local" this caused
+    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
+    # crashing with "Invalid model size".  Move the value into the correct
+    # provider-specific section and remove the flat key.
+    if current_ver < 14:
+        # Read raw config (no defaults merged) to check what the user actually
+        # wrote, then apply changes to the merged config for saving.
+        raw = read_raw_config()
+        raw_stt = raw.get("stt", {})
+        if isinstance(raw_stt, dict) and "model" in raw_stt:
+            legacy_model = raw_stt["model"]
+            provider = raw_stt.get("provider", "local")
+            config = load_config()
+            stt = config.get("stt", {})
+            # Remove the legacy flat key
+            stt.pop("model", None)
+            # Place it in the appropriate provider section only if the
+            # user didn't already set a model there
+            if provider in ("local", "local_command"):
+                # Don't migrate an OpenAI model name into the local section
+                _local_models = {
+                    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
+                    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
+                    "large", "distil-large-v2", "distil-medium.en",
+                    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
+                    "large-v3-turbo", "turbo",
+                }
+                if legacy_model in _local_models:
+                    # Check raw config — only set if user didn't already
+                    # have a nested local.model
+                    raw_local = raw_stt.get("local", {})
+                    if not isinstance(raw_local, dict) or "model" not in raw_local:
+                        local_cfg = stt.setdefault("local", {})
+                        local_cfg["model"] = legacy_model
+                # else: drop it — it was an OpenAI model name, local section
+                # already defaults to "base" via DEFAULT_CONFIG
+            else:
+                # Cloud provider — put it in that provider's section only
+                # if user didn't already set a nested model
+                raw_provider = raw_stt.get(provider, {})
+                if not isinstance(raw_provider, dict) or "model" not in raw_provider:
+                    provider_cfg = stt.setdefault(provider, {})
+                    provider_cfg["model"] = legacy_model
+            config["stt"] = stt
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+
+    # ── Version 14 → 15: add explicit gateway interim-message gate ──
+    if current_ver < 15:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "interim_assistant_messages" not in display:
+            display["interim_assistant_messages"] = True
+            config["display"] = display
+            results["config_added"].append("display.interim_assistant_messages=true (default)")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added display.interim_assistant_messages=true")
+
+    # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
+    if current_ver < 16:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        old_overrides = display.get("tool_progress_overrides")
+        if isinstance(old_overrides, dict) and old_overrides:
+            platforms = display.get("platforms", {})
+            if not isinstance(platforms, dict):
+                platforms = {}
+            for plat, mode in old_overrides.items():
+                if plat not in platforms:
+                    platforms[plat] = {}
+                if "tool_progress" not in platforms[plat]:
+                    platforms[plat]["tool_progress"] = mode
+            display["platforms"] = platforms
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
+                print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
+            results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
+
+    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
+    if current_ver < 17:
+        config = read_raw_config()
+        comp = config.get("compression", {})
+        if isinstance(comp, dict):
+            s_model = comp.pop("summary_model", None)
+            s_provider = comp.pop("summary_provider", None)
+            s_base_url = comp.pop("summary_base_url", None)
+            migrated_keys = []
+            # Migrate non-empty, non-default values to auxiliary.compression
+            if s_model and str(s_model).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("model"):
+                    aux_comp["model"] = str(s_model).strip()
+                    migrated_keys.append(f"model={s_model}")
+            if s_provider and str(s_provider).strip() not in ("", "auto"):
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
+                    aux_comp["provider"] = str(s_provider).strip()
+                    migrated_keys.append(f"provider={s_provider}")
+            if s_base_url and str(s_base_url).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("base_url"):
+                    aux_comp["base_url"] = str(s_base_url).strip()
+                    migrated_keys.append(f"base_url={s_base_url}")
+            if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
+                config["compression"] = comp
+                save_config(config)
+                if not quiet:
+                    if migrated_keys:
+                        print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
+                    else:
+                        print("  ✓ Removed unused compression.summary_* keys")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -1695,7 +2115,50 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config = load_config()
         config["_config_version"] = latest_ver
         save_config(config)
-    
+
+    # ── Skill-declared config vars ──────────────────────────────────────
+    # Skills can declare config.yaml settings they need via
+    # metadata.hermes.config in their SKILL.md frontmatter.
+    # Prompt for any that are missing/empty.
+    missing_skill_config = get_missing_skill_config_vars()
+    if missing_skill_config and interactive and not quiet:
+        print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
+        for var in missing_skill_config:
+            skill_name = var.get("skill", "unknown")
+            print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
+        print()
+        try:
+            answer = input("  Configure skill settings? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+
+        if answer in ("y", "yes"):
+            print()
+            config = load_config()
+            try:
+                from agent.skill_utils import SKILL_CONFIG_PREFIX
+            except Exception:
+                SKILL_CONFIG_PREFIX = "skills.config"
+            for var in missing_skill_config:
+                default = var.get("default", "")
+                default_hint = f" (default: {default})" if default else ""
+                value = input(f"  {var['prompt']}{default_hint}: ").strip()
+                if not value and default:
+                    value = str(default)
+                if value:
+                    storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+                    _set_nested(config, storage_key, value)
+                    results["config_added"].append(var["key"])
+                    print(f"  ✓ Saved {var['key']} = {value}")
+                else:
+                    results["warnings"].append(
+                        f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
+                    )
+                print()
+            save_config(config)
+        else:
+            print("  Set later with: hermes config set <key> <value>")
+
     return results
 
 
@@ -1786,6 +2249,24 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+def read_raw_config() -> Dict[str, Any]:
+    """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
+
+    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
+    be parsed.  Use this for lightweight config reads where you just need a
+    single value and don't want the overhead of ``load_config()``'s deep-merge
+    + migration pipeline.
+    """
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -1837,8 +2318,8 @@ _FALLBACK_COMMENT = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -1880,8 +2361,8 @@ _COMMENTED_SECTIONS = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -1938,7 +2419,13 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env."""
+    """Load environment variables from ~/.hermes/.env.
+
+    Sanitizes lines before parsing so that corrupted files (e.g.
+    concatenated KEY=VALUE pairs on a single line) are handled
+    gracefully instead of producing mangled values such as duplicated
+    bot tokens.  See #8908.
+    """
     env_path = get_env_path()
     env_vars = {}
     
@@ -1947,17 +2434,21 @@ def load_env() -> Dict[str, str]:
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
         open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
         with open(env_path, **open_kw) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
-                    env_vars[key.strip()] = value.strip().strip('"\'')
+            raw_lines = f.readlines()
+        # Sanitize before parsing: split concatenated lines & drop stale
+        # placeholders so corrupted .env files don't produce invalid tokens.
+        lines = _sanitize_env_lines(raw_lines)
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, _, value = line.partition('=')
+                env_vars[key.strip()] = value.strip().strip('"\'')
     
     return env_vars
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before writing.
+    """Fix corrupted .env lines before reading or writing.
 
     Handles two known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
@@ -2190,6 +2681,28 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+
+    Adds/updates vars that changed and removes vars that were deleted from
+    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
+    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    """
+    env_vars = load_env()
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    # Remove known Hermes vars that are no longer in .env
+    for key in known_keys:
+        if key not in env_vars and key in os.environ:
+            del os.environ[key]
+            count += 1
+    return count
+
+
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
     # Check environment first
@@ -2249,7 +2762,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
-    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
     # Model settings
@@ -2311,10 +2825,11 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        _sm = compression.get('summary_model', '') or '(main model)'
+        _aux_comp = config.get('auxiliary', {}).get('compression', {})
+        _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
-        comp_provider = compression.get('summary_provider', 'auto')
-        if comp_provider != 'auto':
+        comp_provider = _aux_comp.get('provider', 'auto')
+        if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
     
     # Auxiliary models
@@ -2349,6 +2864,23 @@ def show_config():
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
     
+    # Skill config
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
+        skill_vars = discover_all_skill_config_vars()
+        if skill_vars:
+            resolved = resolve_skill_config_values(skill_vars)
+            print()
+            print(color("◆ Skill Settings", Colors.CYAN, Colors.BOLD))
+            for var in skill_vars:
+                key = var["key"]
+                value = resolved.get(key, "")
+                skill_name = var.get("skill", "")
+                display_val = str(value) if value else color("(not set)", Colors.DIM)
+                print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
+    except Exception:
+        pass
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
@@ -2408,7 +2940,7 @@ def set_config_value(key: str, value: str):
         'TINKER_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
+    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
@@ -2448,8 +2980,8 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
@@ -2465,6 +2997,10 @@ def set_config_value(key: str, value: str):
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
+        "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
+        "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

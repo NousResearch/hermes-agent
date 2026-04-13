@@ -10,9 +10,9 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +130,7 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     Reads the config file directly (no CLI config imports) to stay
     lightweight.
     """
-    config_path = get_hermes_home() / "config.yaml"
+    config_path = get_config_path()
     if not config_path.exists():
         return set()
     try:
@@ -145,10 +145,11 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
+    from gateway.session_context import get_session_env
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
-        or os.getenv("HERMES_SESSION_PLATFORM")
+        or get_session_env("HERMES_SESSION_PLATFORM")
     )
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(
@@ -177,7 +178,7 @@ def get_external_skills_dirs() -> List[Path]:
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
     """
-    config_path = get_hermes_home() / "config.yaml"
+    config_path = get_config_path()
     if not config_path.exists():
         return []
     try:
@@ -199,7 +200,7 @@ def get_external_skills_dirs() -> List[Path]:
     if not isinstance(raw_dirs, list):
         return []
 
-    local_skills = (get_hermes_home() / "skills").resolve()
+    local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
     result: List[Path] = []
 
@@ -229,7 +230,7 @@ def get_all_skills_dirs() -> List[Path]:
     The local dir is always first (and always included even if it doesn't exist
     yet — callers handle that).  External dirs follow in config order.
     """
-    dirs = [get_hermes_home() / "skills"]
+    dirs = [get_skills_dir()]
     dirs.extend(get_external_skills_dirs())
     return dirs
 
@@ -252,6 +253,163 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
         "fallback_for_tools": hermes.get("fallback_for_tools", []),
         "requires_tools": hermes.get("requires_tools", []),
     }
+
+
+# ── Skill config extraction ───────────────────────────────────────────────
+
+
+def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract config variable declarations from parsed frontmatter.
+
+    Skills declare config.yaml settings they need via::
+
+        metadata:
+          hermes:
+            config:
+              - key: wiki.path
+                description: Path to the LLM Wiki knowledge base directory
+                default: "~/wiki"
+                prompt: Wiki directory path
+
+    Returns a list of dicts with keys: ``key``, ``description``, ``default``,
+    ``prompt``.  Invalid or incomplete entries are silently skipped.
+    """
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return []
+    raw = hermes.get("config")
+    if not raw:
+        return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    result: List[Dict[str, Any]] = []
+    seen: set = set()
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key", "")).strip()
+        if not key or key in seen:
+            continue
+        # Must have at least key and description
+        desc = str(item.get("description", "")).strip()
+        if not desc:
+            continue
+        entry: Dict[str, Any] = {
+            "key": key,
+            "description": desc,
+        }
+        default = item.get("default")
+        if default is not None:
+            entry["default"] = default
+        prompt_text = item.get("prompt")
+        if isinstance(prompt_text, str) and prompt_text.strip():
+            entry["prompt"] = prompt_text.strip()
+        else:
+            entry["prompt"] = desc
+        seen.add(key)
+        result.append(entry)
+    return result
+
+
+def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
+    """Scan all enabled skills and collect their config variable declarations.
+
+    Walks every skills directory, parses each SKILL.md frontmatter, and returns
+    a deduplicated list of config var dicts.  Each dict also includes a
+    ``skill`` key with the skill name for attribution.
+
+    Disabled and platform-incompatible skills are excluded.
+    """
+    all_vars: List[Dict[str, Any]] = []
+    seen_keys: set = set()
+
+    disabled = get_disabled_skill_names()
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.is_dir():
+            continue
+        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+            try:
+                raw = skill_file.read_text(encoding="utf-8")
+                frontmatter, _ = parse_frontmatter(raw)
+            except Exception:
+                continue
+
+            skill_name = frontmatter.get("name") or skill_file.parent.name
+            if str(skill_name) in disabled:
+                continue
+            if not skill_matches_platform(frontmatter):
+                continue
+
+            config_vars = extract_skill_config_vars(frontmatter)
+            for var in config_vars:
+                if var["key"] not in seen_keys:
+                    var["skill"] = str(skill_name)
+                    all_vars.append(var)
+                    seen_keys.add(var["key"])
+
+    return all_vars
+
+
+# Storage prefix: all skill config vars are stored under skills.config.*
+# in config.yaml.  Skill authors declare logical keys (e.g. "wiki.path");
+# the system adds this prefix for storage and strips it for display.
+SKILL_CONFIG_PREFIX = "skills.config"
+
+
+def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
+    """Walk a nested dict following a dotted key.  Returns None if any part is missing."""
+    parts = dotted_key.split(".")
+    current = config
+    for part in parts:
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def resolve_skill_config_values(
+    config_vars: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Resolve current values for skill config vars from config.yaml.
+
+    Skill config is stored under ``skills.config.<key>`` in config.yaml.
+    Returns a dict mapping **logical** keys (as declared by skills) to their
+    current values (or the declared default if the key isn't set).
+    Path values are expanded via ``os.path.expanduser``.
+    """
+    config_path = get_config_path()
+    config: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                config = parsed
+        except Exception:
+            pass
+
+    resolved: Dict[str, Any] = {}
+    for var in config_vars:
+        logical_key = var["key"]
+        storage_key = f"{SKILL_CONFIG_PREFIX}.{logical_key}"
+        value = _resolve_dotpath(config, storage_key)
+
+        if value is None or (isinstance(value, str) and not value.strip()):
+            value = var.get("default", "")
+
+        # Expand ~ in path-like values
+        if isinstance(value, str) and ("~" in value or "${" in value):
+            value = os.path.expanduser(os.path.expandvars(value))
+
+        resolved[logical_key] = value
+
+    return resolved
 
 
 # ── Description extraction ────────────────────────────────────────────────

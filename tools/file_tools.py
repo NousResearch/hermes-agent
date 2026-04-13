@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
@@ -91,7 +92,10 @@ def _is_blocked_device(filepath: str) -> bool:
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
-_SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
+_SENSITIVE_PATH_PREFIXES = (
+    "/etc/", "/boot/", "/usr/lib/systemd/",
+    "/private/etc/", "/private/var/",
+)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
@@ -101,17 +105,16 @@ def _check_sensitive_path(filepath: str) -> str | None:
         resolved = os.path.realpath(os.path.expanduser(filepath))
     except (OSError, ValueError):
         resolved = filepath
+    normalized = os.path.normpath(os.path.expanduser(filepath))
+    _err = (
+        f"Refusing to write to sensitive system path: {filepath}\n"
+        "Use the terminal tool with sudo if you need to modify system files."
+    )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix):
-            return (
-                f"Refusing to write to sensitive system path: {filepath}\n"
-                "Use the terminal tool with sudo if you need to modify system files."
-            )
-    if resolved in _SENSITIVE_EXACT_PATHS:
-        return (
-            f"Refusing to write to sensitive system path: {filepath}\n"
-            "Use the terminal tool with sudo if you need to modify system files."
-        )
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 
@@ -290,11 +293,22 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
+        _resolved = Path(path).expanduser().resolve()
+
+        # ── Binary file guard ─────────────────────────────────────────
+        # Block binary files by extension (no I/O).
+        if has_binary_extension(str(_resolved)):
+            _ext = _resolved.suffix.lower()
+            return json.dumps({
+                "error": (
+                    f"Cannot read binary file '{path}' ({_ext}). "
+                    "Use vision_analyze for images, or terminal to inspect binary files."
+                ),
+            })
+
         # ── Hermes internal path guard ────────────────────────────────
         # Prevent prompt injection via catalog or hub metadata files.
-        import pathlib as _pathlib
         from hermes_constants import get_hermes_home as _get_hh
-        _resolved = _pathlib.Path(path).expanduser().resolve()
         _hermes_home = _get_hh().resolve()
         _blocked_dirs = [
             _hermes_home / "skills" / ".hub" / "index-cache",
@@ -432,7 +446,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def get_read_files_summary(task_id: str = "default") -> list:
@@ -560,7 +574,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
-        return json.dumps({"error": sensitive_err}, ensure_ascii=False)
+        return tool_error(sensitive_err)
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
@@ -577,7 +591,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -595,7 +609,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
-            return json.dumps({"error": sensitive_err}, ensure_ascii=False)
+            return tool_error(sensitive_err)
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []
@@ -608,16 +622,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         
         if mode == "replace":
             if not path:
-                return json.dumps({"error": "path required"})
+                return tool_error("path required")
             if old_string is None or new_string is None:
-                return json.dumps({"error": "old_string and new_string required"})
+                return tool_error("old_string and new_string required")
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
-                return json.dumps({"error": "patch content required"})
+                return tool_error("patch content required")
             result = file_ops.patch_v4a(patch)
         else:
-            return json.dumps({"error": f"Unknown mode: {mode}"})
+            return tool_error(f"Unknown mode: {mode}")
         
         result_dict = result.to_dict()
         if stale_warnings:
@@ -634,7 +648,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
@@ -702,7 +716,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 FILE_TOOLS = [
@@ -713,15 +727,10 @@ FILE_TOOLS = [
 ]
 
 
-def get_file_tools():
-    """Get the list of file tool definitions."""
-    return FILE_TOOLS
-
-
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 
 def _check_file_reqs():
@@ -822,7 +831,7 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖")
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️")
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧")
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎")
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))
+registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
+registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
+registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)

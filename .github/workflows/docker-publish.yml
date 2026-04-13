@@ -8,6 +8,9 @@ on:
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
@@ -17,22 +20,29 @@ jobs:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image
+      # Build amd64 only so we can `load` the image for smoke testing.
+      # `load: true` cannot export a multi-arch manifest to the local daemon.
+      # The multi-arch build follows on push to main / release.
+      - name: Build image (amd64, smoke test)
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           load: true
+          platforms: linux/amd64
           tags: nousresearch/hermes-agent:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -51,29 +61,26 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Push image (main branch)
+      - name: Push multi-arch image (main branch)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: |
-            nousresearch/hermes-agent:latest
-            nousresearch/hermes-agent:${{ github.sha }}
+          platforms: linux/amd64,linux/arm64
+          tags: nousresearch/hermes-agent:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Push image (release)
+      - name: Push multi-arch image (release)
         if: github.event_name == 'release'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: |
-            nousresearch/hermes-agent:latest
-            nousresearch/hermes-agent:${{ github.event.release.tag_name }}
-            nousresearch/hermes-agent:${{ github.sha }}
+          platforms: linux/amd64,linux/arm64
+          tags: nousresearch/hermes-agent:${{ github.event.release.tag_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

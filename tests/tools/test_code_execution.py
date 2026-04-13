@@ -15,9 +15,21 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
-
 import json
 import os
+
+os.environ["TERMINAL_ENV"] = "local"
+
+
+@pytest.fixture(autouse=True)
+def _force_local_terminal(monkeypatch):
+    """Re-set TERMINAL_ENV=local before every test.
+
+    The module-level assignment above covers import time, but under xdist
+    another worker can overwrite os.environ between tests.  monkeypatch
+    ensures each test starts (and ends) with the correct value.
+    """
+    monkeypatch.setenv("TERMINAL_ENV", "local")
 import sys
 import time
 import threading
@@ -32,6 +44,7 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
+    _execute_remote,
 )
 
 
@@ -102,6 +115,48 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
         self.assertIn("import json, os, socket, shlex, time", src)
+
+    def test_file_transport_uses_tempfile_fallback_for_rpc_dir(self):
+        src = generate_hermes_tools_module(["terminal"], transport="file")
+        self.assertIn("import json, os, shlex, tempfile, time", src)
+        self.assertIn("os.path.join(tempfile.gettempdir(), \"hermes_rpc\")", src)
+        self.assertNotIn('os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")', src)
+
+
+class TestExecuteCodeRemoteTempDir(unittest.TestCase):
+    def test_execute_remote_uses_backend_temp_dir_for_sandbox(self):
+        class FakeEnv:
+            def __init__(self):
+                self.commands = []
+
+            def get_temp_dir(self):
+                return "/data/data/com.termux/files/usr/tmp"
+
+            def execute(self, command, cwd=None, timeout=None):
+                self.commands.append((command, cwd, timeout))
+                if "command -v python3" in command:
+                    return {"output": "OK\n"}
+                if "python3 script.py" in command:
+                    return {"output": "hello\n", "returncode": 0}
+                return {"output": ""}
+
+        env = FakeEnv()
+        fake_thread = MagicMock()
+
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
+             patch("tools.code_execution_tool._ship_file_to_remote"), \
+             patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
+            result = json.loads(_execute_remote("print('hello')", "task-1", ["terminal"]))
+
+        self.assertEqual(result["status"], "success")
+        mkdir_cmd = env.commands[1][0]
+        run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
+        cleanup_cmd = env.commands[-1][0]
+        self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
+        self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
+        self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
+        self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -325,7 +380,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -725,14 +780,18 @@ class TestLoadConfig(unittest.TestCase):
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
-        """When _interrupt_event is set, execute_code should stop the script."""
+        """When interrupt is set for the execution thread, execute_code should stop."""
         code = "import time; time.sleep(60); print('should not reach')"
+        from tools.interrupt import set_interrupt
+
+        # Capture the main thread ID so we can target the interrupt correctly.
+        # execute_code runs in the current thread; set_interrupt needs its ID.
+        main_tid = threading.current_thread().ident
 
         def set_interrupt_after_delay():
             import time as _t
             _t.sleep(1)
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.set()
+            set_interrupt(True, main_tid)
 
         t = threading.Thread(target=set_interrupt_after_delay, daemon=True)
         t.start()
@@ -749,8 +808,7 @@ class TestInterruptHandling(unittest.TestCase):
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("interrupted", result["output"])
         finally:
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.clear()
+            set_interrupt(False, main_tid)
             t.join(timeout=3)
 
 

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 8
+sidebar_position: 9
 sidebar_label: "Build a Plugin"
 title: "Build a Hermes Plugin"
 description: "Step-by-step guide to building a complete Hermes plugin with tools, hooks, data files, and skills"
@@ -44,8 +44,12 @@ This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." 
 Optional fields you could add:
 ```yaml
 author: Your Name
-requires_env:          # gate loading on env vars
-  - SOME_API_KEY       # plugin disabled if missing
+requires_env:          # gate loading on env vars; prompted during install
+  - SOME_API_KEY       # simple format — plugin disabled if missing
+  - name: OTHER_KEY    # rich format — shows description/url during install
+    description: "Key for the Other service"
+    url: "https://other.com/keys"
+    secret: true
 ```
 
 ## Step 3: Write the tool schemas
@@ -336,12 +340,34 @@ def register(ctx):
 If your plugin needs an API key:
 
 ```yaml
-# plugin.yaml
+# plugin.yaml — simple format (backwards-compatible)
 requires_env:
   - WEATHER_API_KEY
 ```
 
 If `WEATHER_API_KEY` isn't set, the plugin is disabled with a clear message. No crash, no error in the agent — just "Plugin weather disabled (missing: WEATHER_API_KEY)".
+
+When users run `hermes plugins install`, they're **prompted interactively** for any missing `requires_env` variables. Values are saved to `.env` automatically.
+
+For a better install experience, use the rich format with descriptions and signup URLs:
+
+```yaml
+# plugin.yaml — rich format
+requires_env:
+  - name: WEATHER_API_KEY
+    description: "API key for OpenWeather"
+    url: "https://openweathermap.org/api"
+    secret: true
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Environment variable name |
+| `description` | No | Shown to user during install prompt |
+| `url` | No | Where to get the credential |
+| `secret` | No | If `true`, input is hidden (like a password field) |
+
+Both formats can be mixed in the same list. Already-set variables are skipped silently.
 
 ### Conditional tool availability
 
@@ -379,6 +405,8 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
+| [`pre_api_request`](/docs/user-guide/features/hooks#pre_api_request) | Before each HTTP request to the LLM provider | `method: str, url: str, headers: dict, body: dict` | ignored |
+| [`post_api_request`](/docs/user-guide/features/hooks#post_api_request) | After each HTTP response from the LLM provider | `method: str, url: str, status_code: int, response: dict` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 
@@ -518,6 +546,12 @@ After registration, users can run `hermes my-plugin status`, `hermes my-plugin c
 **Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/docs/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
 
 **Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
+
+:::tip
+This guide covers **general plugins** (tools, hooks, CLI commands). For specialized plugin types, see:
+- [Memory Provider Plugins](/docs/developer-guide/memory-provider-plugin) — cross-session knowledge backends
+- [Context Engine Plugins](/docs/developer-guide/context-engine-plugin) — alternative context management strategies
+:::
 
 ### Distribute via pip
 

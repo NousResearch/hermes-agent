@@ -15,6 +15,10 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _resize_image_for_vision,
+    _is_image_size_error,
+    _MAX_BASE64_BYTES,
+    _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -30,7 +34,10 @@ class TestValidateImageUrl:
     """Tests for URL validation, including urlparse-based netloc check."""
 
     def test_valid_https_url(self):
-        assert _validate_image_url("https://example.com/image.jpg") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=[
@@ -56,10 +63,16 @@ class TestValidateImageUrl:
         assert _validate_image_url("http://localhost:8080/image.png") is False
 
     def test_valid_url_with_port(self):
-        assert _validate_image_url("http://example.com:8080/image.png") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
-        assert _validate_image_url("https://example.com/") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/") is True
 
     def test_rejects_empty_string(self):
         assert _validate_image_url("") is False
@@ -405,6 +418,7 @@ class TestVisionSafetyGuards:
 
         class FakeResponse:
             url = "https://blocked.test/final.png"
+            headers = {"content-length": "24"}
             content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
             def raise_for_status(self):
@@ -441,11 +455,14 @@ class TestVisionRequirements:
         (tmp_path / "auth.json").write_text(
             '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"codex-access-token","refresh_token":"codex-refresh-token"}}}}'
         )
+        # config.yaml must reference the codex provider so vision auto-detect
+        # falls back to the active provider via _read_main_provider().
+        (tmp_path / "config.yaml").write_text(
+            'model:\n  default: gpt-4o\n  provider: openai-codex\n'
+        )
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("AUXILIARY_VISION_PROVIDER", raising=False)
-        monkeypatch.delenv("CONTEXT_VISION_PROVIDER", raising=False)
 
         assert check_vision_requirements() is True
 
@@ -519,6 +536,135 @@ class TestTildeExpansion:
         assert data["success"] is False
 
 
+# ---------------------------------------------------------------------------
+# file:// URI support
+# ---------------------------------------------------------------------------
+
+
+class TestFileUriSupport:
+    """Verify that file:// URIs resolve as local file paths."""
+
+    @pytest.mark.asyncio
+    async def test_file_uri_resolved_as_local_path(self, tmp_path):
+        """file:///absolute/path should be treated as a local file."""
+        img = tmp_path / "photo.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "A test image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = await vision_analyze_tool(
+                f"file://{img}", "describe this", "test/model"
+            )
+            data = json.loads(result)
+            assert data["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_file_uri_nonexistent_gives_error(self, tmp_path):
+        """file:// pointing to a missing file should fail gracefully."""
+        result = await vision_analyze_tool(
+            f"file://{tmp_path}/nonexistent.png", "describe this", "test/model"
+        )
+        data = json.loads(result)
+        assert data["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# Base64 size pre-flight check
+# ---------------------------------------------------------------------------
+
+
+class TestBase64SizeLimit:
+    """Verify that oversized images are rejected before hitting the API."""
+
+    @pytest.mark.asyncio
+    async def test_oversized_image_rejected_before_api_call(self, tmp_path):
+        """Images exceeding the 20 MB hard limit should fail with a clear error."""
+        img = tmp_path / "huge.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (4 * 1024 * 1024))
+
+        # Patch the hard limit to a small value so the test runs fast.
+        with patch("tools.vision_tools._MAX_BASE64_BYTES", 1000), \
+             patch("tools.vision_tools.async_call_llm", new_callable=AsyncMock) as mock_llm:
+            result = json.loads(await vision_analyze_tool(str(img), "describe this"))
+
+        assert result["success"] is False
+        assert "too large" in result["error"].lower()
+        mock_llm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_small_image_not_rejected(self, tmp_path):
+        """Images well under the limit should pass the size check."""
+        img = tmp_path / "small.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Small image"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=mock_response,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe this", "test/model"))
+
+        assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Error classification for 400 responses
+# ---------------------------------------------------------------------------
+
+
+class TestErrorClassification:
+    """Verify that API 400 errors produce actionable guidance."""
+
+    @pytest.mark.asyncio
+    async def test_invalid_request_error_gives_image_guidance(self, tmp_path):
+        """An invalid_request_error from the API should mention image size/format."""
+        img = tmp_path / "test.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        api_error = Exception(
+            "Error code: 400 - {'type': 'error', 'error': "
+            "{'type': 'invalid_request_error', 'message': 'Invalid request data'}}"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=api_error,
+            ),
+        ):
+            result = json.loads(await vision_analyze_tool(str(img), "describe", "test/model"))
+
+        assert result["success"] is False
+        assert "rejected the image" in result["analysis"].lower()
+        assert "smaller" in result["analysis"].lower()
+
+
 class TestVisionRegistration:
     def test_vision_analyze_registered(self):
         from tools.registry import registry
@@ -544,3 +690,180 @@ class TestVisionRegistration:
 
         entry = registry._tools.get("vision_analyze")
         assert callable(entry.handler)
+
+
+# ---------------------------------------------------------------------------
+# _resize_image_for_vision — auto-resize oversized images
+# ---------------------------------------------------------------------------
+
+
+class TestResizeImageForVision:
+    """Tests for the auto-resize function."""
+
+    def test_small_image_returned_as_is(self, tmp_path):
+        """Images under the limit should be returned unchanged."""
+        # Create a small 10x10 red PNG
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (10, 10), (255, 0, 0))
+        path = tmp_path / "small.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        assert len(result) < _MAX_BASE64_BYTES
+
+    def test_large_image_is_resized(self, tmp_path):
+        """Images over the default target should be auto-resized to fit."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Create a large image that will exceed 5 MB in base64
+        # A 4000x4000 uncompressed PNG will be large
+        img = Image.new("RGB", (4000, 4000), (128, 200, 50))
+        path = tmp_path / "large.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png")
+        assert result.startswith("data:image/png;base64,")
+        # Default target is _RESIZE_TARGET_BYTES (5 MB), not _MAX_BASE64_BYTES (20 MB)
+        assert len(result) <= _RESIZE_TARGET_BYTES
+
+    def test_custom_max_bytes(self, tmp_path):
+        """The max_base64_bytes parameter should be respected."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (200, 200), (0, 128, 255))
+        path = tmp_path / "medium.png"
+        img.save(path, "PNG")
+
+        # Set a very low limit to force resizing
+        result = _resize_image_for_vision(path, max_base64_bytes=500)
+        # Should still return a valid data URL
+        assert result.startswith("data:image/")
+
+    def test_jpeg_output_for_non_png(self, tmp_path):
+        """Non-PNG images should be resized as JPEG."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        img = Image.new("RGB", (2000, 2000), (255, 128, 0))
+        path = tmp_path / "photo.jpg"
+        img.save(path, "JPEG", quality=95)
+
+        result = _resize_image_for_vision(path, mime_type="image/jpeg",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/jpeg;base64,")
+
+    def test_constants_sane(self):
+        """Hard limit should be larger than resize target."""
+        assert _MAX_BASE64_BYTES == 20 * 1024 * 1024
+        assert _RESIZE_TARGET_BYTES == 5 * 1024 * 1024
+        assert _MAX_BASE64_BYTES > _RESIZE_TARGET_BYTES
+
+    def test_extreme_aspect_ratio_preserved(self, tmp_path):
+        """Extreme aspect ratios should be preserved during resize."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very wide panorama: 8000x200
+        img = Image.new("RGB", (8000, 200), (100, 150, 200))
+        path = tmp_path / "panorama.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        # Decode and check aspect ratio is roughly preserved
+        import base64
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        from io import BytesIO
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 8000 / 200  # 40:1
+        resized_ratio = resized.width / resized.height if resized.height > 0 else 0
+        # Allow some tolerance (floor clamping), but ratio should stay above 10:1
+        # With independent halving, ratio would collapse to ~1:1. Proportional
+        # scaling should keep it well above 10.
+        assert resized_ratio > 10, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(ratio {resized_ratio:.1f}, expected >10)"
+        )
+
+    def test_tall_narrow_image_preserved(self, tmp_path):
+        """Tall narrow images should also preserve aspect ratio."""
+        try:
+            from PIL import Image
+        except ImportError:
+            pytest.skip("Pillow not installed")
+        # Very tall: 200x6000
+        img = Image.new("RGB", (200, 6000), (200, 100, 50))
+        path = tmp_path / "tall.png"
+        img.save(path, "PNG")
+
+        result = _resize_image_for_vision(path, mime_type="image/png",
+                                           max_base64_bytes=50_000)
+        assert result.startswith("data:image/")
+        import base64
+        from io import BytesIO
+        header, b64data = result.split(",", 1)
+        raw = base64.b64decode(b64data)
+        resized = Image.open(BytesIO(raw))
+        original_ratio = 6000 / 200  # 30:1 (h/w)
+        resized_ratio = resized.height / resized.width if resized.width > 0 else 0
+        assert resized_ratio > 5, (
+            f"Aspect ratio collapsed: {resized.width}x{resized.height} "
+            f"(h/w ratio {resized_ratio:.1f}, expected >5)"
+        )
+
+    def test_no_pillow_returns_original(self, tmp_path):
+        """Without Pillow, oversized images should be returned as-is."""
+        # Create a dummy file
+        path = tmp_path / "test.png"
+        # Write enough bytes to exceed a tiny limit
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 1000)
+
+        with patch("tools.vision_tools._image_to_base64_data_url") as mock_b64:
+            # Simulate a large base64 result
+            mock_b64.return_value = "data:image/png;base64," + "A" * 200
+            with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
+                result = _resize_image_for_vision(path, max_base64_bytes=100)
+                # Should return the original (oversized) data url
+                assert len(result) > 100
+
+
+# ---------------------------------------------------------------------------
+# _is_image_size_error — detect size-related API errors
+# ---------------------------------------------------------------------------
+
+
+class TestIsImageSizeError:
+    """Tests for the size-error detection helper."""
+
+    def test_too_large_message(self):
+        assert _is_image_size_error(Exception("Request payload too large"))
+
+    def test_413_status(self):
+        assert _is_image_size_error(Exception("HTTP 413 Payload Too Large"))
+
+    def test_invalid_request(self):
+        assert _is_image_size_error(Exception("invalid_request_error: image too big"))
+
+    def test_exceeds_limit(self):
+        assert _is_image_size_error(Exception("Image exceeds maximum size"))
+
+    def test_unrelated_error(self):
+        assert not _is_image_size_error(Exception("Connection refused"))
+
+    def test_auth_error(self):
+        assert not _is_image_size_error(Exception("401 Unauthorized"))
+
+    def test_empty_message(self):
+        assert not _is_image_size_error(Exception(""))

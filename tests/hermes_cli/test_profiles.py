@@ -177,7 +177,8 @@ class TestCreateProfile:
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
         assert not (profile_dir / ".env").exists()
-        assert not (profile_dir / "SOUL.md").exists()
+        # SOUL.md is always seeded with the default even when clone source lacks it
+        assert (profile_dir / "SOUL.md").exists()
 
 
 # ===================================================================
@@ -293,12 +294,16 @@ class TestGetActiveProfileName:
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         assert get_active_profile_name() == "coder"
 
-    def test_custom_path_returns_custom(self, profile_env, monkeypatch):
+    def test_custom_path_returns_default(self, profile_env, monkeypatch):
+        """A custom HERMES_HOME (Docker, etc.) IS the default root."""
         tmp_path = profile_env
         custom = tmp_path / "some" / "other" / "path"
         custom.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(custom))
-        assert get_active_profile_name() == "custom"
+        # With Docker-aware roots, a custom HERMES_HOME is the default —
+        # not "custom".  The user is on the default profile of their
+        # custom deployment.
+        assert get_active_profile_name() == "default"
 
 
 # ===================================================================
@@ -705,6 +710,72 @@ class TestInternalHelpers:
         tmp_path = profile_env
         home = _get_default_hermes_home()
         assert home == tmp_path / ".hermes"
+
+    def test_profiles_root_docker_deployment(self, tmp_path, monkeypatch):
+        """In Docker (HERMES_HOME outside ~/.hermes), profiles go under HERMES_HOME."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        root = _get_profiles_root()
+        assert root == docker_home / "profiles"
+
+    def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
+        """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        home = _get_default_hermes_home()
+        assert home == docker_home
+
+    def test_profiles_root_profile_mode(self, tmp_path, monkeypatch):
+        """In profile mode (HERMES_HOME under ~/.hermes), profiles root is still ~/.hermes/profiles."""
+        native = tmp_path / ".hermes"
+        profile_dir = native / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        root = _get_profiles_root()
+        assert root == native / "profiles"
+
+    def test_active_profile_path_docker(self, tmp_path, monkeypatch):
+        """In Docker, active_profile file lives under HERMES_HOME."""
+        from hermes_cli.profiles import _get_active_profile_path
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        path = _get_active_profile_path()
+        assert path == docker_home / "active_profile"
+
+    def test_create_profile_docker(self, tmp_path, monkeypatch):
+        """Profile created in Docker lands under HERMES_HOME/profiles/."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        result = create_profile("orchestrator", no_alias=True)
+        expected = docker_home / "profiles" / "orchestrator"
+        assert result == expected
+        assert expected.is_dir()
+
+    def test_active_profile_name_docker_default(self, tmp_path, monkeypatch):
+        """In Docker (no profile active), get_active_profile_name() returns 'default'."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        assert get_active_profile_name() == "default"
+
+    def test_active_profile_name_docker_profile(self, tmp_path, monkeypatch):
+        """In Docker with a profile active, get_active_profile_name() returns the profile name."""
+        docker_home = tmp_path / "opt" / "data"
+        profile = docker_home / "profiles" / "orchestrator"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        assert get_active_profile_name() == "orchestrator"
 
 
 # ===================================================================

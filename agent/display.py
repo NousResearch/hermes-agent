@@ -4,7 +4,6 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
-import json
 import logging
 import os
 import sys
@@ -13,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+
+from utils import safe_json_loads
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -161,40 +162,6 @@ def get_tool_emoji(tool_name: str, default: str = "⚡") -> str:
         pass
     # 3. Hardcoded fallback
     return default
-
-
-# =========================================================================
-# Skin-aware spinner helpers
-# =========================================================================
-
-def get_skin_waiting_faces() -> list[str]:
-    """Get waiting faces from the active skin, falling back to hardcoded defaults."""
-    skin = _get_skin()
-    if skin:
-        faces = skin.get_spinner_list("waiting_faces")
-        if faces:
-            return faces
-    return KawaiiSpinner.KAWAII_WAITING
-
-
-def get_skin_thinking_faces() -> list[str]:
-    """Get thinking faces from the active skin, falling back to hardcoded defaults."""
-    skin = _get_skin()
-    if skin:
-        faces = skin.get_spinner_list("thinking_faces")
-        if faces:
-            return faces
-    return KawaiiSpinner.KAWAII_THINKING
-
-
-def get_skin_thinking_verbs() -> list[str]:
-    """Get thinking verbs from the active skin, falling back to hardcoded defaults."""
-    skin = _get_skin()
-    if skin:
-        verbs = skin.get_spinner_list("thinking_verbs")
-        if verbs:
-            return verbs
-    return KawaiiSpinner.THINKING_VERBS
 
 
 # =========================================================================
@@ -406,9 +373,8 @@ def _result_succeeded(result: str | None) -> bool:
     """Conservatively detect whether a tool result represents success."""
     if not result:
         return False
-    try:
-        data = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    data = safe_json_loads(result)
+    if data is None:
         return False
     if not isinstance(data, dict):
         return False
@@ -457,10 +423,7 @@ def extract_edit_diff(
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
     if tool_name == "patch" and result:
-        try:
-            data = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            data = None
+        data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
@@ -626,13 +589,12 @@ class KawaiiSpinner:
         'sparkle': ['⁺', '˚', '*', '✧', '✦', '✧', '*', '˚'],
     }
 
-    # Kawaii idle / waiting — warm, friendly, curious
     KAWAII_WAITING = [
         "(｡◕‿◕｡)", "(◕‿◕✿)", "٩(◕‿◕｡)۶", "(✿◠‿◠)", "( ˘▽˘)っ",
         "♪(´ε` )", "(◕ᴗ◕✿)", "ヾ(＾∇＾)", "(≧◡≦)", "(★ω★)",
+        # Expanded: warm, friendly, curious
         "(｡♥‿♥｡)", "(*^‿^*)", "(づ｡◕‿‿◕｡)づ", "(*¯︶¯*)", "(o^▽^o)",
         "ヽ(・∀・)ﾉ", "(*≧ω≦*)", "(^人^)", "(っ˘ω˘ς )", "(ღ˘⌣˘ღ)",
-        # Expanded from curated list
         "(๑˃ᴗ˂)ﻭ", "(♡°▽°♡)", "(つ✧ω✧)つ", "(ﾉ>ω<)ﾉ", "ヾ(☆▽☆)",
     ]
 
@@ -641,20 +603,18 @@ class KawaiiSpinner:
         "(｡•́︿•̀｡)", "(◔_◔)", "(¬‿¬)", "( •_•)>⌐■-■", "(⌐■_■)",
         "(´･_･`)", "◉_◉", "(°ロ°)", "( ˘⌣˘)♡", "ヽ(>∀<☆)☆",
         "٩(๑❛ᴗ❛๑)۶", "(⊙_⊙)", "(¬_¬)", "( ͡° ͜ʖ ͡°)", "ಠ_ಠ",
+        # Expanded: more variety for reasoning moments
         "( •̀_\•́ )", "(￣～￣;)", "( •́ .̫ •̀ )", "( ˘•ω•˘ )", "(๑•́ - •̀๑)",
-        # Expanded from curated list
         "(・_・;)", "( ˙-˙ )", "(⊙﹏⊙)", "(•ิ_•ิ)?",
         "('・_・')", "( ・◇・)?", '(¬_¬")', "(눈‸눈)",
         "( •̀ ω •́ )✧",
     ]
 
-    # Verbs for thinking spinner — varied, evocative, Hermes-kawaii tone
     THINKING_VERBS = [
         "pondering", "contemplating", "musing", "cogitating", "ruminating",
         "deliberating", "mulling", "reflecting", "processing", "reasoning",
         "analyzing", "computing", "synthesizing", "formulating", "brainstorming",
-        "inferring", "deducing", "connecting", "envisioning", "examining",
-        # Expanded from curated list
+        # Expanded: curated vocabulary for the thinking spinner
         "cerebrating", "orchestrating", "crystallizing", "deciphering", "manifesting",
         "reticulating", "osmosing", "percolating", "calculating", "composing",
         "architecting", "distilling", "harmonizing", "calibrating", "reconciling",
@@ -833,23 +793,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
 
     if tool_name == "terminal":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
     if tool_name == "memory":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()

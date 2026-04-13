@@ -944,9 +944,16 @@ def list_authenticated_providers(
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
+            # Build models list from both default_model and full models array
             models_list = []
             if default_model:
                 models_list.append(default_model)
+            # Also include the full models list from config
+            cfg_models = ep_cfg.get("models", [])
+            if isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config

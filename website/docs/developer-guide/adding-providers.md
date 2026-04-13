@@ -253,7 +253,7 @@ Search for `api_mode` and audit every switch point. At minimum, verify:
 - `__init__` chooses the new `api_mode`
 - client construction works for the provider
 - `_build_api_kwargs()` knows how to format requests
-- `_api_call_with_interrupt()` dispatches to the right client call
+- `_interruptible_api_call()` dispatches to the right client call
 - interrupt / client rebuild paths work
 - response validation accepts the provider's shape
 - finish-reason extraction is correct

@@ -47,6 +47,7 @@ class TestCronFilePermissions(unittest.TestCase):
         cron_dir = Path(self.tmpdir) / "cron"
         output_dir = cron_dir / "output"
         jobs_file = cron_dir / "jobs.json"
+        db_file = cron_dir / "jobs.db"
 
         with patch("cron.jobs.CRON_DIR", cron_dir), \
              patch("cron.jobs.OUTPUT_DIR", output_dir), \
@@ -54,7 +55,7 @@ class TestCronFilePermissions(unittest.TestCase):
             from cron.jobs import save_jobs
             save_jobs([{"id": "test", "prompt": "hello"}])
 
-            file_mode = stat.S_IMODE(os.stat(jobs_file).st_mode)
+            file_mode = stat.S_IMODE(os.stat(db_file).st_mode)
             self.assertEqual(file_mode, 0o600)
 
     def test_save_job_output_sets_0600(self):

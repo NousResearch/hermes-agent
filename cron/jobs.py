@@ -11,6 +11,7 @@ import logging
 import tempfile
 import os
 import re
+import sqlite3
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -317,50 +318,150 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # Job CRUD Operations
 # =============================================================================
 
-def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
+def _db_path() -> Path:
+    return CRON_DIR / "jobs.db"
+
+
+def _connect_db() -> sqlite3.Connection:
     ensure_dirs()
+    db_path = _db_path()
+    conn = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS jobs (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            created_at TEXT,
+            enabled INTEGER,
+            state TEXT,
+            next_run_at TEXT,
+            last_run_at TEXT,
+            job_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_due ON jobs(enabled, state, next_run_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at)")
+    _secure_file(db_path)
+    _maybe_migrate_legacy_jobs(conn)
+    return conn
+
+
+def _load_legacy_jobs_file() -> List[Dict[str, Any]]:
     if not JOBS_FILE.exists():
         return []
-    
+
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
     except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
+                return data.get("jobs", [])
         except Exception:
             return []
     except IOError:
         return []
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
-    ensure_dirs()
-    fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
+def _archive_legacy_jobs_file():
+    if not JOBS_FILE.exists():
+        return
+    backup = JOBS_FILE.with_suffix(JOBS_FILE.suffix + ".legacy.bak")
+    if backup.exists():
+        return
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as f:
-            json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, JOBS_FILE)
-        _secure_file(JOBS_FILE)
+        os.replace(JOBS_FILE, backup)
+        _secure_file(backup)
+    except OSError:
+        pass
+
+
+def _job_to_record(job: Dict[str, Any]) -> tuple:
+    normalized = _apply_skill_fields(job)
+    return (
+        normalized["id"],
+        normalized.get("name"),
+        normalized.get("created_at"),
+        1 if normalized.get("enabled", True) else 0,
+        normalized.get("state"),
+        normalized.get("next_run_at"),
+        normalized.get("last_run_at"),
+        json.dumps(normalized, ensure_ascii=False),
+    )
+
+
+def _row_to_job(row: sqlite3.Row) -> Dict[str, Any]:
+    return json.loads(row["job_json"])
+
+
+def _upsert_job(conn: sqlite3.Connection, job: Dict[str, Any]):
+    conn.execute(
+        """
+        INSERT INTO jobs (id, name, created_at, enabled, state, next_run_at, last_run_at, job_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            created_at=excluded.created_at,
+            enabled=excluded.enabled,
+            state=excluded.state,
+            next_run_at=excluded.next_run_at,
+            last_run_at=excluded.last_run_at,
+            job_json=excluded.job_json
+        """,
+        _job_to_record(job),
+    )
+
+
+def _maybe_migrate_legacy_jobs(conn: sqlite3.Connection):
+    count = conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]
+    if count:
+        return
+    legacy_jobs = _load_legacy_jobs_file()
+    if not legacy_jobs:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        for job in legacy_jobs:
+            _upsert_job(conn, job)
+        conn.commit()
+        _archive_legacy_jobs_file()
+        logger.info("Migrated %s cron jobs from legacy jobs.json to SQLite store", len(legacy_jobs))
     except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        conn.rollback()
         raise
+
+
+def load_jobs() -> List[Dict[str, Any]]:
+    """Load all jobs from SQLite storage."""
+    conn = _connect_db()
+    try:
+        rows = conn.execute("SELECT job_json FROM jobs ORDER BY created_at, id").fetchall()
+        return [json.loads(row[0]) for row in rows]
+    finally:
+        conn.close()
+
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Replace all jobs in SQLite storage with the provided list."""
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM jobs")
+        for job in jobs:
+            _upsert_job(conn, job)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def create_job(
@@ -457,36 +558,56 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
-
-    return job
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _upsert_job(conn, job)
+        conn.commit()
+        return job
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
-    jobs = load_jobs()
-    for job in jobs:
-        if job["id"] == job_id:
-            return _apply_skill_fields(job)
-    return None
+    conn = _connect_db()
+    try:
+        row = conn.execute("SELECT job_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return None
+        return _apply_skill_fields(json.loads(row[0]))
+    finally:
+        conn.close()
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_apply_skill_fields(j) for j in load_jobs()]
-    if not include_disabled:
-        jobs = [j for j in jobs if j.get("enabled", True)]
-    return jobs
+    conn = _connect_db()
+    try:
+        query = "SELECT job_json FROM jobs"
+        params: tuple = ()
+        if not include_disabled:
+            query += " WHERE enabled = 1"
+        query += " ORDER BY created_at, id"
+        rows = conn.execute(query, params).fetchall()
+        return [_apply_skill_fields(json.loads(row[0])) for row in rows]
+    finally:
+        conn.close()
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT job_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            conn.rollback()
+            return None
+        job = json.loads(row[0])
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
@@ -508,10 +629,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
             updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _apply_skill_fields(jobs[i])
-    return None
+        _upsert_job(conn, updated)
+        conn.commit()
+        return _apply_skill_fields(updated)
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -565,13 +690,17 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
-    return False
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cur = conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
@@ -581,41 +710,43 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
     """
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] == job_id:
-            now = _hermes_now().isoformat()
-            job["last_run_at"] = now
-            job["last_status"] = "ok" if success else "error"
-            job["last_error"] = error if not success else None
-            
-            # Increment completed count
-            if job.get("repeat"):
-                job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
-                
-                # Check if we've hit the repeat limit
-                times = job["repeat"].get("times")
-                completed = job["repeat"]["completed"]
-                if times is not None and times > 0 and completed >= times:
-                    # Remove the job (limit reached)
-                    jobs.pop(i)
-                    save_jobs(jobs)
-                    return
-            
-            # Compute next run
-            job["next_run_at"] = compute_next_run(job["schedule"], now)
-
-            # If no next run (one-shot completed), disable
-            if job["next_run_at"] is None:
-                job["enabled"] = False
-                job["state"] = "completed"
-            elif job.get("state") != "paused":
-                job["state"] = "scheduled"
-
-            save_jobs(jobs)
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT job_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            conn.commit()
             return
-    
-    save_jobs(jobs)
+        job = json.loads(row[0])
+        now = _hermes_now().isoformat()
+        job["last_run_at"] = now
+        job["last_status"] = "ok" if success else "error"
+        job["last_error"] = error if not success else None
+
+        if job.get("repeat"):
+            job["repeat"]["completed"] = job["repeat"].get("completed", 0) + 1
+            times = job["repeat"].get("times")
+            completed = job["repeat"]["completed"]
+            if times is not None and times > 0 and completed >= times:
+                conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+                conn.commit()
+                return
+
+        job["next_run_at"] = compute_next_run(job["schedule"], now)
+
+        if job["next_run_at"] is None:
+            job["enabled"] = False
+            job["state"] = "completed"
+        elif job.get("state") != "paused":
+            job["state"] = "scheduled"
+
+        _upsert_job(conn, job)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def advance_next_run(job_id: str) -> bool:
@@ -630,20 +761,32 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    jobs = load_jobs()
-    for job in jobs:
-        if job["id"] == job_id:
-            kind = job.get("schedule", {}).get("kind")
-            if kind not in ("cron", "interval"):
-                return False
-            now = _hermes_now().isoformat()
-            new_next = compute_next_run(job["schedule"], now)
-            if new_next and new_next != job.get("next_run_at"):
-                job["next_run_at"] = new_next
-                save_jobs(jobs)
-                return True
+    conn = _connect_db()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT job_json FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            conn.rollback()
             return False
-    return False
+        job = json.loads(row[0])
+        kind = job.get("schedule", {}).get("kind")
+        if kind not in ("cron", "interval"):
+            conn.rollback()
+            return False
+        now = _hermes_now().isoformat()
+        new_next = compute_next_run(job["schedule"], now)
+        if new_next and new_next != job.get("next_run_at"):
+            job["next_run_at"] = new_next
+            _upsert_job(conn, job)
+            conn.commit()
+            return True
+        conn.rollback()
+        return False
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

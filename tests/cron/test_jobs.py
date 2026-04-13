@@ -189,6 +189,44 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestJobCRUD:
+    def test_migrates_legacy_jobs_json_on_first_load(self, tmp_cron_dir):
+        import cron.jobs as jobs_module
+
+        jobs_module.ensure_dirs()
+        legacy_job = {
+            "id": "legacy1",
+            "name": "Legacy Job",
+            "prompt": "legacy prompt",
+            "skills": [],
+            "skill": None,
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "script": None,
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "schedule_display": "every 60m",
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "paused_at": None,
+            "paused_reason": None,
+            "created_at": datetime.now().astimezone().isoformat(),
+            "next_run_at": datetime.now().astimezone().isoformat(),
+            "last_run_at": None,
+            "last_status": None,
+            "last_error": None,
+            "deliver": "local",
+            "origin": None,
+        }
+        jobs_module.JOBS_FILE.write_text(json.dumps({"jobs": [legacy_job]}), encoding="utf-8")
+
+        jobs = load_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["id"] == "legacy1"
+        assert (tmp_cron_dir / "cron" / "jobs.db").exists()
+        assert not jobs_module.JOBS_FILE.exists()
+        assert (tmp_cron_dir / "cron" / "jobs.json.legacy.bak").exists()
+
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
         assert job["id"]

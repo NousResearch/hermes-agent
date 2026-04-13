@@ -350,19 +350,13 @@ def show_status(args):
     print()
     print(color("◆ Scheduled Jobs", Colors.CYAN, Colors.BOLD))
     
-    jobs_file = get_hermes_home() / "cron" / "jobs.json"
-    if jobs_file.exists():
-        import json
-        try:
-            with open(jobs_file, encoding="utf-8") as f:
-                data = json.load(f)
-                jobs = data.get("jobs", [])
-                enabled_jobs = [j for j in jobs if j.get("enabled", True)]
-                print(f"  Jobs:         {len(enabled_jobs)} active, {len(jobs)} total")
-        except Exception:
-            print("  Jobs:         (error reading jobs file)")
-    else:
-        print("  Jobs:         0")
+    try:
+        from cron.jobs import list_jobs
+        enabled_jobs = list_jobs(include_disabled=False)
+        all_jobs = list_jobs(include_disabled=True)
+        print(f"  Jobs:         {len(enabled_jobs)} active, {len(all_jobs)} total")
+    except Exception:
+        print("  Jobs:         (error reading cron storage)")
     
     # =========================================================================
     # Sessions

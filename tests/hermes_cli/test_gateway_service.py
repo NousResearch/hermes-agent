@@ -631,8 +631,45 @@ class TestDetectVenvDir:
         assert result is None
 
 
+class TestRemapPathForUser:
+    def test_preserves_lexical_virtualenv_path_instead_of_resolving_symlink(self, tmp_path, monkeypatch):
+        current_home = tmp_path / "current"
+        target_home = tmp_path / "target"
+        current_home.mkdir()
+        target_home.mkdir()
+
+        real_python = current_home / ".local" / "share" / "uv" / "python" / "cpython-3.11" / "bin"
+        real_python.mkdir(parents=True)
+        (real_python / "python3.11").write_text("", encoding="utf-8")
+
+        venv_bin = current_home / ".hermes" / "hermes-agent" / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").symlink_to(real_python / "python3.11")
+
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: current_home))
+
+        remapped = gateway_cli._remap_path_for_user(str(venv_bin / "python"), str(target_home))
+
+        assert remapped == str(target_home / ".hermes" / "hermes-agent" / "venv" / "bin" / "python")
+        assert ".local/share/uv/python" not in remapped
+
+
 class TestSystemUnitHermesHome:
     """HERMES_HOME in system units must reference the target user, not root."""
+
+    def test_system_unit_keeps_virtualenv_execstart_path_when_running_as_root(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/root/.hermes/hermes-agent/venv/bin/python")
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: Path("/root/.hermes/hermes-agent/venv"))
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity", lambda run_as_user=None: ("root", "root", "/root")
+        )
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="root")
+
+        assert "ExecStart=/root/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace" in unit
+        assert "/root/.local/share/uv/python" not in unit
 
     def test_system_unit_uses_target_user_home_not_calling_user(self, monkeypatch):
         # Simulate sudo: Path.home() returns /root, target user is alice

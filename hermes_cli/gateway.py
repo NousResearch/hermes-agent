@@ -766,16 +766,24 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
     If *path* lives under ``Path.home()`` the corresponding prefix is swapped
     to *target_home_dir*; otherwise the path is returned unchanged.
 
+    Important: this preserves the original lexical path instead of resolving
+    symlinks first. A virtualenv Python commonly lives at ``venv/bin/python``
+    but is itself a symlink to a shared base interpreter (for example uv's
+    managed CPython under ``~/.local/share/uv/python/...``). Resolving the
+    symlink before remapping would bake the shared interpreter into the unit
+    file and bypass the virtualenv, which is exactly the broken ExecStart we
+    must avoid.
+
       /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
       /opt/hermes                 -> /opt/hermes  (kept as-is)
     """
-    current_home = Path.home().resolve()
-    resolved = Path(path).resolve()
+    current_home = Path(os.path.abspath(os.path.expanduser(str(Path.home()))))
+    normalized = Path(os.path.abspath(os.path.expanduser(path)))
     try:
-        relative = resolved.relative_to(current_home)
+        relative = normalized.relative_to(current_home)
         return str(Path(target_home_dir) / relative)
     except ValueError:
-        return str(resolved)
+        return str(normalized)
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:

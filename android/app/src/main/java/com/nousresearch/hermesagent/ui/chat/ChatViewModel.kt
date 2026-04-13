@@ -160,46 +160,56 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 stream = true,
                 sessionId = sessionId,
             )
-            client.streamChatCompletion(
-                request = request,
-                onDelta = { delta ->
-                    val persistedPrefix = conversationStore.loadConversation(sessionId)
-                        ?.messages
-                        ?.firstOrNull { it.id == assistantMessageId }
-                        ?.content
-                        .orEmpty()
-                    conversationStore.updateMessageContent(
-                        sessionId = sessionId,
-                        messageId = assistantMessageId,
-                        newContent = persistedPrefix + delta,
+            runCatching {
+                client.streamChatCompletion(
+                    request = request,
+                    onDelta = { delta ->
+                        val persistedPrefix = conversationStore.loadConversation(sessionId)
+                            ?.messages
+                            ?.firstOrNull { it.id == assistantMessageId }
+                            ?.content
+                            .orEmpty()
+                        conversationStore.updateMessageContent(
+                            sessionId = sessionId,
+                            messageId = assistantMessageId,
+                            newContent = persistedPrefix + delta,
+                        )
+                        _uiState.update { state ->
+                            state.copy(
+                                activeConversationTitle = conversationStore.currentConversation().title,
+                                conversationSummaries = loadSummaries(),
+                                messages = state.messages.map { message ->
+                                    if (message.id == assistantMessageId) {
+                                        message.copy(content = message.content + delta)
+                                    } else {
+                                        message
+                                    }
+                                },
+                            )
+                        }
+                    },
+                    onComplete = {
+                        _uiState.update {
+                            it.copy(
+                                isSending = false,
+                                status = "",
+                                conversationSummaries = loadSummaries(),
+                            )
+                        }
+                    },
+                    onError = { error ->
+                        _uiState.update { it.copy(isSending = false, error = error, status = "") }
+                    },
+                )
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        isSending = false,
+                        error = error.message ?: error.javaClass.simpleName,
+                        status = "",
                     )
-                    _uiState.update { state ->
-                        state.copy(
-                            activeConversationTitle = conversationStore.currentConversation().title,
-                            conversationSummaries = loadSummaries(),
-                            messages = state.messages.map { message ->
-                                if (message.id == assistantMessageId) {
-                                    message.copy(content = message.content + delta)
-                                } else {
-                                    message
-                                }
-                            },
-                        )
-                    }
-                },
-                onComplete = {
-                    _uiState.update {
-                        it.copy(
-                            isSending = false,
-                            status = "",
-                            conversationSummaries = loadSummaries(),
-                        )
-                    }
-                },
-                onError = { error ->
-                    _uiState.update { it.copy(isSending = false, error = error, status = "") }
-                },
-            )
+                }
+            }
         }
     }
 

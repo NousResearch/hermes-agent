@@ -45,22 +45,32 @@ class BootViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val healthOk = withContext(Dispatchers.IO) {
-                checkHealth(runtime.baseUrl, runtime.apiKey)
-            }
-            _uiState.value = if (healthOk) {
-                BootUiState(
-                    status = "Hermes backend is ready",
-                    ready = true,
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    checkHealth(runtime.baseUrl, runtime.apiKey)
+                }
+            }.onSuccess { healthOk ->
+                _uiState.value = if (healthOk) {
+                    BootUiState(
+                        status = "Hermes backend is ready",
+                        ready = true,
+                        probeResult = runtime.probeResult.orEmpty(),
+                        baseUrl = runtime.baseUrl.orEmpty(),
+                    )
+                } else {
+                    BootUiState(
+                        status = "Hermes backend did not pass /health",
+                        probeResult = runtime.probeResult.orEmpty(),
+                        baseUrl = runtime.baseUrl.orEmpty(),
+                        error = "GET /health did not return HTTP 200",
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.value = BootUiState(
+                    status = "Hermes backend health check failed",
                     probeResult = runtime.probeResult.orEmpty(),
                     baseUrl = runtime.baseUrl.orEmpty(),
-                )
-            } else {
-                BootUiState(
-                    status = "Hermes backend did not pass /health",
-                    probeResult = runtime.probeResult.orEmpty(),
-                    baseUrl = runtime.baseUrl.orEmpty(),
-                    error = "GET /health did not return HTTP 200",
+                    error = error.message ?: error.javaClass.simpleName,
                 )
             }
         }

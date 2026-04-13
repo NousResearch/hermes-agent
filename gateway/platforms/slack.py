@@ -84,6 +84,17 @@ class SlackAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Track pending approval message_ts → resolved flag to prevent
+        # double-clicks on approval buttons.
+        self._approval_resolved: Dict[str, bool] = {}
+        # Track timestamps of messages sent by the bot so we can respond
+        # to thread replies even without an explicit @mention.
+        self._bot_message_ts: set = set()
+        self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+        # Track threads where the bot has been @mentioned — once mentioned,
+        # respond to ALL subsequent messages in that thread automatically.
+        self._mentioned_threads: set = set()
+        self._MENTIONED_THREADS_MAX = 5000
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -176,6 +187,15 @@ class SlackAdapter(BasePlatformAdapter):
                 await ack()
                 await self._handle_slash_command(command)
 
+            # Register Block Kit action handlers for approval buttons
+            for _action_id in (
+                "hermes_approve_once",
+                "hermes_approve_session",
+                "hermes_approve_always",
+                "hermes_deny",
+            ):
+                self._app.action(_action_id)(self._handle_approval_action)
+
             # Start Socket Mode handler in background
             self._handler = AsyncSocketModeHandler(self._app, app_token)
             self._socket_mode_task = asyncio.create_task(self._handler.start_async())
@@ -256,9 +276,22 @@ class SlackAdapter(BasePlatformAdapter):
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
+            # Track the sent message ts so we can auto-respond to thread
+            # replies without requiring @mention.
+            sent_ts = last_result.get("ts") if last_result else None
+            if sent_ts:
+                self._bot_message_ts.add(sent_ts)
+                # Also register the thread root so replies-to-my-replies work
+                if thread_ts:
+                    self._bot_message_ts.add(thread_ts)
+                if len(self._bot_message_ts) > self._BOT_TS_MAX:
+                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+                    for old_ts in list(self._bot_message_ts)[:excess]:
+                        self._bot_message_ts.discard(old_ts)
+
             return SendResult(
                 success=True,
-                message_id=last_result.get("ts") if last_result else None,
+                message_id=sent_ts,
                 raw_response=last_result,
             )
 
@@ -276,10 +309,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
+            # Convert standard markdown → Slack mrkdwn
+            formatted = self.format_message(content)
+
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=content,
+                text=formatted,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
@@ -559,6 +595,11 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             import httpx
 
@@ -763,13 +804,61 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, respond if:
+        #   1. The bot is @mentioned in this message, OR
+        #   2. The message is a reply in a thread the bot started/participated in, OR
+        #   3. The message is in a thread where the bot was previously @mentioned, OR
+        #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        if not is_dm and bot_uid:
-            if f"<@{bot_uid}>" not in text:
+        is_mentioned = bot_uid and f"<@{bot_uid}>" in text
+        event_thread_ts = event.get("thread_ts")
+        is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+
+        if not is_dm and bot_uid and not is_mentioned:
+            reply_to_bot_thread = (
+                is_thread_reply and event_thread_ts in self._bot_message_ts
+            )
+            in_mentioned_thread = (
+                event_thread_ts is not None
+                and event_thread_ts in self._mentioned_threads
+            )
+            has_session = (
+                is_thread_reply
+                and self._has_active_session_for_thread(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                )
+            )
+            if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                 return
+
+        if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Register this thread so all future messages auto-trigger the bot
+            if event_thread_ts:
+                self._mentioned_threads.add(event_thread_ts)
+                if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+                    to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
+                    for t in to_remove:
+                        self._mentioned_threads.discard(t)
+
+        # When entering a thread for the first time (no existing session),
+        # fetch thread context so the agent understands the conversation.
+        if is_thread_reply and not self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            user_id=user_id,
+        ):
+            thread_context = await self._fetch_thread_context(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                current_ts=ts,
+                team_id=team_id,
+            )
+            if thread_context:
+                text = thread_context + text
 
         # Determine message type
         msg_type = MessageType.TEXT
@@ -892,6 +981,233 @@ class SlackAdapter(BasePlatformAdapter):
         await self._remove_reaction(channel_id, ts, "eyes")
         await self._add_reaction(channel_id, ts, "white_check_mark")
 
+    # ----- Approval button support (Block Kit) -----
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Block Kit approval prompt with interactive buttons.
+
+        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        agent thread — same mechanism as the text ``/approve`` flow.
+        """
+        if not self._app:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            cmd_preview = command[:2900] + "..." if len(command) > 2900 else command
+            thread_ts = self._resolve_thread_ts(None, metadata)
+
+            blocks = [
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": (
+                            f":warning: *Command Approval Required*\n"
+                            f"```{cmd_preview}```\n"
+                            f"Reason: {description}"
+                        ),
+                    },
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Allow Once"},
+                            "style": "primary",
+                            "action_id": "hermes_approve_once",
+                            "value": session_key,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Allow Session"},
+                            "action_id": "hermes_approve_session",
+                            "value": session_key,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Always Allow"},
+                            "action_id": "hermes_approve_always",
+                            "value": session_key,
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Deny"},
+                            "style": "danger",
+                            "action_id": "hermes_deny",
+                            "value": session_key,
+                        },
+                    ],
+                },
+            ]
+
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "text": f"⚠️ Command approval required: {cmd_preview[:100]}",
+                "blocks": blocks,
+            }
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+
+            result = await self._get_client(chat_id).chat_postMessage(**kwargs)
+            msg_ts = result.get("ts", "")
+            if msg_ts:
+                self._approval_resolved[msg_ts] = False
+
+            return SendResult(success=True, message_id=msg_ts, raw_response=result)
+        except Exception as e:
+            logger.error("[Slack] send_exec_approval failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_approval_action(self, ack, body, action) -> None:
+        """Handle an approval button click from Block Kit."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        session_key = action.get("value", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+        channel_id = body.get("channel", {}).get("id", "")
+        user_name = body.get("user", {}).get("name", "unknown")
+
+        # Map action_id to approval choice
+        choice_map = {
+            "hermes_approve_once": "once",
+            "hermes_approve_session": "session",
+            "hermes_approve_always": "always",
+            "hermes_deny": "deny",
+        }
+        choice = choice_map.get(action_id, "deny")
+
+        # Prevent double-clicks
+        if self._approval_resolved.get(msg_ts, False):
+            return
+        self._approval_resolved[msg_ts] = True
+
+        # Update the message to show the decision and remove buttons
+        label_map = {
+            "once": f"✅ Approved once by {user_name}",
+            "session": f"✅ Approved for session by {user_name}",
+            "always": f"✅ Approved permanently by {user_name}",
+            "deny": f"❌ Denied by {user_name}",
+        }
+        decision_text = label_map.get(choice, f"Resolved by {user_name}")
+
+        # Get original text from the section block
+        original_text = ""
+        for block in message.get("blocks", []):
+            if block.get("type") == "section":
+                original_text = block.get("text", {}).get("text", "")
+                break
+
+        updated_blocks = [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": original_text or "Command approval request",
+                },
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": decision_text},
+                ],
+            },
+        ]
+
+        try:
+            await self._get_client(channel_id).chat_update(
+                channel=channel_id,
+                ts=msg_ts,
+                text=decision_text,
+                blocks=updated_blocks,
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to update approval message: %s", e)
+
+        # Resolve the approval — this unblocks the agent thread
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "Slack button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count, session_key, choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
+
+        # Clean up stale approval state
+        self._approval_resolved.pop(msg_ts, None)
+
+    # ----- Thread context fetching -----
+
+    async def _fetch_thread_context(
+        self, channel_id: str, thread_ts: str, current_ts: str,
+        team_id: str = "", limit: int = 30,
+    ) -> str:
+        """Fetch recent thread messages to provide context when the bot is
+        mentioned mid-thread for the first time.
+
+        Returns a formatted string with thread history, or empty string on
+        failure or if the thread is empty (just the parent message).
+        """
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=limit + 1,  # +1 because it includes the current message
+                inclusive=True,
+            )
+            messages = result.get("messages", [])
+            if not messages:
+                return ""
+
+            context_parts = []
+            for msg in messages:
+                msg_ts = msg.get("ts", "")
+                # Skip the current message (the one that triggered this fetch)
+                if msg_ts == current_ts:
+                    continue
+                # Skip bot messages from ourselves
+                if msg.get("bot_id") or msg.get("subtype") == "bot_message":
+                    continue
+
+                msg_user = msg.get("user", "unknown")
+                msg_text = msg.get("text", "").strip()
+                if not msg_text:
+                    continue
+
+                # Strip bot mentions from context messages
+                bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+                if bot_uid:
+                    msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+
+                # Mark the thread parent
+                is_parent = msg_ts == thread_ts
+                prefix = "[thread parent] " if is_parent else ""
+
+                # Resolve user name (cached)
+                name = await self._resolve_user_name(msg_user, chat_id=channel_id)
+                context_parts.append(f"{prefix}{name}: {msg_text}")
+
+            if not context_parts:
+                return ""
+
+            return (
+                "[Thread context — previous messages in this thread:]\n"
+                + "\n".join(context_parts)
+                + "\n[End of thread context]\n\n"
+            )
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle /hermes slash command."""
         text = command.get("text", "").strip()
@@ -932,6 +1248,53 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
+
+    def _has_active_session_for_thread(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+    ) -> bool:
+        """Check if there's an active session for a thread.
+
+        Used to determine if thread replies without @mentions should be
+        processed (they should if there's an active session).
+
+        Uses ``build_session_key()`` as the single source of truth for key
+        construction — avoids the bug where manual key building didn't
+        respect ``thread_sessions_per_user`` and ``group_sessions_per_user``
+        settings correctly.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="group",
+                user_id=user_id,
+                thread_id=thread_ts,
+            )
+
+            # Read session isolation settings from the store's config
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""

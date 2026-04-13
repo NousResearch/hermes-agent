@@ -26,7 +26,7 @@ import shutil
 import stat
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
@@ -517,7 +517,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     ]
 
     # Check for service
-    from hermes_cli.gateway import _profile_suffix, get_service_name
     wrapper_path = _get_wrapper_dir() / name
     has_wrapper = wrapper_path.exists()
     if has_wrapper:

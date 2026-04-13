@@ -18,6 +18,7 @@ import uuid
 from typing import Optional
 
 from tools.environments.base import BaseEnvironment
+from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
@@ -510,6 +511,8 @@ class DockerEnvironment(BaseEnvironment):
             forward_keys |= get_all_passthrough()
         except Exception:
             pass
+        # Strip Hermes-managed secrets so they never leak into the container.
+        forward_keys -= _HERMES_PROVIDER_ENV_BLOCKLIST
         hermes_env = _load_hermes_env_vars() if forward_keys else {}
         for key in sorted(forward_keys):
             value = os.getenv(key)

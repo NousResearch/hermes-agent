@@ -641,3 +641,69 @@ class TestEnsureUserSystemdEnv:
         result = gateway_cli._systemctl_cmd(system=True)
         assert result == ["systemctl"]
         assert calls == []
+
+
+class TestProfileArg:
+    """Tests for _profile_arg — returns '--profile <name>' for named profiles."""
+
+    def test_default_hermes_home_returns_empty(self, tmp_path, monkeypatch):
+        """Default ~/.hermes should not produce a --profile flag."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = gateway_cli._profile_arg(str(hermes_home))
+        assert result == ""
+
+    def test_named_profile_returns_flag(self, tmp_path, monkeypatch):
+        """~/.hermes/profiles/mybot should return '--profile mybot'."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = gateway_cli._profile_arg(str(profile_dir))
+        assert result == "--profile mybot"
+
+    def test_hash_path_returns_empty(self, tmp_path, monkeypatch):
+        """Arbitrary non-profile HERMES_HOME should return empty string."""
+        custom_home = tmp_path / "custom" / "hermes"
+        custom_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = gateway_cli._profile_arg(str(custom_home))
+        assert result == ""
+
+    def test_nested_profile_path_returns_empty(self, tmp_path, monkeypatch):
+        """~/.hermes/profiles/mybot/subdir should NOT match — too deep."""
+        nested = tmp_path / ".hermes" / "profiles" / "mybot" / "subdir"
+        nested.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = gateway_cli._profile_arg(str(nested))
+        assert result == ""
+
+    def test_invalid_profile_name_returns_empty(self, tmp_path, monkeypatch):
+        """Profile names with invalid chars should not match the regex."""
+        bad_profile = tmp_path / ".hermes" / "profiles" / "My Bot!"
+        bad_profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        result = gateway_cli._profile_arg(str(bad_profile))
+        assert result == ""
+
+    def test_systemd_unit_includes_profile(self, tmp_path, monkeypatch):
+        """generate_systemd_unit should include --profile in ExecStart for named profiles."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        unit = gateway_cli.generate_systemd_unit(system=False)
+        assert "--profile mybot" in unit
+        assert "gateway run --replace" in unit
+
+    def test_launchd_plist_includes_profile(self, tmp_path, monkeypatch):
+        """generate_launchd_plist should include --profile in ProgramArguments for named profiles."""
+        profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<string>--profile</string>" in plist
+        assert "<string>mybot</string>" in plist

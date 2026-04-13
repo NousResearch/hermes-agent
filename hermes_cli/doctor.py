@@ -836,7 +836,7 @@ def run_doctor(args):
                 get_honcho_client(hcfg)
                 check_ok(
                     "Honcho connected",
-                    f"workspace={hcfg.workspace_id} mode={hcfg.memory_mode} freq={hcfg.write_frequency}",
+                    f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
                 )
             except Exception as _e:
                 check_fail("Honcho connection failed", str(_e))
@@ -920,8 +920,8 @@ def run_doctor(args):
                         pass
     except ImportError:
         pass
-    except Exception as _e:
-        logger.debug("Profile health check failed: %s", _e)
+    except Exception:
+        pass
 
     # =========================================================================
     # Summary

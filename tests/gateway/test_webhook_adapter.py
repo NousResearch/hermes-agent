@@ -590,8 +590,15 @@ class TestSessionIsolation:
 class TestDeliveryCleanup:
 
     @pytest.mark.asyncio
-    async def test_delivery_info_cleaned_after_send(self):
-        """send() pops delivery_info so the entry doesn't leak memory."""
+    async def test_delivery_info_survives_multiple_sends(self):
+        """send() must NOT pop delivery_info.
+
+        Interim status messages (fallback notifications, context-pressure
+        warnings, etc.) flow through the same send() path as the final
+        response.  If the entry were popped on the first send, the final
+        response would silently downgrade to the ``log`` deliver type.
+        Regression test for that bug.
+        """
         adapter = _make_adapter()
         chat_id = "webhook:test:d-xyz"
         adapter._delivery_info[chat_id] = {
@@ -599,10 +606,40 @@ class TestDeliveryCleanup:
             "deliver_extra": {},
             "payload": {"x": 1},
         }
+        adapter._delivery_info_created[chat_id] = time.time()
 
-        result = await adapter.send(chat_id, "Agent response here")
-        assert result.success is True
-        assert chat_id not in adapter._delivery_info
+        # First send (e.g. an interim status message)
+        result1 = await adapter.send(chat_id, "Status: switching to fallback")
+        assert result1.success is True
+        # Entry must still be present so the final send can read it
+        assert chat_id in adapter._delivery_info
+
+        # Second send (the final agent response)
+        result2 = await adapter.send(chat_id, "Final agent response")
+        assert result2.success is True
+        assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_delivery_info_pruned_via_ttl(self):
+        """Stale delivery_info entries are dropped on the next POST."""
+        adapter = _make_adapter()
+        adapter._idempotency_ttl = 60  # short TTL for the test
+        now = time.time()
+
+        # Stale entry — older than TTL
+        adapter._delivery_info["webhook:test:old"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:old"] = now - 120
+
+        # Fresh entry — should survive
+        adapter._delivery_info["webhook:test:new"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:new"] = now - 5
+
+        adapter._prune_delivery_info(now)
+
+        assert "webhook:test:old" not in adapter._delivery_info
+        assert "webhook:test:old" not in adapter._delivery_info_created
+        assert "webhook:test:new" in adapter._delivery_info
+        assert "webhook:test:new" in adapter._delivery_info_created
 
 
 # ===================================================================
@@ -617,3 +654,107 @@ class TestCheckRequirements:
     @patch("gateway.platforms.webhook.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_webhook_requirements() is False
+
+
+# ===================================================================
+# __raw__ template token
+# ===================================================================
+
+
+class TestRawTemplateToken:
+    """Tests for the {__raw__} special token in _render_prompt."""
+
+    def test_raw_resolves_to_full_json_payload(self):
+        """{__raw__} in a template dumps the entire payload as JSON."""
+        adapter = _make_adapter()
+        payload = {"action": "opened", "number": 42}
+        result = adapter._render_prompt(
+            "Payload: {__raw__}", payload, "push", "test"
+        )
+        expected_json = json.dumps(payload, indent=2)
+        assert result == f"Payload: {expected_json}"
+
+    def test_raw_truncated_at_4000_chars(self):
+        """{__raw__} output is truncated at 4000 characters for large payloads."""
+        adapter = _make_adapter()
+        # Build a payload whose JSON repr exceeds 4000 chars
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__}", payload, "push", "test")
+        assert len(result) <= 4000
+
+    def test_raw_mixed_with_other_variables(self):
+        """{__raw__} can be mixed with regular template variables."""
+        adapter = _make_adapter()
+        payload = {"action": "closed", "number": 7}
+        result = adapter._render_prompt(
+            "Action={action} Raw={__raw__}", payload, "push", "test"
+        )
+        assert result.startswith("Action=closed Raw=")
+        assert '"action": "closed"' in result
+        assert '"number": 7' in result
+
+
+# ===================================================================
+# Cross-platform delivery thread_id passthrough
+# ===================================================================
+
+
+class TestDeliverCrossPlatformThreadId:
+    """Tests for thread_id passthrough in _deliver_cross_platform."""
+
+    def _setup_adapter_with_mock_target(self):
+        """Set up a webhook adapter with a mocked gateway_runner and target adapter."""
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+
+        adapter.gateway_runner = mock_runner
+        return adapter, mock_target
+
+    @pytest.mark.asyncio
+    async def test_thread_id_passed_as_metadata(self):
+        """thread_id from deliver_extra is passed as metadata to adapter.send()."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "thread_id": "999",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "999"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_thread_id_passed_as_thread_id(self):
+        """message_thread_id from deliver_extra is mapped to thread_id in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "888"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_thread_id_sends_no_metadata(self):
+        """When no thread_id is present, metadata is None."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata=None
+        )

@@ -23,9 +23,12 @@ import json
 import logging
 import os
 import threading
+
+from hermes_constants import get_hermes_home
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +144,6 @@ def _load_config() -> dict:
       3. Environment variables
     """
     from pathlib import Path
-    from hermes_constants import get_hermes_home
 
     # Profile-scoped path (preferred)
     profile_path = get_hermes_home() / "hindsight" / "config.json"
@@ -290,8 +292,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":
             def _start_daemon():
                 import traceback
-                from pathlib import Path
-                log_dir = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / "logs"
+                log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:
@@ -434,12 +435,12 @@ class HindsightMemoryProvider(MemoryProvider):
             client = self._get_client()
         except Exception as e:
             logger.warning("Hindsight client init failed: %s", e)
-            return json.dumps({"error": f"Hindsight client unavailable: {e}"})
+            return tool_error(f"Hindsight client unavailable: {e}")
 
         if tool_name == "hindsight_retain":
             content = args.get("content", "")
             if not content:
-                return json.dumps({"error": "Missing required parameter: content"})
+                return tool_error("Missing required parameter: content")
             context = args.get("context")
             try:
                 _run_sync(client.aretain(
@@ -448,12 +449,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "Memory stored successfully."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e)
-                return json.dumps({"error": f"Failed to store memory: {e}"})
+                return tool_error(f"Failed to store memory: {e}")
 
         elif tool_name == "hindsight_recall":
             query = args.get("query", "")
             if not query:
-                return json.dumps({"error": "Missing required parameter: query"})
+                return tool_error("Missing required parameter: query")
             try:
                 resp = _run_sync(client.arecall(
                     bank_id=self._bank_id, query=query, budget=self._budget
@@ -464,12 +465,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": "\n".join(lines)})
             except Exception as e:
                 logger.warning("hindsight_recall failed: %s", e)
-                return json.dumps({"error": f"Failed to search memory: {e}"})
+                return tool_error(f"Failed to search memory: {e}")
 
         elif tool_name == "hindsight_reflect":
             query = args.get("query", "")
             if not query:
-                return json.dumps({"error": "Missing required parameter: query"})
+                return tool_error("Missing required parameter: query")
             try:
                 resp = _run_sync(client.areflect(
                     bank_id=self._bank_id, query=query, budget=self._budget
@@ -477,9 +478,9 @@ class HindsightMemoryProvider(MemoryProvider):
                 return json.dumps({"result": resp.text or "No relevant memories found."})
             except Exception as e:
                 logger.warning("hindsight_reflect failed: %s", e)
-                return json.dumps({"error": f"Failed to reflect: {e}"})
+                return tool_error(f"Failed to reflect: {e}")
 
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
         global _loop, _loop_thread

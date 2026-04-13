@@ -108,7 +108,7 @@ def detect_audio_environment() -> dict:
         )
 
     return {
-        "available": len(warnings) == 0,
+        "available": not warnings,
         "warnings": warnings,
         "notices": notices,
     }

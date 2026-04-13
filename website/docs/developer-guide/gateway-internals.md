@@ -12,7 +12,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 
 | File | Purpose |
 |------|---------|
-| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (~7,200 lines) |
+| `gateway/run.py` | `GatewayRunner` — main loop, slash commands, message dispatch (~7,500 lines) |
 | `gateway/session.py` | `SessionStore` — conversation persistence and session key construction |
 | `gateway/delivery.py` | Outbound message delivery to target platforms/channels |
 | `gateway/pairing.py` | DM pairing flow for user authorization |
@@ -91,10 +91,11 @@ Commands that must reach the runner while the agent is blocked (like `/approve`)
 
 The gateway uses a multi-layer authorization check, evaluated in order:
 
-1. **Gateway-wide allow-all** (`GATEWAY_ALLOW_ALL_USERS`) — if set, all users are authorized
+1. **Per-platform allow-all flag** (e.g., `TELEGRAM_ALLOW_ALL_USERS`) — if set, all users on that platform are authorized
 2. **Platform allowlist** (e.g., `TELEGRAM_ALLOWED_USERS`) — comma-separated user IDs
 3. **DM pairing** — authenticated users can pair new users via a pairing code
-4. **Admin escalation** — some commands require admin status beyond basic authorization
+4. **Global allow-all** (`GATEWAY_ALLOW_ALL_USERS`) — if set, all users across all platforms are authorized
+5. **Default: deny** — unauthorized users are rejected
 
 ### DM Pairing Flow
 
@@ -154,11 +155,13 @@ gateway/platforms/
 ├── signal.py            # Signal via signal-cli REST API
 ├── matrix.py            # Matrix via matrix-nio (optional E2EE)
 ├── mattermost.py        # Mattermost WebSocket API
-├── email_adapter.py     # Email via IMAP/SMTP
+├── email.py             # Email via IMAP/SMTP
 ├── sms.py               # SMS via Twilio
 ├── dingtalk.py          # DingTalk WebSocket
 ├── feishu.py            # Feishu/Lark WebSocket or webhook
 ├── wecom.py             # WeCom (WeChat Work) callback
+├── webhook.py           # Inbound/outbound webhook adapter
+├── api_server.py        # REST API server adapter
 └── homeassistant.py     # Home Assistant conversation integration
 ```
 

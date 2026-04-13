@@ -13,7 +13,6 @@ secrets are never written to disk.
 """
 
 import logging
-import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional

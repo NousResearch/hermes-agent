@@ -241,7 +241,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         }, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Failed to list recent sessions: {e}"}, ensure_ascii=False)
+        return tool_error(f"Failed to list recent sessions: {e}", success=False)
 
 
 def session_search(
@@ -258,7 +258,7 @@ def session_search(
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
-        return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
+        return tool_error("Session database not available.", success=False)
 
     limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
 
@@ -427,7 +427,7 @@ def session_search(
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
+        return tool_error(f"Search failed: {str(e)}", success=False)
 
 
 def check_session_search_requirements() -> bool:
@@ -487,7 +487,7 @@ SESSION_SEARCH_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="session_search",

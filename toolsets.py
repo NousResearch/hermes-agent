@@ -37,14 +37,12 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
-    # MoA
-    "mixture_of_agents",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_close", "browser_get_images",
+    "browser_press", "browser_get_images",
     "browser_vision", "browser_console",
     # Text-to-speech
     "text_to_speech",
@@ -116,7 +114,7 @@ TOOLSETS = {
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "web_search"
         ],
         "includes": []
@@ -214,7 +212,7 @@ TOOLSETS = {
     
     "safe": {
         "description": "Safe toolkit without terminal access",
-        "tools": ["mixture_of_agents"],
+        "tools": [],
         "includes": ["web", "vision", "image_gen"]
     },
     
@@ -235,7 +233,7 @@ TOOLSETS = {
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console",
             "todo", "memory",
             "session_search",
@@ -255,14 +253,12 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
-            # MoA
-            "mixture_of_agents",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console",
             # Planning & memory
             "todo", "memory",
@@ -596,7 +592,7 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "includes": toolset["includes"],
         "resolved_tools": resolved_tools,
         "tool_count": len(resolved_tools),
-        "is_composite": len(toolset["includes"]) > 0
+        "is_composite": bool(toolset["includes"])
     }
 
 

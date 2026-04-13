@@ -20,7 +20,6 @@ Usage in execute_code:
 
 import os
 import re
-import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -404,7 +403,6 @@ def race_godmode_classic(query, api_key=None, timeout=60):
     Each combo uses a different model paired with its best-performing jailbreak prompt.
     Returns the best result across all combos.
     """
-    from collections import namedtuple
     
     HALL_OF_FAME = [
         {

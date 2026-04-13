@@ -652,7 +652,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -679,7 +679,7 @@ IMAGE_GENERATE_SCHEMA = {
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
-        return json.dumps({"error": "prompt is required for image generation"})
+        return tool_error("prompt is required for image generation")
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=args.get("aspect_ratio", "landscape"),

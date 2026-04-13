@@ -18,10 +18,10 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +216,12 @@ class HonchoMemoryProvider(MemoryProvider):
             if not cfg.enabled or not (cfg.api_key or cfg.base_url):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
+
+            # Override peer_name with gateway user_id for per-user memory scoping.
+            # CLI sessions won't have user_id, so the config default is preserved.
+            _gw_user_id = kwargs.get("user_id")
+            if _gw_user_id:
+                cfg.peer_name = _gw_user_id
 
             self._config = cfg
 
@@ -633,15 +639,15 @@ class HonchoMemoryProvider(MemoryProvider):
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         if self._cron_skipped:
-            return json.dumps({"error": "Honcho is not active (cron context)."})
+            return tool_error("Honcho is not active (cron context).")
 
         # Port #1957: ensure session is initialized for tools-only mode
         if not self._session_initialized:
             if not self._ensure_session():
-                return json.dumps({"error": "Honcho session could not be initialized."})
+                return tool_error("Honcho session could not be initialized.")
 
         if not self._manager or not self._session_key:
-            return json.dumps({"error": "Honcho is not active for this session."})
+            return tool_error("Honcho is not active for this session.")
 
         try:
             if tool_name == "honcho_profile":
@@ -653,7 +659,7 @@ class HonchoMemoryProvider(MemoryProvider):
             elif tool_name == "honcho_search":
                 query = args.get("query", "")
                 if not query:
-                    return json.dumps({"error": "Missing required parameter: query"})
+                    return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
                 result = self._manager.search_context(
                     self._session_key, query, max_tokens=max_tokens
@@ -665,7 +671,7 @@ class HonchoMemoryProvider(MemoryProvider):
             elif tool_name == "honcho_context":
                 query = args.get("query", "")
                 if not query:
-                    return json.dumps({"error": "Missing required parameter: query"})
+                    return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
                 result = self._manager.dialectic_query(
                     self._session_key, query, peer=peer
@@ -675,17 +681,17 @@ class HonchoMemoryProvider(MemoryProvider):
             elif tool_name == "honcho_conclude":
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
-                    return json.dumps({"error": "Missing required parameter: conclusion"})
+                    return tool_error("Missing required parameter: conclusion")
                 ok = self._manager.create_conclusion(self._session_key, conclusion)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved: {conclusion}"})
-                return json.dumps({"error": "Failed to save conclusion."})
+                return tool_error("Failed to save conclusion.")
 
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return tool_error(f"Unknown tool: {tool_name}")
 
         except Exception as e:
             logger.error("Honcho tool %s failed: %s", tool_name, e)
-            return json.dumps({"error": f"Honcho {tool_name} failed: {e}"})
+            return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

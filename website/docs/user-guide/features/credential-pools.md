@@ -179,6 +179,16 @@ Hermes automatically discovers credentials from multiple sources and seeds the p
 
 Auto-seeded entries are updated on each pool load — if you remove an env var, its pool entry is automatically pruned. Manual entries (added via `hermes auth add`) are never auto-pruned.
 
+## Delegation & Subagent Sharing
+
+When the agent spawns subagents via `delegate_task`, the parent's credential pool is automatically shared with children:
+
+- **Same provider** — the child receives the parent's full pool, enabling key rotation on rate limits
+- **Different provider** — the child loads that provider's own pool (if configured)
+- **No pool configured** — the child falls back to the inherited single API key
+
+This means subagents benefit from the same rate-limit resilience as the parent, with no extra configuration needed. Per-task credential leasing ensures children don't conflict with each other when rotating keys concurrently.
+
 ## Thread Safety
 
 The credential pool uses a threading lock for all state mutations (`select()`, `mark_exhausted_and_rotate()`, `try_refresh_current()`, `mark_used()`). This ensures safe concurrent access when the gateway handles multiple chat sessions simultaneously.
@@ -215,9 +225,6 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
       }
     ]
   },
-  "credential_pool_strategies": {
-    "openrouter": "round_robin"
-  }
 }
 ```
 

@@ -13,6 +13,100 @@ from gateway.restart import (
 
 
 class TestSystemdServiceRefresh:
+    def test_systemd_unit_is_current_uses_installed_system_context(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/root/.hermes/hermes-agent/venv/bin/python")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", Path("/root/.hermes/hermes-agent"))
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: Path("/root/.hermes/hermes-agent/venv"))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 60)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        unit_path.write_text(
+            gateway_cli.generate_systemd_unit(
+                system=True,
+                run_as_user="alice",
+                python_path_override="/home/alice/.hermes/hermes-agent/venv/bin/python",
+                working_dir_override="/home/alice/.hermes/hermes-agent",
+                venv_dir_override="/home/alice/.hermes/hermes-agent/venv",
+                hermes_home_override="/home/alice/.hermes",
+            ),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        assert gateway_cli.systemd_unit_is_current(system=True) is True
+
+    def test_refresh_systemd_unit_repairs_broken_execstart_using_installed_venv(self, tmp_path, monkeypatch):
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text(
+            """[Unit]
+Description=Hermes Agent Gateway - Messaging Platform Integration
+
+[Service]
+Type=simple
+User=alice
+Group=alice
+ExecStart=/home/alice/.local/share/uv/python/cpython-3.11.11-linux-x86_64-gnu/bin/python3.11 -m hermes_cli.main gateway run --replace
+WorkingDirectory=/home/alice/.hermes/hermes-agent
+Environment=\"HOME=/home/alice\"
+Environment=\"USER=alice\"
+Environment=\"LOGNAME=alice\"
+Environment=\"PATH=/home/alice/.hermes/hermes-agent/venv/bin:/home/alice/.hermes/hermes-agent/node_modules/.bin:/usr/bin\"
+Environment=\"VIRTUAL_ENV=/home/alice/.hermes/hermes-agent/venv\"
+Environment=\"HERMES_HOME=/home/alice/.hermes\"
+Restart=on-failure
+RestartSec=30
+RestartForceExitStatus=75
+KillMode=mixed
+KillSignal=SIGTERM
+ExecReload=/bin/kill -USR1 $MAINPID
+TimeoutStopSec=60
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+""",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/root/.hermes/hermes-agent/venv/bin/python")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", Path("/root/.hermes/hermes-agent"))
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: Path("/root/.hermes/hermes-agent/venv"))
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 60)
+
+        calls = []
+
+        def fake_run(cmd, check=True, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        refreshed = gateway_cli.refresh_systemd_unit_if_needed(system=True)
+
+        assert refreshed is True
+        unit_text = unit_path.read_text(encoding="utf-8")
+        assert "ExecStart=/home/alice/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace" in unit_text
+        assert "/root/.hermes/hermes-agent" not in unit_text
+        assert ".local/share/uv/python" not in unit_text
+        assert calls == [["systemctl", "daemon-reload"]]
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")

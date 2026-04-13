@@ -812,13 +812,69 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
         return str(current_hermes)
 
 
-def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
-    python_path = get_python_path()
-    working_dir = str(PROJECT_ROOT)
-    detected_venv = _detect_venv_dir()
-    venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
-    venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
-    node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
+def _read_systemd_environment_from_unit(unit_path: Path) -> dict[str, str]:
+    if not unit_path.exists():
+        return {}
+
+    env: dict[str, str] = {}
+    for line in unit_path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("Environment="):
+            continue
+        payload = line.split("=", 1)[1].strip()
+        if len(payload) >= 2 and payload[0] == payload[-1] == '"':
+            payload = payload[1:-1]
+        if "=" not in payload:
+            continue
+        key, value = payload.split("=", 1)
+        env[key] = value
+    return env
+
+
+def _read_systemd_property_from_unit(unit_path: Path, prefix: str) -> str | None:
+    if not unit_path.exists():
+        return None
+
+    for line in unit_path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            value = line.split("=", 1)[1].strip()
+            return value or None
+    return None
+
+
+def _systemd_generation_context_from_unit(unit_path: Path) -> dict[str, str | None]:
+    env = _read_systemd_environment_from_unit(unit_path)
+    working_dir = _read_systemd_property_from_unit(unit_path, "WorkingDirectory=")
+    venv_dir = env.get("VIRTUAL_ENV")
+    python_path = None
+
+    if venv_dir:
+        python_path = str(Path(venv_dir) / ("Scripts/python.exe" if is_windows() else "bin/python"))
+    elif working_dir:
+        python_path = str(Path(working_dir) / "venv" / ("Scripts/python.exe" if is_windows() else "bin/python"))
+
+    return {
+        "python_path": python_path,
+        "working_dir": working_dir,
+        "venv_dir": venv_dir,
+        "hermes_home": env.get("HERMES_HOME"),
+    }
+
+
+def generate_systemd_unit(
+    system: bool = False,
+    run_as_user: str | None = None,
+    *,
+    python_path_override: str | None = None,
+    working_dir_override: str | None = None,
+    venv_dir_override: str | None = None,
+    hermes_home_override: str | None = None,
+) -> str:
+    python_path = python_path_override or get_python_path()
+    working_dir = working_dir_override or str(PROJECT_ROOT)
+    detected_venv = Path(venv_dir_override) if venv_dir_override else _detect_venv_dir()
+    venv_dir = str(detected_venv) if detected_venv else str(Path(working_dir) / "venv")
+    venv_bin = str(Path(venv_dir) / "bin")
+    node_bin = str(Path(working_dir) / "node_modules" / ".bin")
 
     path_entries = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
@@ -832,7 +888,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
-        hermes_home = _hermes_home_for_target_user(home_dir)
+        hermes_home = hermes_home_override or _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
         # Remap all paths that may resolve under the calling user's home
         # (e.g. /root/) to the target user's home so the service can
@@ -879,7 +935,7 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
-    hermes_home = str(get_hermes_home().resolve())
+    hermes_home = hermes_home_override or str(get_hermes_home().resolve())
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)
@@ -941,7 +997,18 @@ def systemd_unit_is_current(system: bool = False) -> bool:
 
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    expected = generate_systemd_unit(system=system, run_as_user=expected_user)
+    if system:
+        context = _systemd_generation_context_from_unit(unit_path)
+        expected = generate_systemd_unit(
+            system=True,
+            run_as_user=expected_user,
+            python_path_override=context.get("python_path"),
+            working_dir_override=context.get("working_dir"),
+            venv_dir_override=context.get("venv_dir"),
+            hermes_home_override=context.get("hermes_home"),
+        )
+    else:
+        expected = generate_systemd_unit(system=False, run_as_user=expected_user)
     return _normalize_service_definition(installed) == _normalize_service_definition(expected)
 
 
@@ -953,7 +1020,21 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         return False
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
+    if system:
+        context = _systemd_generation_context_from_unit(unit_path)
+        unit_path.write_text(
+            generate_systemd_unit(
+                system=True,
+                run_as_user=expected_user,
+                python_path_override=context.get("python_path"),
+                working_dir_override=context.get("working_dir"),
+                venv_dir_override=context.get("venv_dir"),
+                hermes_home_override=context.get("hermes_home"),
+            ),
+            encoding="utf-8",
+        )
+    else:
+        unit_path.write_text(generate_systemd_unit(system=False, run_as_user=expected_user), encoding="utf-8")
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True

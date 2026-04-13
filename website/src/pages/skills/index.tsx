@@ -9,6 +9,7 @@ interface Skill {
   category: string;
   categoryLabel: string;
   source: string;
+  installPrefix: string;
   tags: string[];
   platforms: string[];
   author: string;
@@ -208,7 +209,7 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>hermes skills install {skill.name}</code>
+              <code>hermes skills install {skill.installPrefix ? `${skill.installPrefix}/${skill.name}` : skill.name}</code>
             </div>
           </div>
         )}

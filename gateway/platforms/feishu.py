@@ -71,10 +71,23 @@ try:
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
-    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+    from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN, UTF_8 as FEISHU_SDK_UTF_8
+    from lark_oapi.core.json import JSON as FEISHU_SDK_JSON
+    from lark_oapi.core.log import logger as FEISHU_SDK_LOGGER
     from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
+    from lark_oapi.ws.client import _get_by_key as FEISHU_SDK_GET_BY_KEY
+    from lark_oapi.ws.const import (
+        HEADER_BIZ_RT as FEISHU_SDK_HEADER_BIZ_RT,
+        HEADER_MESSAGE_ID as FEISHU_SDK_HEADER_MESSAGE_ID,
+        HEADER_SEQ as FEISHU_SDK_HEADER_SEQ,
+        HEADER_SUM as FEISHU_SDK_HEADER_SUM,
+        HEADER_TRACE_ID as FEISHU_SDK_HEADER_TRACE_ID,
+        HEADER_TYPE as FEISHU_SDK_HEADER_TYPE,
+    )
+    from lark_oapi.ws.enum import MessageType as FeishuSDKMessageType
+    from lark_oapi.ws.model import Response as FeishuSDKResponse
 
     FEISHU_AVAILABLE = True
 except ImportError:
@@ -85,6 +98,18 @@ except ImportError:
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
+    FEISHU_SDK_UTF_8 = None  # type: ignore[assignment]
+    FEISHU_SDK_JSON = None  # type: ignore[assignment]
+    FEISHU_SDK_LOGGER = None  # type: ignore[assignment]
+    FEISHU_SDK_GET_BY_KEY = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_BIZ_RT = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_MESSAGE_ID = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_SEQ = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_SUM = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_TRACE_ID = None  # type: ignore[assignment]
+    FEISHU_SDK_HEADER_TYPE = None  # type: ignore[assignment]
+    FeishuSDKMessageType = None  # type: ignore[assignment]
+    FeishuSDKResponse = None  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -105,6 +130,8 @@ from gateway.status import acquire_scoped_lock, release_scoped_lock
 from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
+_OFFICIAL_FEISHU_WS_CLIENT = FeishuWSClient
+_FEISHU_WS_MESSAGE_IGNORED = object()
 
 # ---------------------------------------------------------------------------
 # Regex patterns
@@ -960,6 +987,124 @@ def _unique_lines(lines: List[str]) -> List[str]:
         seen.add(line)
         unique.append(line)
     return unique
+
+
+def _dispatch_feishu_ws_payload(event_handler: Any, message_type: Any, payload: bytes) -> Any:
+    """Route websocket EVENT/CARD payloads through the official dispatcher.
+
+    The upstream SDK currently drops MessageType.CARD frames in websocket mode,
+    which prevents `card.action.trigger` callbacks from reaching Hermes.
+    Hermes routes CARD payloads through the same dispatcher used for EVENT
+    payloads so the existing EventDispatcherHandler registrations keep working.
+    """
+
+    if event_handler is None:
+        return _FEISHU_WS_MESSAGE_IGNORED
+    message_kind = str(getattr(message_type, "value", message_type) or "").lower()
+    if message_kind not in {"event", "card"}:
+        return _FEISHU_WS_MESSAGE_IGNORED
+    return event_handler.do_without_validation(payload)
+
+
+
+def _build_card_aware_feishu_ws_client_class(base_client_cls: Any) -> Any:
+    if base_client_cls is None:
+        return None
+    if any(
+        value is None
+        for value in (
+            FEISHU_SDK_UTF_8,
+            FEISHU_SDK_JSON,
+            FEISHU_SDK_LOGGER,
+            FEISHU_SDK_GET_BY_KEY,
+            FEISHU_SDK_HEADER_BIZ_RT,
+            FEISHU_SDK_HEADER_MESSAGE_ID,
+            FEISHU_SDK_HEADER_SEQ,
+            FEISHU_SDK_HEADER_SUM,
+            FEISHU_SDK_HEADER_TRACE_ID,
+            FEISHU_SDK_HEADER_TYPE,
+            FeishuSDKMessageType,
+            FeishuSDKResponse,
+        )
+    ):
+        return None
+
+    class _CardAwareFeishuWSClient(base_client_cls):
+        async def _handle_data_frame(self, frame: Any):
+            import base64 as _base64
+            import http as _http
+            import time as _time
+
+            hs = frame.headers
+            msg_id = FEISHU_SDK_GET_BY_KEY(hs, FEISHU_SDK_HEADER_MESSAGE_ID)
+            trace_id = FEISHU_SDK_GET_BY_KEY(hs, FEISHU_SDK_HEADER_TRACE_ID)
+            sum_ = FEISHU_SDK_GET_BY_KEY(hs, FEISHU_SDK_HEADER_SUM)
+            seq = FEISHU_SDK_GET_BY_KEY(hs, FEISHU_SDK_HEADER_SEQ)
+            type_ = FEISHU_SDK_GET_BY_KEY(hs, FEISHU_SDK_HEADER_TYPE)
+
+            pl = frame.payload
+            if int(sum_) > 1:
+                pl = self._combine(msg_id, int(sum_), int(seq), pl)
+                if pl is None:
+                    return
+
+            message_type = FeishuSDKMessageType(type_)
+            FEISHU_SDK_LOGGER.debug(
+                self._fmt_log(
+                    "receive message, message_type: {}, message_id: {}, trace_id: {}, payload: {}",
+                    message_type.value,
+                    msg_id,
+                    trace_id,
+                    pl.decode(FEISHU_SDK_UTF_8),
+                )
+            )
+
+            resp = FeishuSDKResponse(code=_http.HTTPStatus.OK)
+            try:
+                start = int(round(_time.time() * 1000))
+                result = _dispatch_feishu_ws_payload(self._event_handler, message_type, pl)
+                if result is _FEISHU_WS_MESSAGE_IGNORED:
+                    return
+                end = int(round(_time.time() * 1000))
+                header = hs.add()
+                header.key = FEISHU_SDK_HEADER_BIZ_RT
+                header.value = str(end - start)
+                if result is not None:
+                    resp.data = _base64.b64encode(FEISHU_SDK_JSON.marshal(result).encode(FEISHU_SDK_UTF_8))
+            except Exception as exc:
+                FEISHU_SDK_LOGGER.error(
+                    self._fmt_log(
+                        "handle message failed, message_type: {}, message_id: {}, trace_id: {}, err: {}",
+                        message_type.value,
+                        msg_id,
+                        trace_id,
+                        exc,
+                    )
+                )
+                resp = FeishuSDKResponse(code=_http.HTTPStatus.INTERNAL_SERVER_ERROR)
+
+            frame.payload = FEISHU_SDK_JSON.marshal(resp).encode(FEISHU_SDK_UTF_8)
+            await self._write_message(frame.SerializeToString())
+
+    _CardAwareFeishuWSClient.__name__ = "HermesFeishuWSClient"
+    return _CardAwareFeishuWSClient
+
+
+_CARD_AWARE_FEISHU_WS_CLIENT_CLASS = _build_card_aware_feishu_ws_client_class(_OFFICIAL_FEISHU_WS_CLIENT)
+
+
+
+def _select_feishu_ws_client_class() -> Any:
+    if FeishuWSClient is None:
+        return None
+    if (
+        _OFFICIAL_FEISHU_WS_CLIENT is not None
+        and FeishuWSClient is _OFFICIAL_FEISHU_WS_CLIENT
+        and _CARD_AWARE_FEISHU_WS_CLIENT_CLASS is not None
+    ):
+        return _CARD_AWARE_FEISHU_WS_CLIENT_CLASS
+    return FeishuWSClient
+
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
@@ -3344,7 +3489,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
-        self._ws_client = FeishuWSClient(
+        ws_client_cls = _select_feishu_ws_client_class()
+        if ws_client_cls is None:
+            raise RuntimeError("Feishu websocket client is unavailable")
+        self._ws_client = ws_client_cls(
             app_id=self._app_id,
             app_secret=self._app_secret,
             log_level=lark.LogLevel.INFO,

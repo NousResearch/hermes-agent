@@ -669,6 +669,71 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(fake_client._ping_interval, 4)
 
 
+class TestFeishuWebsocketCardDispatch(unittest.TestCase):
+    def test_dispatch_feishu_ws_payload_routes_card_messages(self):
+        from gateway.platforms.feishu import _dispatch_feishu_ws_payload
+
+        handler = Mock()
+        handler.do_without_validation.return_value = {"ok": True}
+
+        result = _dispatch_feishu_ws_payload(
+            handler,
+            SimpleNamespace(value="card"),
+            b'{"header":{"event_type":"card.action.trigger"}}',
+        )
+
+        self.assertEqual(result, {"ok": True})
+        handler.do_without_validation.assert_called_once_with(
+            b'{"header":{"event_type":"card.action.trigger"}}'
+        )
+
+    def test_dispatch_feishu_ws_payload_ignores_unknown_messages(self):
+        from gateway.platforms.feishu import _FEISHU_WS_MESSAGE_IGNORED, _dispatch_feishu_ws_payload
+
+        handler = Mock()
+
+        result = _dispatch_feishu_ws_payload(handler, SimpleNamespace(value="pong"), b"{}")
+
+        self.assertIs(result, _FEISHU_WS_MESSAGE_IGNORED)
+        handler.do_without_validation.assert_not_called()
+
+    def test_select_feishu_ws_client_class_prefers_card_aware_wrapper_for_official_client(self):
+        from gateway.platforms import feishu as feishu_module
+
+        official = object()
+        wrapper = object()
+        with patch.object(feishu_module, "_OFFICIAL_FEISHU_WS_CLIENT", official), patch.object(
+            feishu_module,
+            "_CARD_AWARE_FEISHU_WS_CLIENT_CLASS",
+            wrapper,
+        ), patch.object(feishu_module, "FeishuWSClient", official):
+            self.assertIs(feishu_module._select_feishu_ws_client_class(), wrapper)
+
+    def test_select_feishu_ws_client_class_falls_back_to_official_client_when_wrapper_unavailable(self):
+        from gateway.platforms import feishu as feishu_module
+
+        official = object()
+        with patch.object(feishu_module, "_OFFICIAL_FEISHU_WS_CLIENT", official), patch.object(
+            feishu_module,
+            "_CARD_AWARE_FEISHU_WS_CLIENT_CLASS",
+            None,
+        ), patch.object(feishu_module, "FeishuWSClient", official):
+            self.assertIs(feishu_module._select_feishu_ws_client_class(), official)
+
+    def test_select_feishu_ws_client_class_respects_test_double(self):
+        from gateway.platforms import feishu as feishu_module
+
+        official = object()
+        wrapper = object()
+        fake_client_cls = object()
+        with patch.object(feishu_module, "_OFFICIAL_FEISHU_WS_CLIENT", official), patch.object(
+            feishu_module,
+            "_CARD_AWARE_FEISHU_WS_CLIENT_CLASS",
+            wrapper,
+        ), patch.object(feishu_module, "FeishuWSClient", fake_client_cls):
+            self.assertIs(feishu_module._select_feishu_ws_client_class(), fake_client_cls)
+
+
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_build_event_handler_registers_reaction_and_card_processors(self):
@@ -699,6 +764,14 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("card_action")
                 return self
 
+            def register_p2_im_chat_member_bot_added_v1(self, _handler):
+                calls.append("bot_added")
+                return self
+
+            def register_p2_im_chat_member_bot_deleted_v1(self, _handler):
+                calls.append("bot_deleted")
+                return self
+
             def build(self):
                 calls.append("build")
                 return "handler"
@@ -722,6 +795,8 @@ class TestAdapterBehavior(unittest.TestCase):
                 "reaction_created",
                 "reaction_deleted",
                 "card_action",
+                "bot_added",
+                "bot_deleted",
                 "build",
             ],
         )
@@ -1557,8 +1632,10 @@ class TestAdapterBehavior(unittest.TestCase):
             headers={},
             read=AsyncMock(return_value=body),
         )
+        web_module = SimpleNamespace(json_response=Mock(return_value=SimpleNamespace(status=200)))
 
-        response = asyncio.run(adapter._handle_webhook_request(request))
+        with patch("gateway.platforms.feishu.web", web_module):
+            response = asyncio.run(adapter._handle_webhook_request(request))
 
         self.assertEqual(response.status, 200)
         adapter._on_message_event.assert_called_once()

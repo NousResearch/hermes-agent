@@ -37,7 +37,11 @@ Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the p
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
-> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
+> **Windows:** Native Windows is supported via the PowerShell installer:
+> ```powershell
+> irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+> ```
+> Alternatively, you can use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the Linux installation command above.
 
 After installation:
 

@@ -309,6 +309,12 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be sent as attachments."
     ),
+    "linear": (
+        "You are replying inside a Linear Agent Session. Keep responses concise, "
+        "action-oriented, and suitable for Linear issue threads. Plain text and simple "
+        "markdown are appropriate. Avoid chatty filler. When you need clarification, ask "
+        "a direct follow-up question that fits naturally in a Linear thread."
+    ),
     "slack": (
         "You are in a Slack workspace communicating with your user. "
         "You can send media files natively: include MEDIA:/absolute/path/to/file "

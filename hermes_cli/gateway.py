@@ -1886,6 +1886,31 @@ _PLATFORMS = [
              "help": "Phone number or Apple ID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "linear",
+        "label": "Linear Agent Sessions",
+        "emoji": "📐",
+        "token_var": "LINEAR_CLIENT_ID",
+        "setup_instructions": [
+            "1. In Linear, create an OAuth application",
+            "2. Enable webhooks and Agent Session events",
+            "3. Use actor=app so Jax has its own agent identity",
+            "4. Choose a public HTTPS base URL reachable by Linear",
+            "5. After saving credentials here, open /linear/oauth/authorize to install the app",
+        ],
+        "vars": [
+            {"name": "LINEAR_CLIENT_ID", "prompt": "Linear client ID", "password": False,
+             "help": "The OAuth client ID from your Linear application."},
+            {"name": "LINEAR_CLIENT_SECRET", "prompt": "Linear client secret", "password": True,
+             "help": "The OAuth client secret from your Linear application."},
+            {"name": "LINEAR_WEBHOOK_SECRET", "prompt": "Linear webhook secret", "password": True,
+             "help": "Used to verify incoming Linear webhook signatures."},
+            {"name": "LINEAR_PUBLIC_BASE_URL", "prompt": "Public base URL (e.g. https://jaxmind.xyz)", "password": False,
+             "help": "Public URL used to build /linear/oauth/callback and /linear/webhook."},
+            {"name": "LINEAR_PORT", "prompt": "Linear listener port (default 8646)", "password": False,
+             "help": "Optional local bind port for the Linear HTTP listener."},
+        ],
+    },
 ]
 
 
@@ -1935,6 +1960,15 @@ def _platform_status(platform: dict) -> str:
         if val and token:
             return "configured"
         if val or token:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "linear":
+        secret = get_env_value("LINEAR_CLIENT_SECRET")
+        webhook_secret = get_env_value("LINEAR_WEBHOOK_SECRET")
+        public_base_url = get_env_value("LINEAR_PUBLIC_BASE_URL")
+        if all([val, secret, webhook_secret, public_base_url]):
+            return "configured"
+        if any([val, secret, webhook_secret, public_base_url]):
             return "partially configured"
         return "not configured"
     if val:

@@ -2243,6 +2243,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.LINEAR:
+            from gateway.platforms.linear import LinearAdapter, check_linear_requirements
+            if not check_linear_requirements():
+                logger.warning("Linear: aiohttp not installed")
+                return None
+            return LinearAdapter(config)
+
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
             if not check_bluebubbles_requirements():
@@ -2268,7 +2275,8 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        # Linear Agent Session webhooks are likewise authenticated upstream.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.LINEAR):
             return True
 
         user_id = source.user_id
@@ -3483,8 +3491,8 @@ class GatewayRunner:
             )
         
         # One-time prompt if no home channel is set for this platform
-        # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # Skip for webhooks and Linear Agent Sessions — they don't use home-channel delivery.
+        if not history and source.platform and source.platform != Platform.LOCAL and source.platform not in (Platform.WEBHOOK, Platform.LINEAR):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
@@ -7308,12 +7316,12 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        tool_progress_enabled = progress_mode != "off" and source.platform not in (Platform.WEBHOOK, Platform.LINEAR)
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            source.platform not in (Platform.WEBHOOK, Platform.LINEAR)
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,

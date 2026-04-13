@@ -2122,6 +2122,59 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
+def _setup_linear():
+    """Configure native Linear Agent Session integration."""
+    print_header("Linear")
+    existing = get_env_value("LINEAR_CLIENT_ID")
+    if existing:
+        print_info("Linear: already configured")
+        if not prompt_yes_no("Reconfigure Linear?", False):
+            return
+
+    print()
+    print_info("Create a Linear OAuth application, enable webhooks, and enable Agent Session events.")
+    print_info("The OAuth app should use actor=app so Jax appears as its own Linear agent identity.")
+    print_info("You will need a public HTTPS URL that Linear can reach for both the OAuth callback and webhooks.")
+    print()
+
+    client_id = prompt("Linear client ID")
+    if client_id:
+        save_env_value("LINEAR_CLIENT_ID", client_id)
+        print_success("Saved LINEAR_CLIENT_ID")
+
+    client_secret = prompt("Linear client secret", password=True)
+    if client_secret:
+        save_env_value("LINEAR_CLIENT_SECRET", client_secret)
+        print_success("Saved LINEAR_CLIENT_SECRET")
+
+    webhook_secret = prompt("Linear webhook secret", password=True)
+    if webhook_secret:
+        save_env_value("LINEAR_WEBHOOK_SECRET", webhook_secret)
+        print_success("Saved LINEAR_WEBHOOK_SECRET")
+
+    public_base_url = prompt("Public base URL (e.g. https://jaxmind.xyz)")
+    if public_base_url:
+        save_env_value("LINEAR_PUBLIC_BASE_URL", public_base_url.rstrip("/"))
+        print_success("Saved LINEAR_PUBLIC_BASE_URL")
+
+    port = prompt("Linear listener port (default 8646)")
+    if port:
+        try:
+            save_env_value("LINEAR_PORT", str(int(port)))
+            print_success(f"Linear port set to {port}")
+        except ValueError:
+            print_warning("Invalid port number, using default 8646")
+
+    save_env_value("LINEAR_ENABLED", "true")
+    print()
+    print_success("Linear integration enabled! Next steps:")
+    print_info("   1. Start or restart the gateway")
+    print_info("   2. Open: <public-base-url>/linear/oauth/authorize")
+    print_info("   3. Complete the Linear install flow as an admin")
+    print_info("   4. In the Linear app settings, point Agent Session webhooks to:")
+    print_info("      <public-base-url>/linear/webhook")
+
+
 # Platform registry for the gateway checklist
 _GATEWAY_PLATFORMS = [
     ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
@@ -2140,6 +2193,7 @@ _GATEWAY_PLATFORMS = [
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
+    ("Linear Agent Sessions", "LINEAR_CLIENT_ID", _setup_linear),
 ]
 
 
@@ -2191,6 +2245,7 @@ def setup_gateway(config: dict):
         or get_env_value("WEIXIN_ACCOUNT_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("WEBHOOK_ENABLED")
+        or get_env_value("LINEAR_CLIENT_ID")
     )
     if any_messaging:
         print()

@@ -1746,6 +1746,9 @@ class HermesCLI:
             CLI_CONFIG["agent"].get("service_tier", "")
         )
         
+        # Max tokens for model responses (from model config)
+        self.max_tokens = CLI_CONFIG.get("model", {}).get("max_tokens") if isinstance(CLI_CONFIG.get("model"), dict) else None
+        
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
         self._provider_sort = pr.get("sort")
@@ -2879,7 +2882,7 @@ class HermesCLI:
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),
-
+                max_tokens=self.max_tokens,
                 fallback_model=self._fallback_model,
                 thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
@@ -5593,6 +5596,7 @@ class HermesCLI:
                     provider_require_parameters=self._provider_require_params,
                     provider_data_collection=self._provider_data_collection,
                     fallback_model=self._fallback_model,
+                    max_tokens=self.max_tokens,
                 )
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
@@ -5734,6 +5738,7 @@ class HermesCLI:
                     skip_memory=True,
                     skip_context_files=True,
                     persist_session=False,
+                    max_tokens=self.max_tokens,
                 )
 
                 btw_prompt = (

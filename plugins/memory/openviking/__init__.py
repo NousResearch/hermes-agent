@@ -291,7 +291,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._endpoint = os.environ.get("OPENVIKING_ENDPOINT", _DEFAULT_ENDPOINT)
         self._api_key = os.environ.get("OPENVIKING_API_KEY", "")
-        self._session_id = session_id
+        self._session_id = ""
         self._turn_count = 0
 
         try:
@@ -303,9 +303,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
 
-        # Register as the last active provider for atexit safety net
-        global _last_active_provider
-        _last_active_provider = self
+        # Create a server-side OpenViking session — OpenViking generates its
+        # own session IDs and rejects unknown ones with 500 errors.
+        if self._client:
+            try:
+                resp = self._client.post("/api/v1/sessions", {"query": f"hermes:{session_id}"})
+                result = resp.get("result") or {}
+                self._session_id = result.get("session_id", "") if isinstance(result, dict) else ""
+                if not self._session_id:
+                    logger.warning("OpenViking /sessions returned no session_id")
+                    self._client = None
+            except Exception as e:
+                logger.warning("OpenViking session creation failed: %s", e)
+                self._client = None
+
+        # Register as the last active provider for atexit safety net —
+        # only when fully functional so the atexit handler doesn't hold
+        # a reference to a disabled provider.
+        if self._client:
+            global _last_active_provider
+            _last_active_provider = self
 
     def system_prompt_block(self) -> str:
         if not self._client:

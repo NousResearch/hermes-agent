@@ -2198,35 +2198,26 @@ class HermesCLI:
         if resolved_provider != "openai-codex":
             return changed
 
-        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
-        if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
-            if not self._model_is_default:
+        from hermes_cli.codex_models import normalize_codex_runtime_model
+
+        resolution = normalize_codex_runtime_model(
+            current_model,
+            access_token=self.api_key if self.api_key else None,
+            model_is_default=self._model_is_default,
+        )
+        if resolution.changed:
+            if resolution.replaced_incompatible and not self._model_is_default:
+                self.console.print(
+                    f"[yellow]⚠️  Model '{current_model}' is not supported by OpenAI Codex; "
+                    f"using '{resolution.model}' instead.[/]"
+                )
+            elif resolution.stripped_prefix and not self._model_is_default:
                 self.console.print(
                     f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
-                    f"using '{slug}' for OpenAI Codex.[/]"
+                    f"using '{resolution.model}' for OpenAI Codex.[/]"
                 )
-            self.model = slug
-            current_model = slug
+            self.model = resolution.model
             changed = True
-
-        # 2. Replace untouched default with a Codex model
-        if self._model_is_default:
-            fallback_model = "gpt-5.3-codex"
-            try:
-                from hermes_cli.codex_models import get_codex_model_ids
-
-                available = get_codex_model_ids(
-                    access_token=self.api_key if self.api_key else None,
-                )
-                if available:
-                    fallback_model = available[0]
-            except Exception:
-                pass
-
-            if current_model != fallback_model:
-                self.model = fallback_model
-                changed = True
 
         return changed
 

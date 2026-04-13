@@ -136,13 +136,7 @@ def _make_cli(model="anthropic/claude-opus-4.6", **kwargs):
 
 
 class TestNormalizeModelForProvider:
-    """_normalize_model_for_provider() trusts user-selected models.
-
-    Only two things happen:
-    1. Provider prefixes are stripped (API needs bare slugs)
-    2. The *untouched default* model is swapped for a Codex model
-    Everything else passes through — the API is the judge.
-    """
+    """_normalize_model_for_provider() protects Codex from cross-provider slugs."""
 
     def test_non_codex_provider_is_noop(self):
         cli = _make_cli(model="gpt-5.4")
@@ -169,13 +163,16 @@ class TestNormalizeModelForProvider:
         assert changed is False
         assert cli.model == "gpt-5.4"
 
-    def test_any_bare_model_trusted(self):
-        """Even a non-OpenAI bare model passes through — user explicitly set it."""
+    def test_incompatible_bare_model_falls_back_to_codex(self):
+        """Cross-provider bare slugs must not be sent to the Codex backend."""
         cli = _make_cli(model="claude-opus-4-6")
-        changed = cli._normalize_model_for_provider("openai-codex")
-        # User explicitly chose this model — we trust them, API will error if wrong
-        assert changed is False
-        assert cli.model == "claude-opus-4-6"
+        with patch(
+            "hermes_cli.codex_models.get_codex_model_ids",
+            return_value=["gpt-5.4-mini", "gpt-5.3-codex"],
+        ):
+            changed = cli._normalize_model_for_provider("openai-codex")
+        assert changed is True
+        assert cli.model == "gpt-5.4-mini"
 
     def test_provider_prefix_stripped(self):
         """openai/gpt-5.4 → gpt-5.4 (strip prefix, keep model)."""
@@ -184,13 +181,16 @@ class TestNormalizeModelForProvider:
         assert changed is True
         assert cli.model == "gpt-5.4"
 
-    def test_any_provider_prefix_stripped(self):
-        """anthropic/claude-opus-4.6 → claude-opus-4.6 (strip prefix only).
-        User explicitly chose this — let the API decide if it works."""
+    def test_incompatible_provider_prefix_falls_back(self):
+        """anthropic/claude-opus-4.6 should be replaced with a Codex model."""
         cli = _make_cli(model="anthropic/claude-opus-4.6")
-        changed = cli._normalize_model_for_provider("openai-codex")
+        with patch(
+            "hermes_cli.codex_models.get_codex_model_ids",
+            return_value=["gpt-5.4", "gpt-5.3-codex"],
+        ):
+            changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "claude-opus-4.6"
+        assert cli.model == "gpt-5.4"
 
     def test_opencode_go_prefix_stripped(self):
         cli = _make_cli(model="opencode-go/kimi-k2.5")

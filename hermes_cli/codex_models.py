@@ -1,9 +1,10 @@
-"""Codex model discovery from API, local cache, and config."""
+"""Codex model discovery and runtime model normalization."""
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
@@ -26,6 +27,24 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.3-codex", ("gpt-5.2-codex",)),
     ("gpt-5.3-codex-spark", ("gpt-5.3-codex", "gpt-5.2-codex")),
 ]
+
+_DEFAULT_CODEX_FALLBACK_MODEL = "gpt-5.3-codex"
+_LIKELY_OPENAI_CODEX_PREFIXES = (
+    "gpt-",
+    "codex",
+    "computer-use-",
+)
+
+
+@dataclass(frozen=True)
+class CodexModelResolution:
+    """Normalized model choice for the Codex backend."""
+
+    model: str
+    changed: bool
+    stripped_prefix: bool = False
+    replaced_incompatible: bool = False
+    used_fallback: bool = False
 
 
 def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
@@ -50,6 +69,76 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
             seen.add(synthetic_model)
 
     return ordered
+
+
+def _looks_like_openai_codex_model(
+    model_id: str,
+    *,
+    available_models: Optional[List[str]] = None,
+) -> bool:
+    """Best-effort check for models that plausibly belong on Codex.
+
+    We intentionally preserve explicit OpenAI-family slugs even when they
+    are newer than our local catalog, but reject obviously cross-provider
+    slugs like Claude/Gemini/Qwen when routed to the Codex backend.
+    """
+    normalized = model_id.strip().lower()
+    if not normalized:
+        return False
+    if available_models and normalized in {item.strip().lower() for item in available_models if item}:
+        return True
+    if any(normalized.startswith(prefix) for prefix in _LIKELY_OPENAI_CODEX_PREFIXES):
+        return True
+    if len(normalized) >= 2 and normalized[0] == "o" and normalized[1].isdigit():
+        return True
+    return False
+
+
+def normalize_codex_runtime_model(
+    model_id: str,
+    *,
+    access_token: Optional[str] = None,
+    model_is_default: bool = False,
+) -> CodexModelResolution:
+    """Normalize a runtime model before sending it to the Codex backend."""
+    original = (model_id or "").strip()
+    candidate = original
+    stripped_prefix = False
+
+    if "/" in candidate:
+        candidate = candidate.split("/", 1)[1].strip()
+        stripped_prefix = True
+
+    fallback_model = _DEFAULT_CODEX_FALLBACK_MODEL
+    try:
+        available_models = get_codex_model_ids(access_token=access_token)
+    except Exception:
+        available_models = []
+    if available_models:
+        fallback_model = available_models[0]
+
+    if not candidate or model_is_default:
+        return CodexModelResolution(
+            model=fallback_model,
+            changed=(candidate != fallback_model) or stripped_prefix,
+            stripped_prefix=stripped_prefix,
+            used_fallback=True,
+        )
+
+    if _looks_like_openai_codex_model(candidate, available_models=available_models):
+        return CodexModelResolution(
+            model=candidate,
+            changed=stripped_prefix,
+            stripped_prefix=stripped_prefix,
+        )
+
+    return CodexModelResolution(
+        model=fallback_model,
+        changed=(candidate != fallback_model) or stripped_prefix,
+        stripped_prefix=stripped_prefix,
+        replaced_incompatible=True,
+        used_fallback=True,
+    )
 
 
 def _fetch_models_from_api(access_token: str) -> List[str]:

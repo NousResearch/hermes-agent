@@ -76,6 +76,29 @@ class TestGatewayEmptyModelFallback:
 
         assert model == "gpt-5.4", "Explicit model should not be overridden"
 
+    def test_incompatible_codex_model_is_normalized(self):
+        """Gateway should not send Claude slugs to the Codex backend."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        with patch("gateway.run._resolve_gateway_model", return_value="anthropic/claude-opus-4.6"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "openai-codex",
+                 "api_key": "test-key",
+                 "base_url": "https://chatgpt.com/backend-api/codex",
+                 "api_mode": "codex_responses",
+             }), \
+             patch(
+                 "hermes_cli.codex_models.get_codex_model_ids",
+                 return_value=["gpt-5.4-mini", "gpt-5.3-codex"],
+             ):
+            model, kwargs = runner._resolve_session_agent_runtime()
+
+        assert model == "gpt-5.4-mini"
+        assert kwargs["provider"] == "openai-codex"
+
     def test_empty_model_no_provider_stays_empty(self):
         """When both model and provider are empty, model stays empty."""
         from gateway.run import GatewayRunner

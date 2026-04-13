@@ -455,6 +455,37 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _normalize_gateway_runtime_model(model: str, runtime_kwargs: dict) -> str:
+    """Normalize provider/model pairs that would fail at request time."""
+    provider = str(runtime_kwargs.get("provider") or "").strip().lower()
+    if provider != "openai-codex":
+        return model
+
+    try:
+        from hermes_cli.codex_models import normalize_codex_runtime_model
+
+        resolution = normalize_codex_runtime_model(
+            model,
+            access_token=runtime_kwargs.get("api_key"),
+            model_is_default=not str(model or "").strip(),
+        )
+    except Exception:
+        return model
+
+    if resolution.changed:
+        if resolution.replaced_incompatible:
+            logger.warning(
+                "Gateway normalized incompatible Codex model %r to %r",
+                model, resolution.model,
+            )
+        else:
+            logger.info(
+                "Gateway normalized Codex model %r to %r",
+                model, resolution.model,
+            )
+    return resolution.model
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -883,6 +914,7 @@ class GatewayRunner:
                     (resolved_session_key or "")[:30], model, override_model,
                     override_runtime.get("provider"),
                 )
+                override_model = _normalize_gateway_runtime_model(override_model, override_runtime)
                 return override_model, override_runtime
             # Override exists but has no api_key — fall through to env-based
             # resolution and apply model/provider from the override on top.
@@ -919,6 +951,7 @@ class GatewayRunner:
             except Exception:
                 pass
 
+        model = _normalize_gateway_runtime_model(model, runtime_kwargs)
         return model, runtime_kwargs
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:

@@ -1945,14 +1945,18 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response({"status": "error", "message": f"Workspace for '{repo}' not found"}, status=404)
 
         limit = int(request.rel_url.query.get("limit", "50"))
-        fmt = "%H|%h|%an|%ae|%aI|%s|%P"
+        # Use null byte as delimiter — safe, never appears in commit text
+        SEP = "\x00"
+        fmt = f"%H{SEP}%h{SEP}%an{SEP}%ae{SEP}%aI{SEP}%s{SEP}%P"
         rc, out, err = await self._ws_run(["git", "log", f"--format={fmt}", f"-n{limit}"], workspace)
         if rc != 0:
             return web.json_response({"status": "error", "message": err.strip()}, status=500)
 
         commits = []
         for line in out.strip().splitlines():
-            parts = line.split("|", 6)
+            if not line.strip():
+                continue
+            parts = line.split(SEP, 6)
             if len(parts) >= 6:
                 commits.append({
                     "hash": parts[0],

@@ -1212,7 +1212,6 @@ class AIAgent:
             _compression_cfg = {}
         compression_threshold = float(_compression_cfg.get("threshold", 0.50))
         compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in ("true", "1", "yes")
-        compression_summary_model = _compression_cfg.get("summary_model") or None
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
@@ -1301,7 +1300,7 @@ class AIAgent:
                 protect_first_n=3,
                 protect_last_n=compression_protect_last,
                 summary_target_ratio=compression_target_ratio,
-                summary_model_override=compression_summary_model,
+                summary_model_override=None,
                 quiet_mode=self.quiet_mode,
                 base_url=self.base_url,
                 api_key=getattr(self, "api_key", ""),

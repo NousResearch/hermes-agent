@@ -286,6 +286,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    # Azure Foundry: user-provided endpoint and model.
+    # Empty list because models depend on the endpoint configuration.
+    "azure-foundry": [],
 }
 
 # ---------------------------------------------------------------------------

@@ -318,6 +318,7 @@
 - **@JiayuuWang** — CLI uninstall import fix
 - **@HiddenPuppy** — Docker procps installation
 - **@dsocolobsky** — Test suite fixes
+- **@bobashopcashier** (1 PR) — Graceful gateway drain before restart (salvaged into #7503 from #7290)
 - **@benbarclay** — Docker image tag simplification
 - **@sosyz** — Shallow git clone for faster install
 - **@devorun** — Nix setupSecrets optional

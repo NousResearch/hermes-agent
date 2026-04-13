@@ -1696,6 +1696,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_update(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/update", "Update initiated~")
 
+        @tree.command(name="restart", description="Gracefully restart the Hermes gateway")
+        async def slash_restart(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/restart", "Restart requested~")
+
         @tree.command(name="approve", description="Approve a pending dangerous command")
         @discord.app_commands.describe(scope="Optional: 'all', 'session', 'always', 'all session', 'all always'")
         async def slash_approve(interaction: discord.Interaction, scope: str = ""):

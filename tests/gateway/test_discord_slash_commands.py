@@ -117,6 +117,23 @@ async def test_registers_native_thread_slash_command(adapter):
     adapter._handle_thread_create_slash.assert_awaited_once_with(interaction, "Planning", "", 1440)
 
 
+@pytest.mark.asyncio
+async def test_registers_native_restart_slash_command(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "restart" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["restart"](interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/restart",
+        "Restart requested~",
+    )
+
+
 # ------------------------------------------------------------------
 # _handle_thread_create_slash — success, session dispatch, failure
 # ------------------------------------------------------------------

@@ -2636,6 +2636,28 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+
+    Adds/updates vars that changed and removes vars that were deleted from
+    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
+    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    """
+    env_vars = load_env()
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    # Remove known Hermes vars that are no longer in .env
+    for key in known_keys:
+        if key not in env_vars and key in os.environ:
+            del os.environ[key]
+            count += 1
+    return count
+
+
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
     # Check environment first

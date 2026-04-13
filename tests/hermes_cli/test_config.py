@@ -589,6 +589,65 @@ class TestCustomProviderCompatibility:
         assert models == ["qwen3-coder", "glm-5.1", "kimi-k2.5"]
 
 
+class TestCompressionSummaryMigration:
+    """Version 16 → 17 migration of legacy compression summary settings."""
+
+    def test_v16_upgrade_drops_provider_scoped_summary_model_without_target_provider(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 16,
+                    "compression": {
+                        "summary_model": "google/gemini-3-flash-preview",
+                        "summary_provider": "auto",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 17
+        assert "summary_model" not in raw["compression"]
+        assert "summary_provider" not in raw["compression"]
+        assert "summary_base_url" not in raw["compression"]
+        aux_comp = raw.get("auxiliary", {}).get("compression", {})
+        assert aux_comp["model"] == ""
+        assert aux_comp["provider"] == "auto"
+        assert aux_comp["base_url"] == ""
+
+    def test_v16_upgrade_keeps_summary_model_when_provider_is_explicit(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 16,
+                    "compression": {
+                        "summary_model": "google/gemini-3-flash-preview",
+                        "summary_provider": "openrouter",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 17
+        assert "summary_model" not in raw["compression"]
+        assert "summary_provider" not in raw["compression"]
+        assert "summary_base_url" not in raw["compression"]
+        aux_comp = raw["auxiliary"]["compression"]
+        assert aux_comp["model"] == "google/gemini-3-flash-preview"
+        assert aux_comp["provider"] == "openrouter"
+
+
 class TestInterimAssistantMessageConfig:
     """Test the explicit gateway interim-message config gate."""
 

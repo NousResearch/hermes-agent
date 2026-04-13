@@ -50,9 +50,9 @@ from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import Platform, PlatformConfig
 
 
-def _make_adapter():
+def _make_adapter(extra=None):
     """Create a TelegramAdapter with mocked internals."""
-    config = PlatformConfig(enabled=True, token="test-token")
+    config = PlatformConfig(enabled=True, token="test-token", extra=extra or {})
     adapter = TelegramAdapter(config)
     adapter._bot = AsyncMock()
     adapter._app = MagicMock()
@@ -133,6 +133,23 @@ class TestTelegramExecApproval:
             chat_id="12345", command="ls", session_key="s"
         )
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_disable_link_previews_sets_preview_kwargs(self):
+        adapter = _make_adapter(extra={"disable_link_previews": True})
+        mock_msg = MagicMock()
+        mock_msg.message_id = 42
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="ls", session_key="s"
+        )
+
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert (
+            kwargs.get("disable_web_page_preview") is True
+            or kwargs.get("link_preview_options") is not None
+        )
 
     @pytest.mark.asyncio
     async def test_truncates_long_command(self):

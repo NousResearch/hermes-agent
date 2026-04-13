@@ -158,6 +158,8 @@ def _discover_tools():
         "tools.send_message_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
+        # Agent-level tools registered via registry.register
+        "agent.project_context",
     ]
     import importlib
     for mod_name in _modules:

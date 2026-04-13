@@ -1,10 +1,11 @@
 """Permission engine plugin for Hermes Agent.
 
-Four-layer permission evaluation:
+Five-layer permission evaluation:
   1. Whitelist — always allow safe read-only tools
   2. Blacklist — always deny explicitly blocked tools
-  3. Risk rules — pattern-match dangerous commands and high-risk paths
-  4. Default allow — anything not caught above is permitted
+  3. Registry metadata — ask for high-risk or confirmation-gated tools
+  4. Risk rules — pattern-match dangerous commands and high-risk paths
+  5. Default allow — anything not caught above is permitted
 """
 
 import os
@@ -31,7 +32,7 @@ ALWAYS_ALLOW = {
 # ── Layer 2: Blacklist ──────────────────────────────────────────────────
 ALWAYS_DENY: set[str] = set()
 
-# ── Layer 3: Risk patterns ──────────────────────────────────────────────
+# ── Layer 4: Risk patterns ──────────────────────────────────────────────
 DANGEROUS_COMMAND_PATTERNS = [
     r"\brm\s+-rf\b",
     r"\bmkfs\b",
@@ -69,7 +70,16 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
     if tool_name in ALWAYS_DENY:
         return {"action": "deny", "reason": f"Tool '{tool_name}' is blocked"}
 
-    # Layer 3: risk rules — dangerous / ask commands
+    # Layer 3: registry metadata rules
+    metadata = _get_tool_metadata(tool_name)
+    if metadata.get("risk_level") == "high":
+        return {"action": "ask", "reason": "high risk tool"}
+    if metadata.get("mutates_external_world") is True:
+        return {"action": "ask", "reason": "mutates external world"}
+    if metadata.get("requires_confirmation_default") is True:
+        return {"action": "ask", "reason": "requires confirmation"}
+
+    # Layer 4: risk rules — dangerous / ask commands
     if tool_name in ("terminal", "execute_code"):
         cmd = args.get("command", "")
         for pattern in DANGEROUS_COMMAND_PATTERNS:
@@ -85,7 +95,7 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
                     "reason": f"High-risk command requires confirmation: {cmd[:80]}",
                 }
 
-    # Layer 3: risk rules — high-risk write paths
+    # Layer 4: risk rules — high-risk write paths
     if tool_name in ("write_file", "patch"):
         path = args.get("file_path", args.get("path", ""))
         for risk_path in HIGH_RISK_PATHS:
@@ -94,20 +104,6 @@ def evaluate_permission(tool_name: str, args: dict) -> dict | None:
                     "action": "ask",
                     "reason": f"Writing to high-risk path: {path}",
                 }
-
-    # Layer 4: registry metadata defaults (Phase B2)
-    metadata = _get_tool_metadata(tool_name)
-    if metadata:
-        if metadata.get("requires_confirmation_default"):
-            return {
-                "action": "ask",
-                "reason": f"Tool metadata requires confirmation: {tool_name}",
-            }
-        if metadata.get("mutates_external_world") and metadata.get("risk_level") == "critical":
-            return {
-                "action": "deny",
-                "reason": f"Critical external side effects require explicit policy: {tool_name}",
-            }
 
     # Layer 5: default allow
     return None

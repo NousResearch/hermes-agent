@@ -1,12 +1,10 @@
-"""Tests for the Plan Mode hook plugin (Phase B2).
-
-12 test cases covering plan mode activation, tool filtering, and deactivation.
-"""
+"""Tests for the Plan Mode hook plugin (Phase B2)."""
 
 import importlib
 import os
 
 import pytest
+from tools.registry import registry
 
 # Load plan_mode_hook via importlib (hyphenated directory name)
 _PLUGIN_DIR = os.path.join(
@@ -28,9 +26,23 @@ pre_tool_call = _mod.pre_tool_call
 @pytest.fixture(autouse=True)
 def _reset_plan_mode():
     """Ensure plan mode is off before and after each test."""
-    exit_plan_mode()
+    _mod._session_states.clear()
     yield
-    exit_plan_mode()
+    _mod._session_states.clear()
+
+
+@pytest.fixture
+def mock_registry_metadata(monkeypatch):
+    """Replace registry metadata lookups with test-controlled values."""
+
+    def _apply(metadata_by_tool):
+        monkeypatch.setattr(
+            registry,
+            "get_metadata",
+            lambda name: metadata_by_tool.get(name, {}),
+        )
+
+    return _apply
 
 
 # ── Inactive state ─────────────────────────────────────────────────────
@@ -56,14 +68,47 @@ class TestActivation:
         assert is_active() is False
 
 
+class TestSessionIsolation:
+    def test_session_a_plan_mode_does_not_affect_session_b(self):
+        enter_plan_mode("session-a")
+
+        assert is_active("session-a") is True
+        assert is_active("session-b") is False
+        assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="session-a")["action"] == "deny"
+        assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="session-b") is None
+
+    def test_exit_session_a_does_not_change_session_b_state(self):
+        enter_plan_mode("session-a")
+        enter_plan_mode("session-b")
+
+        exit_plan_mode("session-a")
+
+        assert is_active("session-a") is False
+        assert is_active("session-b") is True
+        assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="session-a") is None
+        assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="session-b")["action"] == "deny"
+
+    def test_default_session_id_behaves_as_before(self):
+        enter_plan_mode()
+
+        assert is_active() is True
+        assert is_active("default") is True
+        assert pre_tool_call("write_file", {"path": "/tmp/x"})["action"] == "deny"
+        assert pre_tool_call("write_file", {"path": "/tmp/x"}, session_id="default")["action"] == "deny"
+
+
 # ── Allowed tools in plan mode ─────────────────────────────────────────
 
 class TestAllowedInPlanMode:
     def test_read_file_allowed(self):
+        import tools.file_tools  # noqa: F401
+
         enter_plan_mode()
         assert pre_tool_call("read_file", {}) is None
 
     def test_search_files_allowed(self):
+        import tools.file_tools  # noqa: F401
+
         enter_plan_mode()
         assert pre_tool_call("search_files", {"query": "foo"}) is None
 
@@ -76,16 +121,54 @@ class TestAllowedInPlanMode:
         assert pre_tool_call("plan_mode", {"action": "status"}) is None
 
 
+class TestRegistryMetadataInPlanMode:
+    def test_metadata_true_allows_tool(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {"registry_allowed_tool": {"allowed_in_plan_mode_default": True}}
+        )
+
+        assert pre_tool_call("registry_allowed_tool", {}) is None
+
+    def test_metadata_false_denies_tool(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {"registry_denied_tool": {"allowed_in_plan_mode_default": False}}
+        )
+
+        result = pre_tool_call("registry_denied_tool", {})
+        assert result is not None
+        assert result["action"] == "deny"
+
+    def test_missing_metadata_falls_back_to_legacy_allowlist(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata({})
+
+        assert pre_tool_call("read_file", {}) is None
+
+    def test_plan_mode_override_is_always_allowed(self, mock_registry_metadata):
+        enter_plan_mode()
+        mock_registry_metadata(
+            {"plan_mode": {"allowed_in_plan_mode_default": False}}
+        )
+
+        assert pre_tool_call("plan_mode", {"action": "status"}) is None
+
+
 # ── Denied tools in plan mode ──────────────────────────────────────────
 
 class TestDeniedInPlanMode:
     def test_write_file_denied(self):
+        import tools.file_tools  # noqa: F401
+
         enter_plan_mode()
         result = pre_tool_call("write_file", {"path": "/tmp/x"})
         assert result is not None
         assert result["action"] == "deny"
 
     def test_patch_denied(self):
+        import tools.file_tools  # noqa: F401
+
         enter_plan_mode()
         result = pre_tool_call("patch", {"path": "/tmp/x"})
         assert result is not None

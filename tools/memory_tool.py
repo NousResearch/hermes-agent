@@ -790,7 +790,7 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    allowed_in_plan_mode_default=False,
 )
-
 
 

@@ -52,7 +52,7 @@ class TestBackwardCompat:
         assert meta["mutates_browser_session"] is False
         assert meta["mutates_external_world"] is False
         assert meta["requires_confirmation_default"] is False
-        assert meta["allowed_in_plan_mode_default"] is True
+        assert meta["allowed_in_plan_mode_default"] is False
         assert meta["parallel_safe_default"] is False
         assert meta["risk_level"] == "low"
         assert meta["deferred"] is False

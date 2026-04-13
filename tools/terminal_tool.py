@@ -1757,4 +1757,5 @@ registry.register(
     risk_level="high",
     mutates_local_fs=True,
     mutates_external_world=True,
+    requires_confirmation_default=True,
 )

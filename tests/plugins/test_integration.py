@@ -126,6 +126,8 @@ class TestPlanModeState:
 
 class TestPlanModeDeniesWrites:
     def test_write_file_denied(self):
+        import tools.file_tools  # noqa: F401
+
         mod = _load_plan_mode_hook()
         mod.enter_plan_mode()
         result = mod.pre_tool_call("write_file", {"path": "/tmp/x"})
@@ -133,6 +135,8 @@ class TestPlanModeDeniesWrites:
         assert result["action"] == "deny"
 
     def test_read_file_allowed(self):
+        import tools.file_tools  # noqa: F401
+
         mod = _load_plan_mode_hook()
         mod.enter_plan_mode()
         assert mod.pre_tool_call("read_file", {}) is None

@@ -30,6 +30,10 @@ PLAN_MODE_SCHEMA = {
                 "enum": ["enter", "exit", "status"],
                 "description": "Action to perform: enter plan mode, exit plan mode, or check status.",
             },
+            "session_id": {
+                "type": "string",
+                "description": "Optional session identifier. Defaults to 'default'.",
+            },
         },
         "required": ["action"],
     },
@@ -62,16 +66,17 @@ def _load_plan_mode_hook():
 def plan_mode_handler(args: dict, **kwargs) -> str:
     """Handle plan_mode tool calls."""
     action = args.get("action", "status")
+    session_id = args.get("session_id") or "default"
     mod = _load_plan_mode_hook()
 
     if action == "enter":
-        mod.enter_plan_mode()
+        mod.enter_plan_mode(session_id=session_id)
         return json.dumps({"success": True, "plan_mode": True}, ensure_ascii=False)
     elif action == "exit":
-        mod.exit_plan_mode()
+        mod.exit_plan_mode(session_id=session_id)
         return json.dumps({"success": True, "plan_mode": False}, ensure_ascii=False)
     else:
-        return json.dumps({"plan_mode": mod.is_active()}, ensure_ascii=False)
+        return json.dumps({"plan_mode": mod.is_active(session_id=session_id)}, ensure_ascii=False)
 
 
 registry.register(

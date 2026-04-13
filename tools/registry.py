@@ -42,7 +42,7 @@ class ToolEntry:
                  mutates_local_fs=False, mutates_agent_state=False,
                  mutates_browser_session=False, mutates_external_world=False,
                  requires_confirmation_default=False,
-                 allowed_in_plan_mode_default=True,
+                 allowed_in_plan_mode_default=False,
                  parallel_safe_default=False, risk_level="low",
                  deferred=False, always_load=False, search_hint=""):
         self.name = name
@@ -97,7 +97,7 @@ class ToolRegistry:
         mutates_browser_session: bool = False,
         mutates_external_world: bool = False,
         requires_confirmation_default: bool = False,
-        allowed_in_plan_mode_default: bool = True,
+        allowed_in_plan_mode_default: bool = False,
         parallel_safe_default: bool = False,
         risk_level: str = "low",
         deferred: bool = False,

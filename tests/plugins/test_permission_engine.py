@@ -1,11 +1,7 @@
-"""Tests for the permission engine plugin (Phase B1).
-
-16 test cases covering the four evaluation layers.
-"""
+"""Tests for the permission engine plugin."""
 
 import importlib
 import os
-import sys
 
 import pytest
 
@@ -24,6 +20,11 @@ _spec.loader.exec_module(_mod)
 evaluate_permission = _mod.evaluate_permission
 
 
+@pytest.fixture(autouse=True)
+def stub_tool_metadata(monkeypatch):
+    monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {})
+
+
 # ── Layer 1: Whitelist (always allow) ───────────────────────────────────
 
 class TestWhitelist:
@@ -34,7 +35,7 @@ class TestWhitelist:
         assert evaluate_permission("search_files", {}) is None
 
 
-# ── Layer 3: Terminal risk rules ────────────────────────────────────────
+# ── Layer 4: Terminal risk rules ────────────────────────────────────────
 
 class TestTerminalRules:
     def test_safe_ls(self):
@@ -67,7 +68,7 @@ class TestTerminalRules:
         assert result["action"] == "ask"
 
 
-# ── Layer 3: Write / patch path rules ──────────────────────────────────
+# ── Layer 4: Write / patch path rules ──────────────────────────────────
 
 class TestWritePathRules:
     def test_write_safe_path(self):
@@ -93,26 +94,50 @@ class TestWritePathRules:
         assert evaluate_permission("patch", {"path": "/home/user/project/main.py"}) is None
 
 
-# ── Layer 4: Registry metadata defaults (Phase B2) ─────────────────────
+# ── Layer 3: Registry metadata rules ────────────────────────────────────
 
 class TestRegistryMetadataRules:
-    def test_metadata_requires_confirmation_asks(self, monkeypatch):
+    def test_metadata_high_risk_asks(self, monkeypatch):
         monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {
-            "requires_confirmation_default": True,
-            "risk_level": "medium",
+            "risk_level": "high",
         })
         result = evaluate_permission("browser_click", {})
         assert result is not None
         assert result["action"] == "ask"
+        assert result["reason"] == "high risk tool"
 
-    def test_metadata_critical_external_world_denied(self, monkeypatch):
+    def test_metadata_mutates_external_world_asks(self, monkeypatch):
         monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {
             "mutates_external_world": True,
-            "risk_level": "critical",
         })
         result = evaluate_permission("send_message", {})
         assert result is not None
-        assert result["action"] == "deny"
+        assert result["action"] == "ask"
+        assert result["reason"] == "mutates external world"
+
+    def test_metadata_requires_confirmation_asks(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {
+            "requires_confirmation_default": True,
+        })
+        result = evaluate_permission("browser_click", {})
+        assert result is not None
+        assert result["action"] == "ask"
+        assert result["reason"] == "requires confirmation"
+
+    def test_no_metadata_falls_through_to_pattern_rules(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {})
+        result = evaluate_permission("terminal", {"command": "sudo apt install foo"})
+        assert result is not None
+        assert result["action"] == "ask"
+        assert "requires confirmation" in result["reason"]
+
+    def test_whitelist_takes_priority_over_metadata(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_get_tool_metadata", lambda tool_name: {
+            "risk_level": "high",
+            "mutates_external_world": True,
+            "requires_confirmation_default": True,
+        })
+        assert evaluate_permission("read_file", {}) is None
 
 
 # ── Layer 5: Default allow ──────────────────────────────────────────────

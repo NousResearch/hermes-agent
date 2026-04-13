@@ -179,6 +179,7 @@ ALIASES: Dict[str, str] = {
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
     "kimi-coding": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
 
     # minimax-cn

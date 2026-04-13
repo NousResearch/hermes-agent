@@ -4,6 +4,8 @@ import builtins
 import importlib
 import logging
 import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -30,6 +32,19 @@ from agent.prompt_builder import (
     WSL_ENVIRONMENT_HINT,
 )
 from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.mkdir()
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src, target_is_directory=True)
+            return True
+    except OSError:
+        return False
 
 
 # =========================================================================
@@ -409,6 +424,34 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
+    def test_nested_symlinked_skill_is_included(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        target_skill = tmp_path / "linked-skill-source"
+        target_skill.mkdir()
+        (target_skill / "SKILL.md").write_text(
+            "---\nname: nested-real\ndescription: Nested symlinked skill.\n---\n\n# Nested Real\n"
+        )
+
+        nested_link = skills_root / "mlops" / "nested-real"
+        nested_link.parent.mkdir(parents=True)
+        nested_link.symlink_to(target_skill, target_is_directory=True)
+
+        result = build_skills_system_prompt()
+        assert "nested-real" in result
+        assert "mlops" in result
+        assert "Nested symlinked skill" in result
+
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        clear_skills_system_prompt_cache()
+        snapshot_result = build_skills_system_prompt()
+        assert "nested-real" in snapshot_result
+        assert "Nested symlinked skill" in snapshot_result
 
 
 class TestBuildNousSubscriptionPrompt:
@@ -1032,6 +1075,3 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
-

@@ -2,11 +2,13 @@
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from agent.skill_utils import iter_skill_index_files
 import tools.skills_tool as skills_tool_module
 from tools.skills_tool import (
     _get_required_environment_variables,
@@ -44,6 +46,19 @@ description: Description for {name}.
 """
     (skill_dir / "SKILL.md").write_text(content)
     return skill_dir
+
+
+def _can_symlink():
+    """Check if we can create symlinks (needs admin/dev-mode on Windows)."""
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.mkdir()
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src, target_is_directory=True)
+            return True
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +284,53 @@ class TestFindAllSkills:
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
 
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
+    def test_finds_nested_symlinked_skill_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        target_skill = tmp_path / "linked-skill-source"
+        target_skill.mkdir()
+        (target_skill / "SKILL.md").write_text(
+            "---\nname: nested-real\ndescription: Nested symlinked skill.\n---\n\n# Nested Real\n"
+        )
+
+        nested_link = skills_root / "mlops" / "nested-real"
+        nested_link.parent.mkdir(parents=True)
+        nested_link.symlink_to(target_skill, target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            skills = _find_all_skills()
+
+        assert [s["name"] for s in skills] == ["nested-real"]
+        assert skills[0]["category"] == "mlops"
+        assert skills[0]["description"] == "Nested symlinked skill."
+
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
+    def test_cycle_protection_in_iterator(self, tmp_path):
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        normal_skill = skills_root / "real-skill"
+        normal_skill.mkdir()
+        (normal_skill / "SKILL.md").write_text(
+            "---\nname: real-skill\ndescription: Real skill.\n---\n\n# Real Skill\n"
+        )
+
+        loop_skill = skills_root / "loop-skill"
+        loop_skill.mkdir()
+        (loop_skill / "SKILL.md").write_text(
+            "---\nname: loop-skill\ndescription: Loop skill.\n---\n\n# Loop Skill\n"
+        )
+        (loop_skill / "back").symlink_to(skills_root, target_is_directory=True)
+
+        paths = list(iter_skill_index_files(skills_root, "SKILL.md"))
+        assert [str(path.relative_to(skills_root)) for path in paths] == [
+            "loop-skill/SKILL.md",
+            "real-skill/SKILL.md",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # skills_list
@@ -301,6 +363,30 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
+
+    @pytest.mark.skipif(not _can_symlink(), reason="Symlinks need elevated privileges")
+    def test_lists_nested_symlinked_skill_directory(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_root = tmp_path / "skills"
+        skills_root.mkdir()
+
+        target_skill = tmp_path / "linked-skill-source"
+        target_skill.mkdir()
+        (target_skill / "SKILL.md").write_text(
+            "---\nname: nested-real\ndescription: Nested symlinked skill.\n---\n\n# Nested Real\n"
+        )
+
+        nested_link = skills_root / "mlops" / "nested-real"
+        nested_link.parent.mkdir(parents=True)
+        nested_link.symlink_to(target_skill, target_is_directory=True)
+
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            raw = skills_list()
+
+        result = json.loads(raw)
+        assert result["count"] == 1
+        assert result["skills"][0]["name"] == "nested-real"
+        assert result["skills"][0]["category"] == "mlops"
 
 
 # ---------------------------------------------------------------------------

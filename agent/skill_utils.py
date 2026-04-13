@@ -430,14 +430,47 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 
 
 def iter_skill_index_files(skills_dir: Path, filename: str):
-    """Walk skills_dir yielding sorted paths matching *filename*.
+    """Walk ``skills_dir`` yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub`` directories.
+    Symlinked directories are followed so nested skills discovered through
+    local or external skill roots are visible to all callers.  Traversal is
+    cycle-safe: each real directory is visited at most once, and the standard
+    excluded directories (``.git``, ``.github``, ``.hub``) are still pruned.
     """
     matches = []
-    for root, dirs, files in os.walk(skills_dir):
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
+    visited_real_dirs: Set[Path] = set()
+
+    for root, dirs, files in os.walk(skills_dir, followlinks=True):
+        root_path = Path(root)
+        try:
+            root_real = root_path.resolve()
+        except (OSError, RuntimeError):
+            dirs[:] = []
+            continue
+
+        if root_real in visited_real_dirs:
+            dirs[:] = []
+            continue
+        visited_real_dirs.add(root_real)
+
+        next_dirs = []
+        for dirname in dirs:
+            if dirname in EXCLUDED_SKILL_DIRS:
+                continue
+
+            child_path = root_path / dirname
+            try:
+                child_real = child_path.resolve()
+            except (OSError, RuntimeError):
+                continue
+
+            if child_real in visited_real_dirs:
+                continue
+            next_dirs.append(dirname)
+
+        dirs[:] = next_dirs
         if filename in files:
-            matches.append(Path(root) / filename)
+            matches.append(root_path / filename)
+
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path

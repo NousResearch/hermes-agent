@@ -58,7 +58,17 @@ function Detail({ color, content, dimColor }: DetailRow) {
 
 // ── Streaming cursor ─────────────────────────────────────────────────
 
-function StreamCursor({ active = false, color, dimColor }: { active?: boolean; color: string; dimColor?: boolean }) {
+function StreamCursor({
+  color,
+  dimColor,
+  streaming = false,
+  visible = false
+}: {
+  color: string
+  dimColor?: boolean
+  streaming?: boolean
+  visible?: boolean
+}) {
   const [on, setOn] = useState(true)
 
   useEffect(() => {
@@ -67,21 +77,23 @@ function StreamCursor({ active = false, color, dimColor }: { active?: boolean; c
     return () => clearInterval(id)
   }, [])
 
-  return (
+  return visible ? (
     <Text color={color} dimColor={dimColor}>
-      {active && on ? '▍' : ' '}
+      {streaming && on ? '▍' : ' '}
     </Text>
-  )
+  ) : null
 }
 
 // ── Thinking (pre-tool fallback) ─────────────────────────────────────
 
 export const Thinking = memo(function Thinking({
+  active = false,
   mode = 'truncated',
   reasoning,
   streaming = false,
   t
 }: {
+  active?: boolean
   mode?: ThinkingMode
   reasoning: string
   streaming?: boolean
@@ -108,12 +120,12 @@ export const Thinking = memo(function Thinking({
         <Text color={t.color.dim} dimColor {...(mode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
           <Text dimColor>└ </Text>
           {preview}
-          <StreamCursor active={streaming} color={t.color.dim} dimColor />
+          <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
         </Text>
-      ) : streaming ? (
+      ) : active ? (
         <Text color={t.color.dim} dimColor>
           <Text dimColor>└ </Text>
-          <StreamCursor active={streaming} color={t.color.dim} dimColor />
+          <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
         </Text>
       ) : null}
     </Box>
@@ -127,6 +139,7 @@ type Group = { color: string; content: ReactNode; details: DetailRow[]; key: str
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
   thinkingMode = 'truncated',
+  reasoningActive = false,
   reasoning = '',
   reasoningStreaming = false,
   t,
@@ -136,6 +149,7 @@ export const ToolTrail = memo(function ToolTrail({
 }: {
   busy?: boolean
   thinkingMode?: ThinkingMode
+  reasoningActive?: boolean
   reasoning?: string
   reasoningStreaming?: boolean
   t: Theme
@@ -157,7 +171,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   const reasoningTail = thinkingPreview(reasoning, thinkingMode, THINKING_COT_MAX)
 
-  if (!busy && !trail.length && !tools.length && !activity.length && !reasoningTail) {
+  if (!busy && !trail.length && !tools.length && !activity.length && !reasoningTail && !reasoningActive) {
     return null
   }
 
@@ -247,16 +261,16 @@ export const ToolTrail = memo(function ToolTrail({
       content: (
         <>
           {reasoningTail}
-          <StreamCursor active={reasoningStreaming} color={t.color.dim} dimColor />
+          <StreamCursor color={t.color.dim} dimColor streaming={reasoningStreaming} visible={reasoningActive} />
         </>
       ),
       dimColor: true,
       key: 'cot'
     })
-  } else if (reasoningStreaming && groups.length && thinkingMode === 'collapsed') {
+  } else if (reasoningActive && groups.length && thinkingMode === 'collapsed') {
     detail({
       color: t.color.dim,
-      content: <StreamCursor active={reasoningStreaming} color={t.color.dim} dimColor />,
+      content: <StreamCursor color={t.color.dim} dimColor streaming={reasoningStreaming} visible={reasoningActive} />,
       dimColor: true,
       key: 'cot'
     })
@@ -276,7 +290,13 @@ export const ToolTrail = memo(function ToolTrail({
   return (
     <Box flexDirection="column">
       {busy && !groups.length && (
-        <Thinking mode={thinkingMode} reasoning={reasoning} streaming={reasoningStreaming} t={t} />
+        <Thinking
+          active={reasoningActive}
+          mode={thinkingMode}
+          reasoning={reasoning}
+          streaming={reasoningStreaming}
+          t={t}
+        />
       )}
       {!busy && !groups.length && reasoningTail && (
         <Detail color={t.color.dim} content={reasoningTail} dimColor key="cot" />

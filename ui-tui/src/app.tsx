@@ -338,6 +338,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [secret, setSecret] = useState<SecretReq | null>(null)
   const [picker, setPicker] = useState(false)
   const [reasoning, setReasoning] = useState('')
+  const [reasoningActive, setReasoningActive] = useState(false)
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
@@ -394,6 +395,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       clearTimeout(reasoningStreamingTimerRef.current)
     }
 
+    setReasoningActive(true)
     setReasoningStreaming(true)
     reasoningStreamingTimerRef.current = setTimeout(() => {
       reasoningStreamingTimerRef.current = null
@@ -401,13 +403,14 @@ export function App({ gw }: { gw: GatewayClient }) {
     }, REASONING_PULSE_MS)
   }, [])
 
-  const clearReasoningStreaming = useCallback(() => {
+  const endReasoningPhase = useCallback(() => {
     if (reasoningStreamingTimerRef.current) {
       clearTimeout(reasoningStreamingTimerRef.current)
       reasoningStreamingTimerRef.current = null
     }
 
     setReasoningStreaming(false)
+    setReasoningActive(false)
   }, [])
 
   useEffect(
@@ -589,6 +592,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   }, [pushActivity, rpc, sid])
 
   const idle = () => {
+    endReasoningPhase()
     setTools([])
     setTurnTrail([])
     setBusy(false)
@@ -1342,6 +1346,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'message.start':
           setBusy(true)
+          endReasoningPhase()
           setReasoning('')
           setActivity([])
           setTurnTrail([])
@@ -1416,7 +1421,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'tool.start':
           pruneTransient()
-          clearReasoningStreaming()
+          endReasoningPhase()
           setTools(prev => [
             ...prev,
             { id: p.tool_id, name: p.name, context: (p.context as string) || '', startedAt: Date.now() }
@@ -1507,7 +1512,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'message.delta':
           pruneTransient()
-          clearReasoningStreaming()
+          endReasoningPhase()
 
           if (p?.text && !interruptedRef.current) {
             buf.current = p.rendered ?? buf.current + p.text
@@ -1528,7 +1533,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           idle()
           setReasoning('')
-          clearReasoningStreaming()
           setStreaming('')
 
           if (inflightPasteIdsRef.current.length) {
@@ -1586,7 +1590,20 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
       }
     },
-    [appendMessage, dequeue, newSession, pushActivity, pushTrail, send, sys]
+    [
+      appendMessage,
+      bellOnComplete,
+      dequeue,
+      endReasoningPhase,
+      newSession,
+      pruneTransient,
+      pulseReasoningStreaming,
+      pushActivity,
+      pushTrail,
+      send,
+      sys,
+      stdout
+    ]
   )
 
   onEventRef.current = onEvent
@@ -2484,6 +2501,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               activity={busy ? activity : []}
               busy={busy && !streaming}
               reasoning={reasoning}
+              reasoningActive={reasoningActive}
               reasoningStreaming={reasoningStreaming}
               t={theme}
               thinkingMode={hasReasoning ? thinkingMode : 'truncated'}

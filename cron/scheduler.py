@@ -47,6 +47,22 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
 })
 
+# Platforms that support a configured cron/notification home target, mapped to
+# the environment variable used by gateway setup/runtime config.
+_HOME_TARGET_ENV_VARS = {
+    "matrix": "MATRIX_HOME_ROOM",
+    "telegram": "TELEGRAM_HOME_CHANNEL",
+    "discord": "DISCORD_HOME_CHANNEL",
+    "slack": "SLACK_HOME_CHANNEL",
+    "signal": "SIGNAL_HOME_CHANNEL",
+    "mattermost": "MATTERMOST_HOME_CHANNEL",
+    "sms": "SMS_HOME_CHANNEL",
+    "feishu": "FEISHU_HOME_CHANNEL",
+    "wecom": "WECOM_HOME_CHANNEL",
+    "weixin": "WEIXIN_HOME_CHANNEL",
+    "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
+}
+
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
@@ -74,6 +90,14 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _get_home_target_chat_id(platform_name: str) -> str:
+    """Return the configured home target chat/room ID for a delivery platform."""
+    env_var = _HOME_TARGET_ENV_VARS.get(platform_name.lower())
+    if not env_var:
+        return ""
+    return os.getenv(env_var, "")
+
+
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     deliver = job.get("deliver", "local")
@@ -91,8 +115,8 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack", "feishu", "wecom", "weixin", "bluebubbles"):
-            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+        for platform_name in _HOME_TARGET_ENV_VARS:
+            chat_id = _get_home_target_chat_id(platform_name)
             if chat_id:
                 logger.info(
                     "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
@@ -147,7 +171,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
-    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    chat_id = _get_home_target_chat_id(platform_name)
     if not chat_id:
         return None
 

@@ -63,6 +63,9 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
+| `completion_menu_text` | Text color in the autocompletion dropdown menu | `#FFF8DC` |
+| `completion_menu_bg` | Background color of the completion dropdown | `#1a1a2e` |
+| `completion_menu_current_bg` | Background of the currently selected completion item | `#333355` |
 
 ### Spinner (`spinner:`)
 
@@ -129,6 +132,9 @@ colors:
   response_border: "#FFD700"
   session_label: "#DAA520"
   session_border: "#8B8682"
+  completion_menu_text: "#FFF8DC"
+  completion_menu_bg: "#1a1a2e"
+  completion_menu_current_bg: "#333355"
 
 spinner:
   waiting_faces:

@@ -251,20 +251,23 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "description": "Monochrome — clean grayscale",
         "colors": {
             "banner_border": "#555555",
-            "banner_title": "#e6edf3",
-            "banner_accent": "#aaaaaa",
+            "banner_title": "#b0b0b0",
+            "banner_accent": "#888888",
             "banner_dim": "#444444",
-            "banner_text": "#c9d1d9",
-            "ui_accent": "#aaaaaa",
-            "ui_label": "#888888",
-            "ui_ok": "#888888",
-            "ui_error": "#cccccc",
-            "ui_warn": "#999999",
-            "prompt": "#c9d1d9",
+            "banner_text": "#999999",
+            "ui_accent": "#888888",
+            "ui_label": "#777777",
+            "ui_ok": "#777777",
+            "ui_error": "#999999",
+            "ui_warn": "#888888",
+            "prompt": "#999999",
             "input_rule": "#444444",
-            "response_border": "#aaaaaa",
-            "session_label": "#888888",
+            "response_border": "#888888",
+            "session_label": "#777777",
             "session_border": "#555555",
+            "completion_menu_text": "#f0f0f0",  # Light text for dark completion menu bg
+            "completion_menu_bg": "#1a1a2e",
+            "completion_menu_current_bg": "#333355",
         },
         "spinner": {},
         "branding": {
@@ -687,6 +690,9 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     text = skin.get_color("banner_text", prompt)
     dim = skin.get_color("banner_dim", "#555555")
     label = skin.get_color("ui_label", title)
+    completion_text = skin.get_color("completion_menu_text", text)
+    completion_bg = skin.get_color("completion_menu_bg", "#1a1a2e")
+    completion_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
 
@@ -698,11 +704,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "hint": f"{dim} italic",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": f"bg:{completion_bg} {completion_text}",
+        "completion-menu.completion": f"bg:{completion_bg} {completion_text}",
+        "completion-menu.completion.current": f"bg:{completion_current_bg} {completion_text} bold",
+        "completion-menu.meta.completion": f"bg:{completion_bg} {dim}",
+        "completion-menu.meta.completion.current": f"bg:{completion_current_bg} {dim}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

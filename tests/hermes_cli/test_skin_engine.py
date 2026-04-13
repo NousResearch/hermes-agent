@@ -80,7 +80,10 @@ class TestBuiltinSkins:
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("mono")
         assert skin.name == "mono"
-        assert skin.get_color("banner_title") == "#e6edf3"
+        assert skin.get_color("banner_title") == "#b0b0b0"
+        # New completion menu color keys should be present
+        assert skin.get_color("completion_menu_bg") == "#1a1a2e"
+        assert skin.get_color("completion_menu_current_bg") == "#333355"
 
     def test_slate_skin_loads(self):
         from hermes_cli.skin_engine import load_skin

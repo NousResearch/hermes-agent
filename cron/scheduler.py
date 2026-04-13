@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook", "bluebubbles",
+    "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -219,6 +219,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     chat_id = target["chat_id"]
     thread_id = target.get("thread_id")
 
+    # Diagnostic: log thread_id for topic-aware delivery debugging
+    origin = job.get("origin") or {}
+    origin_thread = origin.get("thread_id")
+    if origin_thread and not thread_id:
+        logger.warning(
+            "Job '%s': origin has thread_id=%s but delivery target lost it "
+            "(deliver=%s, target=%s)",
+            job["id"], origin_thread, job.get("deliver", "local"), target,
+        )
+    elif thread_id:
+        logger.debug(
+            "Job '%s': delivering to %s:%s thread_id=%s",
+            job["id"], platform_name, chat_id, thread_id,
+        )
+
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
@@ -234,6 +249,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "wecom_callback": Platform.WECOM_CALLBACK,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
@@ -441,6 +458,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
 
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
             if stderr:
@@ -449,13 +474,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        # Redact any secrets that may appear in script output before
-        # they are injected into the LLM prompt context.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:
@@ -623,6 +641,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
+        # Apply IPv4 preference if configured.
+        try:
+            from hermes_constants import apply_ipv4_preference
+            _net_cfg = _cfg.get("network", {})
+            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
+                apply_ipv4_preference(force=True)
+        except Exception:
+            pass
+
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
@@ -720,6 +747,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
+            skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
@@ -768,7 +796,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False)
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

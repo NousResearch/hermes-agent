@@ -58,6 +58,10 @@ class TestNormalizeVisionProvider:
         assert _normalize_vision_provider("beans") == "beans"
         assert _normalize_vision_provider("deepseek") == "deepseek"
 
+    def test_custom_colon_named_provider_preserved(self):
+        from agent.auxiliary_client import _normalize_vision_provider
+        assert _normalize_vision_provider("custom:beans") == "beans"
+
     def test_codex_alias_still_works(self):
         from agent.auxiliary_client import _normalize_vision_provider
         assert _normalize_vision_provider("codex") == "openai-codex"
@@ -149,3 +153,102 @@ class TestResolveProviderClientNamedCustom:
         # "coffee" doesn't exist in custom_providers
         client, model = resolve_provider_client("coffee", "test")
         assert client is None
+
+
+class TestResolveProviderClientModelNormalization:
+    """Direct-provider auxiliary routing should normalize models like main runtime."""
+
+    def test_matching_native_prefix_is_stripped_for_main_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "zai/glm-5.1", "provider": "zai"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "glm-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("main", "zai/glm-5.1")
+
+        assert client is not None
+        assert model == "glm-5.1"
+
+    def test_non_matching_prefix_is_preserved_for_direct_provider(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "zai/glm-5.1", "provider": "zai"},
+        })
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "glm-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("zai", "google/gemini-2.5-pro")
+
+        assert client is not None
+        assert model == "google/gemini-2.5-pro"
+
+    def test_aggregator_vendor_slug_is_preserved(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "openrouter", "anthropic/claude-sonnet-4.6"
+            )
+
+        assert client is not None
+        assert model == "anthropic/claude-sonnet-4.6"
+
+
+class TestResolveVisionProviderClientModelNormalization:
+    """Vision auto-routing should reuse the same provider-specific normalization."""
+
+    def test_vision_auto_strips_matching_main_provider_prefix(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "zai/glm-5.1", "provider": "zai"},
+        })
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "glm-key",
+                "base_url": "https://api.z.ai/api/paas/v4",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "zai"
+        assert client is not None
+        assert model == "glm-5.1"
+
+
+class TestVisionPathApiMode:
+    """Vision path should propagate api_mode to _get_cached_client."""
+
+    def test_explicit_provider_passes_api_mode(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "auxiliary": {"vision": {"api_mode": "chat_completions"}},
+        })
+        with patch("agent.auxiliary_client._get_cached_client") as mock_gcc:
+            mock_gcc.return_value = (MagicMock(), "test-model")
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client(provider="deepseek")
+
+        mock_gcc.assert_called_once()
+        _, kwargs = mock_gcc.call_args
+        assert kwargs.get("api_mode") == "chat_completions"

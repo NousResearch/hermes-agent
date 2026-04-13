@@ -70,7 +70,7 @@ Delivery targets are case-sensitive and require the correct platform to be confi
 | `local` | Write access to `~/.hermes/cron/output/` |
 | `origin` | Delivers to the chat where the job was created |
 
-Other supported platforms include `mattermost`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `bluebubbles`, and `webhook`. You can also target a specific chat with `platform:chat_id` syntax (e.g., `telegram:-1001234567890`).
+Other supported platforms include `mattermost`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, and `webhook`. You can also target a specific chat with `platform:chat_id` syntax (e.g., `telegram:-1001234567890`).
 
 If delivery fails, the job still runs — it just won't send anywhere. Check `hermes cron list` for updated `last_error` field (if available).
 

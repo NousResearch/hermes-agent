@@ -2,11 +2,12 @@
 """
 Text-to-Speech Tool Module
 
-Supports five TTS providers:
+Supports six TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -23,6 +24,7 @@ Usage:
 """
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -62,6 +64,11 @@ def _import_openai_client():
     from openai import OpenAI as OpenAIClient
     return OpenAIClient
 
+def _import_mistral_client():
+    """Lazy import Mistral client. Returns the class or raises ImportError."""
+    from mistralai.client import Mistral
+    return Mistral
+
 def _import_sounddevice():
     """Lazy import sounddevice. Returns the module or raises ImportError/OSError."""
     import sounddevice as sd
@@ -82,6 +89,8 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
+DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -179,8 +188,14 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     _edge_tts = _import_edge_tts()
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
+    speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
 
-    communicate = _edge_tts.Communicate(text, voice)
+    kwargs = {"voice": voice}
+    if speed != 1.0:
+        pct = round((speed - 1.0) * 100)
+        kwargs["rate"] = f"{pct:+d}%"
+
+    communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
     return output_path
 
@@ -252,6 +267,7 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
     base_url = oai_config.get("base_url", base_url)
+    speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -262,13 +278,16 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        response = client.audio.speech.create(
+        create_kwargs = dict(
             model=model,
             voice=voice,
             input=text,
             response_format=response_format,
             extra_headers={"x-idempotency-key": str(uuid.uuid4())},
         )
+        if speed != 1.0:
+            create_kwargs["speed"] = max(0.25, min(4.0, speed))
+        response = client.audio.speech.create(**create_kwargs)
 
         response.stream_to_file(output_path)
         return output_path
@@ -305,7 +324,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     mm_config = tts_config.get("minimax", {})
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
-    speed = mm_config.get("speed", 1)
+    speed = mm_config.get("speed", tts_config.get("speed", 1))
     vol = mm_config.get("vol", 1)
     pitch = mm_config.get("pitch", 0)
     base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
@@ -358,6 +377,55 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     # MiniMax returns hex-encoded audio (not base64)
     audio_bytes = bytes.fromhex(hex_audio)
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
+# Provider: Mistral (Voxtral TTS)
+# ===========================================================================
+def _generate_mistral_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Mistral Voxtral TTS API.
+
+    The API returns base64-encoded audio; this function decodes it
+    and writes the raw bytes to *output_path*.
+    Supports native Opus output for Telegram voice bubbles.
+    """
+    api_key = os.getenv("MISTRAL_API_KEY", "")
+    if not api_key:
+        raise ValueError("MISTRAL_API_KEY not set. Get one at https://console.mistral.ai/")
+
+    mi_config = tts_config.get("mistral", {})
+    model = mi_config.get("model", DEFAULT_MISTRAL_TTS_MODEL)
+    voice_id = mi_config.get("voice_id") or DEFAULT_MISTRAL_TTS_VOICE_ID
+
+    if output_path.endswith(".ogg"):
+        response_format = "opus"
+    elif output_path.endswith(".wav"):
+        response_format = "wav"
+    elif output_path.endswith(".flac"):
+        response_format = "flac"
+    else:
+        response_format = "mp3"
+
+    Mistral = _import_mistral_client()
+    try:
+        with Mistral(api_key=api_key) as client:
+            response = client.audio.speech.complete(
+                model=model,
+                input=text,
+                voice_id=voice_id,
+                response_format=response_format,
+            )
+            audio_bytes = base64.b64decode(response.audio_data)
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error("Mistral TTS failed: %s", e, exc_info=True)
+        raise RuntimeError(f"Mistral TTS failed: {type(e).__name__}") from e
 
     with open(output_path, "wb") as f:
         f.write(audio_bytes)
@@ -480,7 +548,8 @@ def text_to_speech_tool(
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
-    platform = os.getenv("HERMES_SESSION_PLATFORM", "").lower()
+    from gateway.session_context import get_session_env
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
     # Determine output path
@@ -492,7 +561,7 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).
-        if want_opus and provider in ("openai", "elevenlabs"):
+        if want_opus and provider in ("openai", "elevenlabs", "mistral"):
             file_path = out_dir / f"tts_{timestamp}.ogg"
         else:
             file_path = out_dir / f"tts_{timestamp}.mp3"
@@ -528,6 +597,18 @@ def text_to_speech_tool(
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
+
+        elif provider == "mistral":
+            try:
+                _import_mistral_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "Mistral provider selected but 'mistralai' package not installed. "
+                             "Run: pip install 'hermes-agent[mistral]'"
+                }, ensure_ascii=False)
+            logger.info("Generating speech with Mistral Voxtral TTS...")
+            _generate_mistral_tts(text, file_str, tts_config)
 
         elif provider == "neutts":
             if not _check_neutts_available():
@@ -583,8 +664,7 @@ def text_to_speech_tool(
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
-        elif provider in ("elevenlabs", "openai"):
-            # These providers can output Opus natively if the path ends in .ogg
+        elif provider in ("elevenlabs", "openai", "mistral"):
             voice_compatible = file_str.endswith(".ogg")
 
         file_size = os.path.getsize(file_str)
@@ -652,6 +732,12 @@ def check_tts_requirements() -> bool:
         pass
     if os.getenv("MINIMAX_API_KEY"):
         return True
+    try:
+        _import_mistral_client()
+        if os.getenv("MISTRAL_API_KEY"):
+            return True
+    except ImportError:
+        pass
     if _check_neutts_available():
         return True
     return False

@@ -567,6 +567,7 @@ def test_singleton_seed_does_not_clobber_manual_oauth_entry(tmp_path, monkeypatc
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr("hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True)
     _write_auth_store(
         tmp_path,
         {
@@ -1043,3 +1044,30 @@ def test_release_lease_decrements_counter(tmp_path, monkeypatch):
 
     pool.release_lease("cred-1")
     assert pool._active_leases.get("cred-1", 0) == 0
+
+
+def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_path, monkeypatch):
+    """Claude Code credentials must not be auto-seeded when the user never selected anthropic."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    # Claude Code credentials exist on disk
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_claude_code_credentials",
+        lambda: {"accessToken": "sk-ant...oken", "refreshToken": "rt", "expiresAt": 9999999999999},
+    )
+    monkeypatch.setattr(
+        "agent.anthropic_adapter.read_hermes_oauth_credentials",
+        lambda: None,
+    )
+    # User configured kimi-coding, NOT anthropic
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: pid == "kimi-coding",
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("anthropic")
+
+    # Should NOT have seeded the claude_code entry
+    assert pool.entries() == []

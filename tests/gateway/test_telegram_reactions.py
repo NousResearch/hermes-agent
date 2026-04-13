@@ -175,7 +175,7 @@ async def test_on_processing_start_handles_missing_ids(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_success(monkeypatch):
-    """Successful processing should set check mark reaction."""
+    """Successful processing should set thumbs-up reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -185,13 +185,13 @@ async def test_on_processing_complete_success(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\u2705",
+        reaction="\U0001f44d",
     )
 
 
 @pytest.mark.asyncio
 async def test_on_processing_complete_failure(monkeypatch):
-    """Failed processing should set cross mark reaction."""
+    """Failed processing should set thumbs-down reaction."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -201,7 +201,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\u274c",
+        reaction="\U0001f44e",
     )
 
 

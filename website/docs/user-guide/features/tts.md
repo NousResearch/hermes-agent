@@ -10,7 +10,7 @@ Hermes Agent supports both text-to-speech output and voice message transcription
 
 ## Text-to-Speech
 
-Convert text to speech with five providers:
+Convert text to speech with six providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -18,6 +18,7 @@ Convert text to speech with five providers:
 | **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
 | **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
 | **MiniMax TTS** | Excellent | Paid | `MINIMAX_API_KEY` |
+| **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **NeuTTS** | Good | Free | None needed |
 
 ### Platform Delivery
@@ -34,9 +35,11 @@ Convert text to speech with five providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "neutts"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "neutts"
+  speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+    speed: 1.0                  # Converted to rate percentage (+/-%)
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
     model_id: "eleven_multilingual_v2"
@@ -44,12 +47,16 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    speed: 1.0                  # 0.25 - 4.0
   minimax:
     model: "speech-2.8-hd"     # speech-2.8-hd (default), speech-2.8-turbo
     voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
+  mistral:
+    model: "voxtral-mini-tts-2603"
+    voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   neutts:
     ref_audio: ''
     ref_text: ''
@@ -57,11 +64,13 @@ tts:
     device: cpu
 ```
 
+**Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
+
 ### Telegram Voice Bubbles & ffmpeg
 
 Telegram voice bubbles require Opus/OGG audio format:
 
-- **OpenAI and ElevenLabs** produce Opus natively — no extra setup
+- **OpenAI, ElevenLabs, and Mistral** produce Opus natively — no extra setup
 - **Edge TTS** (default) outputs MP3 and needs **ffmpeg** to convert:
 - **MiniMax TTS** outputs MP3 and needs **ffmpeg** to convert for Telegram voice bubbles
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
@@ -80,7 +89,7 @@ sudo dnf install ffmpeg
 Without ffmpeg, Edge TTS, MiniMax TTS, and NeuTTS audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
-If you want voice bubbles without installing ffmpeg, switch to the OpenAI or ElevenLabs provider.
+If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
 :::
 
 ## Voice Message Transcription (STT)

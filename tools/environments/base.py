@@ -23,6 +23,19 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+# Thread-local activity callback.  The agent sets this before a tool call so
+# long-running _wait_for_process loops can report liveness to the gateway.
+_activity_callback_local = threading.local()
+
+
+def set_activity_callback(cb: Callable[[str], None] | None) -> None:
+    """Register a callback that _wait_for_process fires periodically."""
+    _activity_callback_local.callback = cb
+
+
+def _get_activity_callback() -> Callable[[str], None] | None:
+    return getattr(_activity_callback_local, "callback", None)
+
 
 def get_sandbox_dir() -> Path:
     """Return the host-side root for all sandbox storage (Docker workspaces,
@@ -370,6 +383,10 @@ class BaseEnvironment(ABC):
         """Poll-based wait with interrupt checking and stdout draining.
 
         Shared across all backends — not overridden.
+
+        Fires the ``activity_callback`` (if set on this instance) every 10s
+        while the process is running so the gateway's inactivity timeout
+        doesn't kill long-running commands.
         """
         output_chunks: list[str] = []
 
@@ -388,6 +405,8 @@ class BaseEnvironment(ABC):
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
         deadline = time.monotonic() + timeout
+        _last_activity_touch = time.monotonic()
+        _ACTIVITY_INTERVAL = 10.0  # seconds between activity touches
 
         while proc.poll() is None:
             if is_interrupted():
@@ -408,6 +427,17 @@ class BaseEnvironment(ABC):
                     else timeout_msg.lstrip(),
                     "returncode": 124,
                 }
+            # Periodic activity touch so the gateway knows we're alive
+            _now = time.monotonic()
+            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
+                _last_activity_touch = _now
+                _cb = _get_activity_callback()
+                if _cb:
+                    try:
+                        _elapsed = int(_now - (deadline - timeout))
+                        _cb(f"terminal command running ({_elapsed}s elapsed)")
+                    except Exception:
+                        pass
             time.sleep(0.2)
 
         drain_thread.join(timeout=5)

@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -219,13 +219,15 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     Validate a file path for write_file/remove_file.
     Must be under an allowed subdirectory and not escape the skill dir.
     """
+    from tools.path_security import has_traversal_component
+
     if not file_path:
         return "file_path is required."
 
     normalized = Path(file_path)
 
     # Prevent path traversal
-    if ".." in normalized.parts:
+    if has_traversal_component(file_path):
         return "Path traversal ('..') is not allowed."
 
     # Must be under an allowed subdirectory
@@ -238,6 +240,17 @@ def _validate_file_path(file_path: str) -> Optional[str]:
         return f"Provide a file path, not just a directory. Example: '{normalized.parts[0]}/myfile.md'"
 
     return None
+
+
+def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
+    """Resolve a supporting-file path and ensure it stays within the skill directory."""
+    from tools.path_security import validate_within_dir
+
+    target = skill_dir / file_path
+    error = validate_within_dir(target, skill_dir)
+    if error:
+        return None, error
+    return target, None
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -394,7 +407,9 @@ def _patch_skill(
         err = _validate_file_path(file_path)
         if err:
             return {"success": False, "error": err}
-        target = skill_dir / file_path
+        target, err = _resolve_skill_target(skill_dir, file_path)
+        if err:
+            return {"success": False, "error": err}
     else:
         # Patching SKILL.md
         target = skill_dir / "SKILL.md"
@@ -410,7 +425,7 @@ def _patch_skill(
     # from exact-match failures on minor formatting mismatches.
     from tools.fuzzy_match import fuzzy_find_and_replace
 
-    new_content, match_count, match_error = fuzzy_find_and_replace(
+    new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all
     )
     if match_error:
@@ -500,7 +515,9 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
-    target = existing["path"] / file_path
+    target, err = _resolve_skill_target(existing["path"], file_path)
+    if err:
+        return {"success": False, "error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
@@ -533,7 +550,9 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Skill '{name}' not found."}
     skill_dir = existing["path"]
 
-    target = skill_dir / file_path
+    target, err = _resolve_skill_target(skill_dir, file_path)
+    if err:
+        return {"success": False, "error": err}
     if not target.exists():
         # List what's actually there for the model to see
         available = []

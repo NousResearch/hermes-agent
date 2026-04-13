@@ -112,6 +112,7 @@ _RATE_LIMIT_PATTERNS = [
     "try again in",
     "please retry after",
     "resource_exhausted",
+    "rate increased too quickly",  # Alibaba/DashScope throttling
 ]
 
 # Usage-limit patterns that need disambiguation (could be billing OR rate_limit)

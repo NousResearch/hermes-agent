@@ -106,8 +106,9 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker detection
-    if os.path.exists('/.dockerenv'):
+    # Docker/Podman container detection
+    from hermes_constants import is_container
+    if is_container():
         warnings.append("Running inside Docker container -- no audio devices")
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
@@ -427,6 +428,11 @@ class AudioRecorder:
     def current_rms(self) -> int:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
+
+    @property
+    def is_recording(self) -> bool:
+        """Whether audio recording is currently active."""
+        return self._recording
 
     # -- public methods ------------------------------------------------------
 

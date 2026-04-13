@@ -26,6 +26,7 @@ _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
+_UNSET = object()
 
 
 def _get_pid_path() -> Path:
@@ -158,6 +159,8 @@ def _build_runtime_status_record() -> dict[str, Any]:
     payload.update({
         "gateway_state": "starting",
         "exit_reason": None,
+        "restart_requested": False,
+        "active_agents": 0,
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -216,12 +219,14 @@ def write_pid_file() -> None:
 
 def write_runtime_status(
     *,
-    gateway_state: Optional[str] = None,
-    exit_reason: Optional[str] = None,
-    platform: Optional[str] = None,
-    platform_state: Optional[str] = None,
-    error_code: Optional[str] = None,
-    error_message: Optional[str] = None,
+    gateway_state: Any = _UNSET,
+    exit_reason: Any = _UNSET,
+    restart_requested: Any = _UNSET,
+    active_agents: Any = _UNSET,
+    platform: Any = _UNSET,
+    platform_state: Any = _UNSET,
+    error_code: Any = _UNSET,
+    error_message: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -232,18 +237,22 @@ def write_runtime_status(
     payload["start_time"] = _get_process_start_time(os.getpid())
     payload["updated_at"] = _utc_now_iso()
 
-    if gateway_state is not None:
+    if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
+    if exit_reason is not _UNSET:
         payload["exit_reason"] = exit_reason
+    if restart_requested is not _UNSET:
+        payload["restart_requested"] = bool(restart_requested)
+    if active_agents is not _UNSET:
+        payload["active_agents"] = max(0, int(active_agents))
 
-    if platform is not None:
+    if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not None:
+        if platform_state is not _UNSET:
             platform_payload["state"] = platform_state
-        if error_code is not None:
+        if error_code is not _UNSET:
             platform_payload["error_code"] = error_code
-        if error_message is not None:
+        if error_message is not _UNSET:
             platform_payload["error_message"] = error_message
         platform_payload["updated_at"] = _utc_now_iso()
         payload["platforms"][platform] = platform_payload
@@ -281,6 +290,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     }
 
     existing = _read_json_file(lock_path)
+    if existing is None and lock_path.exists():
+        # Lock file exists but is empty or contains invalid JSON — treat as
+        # stale.  This happens when a previous process was killed between
+        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
+        # during rapid Slack reconnect retries).
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if existing:
         try:
             existing_pid = int(existing["pid"])

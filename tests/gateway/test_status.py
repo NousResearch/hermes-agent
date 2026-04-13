@@ -104,6 +104,34 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="stale error",
+            platform="discord",
+            platform_state="fatal",
+            error_code="discord_timeout",
+            error_message="stale platform error",
+        )
+
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="discord",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["platforms"]["discord"]["error_code"] is None
+        assert payload["platforms"]["discord"]["error_message"] is None
+
 
 class TestTerminatePid:
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
@@ -180,6 +208,33 @@ class TestScopedLocks:
         payload = json.loads(lock_path.read_text())
         assert payload["pid"] == os.getpid()
         assert payload["metadata"]["platform"] == "telegram"
+
+    def test_acquire_scoped_lock_recovers_empty_lock_file(self, tmp_path, monkeypatch):
+        """Empty lock file (0 bytes) left by a crashed process should be treated as stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "slack-app-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("")  # simulate crash between O_CREAT and json.dump
+
+        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
+        assert payload["metadata"]["platform"] == "slack"
+
+    def test_acquire_scoped_lock_recovers_corrupt_lock_file(self, tmp_path, monkeypatch):
+        """Lock file with invalid JSON should be treated as stale."""
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
+        lock_path = tmp_path / "locks" / "slack-app-token-2bb80d537b1da3e3.lock"
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.write_text("{truncated")  # simulate partial write
+
+        acquired, existing = status.acquire_scoped_lock("slack-app-token", "secret", metadata={"platform": "slack"})
+
+        assert acquired is True
+        payload = json.loads(lock_path.read_text())
+        assert payload["pid"] == os.getpid()
 
     def test_release_scoped_lock_only_removes_current_owner(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))

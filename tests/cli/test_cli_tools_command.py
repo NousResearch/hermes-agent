@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch, call
 
+import pytest
+
 from cli import HermesCLI
 
 
@@ -12,6 +14,13 @@ def _make_cli(enabled_toolsets=None):
     cli_obj._command_running = False
     cli_obj.console = MagicMock()
     return cli_obj
+
+
+@pytest.fixture(autouse=True)
+def _patch_cprint_for_tests():
+    """Route prompt_toolkit output through plain print during unit tests."""
+    with patch("cli._cprint", side_effect=print):
+        yield
 
 
 # ── /tools (no subcommand) ──────────────────────────────────────────────────
@@ -66,7 +75,8 @@ class TestToolsSlashDisableWithReset:
         with patch("hermes_cli.tools_config.load_config",
                    return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
              patch("hermes_cli.tools_config.save_config"), \
-             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.tools_config._get_platform_tools",
+                   side_effect=[{"web", "memory"}, {"memory"}]), \
              patch("hermes_cli.config.load_config", return_value={}), \
              patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools disable web")
@@ -86,17 +96,26 @@ class TestToolsSlashDisableWithReset:
             cli_obj._handle_tools_command("/tools disable web")
         mock_input.assert_not_called()
 
-    def test_disable_always_resets_session(self):
-        """Even without a confirmation prompt, disable always resets the session."""
+    def test_disable_resets_session_when_changed(self):
+        """Disable resets the session only when the tool config actually changes."""
         cli_obj = _make_cli(["web", "memory"])
         with patch("hermes_cli.tools_config.load_config",
                    return_value={"platform_toolsets": {"cli": ["web", "memory"]}}), \
              patch("hermes_cli.tools_config.save_config"), \
-             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory"}), \
+             patch("hermes_cli.tools_config._get_platform_tools",
+                   side_effect=[{"web", "memory"}, {"memory"}]), \
              patch("hermes_cli.config.load_config", return_value={}), \
              patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools disable web")
         mock_reset.assert_called_once()
+
+    def test_disable_noop_does_not_reset_session(self):
+        cli_obj = _make_cli(["memory"])
+        with patch("hermes_cli.tools_config.tools_disable_enable_command",
+                   return_value={"changed": False, "changed_targets": [], "unchanged_targets": ["web"]}), \
+             patch.object(cli_obj, "new_session") as mock_reset:
+            cli_obj._handle_tools_command("/tools disable web")
+        mock_reset.assert_not_called()
 
     def test_disable_missing_name_prints_usage(self, capsys):
         cli_obj = _make_cli()
@@ -116,12 +135,21 @@ class TestToolsSlashEnableWithReset:
         with patch("hermes_cli.tools_config.load_config",
                    return_value={"platform_toolsets": {"cli": ["memory"]}}), \
              patch("hermes_cli.tools_config.save_config"), \
-             patch("hermes_cli.tools_config._get_platform_tools", return_value={"memory", "web"}), \
+             patch("hermes_cli.tools_config._get_platform_tools",
+                   side_effect=[{"memory"}, {"memory", "web"}]), \
              patch("hermes_cli.config.load_config", return_value={}), \
              patch.object(cli_obj, "new_session") as mock_reset:
             cli_obj._handle_tools_command("/tools enable web")
         mock_reset.assert_called_once()
         assert "web" in cli_obj.enabled_toolsets
+
+    def test_enable_noop_does_not_reset_session(self):
+        cli_obj = _make_cli(["web", "memory"])
+        with patch("hermes_cli.tools_config.tools_disable_enable_command",
+                   return_value={"changed": False, "changed_targets": [], "unchanged_targets": ["web"]}), \
+             patch.object(cli_obj, "new_session") as mock_reset:
+            cli_obj._handle_tools_command("/tools enable web")
+        mock_reset.assert_not_called()
 
     def test_enable_missing_name_prints_usage(self, capsys):
         cli_obj = _make_cli()

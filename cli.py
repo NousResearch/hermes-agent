@@ -3833,7 +3833,8 @@ class HermesCLI:
 
         if subcommand == "list":
             tools_disable_enable_command(
-                Namespace(tools_action="list", platform="cli"))
+                Namespace(tools_action="list", platform="cli"),
+                line_printer=_cprint)
             return
 
         names = parts[2:]
@@ -3850,15 +3851,19 @@ class HermesCLI:
         label = ", ".join(names)
         _cprint(f"{_ACCENT}{verb} {label}...{_RST}")
 
-        tools_disable_enable_command(
-            Namespace(tools_action=subcommand, names=names, platform="cli"))
+        result = tools_disable_enable_command(
+            Namespace(tools_action=subcommand, names=names, platform="cli"),
+            line_printer=_cprint)
 
-        # Reset session so the new tool config is picked up from a clean state
-        from hermes_cli.tools_config import _get_platform_tools
-        from hermes_cli.config import load_config
-        self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
-        self.new_session()
-        _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
+        if result and result.get("changed"):
+            # Reset session so the new tool config is picked up from a clean state
+            from hermes_cli.tools_config import _get_platform_tools
+            from hermes_cli.config import load_config
+            self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+            self.new_session()
+            _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
+        else:
+            _cprint(f"{_DIM}No session reset needed.{_RST}")
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""

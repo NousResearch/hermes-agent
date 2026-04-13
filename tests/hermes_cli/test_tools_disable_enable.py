@@ -33,9 +33,13 @@ class TestToolsDisableBuiltin:
         config = {"platform_toolsets": {"cli": ["memory"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="disable", names=["web"], platform="cli"))
+            result = tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["web"], platform="cli")
+            )
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
+        assert result["changed"] is False
+        assert result["unchanged_targets"] == ["web"]
 
 
 # ── Built-in toolset enable ─────────────────────────────────────────────────
@@ -55,9 +59,13 @@ class TestToolsEnableBuiltin:
         config = {"platform_toolsets": {"cli": ["web"]}}
         with patch("hermes_cli.tools_config.load_config", return_value=config), \
              patch("hermes_cli.tools_config.save_config") as mock_save:
-            tools_disable_enable_command(Namespace(tools_action="enable", names=["web"], platform="cli"))
+            result = tools_disable_enable_command(
+                Namespace(tools_action="enable", names=["web"], platform="cli")
+            )
         saved = mock_save.call_args[0][0]
         assert saved["platform_toolsets"]["cli"].count("web") == 1
+        assert result["changed"] is False
+        assert result["unchanged_targets"] == ["web"]
 
 
 # ── MCP tool disable ────────────────────────────────────────────────────────
@@ -222,3 +230,13 @@ class TestToolsValidation:
         saved = mock_save.call_args[0][0]
         assert "web" not in saved["platform_toolsets"]["cli"]
         assert "memory" in saved["platform_toolsets"]["cli"]
+
+    def test_disable_noop_prints_no_changes(self, capsys):
+        config = {"platform_toolsets": {"cli": ["memory"]}}
+        with patch("hermes_cli.tools_config.load_config", return_value=config), \
+             patch("hermes_cli.tools_config.save_config"):
+            tools_disable_enable_command(
+                Namespace(tools_action="disable", names=["web"], platform="cli")
+            )
+        out = capsys.readouterr().out
+        assert "No changes (already disabled): web" in out

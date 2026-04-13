@@ -13,7 +13,7 @@ import json as _json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 
 from hermes_cli.config import (
@@ -1575,22 +1575,37 @@ def _configure_mcp_tools_interactive(config: dict):
 # ─── Non-interactive disable/enable ──────────────────────────────────────────
 
 
-def _apply_toolset_change(config: dict, platform: str, toolset_names: List[str], action: str):
-    """Add or remove built-in toolsets for a platform."""
+def _apply_toolset_change(
+    config: dict,
+    platform: str,
+    toolset_names: List[str],
+    action: str,
+) -> tuple[List[str], List[str]]:
+    """Add or remove built-in toolsets for a platform.
+
+    Returns ``(changed, unchanged)`` in request order.
+    """
     enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
     if action == "disable":
+        changed = [name for name in toolset_names if name in enabled]
+        unchanged = [name for name in toolset_names if name not in enabled]
         updated = enabled - set(toolset_names)
     else:
+        changed = [name for name in toolset_names if name not in enabled]
+        unchanged = [name for name in toolset_names if name in enabled]
         updated = enabled | set(toolset_names)
     _save_platform_tools(config, platform, updated)
+    return changed, unchanged
 
 
-def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]:
+def _apply_mcp_change(config: dict, targets: List[str], action: str) -> tuple[Set[str], List[str], List[str]]:
     """Add or remove specific MCP tools from a server's exclude list.
 
-    Returns the set of server names that were not found in config.
+    Returns ``(failed_servers, changed, unchanged)`` in request order.
     """
     failed_servers: Set[str] = set()
+    changed: List[str] = []
+    unchanged: List[str] = []
     mcp_servers = config.get("mcp_servers") or {}
 
     for target in targets:
@@ -1603,52 +1618,69 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
         if action == "disable":
             if tool_name not in exclude:
                 exclude.append(tool_name)
+                changed.append(target)
+            else:
+                unchanged.append(target)
         else:
-            exclude = [t for t in exclude if t != tool_name]
+            if tool_name in exclude:
+                exclude = [t for t in exclude if t != tool_name]
+                changed.append(target)
+            else:
+                unchanged.append(target)
         tools_cfg["exclude"] = exclude
 
-    return failed_servers
+    return failed_servers, changed, unchanged
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
-    """Print a summary of enabled/disabled toolsets and MCP tool filters."""
+def _print_tools_list(
+    enabled_toolsets: set,
+    mcp_servers: dict,
+    platform: str = "cli",
+    line_printer: Optional[Callable[[str], None]] = None,
+):
+    """Print a summary of enabled/disabled toolsets and MCP tool filters.
+
+    ``line_printer`` lets the interactive TUI route ANSI strings through
+    prompt_toolkit's renderer instead of raw stdout.
+    """
+    emit = line_printer or print
     effective = _get_effective_configurable_toolsets()
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
-    print(f"Built-in toolsets ({platform}):")
+    emit(f"Built-in toolsets ({platform}):")
     for ts_key, label, _ in effective:
         if ts_key not in builtin_keys:
             continue
         status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                   else color("✗ disabled", Colors.RED))
-        print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+        emit(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     # Plugin toolsets
     plugin_entries = [(k, l) for k, l, _ in effective if k not in builtin_keys]
     if plugin_entries:
-        print()
-        print(f"Plugin toolsets ({platform}):")
+        emit("")
+        emit(f"Plugin toolsets ({platform}):")
         for ts_key, label in plugin_entries:
             status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                       else color("✗ disabled", Colors.RED))
-            print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+            emit(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
 
     if mcp_servers:
-        print()
-        print("MCP servers:")
+        emit("")
+        emit("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude = tools_cfg.get("exclude") or []
             include = tools_cfg.get("include") or []
             if include:
-                _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
+                emit(color(f"  {srv_name}  [include only: {', '.join(include)}]", Colors.DIM))
             elif exclude:
-                _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
+                emit(color(f"  {srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]", Colors.DIM))
             else:
-                _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
+                emit(color(f"  {srv_name}  {color('all tools enabled', Colors.DIM)}", Colors.DIM))
 
 
-def tools_disable_enable_command(args):
+def tools_disable_enable_command(args, line_printer: Optional[Callable[[str], None]] = None):
     """Enable, disable, or list tools for a platform.
 
     Built-in toolsets use plain names (e.g. ``web``, ``memory``).
@@ -1657,15 +1689,34 @@ def tools_disable_enable_command(args):
     action = args.tools_action
     platform = getattr(args, "platform", "cli")
     config = load_config()
+    emit = line_printer or print
+
+    def emit_error(text: str) -> None:
+        if line_printer:
+            emit(color(f"✗ {text}", Colors.RED))
+        else:
+            _print_error(text)
+
+    def emit_success(text: str) -> None:
+        if line_printer:
+            emit(color(f"✓ {text}", Colors.GREEN))
+        else:
+            _print_success(text)
+
+    def emit_info(text: str) -> None:
+        if line_printer:
+            emit(color(text, Colors.DIM))
+        else:
+            _print_info(text)
 
     if platform not in PLATFORMS:
-        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
-        return
+        emit_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
+        return {"changed": False, "changed_targets": [], "unchanged_targets": []}
 
     if action == "list":
         _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
-        return
+                          config.get("mcp_servers") or {}, platform, line_printer=line_printer)
+        return {"changed": False, "changed_targets": [], "unchanged_targets": []}
 
     targets: List[str] = args.names
     toolset_targets = [t for t in targets if ":" not in t]
@@ -1675,24 +1726,39 @@ def tools_disable_enable_command(args):
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
         for name in unknown_toolsets:
-            _print_error(f"Unknown toolset '{name}'")
+            emit_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
 
+    changed_targets: List[str] = []
+    unchanged_targets: List[str] = []
     if toolset_targets:
-        _apply_toolset_change(config, platform, toolset_targets, action)
+        builtin_changed, builtin_unchanged = _apply_toolset_change(config, platform, toolset_targets, action)
+        changed_targets.extend(builtin_changed)
+        unchanged_targets.extend(builtin_unchanged)
 
     failed_servers: Set[str] = set()
     if mcp_targets:
-        failed_servers = _apply_mcp_change(config, mcp_targets, action)
+        failed_servers, mcp_changed, mcp_unchanged = _apply_mcp_change(config, mcp_targets, action)
+        changed_targets.extend(mcp_changed)
+        unchanged_targets.extend(mcp_unchanged)
         for srv in failed_servers:
-            _print_error(f"MCP server '{srv}' not found in config")
+            emit_error(f"MCP server '{srv}' not found in config")
 
     save_config(config)
 
-    successful = [
-        t for t in targets
-        if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
-    ]
-    if successful:
+    ordered_changed = [t for t in targets if t in changed_targets]
+    ordered_unchanged = [t for t in targets if t in unchanged_targets]
+
+    if ordered_changed:
         verb = "Disabled" if action == "disable" else "Enabled"
-        _print_success(f"{verb}: {', '.join(successful)}")
+        emit_success(f"{verb}: {', '.join(ordered_changed)}")
+
+    if ordered_unchanged:
+        state = "already disabled" if action == "disable" else "already enabled"
+        emit_info(f"No changes ({state}): {', '.join(ordered_unchanged)}")
+
+    return {
+        "changed": bool(ordered_changed),
+        "changed_targets": ordered_changed,
+        "unchanged_targets": ordered_unchanged,
+    }

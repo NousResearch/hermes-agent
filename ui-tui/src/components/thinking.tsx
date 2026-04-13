@@ -67,7 +67,11 @@ function StreamCursor({ active = false, color, dimColor }: { active?: boolean; c
     return () => clearInterval(id)
   }, [])
 
-  return <Text color={color} dimColor={dimColor}>{active && on ? '▍' : ' '}</Text>
+  return (
+    <Text color={color} dimColor={dimColor}>
+      {active && on ? '▍' : ' '}
+    </Text>
+  )
 }
 
 // ── Thinking (pre-tool fallback) ─────────────────────────────────────
@@ -271,7 +275,9 @@ export const ToolTrail = memo(function ToolTrail({
 
   return (
     <Box flexDirection="column">
-      {busy && !groups.length && <Thinking mode={thinkingMode} reasoning={reasoning} streaming={reasoningStreaming} t={t} />}
+      {busy && !groups.length && (
+        <Thinking mode={thinkingMode} reasoning={reasoning} streaming={reasoningStreaming} t={t} />
+      )}
       {!busy && !groups.length && reasoningTail && (
         <Detail color={t.color.dim} content={reasoningTail} dimColor key="cot" />
       )}

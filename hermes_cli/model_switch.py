@@ -935,6 +935,65 @@ def list_authenticated_providers(
         seen_slugs.add(pid)
         seen_slugs.add(hermes_slug)
 
+    # --- 2b. Cross-check canonical provider list ---
+    # Catches providers that are in CANONICAL_PROVIDERS but weren't found
+    # in PROVIDER_TO_MODELS_DEV or HERMES_OVERLAYS (keeps /model in sync
+    # with `hermes model`).
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS as _canon_provs
+    except ImportError:
+        _canon_provs = []
+
+    for _cp in _canon_provs:
+        if _cp.slug in seen_slugs:
+            continue
+
+        # Check credentials via PROVIDER_REGISTRY (auth.py)
+        _cp_config = _auth_registry.get(_cp.slug)
+        _cp_has_creds = False
+        if _cp_config and _cp_config.api_key_env_vars:
+            _cp_has_creds = any(os.environ.get(ev) for ev in _cp_config.api_key_env_vars)
+        # Also check auth store and credential pool
+        if not _cp_has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                _cp_store = _load_auth_store()
+                _cp_providers_store = _cp_store.get("providers", {})
+                _cp_pool_store = _cp_store.get("credential_pool", {})
+                if _cp_store and (
+                    _cp.slug in _cp_providers_store
+                    or _cp.slug in _cp_pool_store
+                ):
+                    _cp_has_creds = True
+            except Exception:
+                pass
+        if not _cp_has_creds:
+            try:
+                from agent.credential_pool import load_pool
+                _cp_pool = load_pool(_cp.slug)
+                if _cp_pool.has_credentials():
+                    _cp_has_creds = True
+            except Exception:
+                pass
+
+        if not _cp_has_creds:
+            continue
+
+        _cp_model_ids = curated.get(_cp.slug, [])
+        _cp_total = len(_cp_model_ids)
+        _cp_top = _cp_model_ids[:max_models]
+
+        results.append({
+            "slug": _cp.slug,
+            "name": _cp.label,
+            "is_current": _cp.slug == current_provider,
+            "is_user_defined": False,
+            "models": _cp_top,
+            "total_models": _cp_total,
+            "source": "canonical",
+        })
+        seen_slugs.add(_cp.slug)
+
     # --- 3. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():

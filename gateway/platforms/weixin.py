@@ -98,6 +98,26 @@ MEDIA_VOICE = 4
 
 _LIVE_ADAPTERS: Dict[str, Any] = {}
 
+
+def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
+    """Return a TCPConnector with a certifi CA bundle, or None if certifi is unavailable.
+
+    Tencent's iLink server (``ilinkai.weixin.qq.com``) is not verifiable against
+    some system CA stores (notably Homebrew's OpenSSL on macOS Apple Silicon).
+    When ``certifi`` is installed, use its Mozilla CA bundle to guarantee
+    verification. Otherwise fall back to aiohttp's default (which honors
+    ``SSL_CERT_FILE`` env var via ``trust_env=True``).
+    """
+    try:
+        import ssl
+        import certifi
+    except ImportError:
+        return None
+    if not AIOHTTP_AVAILABLE:
+        return None
+    ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+    return aiohttp.TCPConnector(ssl=ssl_ctx)
+
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
 ITEM_VOICE = 3
@@ -969,7 +989,7 @@ async def qr_login(
     if not AIOHTTP_AVAILABLE:
         raise RuntimeError("aiohttp is required for Weixin QR login")
 
-    async with aiohttp.ClientSession(trust_env=True) as session:
+    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
         try:
             qr_resp = await _api_get(
                 session,
@@ -987,6 +1007,10 @@ async def qr_login(
             logger.error("weixin: QR response missing qrcode")
             return None
 
+        # qrcode_url is the full scannable liteapp URL; qrcode_value is just the hex token
+        # WeChat needs to scan the full URL, not the raw hex string
+        qr_scan_data = qrcode_url if qrcode_url else qrcode_value
+
         print("\n请使用微信扫描以下二维码：")
         if qrcode_url:
             print(qrcode_url)
@@ -994,11 +1018,11 @@ async def qr_login(
             import qrcode
 
             qr = qrcode.QRCode()
-            qr.add_data(qrcode_url or qrcode_value)
+            qr.add_data(qr_scan_data)
             qr.make(fit=True)
             qr.print_ascii(invert=True)
-        except Exception:
-            print("（终端二维码渲染失败，请直接打开上面的二维码链接）")
+        except Exception as _qr_exc:
+            print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
         deadline = time.time() + timeout_seconds
         current_base_url = ILINK_BASE_URL
@@ -1044,8 +1068,17 @@ async def qr_login(
                     )
                     qrcode_value = str(qr_resp.get("qrcode") or "")
                     qrcode_url = str(qr_resp.get("qrcode_img_content") or "")
+                    qr_scan_data = qrcode_url if qrcode_url else qrcode_value
                     if qrcode_url:
                         print(qrcode_url)
+                    try:
+                        import qrcode as _qrcode
+                        qr = _qrcode.QRCode()
+                        qr.add_data(qr_scan_data)
+                        qr.make(fit=True)
+                        qr.print_ascii(invert=True)
+                    except Exception:
+                        pass
                 except Exception as exc:
                     logger.error("weixin: QR refresh failed: %s", exc)
                     return None
@@ -1169,8 +1202,8 @@ class WeixinAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
-        self._poll_session = aiohttp.ClientSession(trust_env=True)
-        self._send_session = aiohttp.ClientSession(trust_env=True)
+        self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1964,7 +1997,7 @@ async def send_weixin_direct(
             "context_token_used": bool(context_token),
         }
 
-    async with aiohttp.ClientSession(trust_env=True) as session:
+    async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(
             PlatformConfig(
                 enabled=True,

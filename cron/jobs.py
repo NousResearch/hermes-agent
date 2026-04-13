@@ -306,7 +306,14 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
             return None
-        cron = croniter(schedule["expr"], now)
+        # Use last_run_at as the croniter base when available, consistent
+        # with interval jobs. This ensures that after a crash/restart,
+        # the next run is anchored to the actual last execution time,
+        # not to an arbitrary restart time.
+        base_time = now
+        if last_run_at:
+            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
+        cron = croniter(schedule["expr"], base_time)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 

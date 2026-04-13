@@ -49,7 +49,7 @@ export default function StatusPage() {
   useEffect(() => {
     const load = () => {
       api.getStatus().then(setStatus).catch(() => {});
-      api.getSessions().then(setSessions).catch(() => {});
+      api.getSessions(50).then((resp) => setSessions(resp.sessions)).catch(() => {});
     };
     load();
     const interval = setInterval(load, 5000);

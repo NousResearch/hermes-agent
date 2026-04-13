@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import {
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   MessageSquare,
   Search,
@@ -287,6 +288,9 @@ function SessionRow({
 
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -294,17 +298,21 @@ export default function SessionsPage() {
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
 
-  const loadSessions = useCallback(() => {
+  const loadSessions = useCallback((p: number) => {
+    setLoading(true);
     api
-      .getSessions()
-      .then(setSessions)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .then((resp) => {
+        setSessions(resp.sessions);
+        setTotal(resp.total);
+      })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    loadSessions();
-  }, [loadSessions]);
+    loadSessions(page);
+  }, [loadSessions, page]);
 
   // Debounced FTS search
   useEffect(() => {
@@ -334,6 +342,7 @@ export default function SessionsPage() {
     try {
       await api.deleteSession(id);
       setSessions((prev) => prev.filter((s) => s.id !== id));
+      setTotal((prev) => prev - 1);
       if (expandedId === id) setExpandedId(null);
     } catch {
       // ignore
@@ -370,7 +379,7 @@ export default function SessionsPage() {
           <MessageSquare className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-base font-semibold">Sessions</h1>
           <Badge variant="secondary" className="text-xs">
-            {sessions.length}
+            {total}
           </Badge>
         </div>
         <div className="relative w-64">
@@ -408,21 +417,57 @@ export default function SessionsPage() {
           )}
         </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
-          {filtered.map((s) => (
-            <SessionRow
-              key={s.id}
-              session={s}
-              snippet={snippetMap.get(s.id)}
-              searchQuery={search || undefined}
-              isExpanded={expandedId === s.id}
-              onToggle={() =>
-                setExpandedId((prev) => (prev === s.id ? null : s.id))
-              }
-              onDelete={() => handleDelete(s.id)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="flex flex-col gap-1.5">
+            {filtered.map((s) => (
+              <SessionRow
+                key={s.id}
+                session={s}
+                snippet={snippetMap.get(s.id)}
+                searchQuery={search || undefined}
+                isExpanded={expandedId === s.id}
+                onToggle={() =>
+                  setExpandedId((prev) => (prev === s.id ? null : s.id))
+                }
+                onDelete={() => handleDelete(s.id)}
+              />
+            ))}
+          </div>
+
+          {/* Pagination — hidden during search */}
+          {!searchResults && total > PAGE_SIZE && (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => p - 1)}
+                  aria-label="Previous page"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  Page {page + 1} of {Math.ceil(total / PAGE_SIZE)}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 w-7 p-0"
+                  disabled={(page + 1) * PAGE_SIZE >= total}
+                  onClick={() => setPage((p) => p + 1)}
+                  aria-label="Next page"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

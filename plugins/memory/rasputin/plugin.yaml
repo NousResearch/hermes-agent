@@ -1,0 +1,4 @@
+name: rasputin
+version: 0.1.0
+description: "Rasputin derived-memory provider scaffold for Hermes. V1 is context-only with mirrored writes and no model-facing tools."
+pip_dependencies: []

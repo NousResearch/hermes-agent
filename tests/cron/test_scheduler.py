@@ -64,6 +64,36 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    @pytest.mark.parametrize(
+        ("platform", "env_var", "chat_id"),
+        [
+            ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
+            ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
+            ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
+        ],
+    )
+    def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
+        self, monkeypatch, platform, env_var, chat_id
+    ):
+        for fallback_env in (
+            "MATRIX_HOME_CHANNEL",
+            "TELEGRAM_HOME_CHANNEL",
+            "DISCORD_HOME_CHANNEL",
+            "SLACK_HOME_CHANNEL",
+            "BLUEBUBBLES_HOME_CHANNEL",
+            "FEISHU_HOME_CHANNEL",
+            "WECOM_HOME_CHANNEL",
+            "WEIXIN_HOME_CHANNEL",
+        ):
+            monkeypatch.delenv(fallback_env, raising=False)
+        monkeypatch.setenv(env_var, chat_id)
+
+        assert _resolve_delivery_target({"deliver": "origin"}) == {
+            "platform": platform,
+            "chat_id": chat_id,
+            "thread_id": None,
+        }
+
     def test_explicit_telegram_topic_target_with_thread_id(self):
         """deliver: 'telegram:chat_id:thread_id' parses correctly."""
         job = {

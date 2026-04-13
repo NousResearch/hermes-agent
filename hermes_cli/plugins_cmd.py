@@ -319,7 +319,7 @@ def _read_autogen_lock(plugin_dir: Path):
         return None
     try:
         return _json_autogen.loads(lock_file.read_text(encoding="utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:
+    except (ValueError, TypeError, UnicodeDecodeError) as e:
         _log.warning(
             "Corrupt autogen lock file at %s: %s. Treating as absent.",
             lock_file, e,

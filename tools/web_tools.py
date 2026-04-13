@@ -16,6 +16,7 @@ Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
+- Perplexity: https://docs.perplexity.ai (search only — no extract or crawl)
 - Tavily: https://tavily.com (search, extract, crawl)
 
 LLM Processing:
@@ -88,13 +89,14 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "perplexity"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
     # available backend. Firecrawl also counts as available when the managed
     # tool gateway is configured for Nous subscribers.
     backend_candidates = (
+        ("perplexity", _has_env("PERPLEXITY_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "perplexity":
+        return _has_env("PERPLEXITY_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,8 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "PERPLEXITY_API_KEY",
+        "PERPLEXITY_API_URL",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -955,6 +961,134 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+# ─── Perplexity Search Helper ──────────────────────────────────────────────
+
+_PERPLEXITY_DEFAULT_API_URL = "https://api.perplexity.ai"
+
+
+def _perplexity_base_url() -> str:
+    """Return the Perplexity API base URL, configurable via PERPLEXITY_API_URL.
+
+    Allows overriding for self-hosted or proxy deployments, matching the
+    pattern used by FIRECRAWL_API_URL.
+    """
+    return os.getenv("PERPLEXITY_API_URL", "").strip().rstrip("/") or _PERPLEXITY_DEFAULT_API_URL
+
+
+def _normalize_perplexity_search_results(data: dict) -> dict:
+    """Normalize Perplexity /search response to the standard web search format.
+
+    Perplexity returns ``{id: str, results: [{title, url, snippet, date}]}``.
+    We map to ``{success: bool, data: {web: [{title, url, description, date, position}]}}``.
+    """
+    raw_results = data.get("results", [])
+    if not isinstance(raw_results, list):
+        raw_results = []
+
+    web_results = []
+    for i, result in enumerate(raw_results):
+        if not isinstance(result, dict):
+            continue
+        url = result.get("url", "") or ""
+        title = result.get("title", "") or ""
+        snippet = result.get("snippet", "") or ""
+        date = result.get("date", "") or ""
+        # Skip results missing both URL and title — not useful for the agent
+        if not url and not title:
+            continue
+        web_results.append({
+            "url": url,
+            "title": title,
+            "description": snippet,
+            "date": date,
+            "position": i + 1,
+        })
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _perplexity_search(query: str, limit: int = 10) -> dict:
+    """Search using the Perplexity Search API and return results as a dict.
+
+    Uses the POST /search endpoint on the Perplexity API.
+    Returns results in the standard Hermes web search format.
+
+    Perplexity Search API returns ranked results with title, url, snippet,
+    and date — no LLM-generated summaries. It is a search-only backend;
+    web_extract and web_crawl are not supported.
+
+    Args:
+        query: The search query string.
+        limit: Maximum number of results to return (1-20, API max is 20).
+
+    Returns:
+        dict with ``success`` and ``data.web`` list of result dicts.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    api_key = os.getenv("PERPLEXITY_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "success": False,
+            "error": "PERPLEXITY_API_KEY not set. Get an API key at https://www.perplexity.ai/settings/api",
+        }
+
+    limit = max(1, min(limit, 20))
+    base_url = _perplexity_base_url()
+    search_url = f"{base_url}/search"
+    logger.info("Perplexity search: '%s' (limit=%d)", query, limit)
+
+    payload = {
+        "query": query,
+        "max_results": limit,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = httpx.post(
+            search_url,
+            json=payload,
+            headers=headers,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        status = exc.response.status_code
+        body = exc.response.text[:500]
+        logger.error("Perplexity search HTTP %s: %s", status, body)
+        if status == 401:
+            return {"success": False, "error": f"Perplexity API authentication failed (HTTP {status}). Check your PERPLEXITY_API_KEY."}
+        if status == 429:
+            retry_after = exc.response.headers.get("retry-after")
+            hint = f" Retry after {retry_after}s." if retry_after else ""
+            return {"success": False, "error": f"Perplexity API rate limit exceeded (HTTP 429).{hint} Consider reducing request frequency or upgrading your plan."}
+        if status >= 500:
+            return {"success": False, "error": f"Perplexity API server error (HTTP {status}). The service may be temporarily unavailable."}
+        return {"success": False, "error": f"Perplexity API error (HTTP {status}): {body[:200]}"}
+    except httpx.TimeoutException:
+        logger.error("Perplexity search request timed out after 30s")
+        return {"success": False, "error": "Perplexity search request timed out (30s). Try again or reduce max_results."}
+    except httpx.RequestError as exc:
+        logger.error("Perplexity search request error: %s", exc)
+        return {"success": False, "error": f"Perplexity request failed: {exc}"}
+
+    try:
+        data = resp.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.error("Perplexity search returned invalid JSON: %s", exc)
+        return {"success": False, "error": f"Perplexity returned invalid JSON: {exc}"}
+
+    result = _normalize_perplexity_search_results(data)
+    logger.info("Perplexity search returned %d results", len(result.get("data", {}).get("web", [])))
+    return result
+
+
 # ─── Parallel Search & Extract Helpers ────────────────────────────────────────
 
 def _parallel_search(query: str, limit: int = 5) -> dict:
@@ -1036,7 +1170,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     Search the web for information using available search API backend.
 
     This function provides a generic interface for web search that can work
-    with multiple backends (Parallel or Firecrawl).
+    with multiple backends (Perplexity, Parallel, Firecrawl, Exa, or Tavily).
 
     Note: This function returns search result metadata only (URLs, titles, descriptions).
     Use web_extract_tool to get full content from specific URLs.
@@ -1083,6 +1217,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "perplexity":
+            response_data = _perplexity_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1240,7 +1383,11 @@ async def web_extract_tool(
         else:
             backend = _get_backend()
 
-            if backend == "parallel":
+            if backend == "perplexity":
+                # Perplexity Search API is search-only; no web_extract support.
+                # Fall back to Firecrawl for extraction.
+                logger.info("Perplexity backend does not support extract; falling back to Firecrawl")
+            elif backend == "parallel":
                 results = await _parallel_extract(safe_urls)
             elif backend == "exa":
                 results = _exa_extract(safe_urls)
@@ -1541,6 +1688,11 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        # Perplexity Search API is search-only; no crawl support.
+        # Fall back to Firecrawl for crawling.
+        if backend == "perplexity":
+            logger.info("Perplexity backend does not support crawl; falling back to Firecrawl")
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1921,9 +2073,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "perplexity"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("perplexity", "exa", "parallel", "firecrawl", "tavily"))
 
 
 def check_auxiliary_model() -> bool:

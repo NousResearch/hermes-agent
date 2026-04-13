@@ -241,3 +241,51 @@ class TestAutogenEmptySkillsDir:
             for call in console.print.call_args_list
         )
         assert "empty" in all_calls.lower() or "Warning" in all_calls
+
+
+class TestAutogenIntegratedWithInstall:
+    """Integration-ish test: verify cmd_install calls _autogen_plugin_shim."""
+
+    def test_cmd_install_triggers_autogen_for_skill_only_bundle(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+        import shutil
+
+        from hermes_cli import plugins_cmd
+
+        # Stage a fake "cloned" repo layout in a temp location
+        fake_repo = tmp_path / "fake-clone"
+        fake_repo.mkdir()
+        skills_dir = fake_repo / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "alpha").mkdir()
+        (skills_dir / "alpha" / "SKILL.md").write_text(
+            "---\nname: alpha\n---\n\nBody.\n"
+        )
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: plugins_dir)
+
+        def fake_git_clone(cmd, **kwargs):
+            # Simulate git clone by copying fake_repo into cmd's destination
+            dest = Path(cmd[-1])
+            shutil.copytree(fake_repo, dest)
+            mock_result = MagicMock()
+            mock_result.returncode = 0
+            mock_result.stderr = ""
+            return mock_result
+
+        monkeypatch.setattr(subprocess, "run", fake_git_clone)
+        # Avoid interactive env-var prompt
+        monkeypatch.setattr(
+            plugins_cmd, "_prompt_plugin_env_vars", lambda *a, **k: None
+        )
+
+        plugins_cmd.cmd_install("myauthor/mybundle")
+
+        target = plugins_dir / "mybundle"
+        assert (target / "__init__.py").exists()
+        assert (target / "plugin.yaml").exists()
+        assert (target / ".hermes-autogen" / "shim.lock").exists()

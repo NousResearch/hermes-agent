@@ -555,6 +555,9 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         # Move from temp to final location
         shutil.move(str(tmp_target), str(target))
 
+    # Autogen shim for skill-only bundles that lack a hermes-aware __init__.py
+    _autogen_plugin_shim(target, console)
+
     # Validate it looks like a plugin
     if not (target / "plugin.yaml").exists() and not (target / "__init__.py").exists():
         console.print(

@@ -72,6 +72,9 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "github": "copilot",
+    "github-copilot": "copilot",
+    "github-models": "copilot",
 }
 
 

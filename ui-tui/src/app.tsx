@@ -58,6 +58,7 @@ const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 const LARGE_PASTE = { chars: 8000, lines: 80 }
 const EXCERPT = { chars: 1200, lines: 14 }
 const MAX_HISTORY = 800
+const REASONING_PULSE_MS = 700
 
 const SECRET_PATTERNS = [
   /AKIA[0-9A-Z]{16}/g,
@@ -337,6 +338,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [secret, setSecret] = useState<SecretReq | null>(null)
   const [picker, setPicker] = useState(false)
   const [reasoning, setReasoning] = useState('')
+  const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [pastes, setPastes] = useState<PendingPaste[]>([])
@@ -370,6 +372,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
   const persistedToolLabelsRef = useRef<Set<string>>(new Set())
+  const reasoningStreamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
@@ -385,6 +388,36 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
+
+  const pulseReasoningStreaming = useCallback(() => {
+    if (reasoningStreamingTimerRef.current) {
+      clearTimeout(reasoningStreamingTimerRef.current)
+    }
+
+    setReasoningStreaming(true)
+    reasoningStreamingTimerRef.current = setTimeout(() => {
+      reasoningStreamingTimerRef.current = null
+      setReasoningStreaming(false)
+    }, REASONING_PULSE_MS)
+  }, [])
+
+  const clearReasoningStreaming = useCallback(() => {
+    if (reasoningStreamingTimerRef.current) {
+      clearTimeout(reasoningStreamingTimerRef.current)
+      reasoningStreamingTimerRef.current = null
+    }
+
+    setReasoningStreaming(false)
+  }, [])
+
+  useEffect(
+    () => () => {
+      if (reasoningStreamingTimerRef.current) {
+        clearTimeout(reasoningStreamingTimerRef.current)
+      }
+    },
+    []
+  )
 
   function blocked() {
     return !!(clarify || approval || pasteReview || picker || secret || sudo || pager)
@@ -1356,6 +1389,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'reasoning.delta':
           if (p?.text) {
             setReasoning(prev => prev + p.text)
+            pulseReasoningStreaming()
           }
 
           break
@@ -1382,6 +1416,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'tool.start':
           pruneTransient()
+          clearReasoningStreaming()
           setTools(prev => [
             ...prev,
             { id: p.tool_id, name: p.name, context: (p.context as string) || '', startedAt: Date.now() }
@@ -1472,6 +1507,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'message.delta':
           pruneTransient()
+          clearReasoningStreaming()
 
           if (p?.text && !interruptedRef.current) {
             buf.current = p.rendered ?? buf.current + p.text
@@ -1492,6 +1528,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           idle()
           setReasoning('')
+          clearReasoningStreaming()
           setStreaming('')
 
           if (inflightPasteIdsRef.current.length) {
@@ -2447,6 +2484,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               activity={busy ? activity : []}
               busy={busy && !streaming}
               reasoning={reasoning}
+              reasoningStreaming={reasoningStreaming}
               t={theme}
               thinkingMode={hasReasoning ? thinkingMode : 'truncated'}
               tools={tools}

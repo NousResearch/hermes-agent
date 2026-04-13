@@ -371,3 +371,102 @@ class TestCleanupAutogenFiles:
 
         # Should not raise
         _cleanup_autogen_files(plugin_dir, lock)
+
+
+class TestRefreshAutogenShim:
+    def _bundle_with_shim(self, tmp_path, name="testplug", skills=("a",)):
+        """Create a plugin dir that already has an autogen shim + lock."""
+        plugin_dir = tmp_path / name
+        plugin_dir.mkdir()
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        for skill in skills:
+            skill_dir = skills_dir / skill
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(f"---\nname: {skill}\n---\n")
+
+        from hermes_cli.plugins_cmd import _autogen_plugin_shim
+        _autogen_plugin_shim(plugin_dir, MagicMock())
+        return plugin_dir
+
+    def test_case1_regenerates_existing_shim(self, tmp_path):
+        from hermes_cli.plugins_cmd import _refresh_autogen_shim
+
+        plugin_dir = self._bundle_with_shim(tmp_path)
+        init_before = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+
+        _refresh_autogen_shim(plugin_dir, MagicMock())
+
+        init_after = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+        assert init_after == init_before
+        assert (plugin_dir / ".hermes-autogen" / "shim.lock").exists()
+
+    def test_case2_user_deleted_hermes_autogen_dir(self, tmp_path):
+        import shutil
+        from hermes_cli.plugins_cmd import _refresh_autogen_shim
+
+        plugin_dir = self._bundle_with_shim(tmp_path)
+
+        # User takes ownership by deleting the sidecar
+        shutil.rmtree(plugin_dir / ".hermes-autogen")
+
+        original_init = (plugin_dir / "__init__.py").read_text(encoding="utf-8")
+
+        _refresh_autogen_shim(plugin_dir, MagicMock())
+
+        # __init__.py should be untouched (user now owns it)
+        assert (plugin_dir / "__init__.py").read_text(encoding="utf-8") == original_init
+        # No new lock file should be created
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+    def test_case3_missing_init_py_regenerates(self, tmp_path):
+        from hermes_cli.plugins_cmd import _refresh_autogen_shim
+
+        plugin_dir = tmp_path / "fresh"
+        plugin_dir.mkdir()
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "foo").mkdir()
+        (skills_dir / "foo" / "SKILL.md").write_text("---\nname: foo\n---\n")
+
+        _refresh_autogen_shim(plugin_dir, MagicMock())
+
+        assert (plugin_dir / "__init__.py").exists()
+        assert (plugin_dir / ".hermes-autogen" / "shim.lock").exists()
+
+    def test_case4_upstream_added_init_py(self, tmp_path):
+        from hermes_cli.plugins_cmd import _refresh_autogen_shim
+
+        plugin_dir = self._bundle_with_shim(tmp_path)
+
+        # Simulate: upstream started providing its own __init__.py on update
+        (plugin_dir / "__init__.py").write_text("# upstream now provides this\n")
+
+        _refresh_autogen_shim(plugin_dir, MagicMock())
+
+        # Upstream's file is preserved
+        assert (plugin_dir / "__init__.py").read_text(encoding="utf-8") == (
+            "# upstream now provides this\n"
+        )
+        # Autogen lock is cleaned up
+        assert not (plugin_dir / ".hermes-autogen").exists()
+
+    def test_case5_upstream_removed_skills_dir(self, tmp_path):
+        import shutil
+        from hermes_cli.plugins_cmd import _refresh_autogen_shim
+
+        plugin_dir = self._bundle_with_shim(tmp_path)
+        shutil.rmtree(plugin_dir / "skills")
+
+        console = MagicMock()
+        _refresh_autogen_shim(plugin_dir, console)
+
+        # All autogen artifacts are cleaned up
+        assert not (plugin_dir / "__init__.py").exists()
+        assert not (plugin_dir / "plugin.yaml").exists()
+        assert not (plugin_dir / ".hermes-autogen").exists()
+        all_calls = " ".join(
+            str(call.args[0]) if call.args else ""
+            for call in console.print.call_args_list
+        )
+        assert "skills/" in all_calls or "no longer" in all_calls

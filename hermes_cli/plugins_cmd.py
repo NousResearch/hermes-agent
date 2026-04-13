@@ -340,6 +340,72 @@ def _cleanup_autogen_files(plugin_dir: Path, lock: dict) -> None:
             pass  # non-empty or permission issue, leave alone
 
 
+def _refresh_autogen_shim(plugin_dir: Path, console) -> None:
+    """After `git pull`, refresh the autogen shim if needed.
+
+    Five cases:
+    1. lock exists + generated files still present → regenerate from latest template
+    2. lock missing (user deleted .hermes-autogen/) → step back, don't touch files
+    3. lock missing + no __init__.py + skills/ exists → generate fresh
+    4. lock exists but upstream now provides its own __init__.py → cleanup
+    5. lock exists but upstream removed skills/ → cleanup
+    """
+    skills_dir = plugin_dir / "skills"
+    init_py = plugin_dir / "__init__.py"
+    lock = _read_autogen_lock(plugin_dir)
+
+    # Case 5: upstream removed skills/ entirely
+    if lock and not skills_dir.is_dir():
+        _cleanup_autogen_files(plugin_dir, lock)
+        console.print(
+            "[yellow]Warning:[/yellow] upstream no longer provides skills/; "
+            "removed autogen shim."
+        )
+        return
+
+    # Case 2 / Case 3: lock missing
+    if not lock:
+        if not init_py.exists() and skills_dir.is_dir():
+            # Case 3: generate fresh
+            _autogen_plugin_shim(plugin_dir, console)
+        # Case 2: user owns, do nothing
+        return
+
+    # Case 4: lock exists but init_py content no longer matches our template
+    # Upstream / user has taken over the file — remove ONLY the sidecar lock,
+    # leave the files themselves alone (they no longer belong to autogen).
+    if init_py.exists():
+        current_content = init_py.read_text(encoding="utf-8")
+        if current_content != _SHIM_INIT_PY_TEMPLATE_V1:
+            sidecar = plugin_dir / ".hermes-autogen"
+            if sidecar.exists():
+                try:
+                    (sidecar / "shim.lock").unlink(missing_ok=True)
+                    sidecar.rmdir()
+                except OSError:
+                    pass
+            console.print(
+                "[dim]  Upstream now provides __init__.py; "
+                "removed autogen shim (preserving upstream version).[/dim]"
+            )
+            return
+
+    # Case 1: regenerate from current template (idempotent if template unchanged)
+    if init_py.exists():
+        init_py.unlink()
+    plugin_yaml = plugin_dir / "plugin.yaml"
+    was_yaml_autogen = any(
+        entry["path"] == "plugin.yaml" for entry in lock.get("generated_files", [])
+    )
+    if was_yaml_autogen and plugin_yaml.exists():
+        plugin_yaml.unlink()
+    lock_file = plugin_dir / ".hermes-autogen" / "shim.lock"
+    if lock_file.exists():
+        lock_file.unlink()
+
+    _autogen_plugin_shim(plugin_dir, console)
+
+
 def _copy_example_files(plugin_dir: Path, console) -> None:
     """Copy any .example files to their real names if they don't already exist.
 

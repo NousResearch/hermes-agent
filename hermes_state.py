@@ -1104,6 +1104,24 @@ class SessionDB:
             return None
         return row["holder"] if isinstance(row, sqlite3.Row) else row[0]
 
+    def update_session_meta(
+        self,
+        session_id: str,
+        model_config_json: str,
+        model: Optional[str] = None,
+    ) -> None:
+        """Update model_config and optionally model for an existing session.
+
+        Uses COALESCE so that passing model=None leaves the stored model
+        column unchanged.  Routes through _execute_write for the standard
+        BEGIN IMMEDIATE + jitter-retry + lock guarantee.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
+                (model_config_json, model, session_id),
+            )
+        self._execute_write(_do)
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""

@@ -109,7 +109,12 @@ class _VikingClient:
         resp = self._httpx.get(
             self._url(path), headers=self._headers(), timeout=_TIMEOUT, **kwargs
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug("OpenViking request failed: %s %s, status: %s, response: %s",
+                         "GET", path, resp.status_code, resp.text)
+            raise
         return resp.json()
 
     def post(self, path: str, payload: dict = None, **kwargs) -> dict:
@@ -117,7 +122,12 @@ class _VikingClient:
             self._url(path), json=payload or {}, headers=self._headers(),
             timeout=_TIMEOUT, **kwargs
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            logger.debug("OpenViking request failed: %s %s, status: %s, response: %s",
+                         "POST", path, resp.status_code, resp.text)
+            raise
         return resp.json()
 
     def health(self) -> bool:
@@ -326,6 +336,13 @@ class OpenVikingMemoryProvider(MemoryProvider):
             if not self._client.health():
                 logger.warning("OpenViking server at %s is not reachable", self._endpoint)
                 self._client = None
+            else:
+                # Explicitly create the session to ensure it exists
+                try:
+                    self._client.post("/api/v1/sessions", {"session_id": self._session_id})
+                    logger.info("OpenViking session %s created", self._session_id)
+                except Exception as e:
+                    logger.debug("OpenViking session creation failed (may already exist): %s", e)
         except ImportError:
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
@@ -352,7 +369,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 "(abstract/overview/full), viking_browse to explore.\n"
                 "Use viking_remember to store facts, viking_add_resource to index URLs/docs."
             )
-        except Exception:
+        except Exception as e:
+            logger.warning("OpenViking system_prompt_block failed: %s", e)
             return (
                 "# OpenViking Knowledge Base\n"
                 f"Active. Endpoint: {self._endpoint}\n"

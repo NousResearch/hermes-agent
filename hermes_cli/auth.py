@@ -127,6 +127,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
         api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        base_url_env_var="COPILOT_API_BASE_URL",
     ),
     "copilot-acp": ProviderConfig(
         id="copilot-acp",

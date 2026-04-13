@@ -1,9 +1,12 @@
-"""Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
+"""Tests for Discord bot message filtering and bot-reply intake."""
 
-import asyncio
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
+
+from gateway.config import PlatformConfig
+from gateway.platforms.discord import DiscordAdapter
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
@@ -111,6 +114,44 @@ class TestDiscordBotFilter(unittest.TestCase):
         self.assertTrue(self._run_filter(msg, "All"))
         self.assertFalse(self._run_filter(msg, "NONE"))
         self.assertFalse(self._run_filter(msg, "None"))
+
+
+class TestDiscordBotReplyIntake(unittest.TestCase):
+    """Test adapter-level bot message intake for reply-based handoffs."""
+
+    def _make_adapter(self, *, allow_bots="mentions", accept_bot_replies=True):
+        config = PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={
+                "allow_bots": allow_bots,
+                "accept_bot_replies": accept_bot_replies,
+            },
+        )
+        adapter = DiscordAdapter(config)
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999, bot=True))
+        return adapter
+
+    def test_bot_reply_to_self_is_accepted_without_mention(self):
+        adapter = self._make_adapter()
+        reply_target = SimpleNamespace(author=adapter._client.user)
+        msg = _make_message(author=_make_author(bot=True), mentions=[])
+        msg.reference = SimpleNamespace(resolved=reply_target)
+        self.assertTrue(adapter._should_accept_bot_message(msg))
+
+    def test_bot_reply_to_other_user_is_rejected_without_mention(self):
+        adapter = self._make_adapter()
+        reply_target = SimpleNamespace(author=_make_author(bot=False))
+        msg = _make_message(author=_make_author(bot=True), mentions=[])
+        msg.reference = SimpleNamespace(resolved=reply_target)
+        self.assertFalse(adapter._should_accept_bot_message(msg))
+
+    def test_bot_reply_acceptance_can_be_disabled(self):
+        adapter = self._make_adapter(accept_bot_replies=False)
+        reply_target = SimpleNamespace(author=adapter._client.user)
+        msg = _make_message(author=_make_author(bot=True), mentions=[])
+        msg.reference = SimpleNamespace(resolved=reply_target)
+        self.assertFalse(adapter._should_accept_bot_message(msg))
 
 
 if __name__ == "__main__":

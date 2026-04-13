@@ -230,7 +230,7 @@ class TestConfigSerialization:
 
 
 class TestEnvVarOverride:
-    """Tests for DISCORD_REPLY_TO_MODE environment variable override."""
+    """Tests for Discord environment variable overrides."""
 
     def _make_config(self):
         config = GatewayConfig()
@@ -275,3 +275,27 @@ class TestEnvVarOverride:
             _apply_env_overrides(config)
         assert Platform.DISCORD in config.platforms
         assert config.platforms[Platform.DISCORD].reply_to_mode == "off"
+
+    def test_allow_bots_env_override_saved_to_extra(self):
+        config = self._make_config()
+        with patch.dict(os.environ, {"DISCORD_ALLOW_BOTS": "mentions"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].extra["allow_bots"] == "mentions"
+
+    def test_target_bot_ids_env_override_saved_to_extra(self):
+        config = self._make_config()
+        with patch.dict(os.environ, {"DISCORD_TARGET_BOT_IDS": "111, 222"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].extra["target_bot_ids"] == ["111", "222"]
+
+    def test_auto_mention_target_bots_env_override_saved_to_extra(self):
+        config = self._make_config()
+        with patch.dict(os.environ, {"DISCORD_AUTO_MENTION_TARGET_BOTS": "true"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].extra["auto_mention_target_bots"] is True
+
+    def test_accept_bot_replies_env_override_saved_to_extra(self):
+        config = self._make_config()
+        with patch.dict(os.environ, {"DISCORD_ACCEPT_BOT_REPLIES": "false"}, clear=False):
+            _apply_env_overrides(config)
+        assert config.platforms[Platform.DISCORD].extra["accept_bot_replies"] is False

@@ -89,6 +89,7 @@
               echo "$STAMP_VALUE" > "$STAMP"
             else
               source .venv/bin/activate
+              export HERMES_PYTHON=${hermesVenv}/bin/python3
             fi
           '';
 

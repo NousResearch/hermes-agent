@@ -941,21 +941,36 @@ class GatewayRunner:
         """Load ephemeral system prompt from config or env var.
         
         Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        agent.system_prompt in ~/.hermes/cli-config.yaml or config.yaml.
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
             return prompt
+        
+        system_prompt = ""
+        cognitive_framework = False
         try:
             import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
-            if cfg_path.exists():
-                with open(cfg_path, encoding="utf-8") as _f:
-                    cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+            for cfg_name in ("cli-config.yaml", "config.yaml"):
+                cfg_path = _hermes_home / cfg_name
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    system_prompt = (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+                    cognitive_framework = bool(cfg.get("agent", {}).get("cognitive_framework", False))
+                    break
         except Exception:
             pass
-        return ""
+
+        if cognitive_framework:
+            try:
+                from gateway.add_framework import ADD_FRAMEWORK_PROMPT
+                separator = "\n\n" if system_prompt else ""
+                system_prompt = f"{system_prompt}{separator}{ADD_FRAMEWORK_PROMPT.strip()}"
+            except ImportError:
+                pass
+                
+        return system_prompt
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
@@ -5208,7 +5223,25 @@ class GatewayRunner:
         return True
 
     def _set_session_env(self, context: SessionContext) -> None:
-        """Set environment variables for the current session."""
+        """Set environment variables for the current session.
+
+        WARNING — PROCESS-GLOBAL STATE. These env vars are read by tools
+        and subprocesses. Concurrent messages across sessions can overlap
+        this mutation window (set at message start, cleared in finally),
+        so a subprocess started by session A may inherit session B's
+        CHAT_ID. Safer long-term: thread an explicit env dict through
+        subprocess.run(..., env=...) instead of relying on os.environ.
+
+        Until then, we detect concurrent overlap and log a warning so the
+        race is visible in logs.
+        """
+        prior = os.environ.get("HERMES_SESSION_CHAT_ID")
+        if prior and prior != context.source.chat_id:
+            logger.warning(
+                "Concurrent session env overlap: prior HERMES_SESSION_CHAT_ID=%s "
+                "being overwritten with %s. Tools/subprocesses may see stale context.",
+                prior, context.source.chat_id,
+            )
         os.environ["HERMES_SESSION_PLATFORM"] = context.source.platform.value
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
@@ -6741,6 +6774,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
+
+    # Start background Obsidian watcher so managed-vault edits reconcile even
+    # when Mission Control is idle. This is intentionally best-effort.
+    obsidian_watcher = None
+    try:
+        from hermes_cli.config import load_config
+        from agent.wiki_paths import resolve_obsidian_vault_path
+        from hermes_state import SessionDB
+        from agent.obsidian_watcher import ObsidianSyncWatcher
+
+        _agent_cfg = load_config()
+        _kn_cfg = _agent_cfg.get("knowledge", {}) if isinstance(_agent_cfg, dict) else {}
+        _vault = resolve_obsidian_vault_path(_agent_cfg) if isinstance(_agent_cfg, dict) else None
+        if _vault:
+            obsidian_watcher = ObsidianSyncWatcher(
+                db=SessionDB(),
+                vault_path=str(_vault),
+                agent_prefix=_kn_cfg.get("agent_prefix", "Hermes"),
+                poll_interval=float(os.getenv("HERMES_OBSIDIAN_WATCH_INTERVAL", "2.5")),
+            )
+            obsidian_watcher.start()
+            logger.info("Started background Obsidian watcher for %s", _vault)
+    except Exception as _obsidian_exc:
+        logger.warning("Obsidian watcher disabled: %s", _obsidian_exc)
     
     # Wait for shutdown
     await runner.wait_for_shutdown()
@@ -6753,6 +6810,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Stop cron ticker cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
+    if obsidian_watcher:
+        obsidian_watcher.stop()
+        obsidian_watcher.join(timeout=5)
 
     # Close MCP server connections
     try:

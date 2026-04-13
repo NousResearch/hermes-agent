@@ -68,7 +68,6 @@ class TestApiServerPlatformConfig:
 
 
 class TestApiServerAdapterToolset:
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_reads_config_toolsets(self):
         """API server resolves toolsets from config like all other platforms."""
         from gateway.platforms.api_server import APIServerAdapter
@@ -98,7 +97,6 @@ class TestApiServerAdapterToolset:
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
 
-    @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_respects_config_override(self):
         """User can override API server toolsets via platform_toolsets in config.yaml."""
         from gateway.platforms.api_server import APIServerAdapter

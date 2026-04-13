@@ -430,35 +430,17 @@ class SessionEntry:
 def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
     """Build a deterministic session key from a message source.
 
-    This is the single source of truth for session key construction.
-
-    DM rules:
-      - DMs include chat_id when present, so each private conversation is isolated.
-      - thread_id further differentiates threaded DMs within the same DM chat.
-      - Without chat_id, thread_id is used as a best-effort fallback.
-      - Without thread_id or chat_id, DMs share a single session.
-
-    Group/channel rules:
-      - chat_id identifies the parent group/channel.
-      - user_id/user_id_alt isolates participants within that parent chat when available when
-        ``group_sessions_per_user`` is enabled.
-      - thread_id differentiates threads within that parent chat.
-      - Without participant identifiers, or when isolation is disabled, messages fall back to one
-        shared session per chat.
-      - Without identifiers, messages fall back to one session per platform/chat_type.
+    AskJo parity: We unify all DMs into a single global session, so context
+    spans seamlessly across macOS, Telegram, and WhatsApp for the primary user.
     """
-    platform = source.platform.value
     if source.chat_type == "dm":
-        if source.chat_id:
-            if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+        # Global Cross-Channel State: One conversation everywhere
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"agent:main:global_user:dm:{source.thread_id}"
+        return "agent:main:global_user:dm"
 
     participant_id = source.user_id_alt or source.user_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = ["agent:main", source.platform.value, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)

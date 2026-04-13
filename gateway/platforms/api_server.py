@@ -2031,6 +2031,46 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
+    async def _handle_memory_search(self, request: Request) -> Response:
+        """GET /api/memory/search?q={query} — Native Reciprocal Rank Fusion Search across Obsidian and Context Graph"""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        
+        # Handle both FastAPI and aiohttp query params
+        if hasattr(request, "query_params"):
+            query = request.query_params.get("q", "")
+            limit = int(request.query_params.get("limit", 10))
+        else:
+            query = request.query.get("q", "")
+            limit = int(request.query.get("limit", "10"))
+            
+        if not query:
+            return json_response(_openai_error("Missing 'q' parameter"), status=400)
+            
+        try:
+            from agent.graph_manager import GraphManager
+            from hermes_cli.config import get_hermes_home
+            import yaml
+            
+            # Find auxiliary config
+            llm_config = {}
+            config_path = get_hermes_home() / "cli-config.yaml"
+            if config_path.exists():
+                with open(config_path) as f:
+                    llm_config = yaml.safe_load(f) or {}
+                    
+            db_path = get_hermes_home() / "context-graph" / "kuzu_db"
+            manager = GraphManager(db_path=db_path, llm_config=llm_config)
+            
+            # Run the fused memory search natively
+            results = await manager.search(query=query, limit=limit)
+            return json_response(results)
+            
+        except Exception as e:
+            logger.error("Memory Search Failed: %s", e, exc_info=True)
+            return json_response(_openai_error(str(e), err_type="server_error"), status=500)
+
     async def _sweep_orphaned_runs(self) -> None:
         """Periodically clean up run streams that were never consumed."""
         while True:
@@ -2088,6 +2128,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.add_api_route("/v1/approvals", self._handle_list_approvals, methods=["GET"])
             self._app.add_api_route("/v1/runs", self._handle_runs, methods=["POST"])
             self._app.add_api_route("/v1/runs/{run_id}/events", self._handle_run_events, methods=["GET"])
+            self._app.add_api_route("/api/memory/search", self._handle_memory_search, methods=["GET"])
 
             # Start background sweep to clean up orphaned runs
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
@@ -2156,6 +2197,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_get("/api/memory/search", self._handle_memory_search)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

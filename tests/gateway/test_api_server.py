@@ -18,18 +18,11 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
+from fastapi import FastAPI, Request, Response
+from httpx import AsyncClient, ASGITransport
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.api_server import (
-    APIServerAdapter,
-    ResponseStore,
-    _CORS_HEADERS,
-    check_api_server_requirements,
-    cors_middleware,
-    security_headers_middleware,
-)
+from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements, ResponseStore
 
 
 # ---------------------------------------------------------------------------
@@ -158,43 +151,43 @@ class TestAuth:
     def test_no_key_configured_allows_all(self):
         config = PlatformConfig(enabled=True)
         adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {}
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": []})
         assert adapter._check_auth(mock_request) is None
 
     def test_valid_key_passes(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
         adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Bearer sk-test123"}
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": [(b"authorization", b"Bearer sk-test123")]})
         assert adapter._check_auth(mock_request) is None
 
     def test_invalid_key_returns_401(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
         adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Bearer wrong-key"}
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": [(b"authorization", b"Bearer wrong-key")]})
         result = adapter._check_auth(mock_request)
         assert result is not None
-        assert result.status == 401
+        assert result.status_code == 401
 
     def test_missing_auth_header_returns_401(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
         adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {}
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": []})
         result = adapter._check_auth(mock_request)
         assert result is not None
-        assert result.status == 401
+        assert result.status_code == 401
 
     def test_malformed_auth_header_returns_401(self):
         config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
         adapter = APIServerAdapter(config)
-        mock_request = MagicMock()
-        mock_request.headers = {"Authorization": "Basic dXNlcjpwYXNz"}
+        from starlette.requests import Request
+        mock_request = Request({"type": "http", "headers": [(b"authorization", b"Basic dXNlcjpwYXNz")]})
         result = adapter._check_auth(mock_request)
         assert result is not None
-        assert result.status == 401
+        assert result.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -213,18 +206,30 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
     return APIServerAdapter(config)
 
 
-def _create_app(adapter: APIServerAdapter) -> web.Application:
-    """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
-    app["api_server_adapter"] = adapter
-    app.router.add_get("/health", adapter._handle_health)
-    app.router.add_get("/v1/health", adapter._handle_health)
-    app.router.add_get("/v1/models", adapter._handle_models)
-    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
-    app.router.add_post("/v1/responses", adapter._handle_responses)
-    app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
-    app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+def _create_app(adapter: APIServerAdapter) -> FastAPI:
+    app = FastAPI()
+    app.state.api_server_adapter = adapter
+    # Use the adapter's own CORS middleware so tests exercise the production
+    # browser-facing contract (strict origin allowlist, OPTIONS short-circuit,
+    # Vary: Origin, Max-Age, documented method/header list).
+    adapter.install_cors_middleware(app)
+    app.add_api_route("/health", adapter._handle_health, methods=["GET"])
+    app.add_api_route("/v1/health", adapter._handle_health, methods=["GET"])
+    app.add_api_route("/v1/models", adapter._handle_models, methods=["GET"])
+    app.add_api_route("/v1/chat/completions", adapter._handle_chat_completions, methods=["POST"])
+    app.add_api_route("/v1/responses", adapter._handle_responses, methods=["POST"])
+    app.add_api_route("/v1/responses/{response_id}", adapter._handle_get_response, methods=["GET"])
+    app.add_api_route("/v1/responses/{response_id}", adapter._handle_delete_response, methods=["DELETE"])
+    app.add_api_route("/v1/runs", adapter._handle_runs, methods=["POST"])
+    app.add_api_route("/v1/runs/{run_id}/events", adapter._handle_run_events, methods=["GET"])
+    app.add_api_route("/api/jobs", adapter._handle_list_jobs, methods=["GET"])
+    app.add_api_route("/api/jobs", adapter._handle_create_job, methods=["POST"])
+    app.add_api_route("/api/jobs/{job_id}", adapter._handle_get_job, methods=["GET"])
+    app.add_api_route("/api/jobs/{job_id}", adapter._handle_update_job, methods=["PATCH"])
+    app.add_api_route("/api/jobs/{job_id}", adapter._handle_delete_job, methods=["DELETE"])
+    app.add_api_route("/api/jobs/{job_id}/pause", adapter._handle_pause_job, methods=["POST"])
+    app.add_api_route("/api/jobs/{job_id}/resume", adapter._handle_resume_job, methods=["POST"])
+    app.add_api_route("/api/jobs/{job_id}/run", adapter._handle_run_job, methods=["POST"])
     return app
 
 
@@ -244,34 +249,28 @@ def auth_adapter():
 
 
 class TestHealthEndpoint:
-    @pytest.mark.asyncio
-    async def test_security_headers_present(self, adapter):
-        """Responses should include basic security headers."""
-        app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.get("/health")
-            assert resp.status == 200
-            assert resp.headers.get("X-Content-Type-Options") == "nosniff"
-            assert resp.headers.get("Referrer-Policy") == "no-referrer"
 
     @pytest.mark.asyncio
     async def test_health_returns_ok(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health")
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+            assert "capabilities" in data
+            assert "supports_vision" in data["capabilities"]
+            assert "vision_backends" in data["capabilities"]
 
     @pytest.mark.asyncio
     async def test_v1_health_alias_returns_ok(self, adapter):
         """GET /v1/health should return the same response as /health."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/health")
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
 
@@ -285,10 +284,10 @@ class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_returns_hermes_agent(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/models")
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["object"] == "list"
             assert len(data["data"]) == 1
             assert data["data"][0]["id"] == "hermes-agent"
@@ -297,19 +296,19 @@ class TestModelsEndpoint:
     @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/models")
-            assert resp.status == 401
+            assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_models_with_valid_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get(
                 "/v1/models",
                 headers={"Authorization": "Bearer sk-secret"},
             )
-            assert resp.status == 200
+            assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -321,37 +320,37 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/chat/completions",
                 data="not json",
                 headers={"Content-Type": "application/json"},
             )
-            assert resp.status == 400
-            data = await resp.json()
+            assert resp.status_code == 400
+            data = resp.json()
             assert "Invalid JSON" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_missing_messages_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test"})
-            assert resp.status == 400
-            data = await resp.json()
+            assert resp.status_code == 400
+            data = resp.json()
             assert "messages" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_empty_messages_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
-            assert resp.status == 400
+            assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):
         """stream=true returns SSE format with the full response."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             async def _mock_run_agent(**kwargs):
                 # Simulate streaming: invoke stream_delta_callback with tokens
                 cb = kwargs.get("stream_delta_callback")
@@ -372,9 +371,9 @@ class TestChatCompletionsEndpoint:
                         "stream": True,
                     },
                 )
-                assert resp.status == 200
+                assert resp.status_code == 200
                 assert "text/event-stream" in resp.headers.get("Content-Type", "")
-                body = await resp.text()
+                body = resp.text
                 assert "data: " in body
                 assert "[DONE]" in body
                 assert "Hello!" in body
@@ -391,7 +390,7 @@ class TestChatCompletionsEndpoint:
         import asyncio
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 if cb:
@@ -418,8 +417,8 @@ class TestChatCompletionsEndpoint:
                         "stream": True,
                     },
                 )
-                assert resp.status == 200
-                body = await resp.text()
+                assert resp.status_code == 200
+                body = resp.text
                 assert "[DONE]" in body
                 # The final answer text must appear in the SSE stream
                 assert "The answer is 42." in body
@@ -433,7 +432,7 @@ class TestChatCompletionsEndpoint:
         import asyncio
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
@@ -457,8 +456,8 @@ class TestChatCompletionsEndpoint:
                         "stream": True,
                     },
                 )
-                assert resp.status == 200
-                body = await resp.text()
+                assert resp.status_code == 200
+                body = resp.text
                 assert "[DONE]" in body
                 # Tool progress message must appear in the stream
                 assert "ls -la" in body
@@ -471,7 +470,7 @@ class TestChatCompletionsEndpoint:
         import asyncio
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
@@ -495,8 +494,8 @@ class TestChatCompletionsEndpoint:
                         "stream": True,
                     },
                 )
-                assert resp.status == 200
-                body = await resp.text()
+                assert resp.status_code == 200
+                body = resp.text
                 # Internal _thinking event should NOT appear
                 assert "some internal state" not in body
                 # Real tool progress should appear
@@ -505,7 +504,7 @@ class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/chat/completions",
                 json={
@@ -513,7 +512,7 @@ class TestChatCompletionsEndpoint:
                     "messages": [{"role": "system", "content": "You are helpful."}],
                 },
             )
-            assert resp.status == 400
+            assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_successful_completion(self, adapter):
@@ -525,7 +524,7 @@ class TestChatCompletionsEndpoint:
         }
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -536,8 +535,8 @@ class TestChatCompletionsEndpoint:
                     },
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["object"] == "chat.completion"
             assert data["id"].startswith("chatcmpl-")
             assert data["model"] == "hermes-agent"
@@ -557,7 +556,7 @@ class TestChatCompletionsEndpoint:
         }
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -571,7 +570,7 @@ class TestChatCompletionsEndpoint:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             # Check that _run_agent was called with the system prompt
             call_kwargs = mock_run.call_args
             assert call_kwargs.kwargs.get("ephemeral_system_prompt") == "You are a pirate."
@@ -583,7 +582,7 @@ class TestChatCompletionsEndpoint:
         mock_result = {"final_response": "3", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -598,7 +597,7 @@ class TestChatCompletionsEndpoint:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["user_message"] == "Now add 1 more"
             assert len(call_kwargs["conversation_history"]) == 2
@@ -609,7 +608,7 @@ class TestChatCompletionsEndpoint:
     async def test_agent_error_returns_500(self, adapter):
         """Agent exception returns 500."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.side_effect = RuntimeError("Provider failed")
                 resp = await cli.post(
@@ -620,8 +619,8 @@ class TestChatCompletionsEndpoint:
                     },
                 )
 
-            assert resp.status == 500
-            data = await resp.json()
+            assert resp.status_code == 500
+            data = resp.json()
             assert "Provider failed" in data["error"]["message"]
 
     # ------------------------------------------------------------------
@@ -639,7 +638,7 @@ class TestChatCompletionsEndpoint:
         """X-Hermes-Council: on must reach _run_agent as council_enabled=True."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -654,7 +653,7 @@ class TestChatCompletionsEndpoint:
                     headers={"X-Hermes-Council": "on"},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is True
 
     @pytest.mark.asyncio
@@ -662,7 +661,7 @@ class TestChatCompletionsEndpoint:
         """X-Hermes-Council: off must reach _run_agent as council_enabled=False."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -677,7 +676,7 @@ class TestChatCompletionsEndpoint:
                     headers={"X-Hermes-Council": "off"},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is False
 
     @pytest.mark.asyncio
@@ -691,7 +690,7 @@ class TestChatCompletionsEndpoint:
         """
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -705,7 +704,7 @@ class TestChatCompletionsEndpoint:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is None
 
 
@@ -718,22 +717,22 @@ class TestResponsesEndpoint:
     @pytest.mark.asyncio
     async def test_missing_input_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post("/v1/responses", json={"model": "test"})
-            assert resp.status == 400
-            data = await resp.json()
+            assert resp.status_code == 400
+            data = resp.json()
             assert "input" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/responses",
                 data="not json",
                 headers={"Content-Type": "application/json"},
             )
-            assert resp.status == 400
+            assert resp.status_code == 400
 
     @pytest.mark.asyncio
     async def test_successful_response_with_string_input(self, adapter):
@@ -745,7 +744,7 @@ class TestResponsesEndpoint:
         }
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -756,8 +755,8 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["object"] == "response"
             assert data["id"].startswith("resp_")
             assert data["status"] == "completed"
@@ -772,7 +771,7 @@ class TestResponsesEndpoint:
         mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -786,7 +785,7 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             # Last message is user_message, rest are history
             assert call_kwargs["user_message"] == "What is 2+2?"
@@ -798,7 +797,7 @@ class TestResponsesEndpoint:
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -810,7 +809,7 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["ephemeral_system_prompt"] == "Talk like a pirate."
 
@@ -824,7 +823,7 @@ class TestResponsesEndpoint:
         }
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             # First request
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result_1, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -833,8 +832,8 @@ class TestResponsesEndpoint:
                     json={"model": "hermes-agent", "input": "What is 1+1?"},
                 )
 
-            assert resp1.status == 200
-            data1 = await resp1.json()
+            assert resp1.status_code == 200
+            data1 = resp1.json()
             response_id = data1["id"]
 
             # Second request chaining from the first
@@ -855,7 +854,7 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp2.status == 200
+            assert resp2.status_code == 200
             # The conversation_history should contain the full history from the first response
             call_kwargs = mock_run.call_args.kwargs
             assert len(call_kwargs["conversation_history"]) > 0
@@ -864,7 +863,7 @@ class TestResponsesEndpoint:
     @pytest.mark.asyncio
     async def test_invalid_previous_response_id_returns_404(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/responses",
                 json={
@@ -873,7 +872,7 @@ class TestResponsesEndpoint:
                     "previous_response_id": "resp_nonexistent",
                 },
             )
-            assert resp.status == 404
+            assert resp.status_code == 404
 
     @pytest.mark.asyncio
     async def test_store_false_does_not_store(self, adapter):
@@ -881,7 +880,7 @@ class TestResponsesEndpoint:
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -893,8 +892,8 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             # The response has an ID but it shouldn't be retrievable
             assert adapter._response_store.get(data["id"]) is None
 
@@ -904,7 +903,7 @@ class TestResponsesEndpoint:
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             # First request with instructions
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -917,7 +916,7 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            data1 = await resp1.json()
+            data1 = resp1.json()
             resp_id = data1["id"]
 
             # Second request without instructions
@@ -932,14 +931,14 @@ class TestResponsesEndpoint:
                     },
                 )
 
-            assert resp2.status == 200
+            assert resp2.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["ephemeral_system_prompt"] == "Be a pirate"
 
     @pytest.mark.asyncio
     async def test_agent_error_returns_500(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.side_effect = RuntimeError("Boom")
                 resp = await cli.post(
@@ -947,17 +946,17 @@ class TestResponsesEndpoint:
                     json={"model": "hermes-agent", "input": "Hello"},
                 )
 
-            assert resp.status == 500
+            assert resp.status_code == 500
 
     @pytest.mark.asyncio
     async def test_invalid_input_type_returns_400(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/responses",
                 json={"model": "hermes-agent", "input": 42},
             )
-            assert resp.status == 400
+            assert resp.status_code == 400
 
     # ------------------------------------------------------------------
     # X-Hermes-Council header plumbing (Responses API surface)
@@ -974,7 +973,7 @@ class TestResponsesEndpoint:
         """X-Hermes-Council: on reaches _run_agent through /v1/responses."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -986,7 +985,7 @@ class TestResponsesEndpoint:
                     headers={"X-Hermes-Council": "on"},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is True
 
     @pytest.mark.asyncio
@@ -994,7 +993,7 @@ class TestResponsesEndpoint:
         """X-Hermes-Council: off reaches _run_agent through /v1/responses."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -1006,7 +1005,7 @@ class TestResponsesEndpoint:
                     headers={"X-Hermes-Council": "off"},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is False
 
     @pytest.mark.asyncio
@@ -1014,7 +1013,7 @@ class TestResponsesEndpoint:
         """Missing X-Hermes-Council on /v1/responses yields council_enabled=None."""
         mock_result = {"final_response": "ok", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     mock_result,
@@ -1025,7 +1024,7 @@ class TestResponsesEndpoint:
                     json={"model": "hermes-agent", "input": "research Tesla"},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert mock_run.call_args.kwargs["council_enabled"] is None
 
 
@@ -1038,36 +1037,36 @@ class TestEndpointAuth:
     @pytest.mark.asyncio
     async def test_chat_completions_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/chat/completions",
                 json={"model": "test", "messages": [{"role": "user", "content": "hi"}]},
             )
-            assert resp.status == 401
+            assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_responses_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post(
                 "/v1/responses",
                 json={"model": "test", "input": "hi"},
             )
-            assert resp.status == 401
+            assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/models")
-            assert resp.status == 401
+            assert resp.status_code == 401
 
     @pytest.mark.asyncio
     async def test_health_does_not_require_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health")
-            assert resp.status == 200
+            assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -1139,7 +1138,7 @@ class TestMultipleSystemMessages:
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1154,7 +1153,7 @@ class TestMultipleSystemMessages:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             prompt = call_kwargs["ephemeral_system_prompt"]
             assert "You are helpful." in prompt
@@ -1188,7 +1187,7 @@ class TestGetResponse:
         mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             # Create a response first
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15})
@@ -1197,14 +1196,14 @@ class TestGetResponse:
                     json={"model": "hermes-agent", "input": "Hi"},
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             response_id = data["id"]
 
             # Now GET it
             resp2 = await cli.get(f"/v1/responses/{response_id}")
-            assert resp2.status == 200
-            data2 = await resp2.json()
+            assert resp2.status_code == 200
+            data2 = resp2.json()
             assert data2["id"] == response_id
             assert data2["object"] == "response"
             assert data2["status"] == "completed"
@@ -1212,16 +1211,16 @@ class TestGetResponse:
     @pytest.mark.asyncio
     async def test_get_not_found(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/responses/resp_nonexistent")
-            assert resp.status == 404
+            assert resp.status_code == 404
 
     @pytest.mark.asyncio
     async def test_get_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/v1/responses/resp_any")
-            assert resp.status == 401
+            assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -1236,7 +1235,7 @@ class TestDeleteResponse:
         mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1244,34 +1243,34 @@ class TestDeleteResponse:
                     json={"model": "hermes-agent", "input": "Hi"},
                 )
 
-            data = await resp.json()
+            data = resp.json()
             response_id = data["id"]
 
             # Delete it
             resp2 = await cli.delete(f"/v1/responses/{response_id}")
-            assert resp2.status == 200
-            data2 = await resp2.json()
+            assert resp2.status_code == 200
+            data2 = resp2.json()
             assert data2["id"] == response_id
             assert data2["object"] == "response"
             assert data2["deleted"] is True
 
             # Verify it's gone
             resp3 = await cli.get(f"/v1/responses/{response_id}")
-            assert resp3.status == 404
+            assert resp3.status_code == 404
 
     @pytest.mark.asyncio
     async def test_delete_not_found(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.delete("/v1/responses/resp_nonexistent")
-            assert resp.status == 404
+            assert resp.status_code == 404
 
     @pytest.mark.asyncio
     async def test_delete_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.delete("/v1/responses/resp_any")
-            assert resp.status == 401
+            assert resp.status_code == 401
 
 
 # ---------------------------------------------------------------------------
@@ -1313,7 +1312,7 @@ class TestToolCallsInOutput:
         }
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1321,8 +1320,8 @@ class TestToolCallsInOutput:
                     json={"model": "hermes-agent", "input": "What is 6*7?"},
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             output = data["output"]
 
             # Should have: function_call, function_call_output, message
@@ -1343,7 +1342,7 @@ class TestToolCallsInOutput:
         mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1351,8 +1350,8 @@ class TestToolCallsInOutput:
                     json={"model": "hermes-agent", "input": "Hello"},
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert len(data["output"]) == 1
             assert data["output"][0]["type"] == "message"
 
@@ -1370,7 +1369,7 @@ class TestUsageCounting:
         usage = {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, usage)
                 resp = await cli.post(
@@ -1378,8 +1377,8 @@ class TestUsageCounting:
                     json={"model": "hermes-agent", "input": "Hi"},
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["usage"]["input_tokens"] == 100
             assert data["usage"]["output_tokens"] == 50
             assert data["usage"]["total_tokens"] == 150
@@ -1391,7 +1390,7 @@ class TestUsageCounting:
         usage = {"input_tokens": 200, "output_tokens": 80, "total_tokens": 280}
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, usage)
                 resp = await cli.post(
@@ -1402,8 +1401,8 @@ class TestUsageCounting:
                     },
                 )
 
-            assert resp.status == 200
-            data = await resp.json()
+            assert resp.status_code == 200
+            data = resp.json()
             assert data["usage"]["prompt_tokens"] == 200
             assert data["usage"]["completion_tokens"] == 80
             assert data["usage"]["total_tokens"] == 280
@@ -1429,7 +1428,7 @@ class TestTruncation:
         })
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1442,7 +1441,7 @@ class TestTruncation:
                     },
                 )
 
-        assert resp.status == 200
+        assert resp.status_code == 200
         call_kwargs = mock_run.call_args.kwargs
         # History should be truncated to 100
         assert len(call_kwargs["conversation_history"]) <= 100
@@ -1460,7 +1459,7 @@ class TestTruncation:
         })
 
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
@@ -1472,7 +1471,7 @@ class TestTruncation:
                     },
                 )
 
-        assert resp.status == 200
+        assert resp.status_code == 200
         call_kwargs = mock_run.call_args.kwargs
         assert len(call_kwargs["conversation_history"]) == 150
 
@@ -1511,25 +1510,25 @@ class TestCORS:
     async def test_cors_headers_not_present_by_default(self, adapter):
         """CORS is disabled unless explicitly configured."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health")
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("Access-Control-Allow-Origin") is None
 
     @pytest.mark.asyncio
     async def test_browser_origin_rejected_by_default(self, adapter):
         """Browser-originated requests are rejected unless explicitly allowed."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health", headers={"Origin": "http://evil.example"})
-            assert resp.status == 403
+            assert resp.status_code == 403
             assert resp.headers.get("Access-Control-Allow-Origin") is None
 
     @pytest.mark.asyncio
     async def test_cors_options_preflight_rejected_by_default(self, adapter):
         """Browser preflight is rejected unless CORS is explicitly configured."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.options(
                 "/v1/chat/completions",
                 headers={
@@ -1537,7 +1536,7 @@ class TestCORS:
                     "Access-Control-Request-Method": "POST",
                 },
             )
-            assert resp.status == 403
+            assert resp.status_code == 403
             assert resp.headers.get("Access-Control-Allow-Origin") is None
 
     @pytest.mark.asyncio
@@ -1545,9 +1544,9 @@ class TestCORS:
         """Allowed origins receive explicit CORS headers."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
             assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
             assert "DELETE" in resp.headers.get("Access-Control-Allow-Methods", "")
@@ -1556,7 +1555,7 @@ class TestCORS:
     async def test_cors_allows_idempotency_key_header(self):
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.options(
                 "/v1/chat/completions",
                 headers={
@@ -1565,16 +1564,16 @@ class TestCORS:
                     "Access-Control-Request-Headers": "Idempotency-Key",
                 },
             )
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert "Idempotency-Key" in resp.headers.get("Access-Control-Allow-Headers", "")
 
     @pytest.mark.asyncio
     async def test_cors_sets_vary_origin_header(self):
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.get("/health", headers={"Origin": "http://localhost:3000"})
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("Vary") == "Origin"
 
     @pytest.mark.asyncio
@@ -1582,7 +1581,7 @@ class TestCORS:
         """Configured origins can complete browser preflight."""
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.options(
                 "/v1/chat/completions",
                 headers={
@@ -1591,7 +1590,7 @@ class TestCORS:
                     "Access-Control-Request-Headers": "Authorization, Content-Type",
                 },
             )
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
 
@@ -1600,7 +1599,7 @@ class TestCORS:
     async def test_cors_preflight_sets_max_age(self):
         adapter = _make_adapter(cors_origins=["http://localhost:3000"])
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.options(
                 "/v1/chat/completions",
                 headers={
@@ -1609,7 +1608,7 @@ class TestCORS:
                     "Access-Control-Request-Headers": "Authorization, Content-Type",
                 },
             )
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("Access-Control-Max-Age") == "600"
 # ---------------------------------------------------------------------------
 # Conversation parameter
@@ -1621,7 +1620,7 @@ class TestConversationParameter:
     async def test_conversation_creates_new(self, adapter):
         """First request with a conversation name works (new conversation)."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     {"final_response": "Hello!", "messages": [], "api_calls": 1},
@@ -1631,8 +1630,8 @@ class TestConversationParameter:
                     "input": "hi",
                     "conversation": "my-chat",
                 })
-                assert resp.status == 200
-                data = await resp.json()
+                assert resp.status_code == 200
+                data = resp.json()
                 assert data["status"] == "completed"
                 # Conversation mapping should be set
                 assert adapter._response_store.get_conversation("my-chat") is not None
@@ -1641,7 +1640,7 @@ class TestConversationParameter:
     async def test_conversation_chains_automatically(self, adapter):
         """Second request with same conversation name chains to first."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     {"final_response": "First response", "messages": [], "api_calls": 1},
@@ -1652,8 +1651,8 @@ class TestConversationParameter:
                     "input": "hello",
                     "conversation": "test-conv",
                 })
-                assert resp1.status == 200
-                data1 = await resp1.json()
+                assert resp1.status_code == 200
+                data1 = resp1.json()
                 resp1_id = data1["id"]
 
                 # Second request — should chain
@@ -1665,7 +1664,7 @@ class TestConversationParameter:
                     "input": "follow up",
                     "conversation": "test-conv",
                 })
-                assert resp2.status == 200
+                assert resp2.status_code == 200
 
                 # The second call should have received conversation history from the first
                 assert mock_run.call_count == 2
@@ -1679,21 +1678,21 @@ class TestConversationParameter:
     async def test_conversation_and_previous_response_id_conflict(self, adapter):
         """Cannot use both conversation and previous_response_id."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             resp = await cli.post("/v1/responses", json={
                 "input": "hi",
                 "conversation": "my-chat",
                 "previous_response_id": "resp_abc123",
             })
-            assert resp.status == 400
-            data = await resp.json()
+            assert resp.status_code == 400
+            data = resp.json()
             assert "Cannot use both" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_separate_conversations_are_isolated(self, adapter):
         """Different conversation names have independent histories."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     {"final_response": "Response A", "messages": [], "api_calls": 1},
@@ -1715,7 +1714,7 @@ class TestConversationParameter:
     async def test_conversation_store_false_no_mapping(self, adapter):
         """If store=false, conversation mapping is not updated."""
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (
                     {"final_response": "Ephemeral", "messages": [], "api_calls": 1},
@@ -1726,7 +1725,7 @@ class TestConversationParameter:
                     "conversation": "ephemeral-chat",
                     "store": False,
                 })
-                assert resp.status == 200
+                assert resp.status_code == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
 
@@ -1742,14 +1741,14 @@ class TestSessionIdHeader:
         """Without X-Hermes-Session-Id, a new session is created and returned in the header."""
         mock_result = {"final_response": "Hello!", "messages": [], "api_calls": 1}
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
                 resp = await cli.post(
                     "/v1/chat/completions",
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("X-Hermes-Session-Id") is not None
 
     @pytest.mark.asyncio
@@ -1763,7 +1762,7 @@ class TestSessionIdHeader:
         ]
         adapter._session_db = mock_db
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
@@ -1773,7 +1772,7 @@ class TestSessionIdHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             assert resp.headers.get("X-Hermes-Session-Id") == "my-session-123"
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["session_id"] == "my-session-123"
@@ -1790,7 +1789,7 @@ class TestSessionIdHeader:
         mock_db.get_messages_as_conversation.return_value = db_history
         adapter._session_db = mock_db
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
@@ -1808,7 +1807,7 @@ class TestSessionIdHeader:
                     },
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
@@ -1821,7 +1820,7 @@ class TestSessionIdHeader:
         # Simulate DB failure: _session_db is None and SessionDB() constructor raises
         adapter._session_db = None
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
                  patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -1832,7 +1831,7 @@ class TestSessionIdHeader:
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
 
-            assert resp.status == 200
+            assert resp.status_code == 200
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"

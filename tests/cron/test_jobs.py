@@ -200,6 +200,14 @@ class TestJobCRUD:
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
 
+    def test_create_persists_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="30m", reasoning_effort="low")
+        assert job["reasoning_effort"] == "low"
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["reasoning_effort"] == "low"
+
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
         create_job(prompt="Job 2", schedule="every 2h")
@@ -278,6 +286,15 @@ class TestUpdateJob:
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})
         assert result is None
+
+    def test_update_reasoning_effort(self, tmp_cron_dir):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+        updated = update_job(job["id"], {"reasoning_effort": "high"})
+        assert updated is not None
+        assert updated["reasoning_effort"] == "high"
+
+        fetched = get_job(job["id"])
+        assert fetched["reasoning_effort"] == "high"
 
 
 class TestPauseResumeJob:

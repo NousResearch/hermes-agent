@@ -872,6 +872,87 @@ class TestRunJobPerJobOverrides:
             explicit_base_url="http://127.0.0.1:4000/v1",
         )
         assert mock_agent_cls.call_args.kwargs["model"] == "perplexity/sonar-pro"
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] is None
+        fake_db.close.assert_called_once()
+
+    def test_job_level_reasoning_effort_override_wins_over_config(self, tmp_path):
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("agent:\n  reasoning_effort: high\n")
+
+        job = {
+            "id": "briefing-job",
+            "name": "briefing",
+            "prompt": "hello",
+            "reasoning_effort": "low",
+        }
+
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "low"}
+        fake_db.close.assert_called_once()
+
+    def test_job_level_reasoning_none_disables_reasoning(self, tmp_path):
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("agent:\n  reasoning_effort: high\n")
+
+        job = {
+            "id": "briefing-job",
+            "name": "briefing",
+            "prompt": "hello",
+            "reasoning_effort": "none",
+        }
+
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {"enabled": False}
         fake_db.close.assert_called_once()
 
 

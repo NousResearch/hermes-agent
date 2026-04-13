@@ -94,6 +94,7 @@ class TestCronCommandLifecycle:
                 name="Skill combo",
                 deliver=None,
                 repeat=None,
+                reasoning_effort=None,
                 skill=None,
                 skills=["blogwatcher", "find-nearby"],
             )
@@ -105,3 +106,74 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_create_with_reasoning_effort_override(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Think a bit before answering",
+                name="Thinking job",
+                deliver=None,
+                repeat=None,
+                reasoning_effort="low",
+                skill=None,
+                skills=None,
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "Created job" in out
+        assert "Thinking: low" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["reasoning_effort"] == "low"
+
+    def test_edit_can_set_and_clear_reasoning_effort_override(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                reasoning_effort="high",
+                skill=None,
+                skills=None,
+                add_skills=None,
+                remove_skills=None,
+                clear_skills=False,
+                script=None,
+            )
+        )
+        updated = get_job(job["id"])
+        assert updated["reasoning_effort"] == "high"
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                reasoning_effort="default",
+                skill=None,
+                skills=None,
+                add_skills=None,
+                remove_skills=None,
+                clear_skills=False,
+                script=None,
+            )
+        )
+        cleared = get_job(job["id"])
+        assert cleared["reasoning_effort"] is None
+
+        out = capsys.readouterr().out
+        assert "Thinking: high" in out

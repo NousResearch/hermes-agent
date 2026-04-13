@@ -587,8 +587,14 @@ def _build_table_element(headers, rows):
 def _convert_content_with_tables(md_text):
     """将 Markdown 文本转为飞书 Schema 2.0 元素列表。
 
-    处理：tables → native table, headings → native heading, HRs → native hr,
+    处理：tables → native table, headings → emoji+bold markdown, HRs → native hr,
+    图片 → img 元素（需调用方上传到 Feishu 获取 img_key），
     其余内容 → markdown 元素。
+
+    注意：Feishu Schema 2.0 markdown 不支持：
+    - heading 标签/hierarchy（用 emoji+bold 模拟层级）
+    - <u> 下划线（直接去掉标签）
+    - 图片 URL（需上传到 Feishu 获取 img_key）
     """
     if not md_text:
         return [{"tag": "markdown", "content": " "}]
@@ -603,6 +609,8 @@ def _convert_content_with_tables(md_text):
         nonlocal pending_markdown_lines
         stripped = "\n".join(pending_markdown_lines).strip()
         if stripped:
+            # Feishu markdown does not support <u> underline tags — strip them
+            stripped = re.sub(r"</?u[^>]*>", "", stripped)
             elements.append({"tag": "markdown", "content": stripped})
         pending_markdown_lines = []
 
@@ -620,17 +628,20 @@ def _convert_content_with_tables(md_text):
             i += 1
             continue
 
-        # Check for heading
+        # Check for heading - use emoji + bold to simulate hierarchy
+        # Feishu markdown has no heading size/hierarchy, so we use:
+        # H1 -> ◆ **text**, H2 -> ● **text**, H3 -> ▷ **text**
         heading_match = _MARKDOWN_HEADING_RE.match(line)
         if heading_match:
             _flush_markdown()
             level = len(heading_match.group(1))
             content = heading_match.group(2).strip()
-            elements.append({
-                "tag": "heading",
-                "content": content,
-                "level": level,
-            })
+            # Strip <u> from heading content
+            content = re.sub(r"</?u[^>]*>", "", content)
+            # Emoji prefix for visual hierarchy (Feishu markdown lacks heading levels)
+            prefixes = {1: "◆", 2: "●", 3: "▷", 4: "▶", 5: "○", 6: "△"}
+            prefix = prefixes.get(level, "●")
+            elements.append({"tag": "markdown", "content": f"{prefix} **{content}**"})
             i += 1
             continue
 

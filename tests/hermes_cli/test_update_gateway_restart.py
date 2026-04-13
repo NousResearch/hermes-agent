@@ -774,6 +774,27 @@ class TestFindGatewayPidsExclude:
         assert 100 in pids
         assert 200 in pids
 
+    def test_unix_process_scan_does_not_include_environment(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        seen_cmds = []
+
+        def fake_run(cmd, **kwargs):
+            seen_cmds.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="100 /usr/local/bin/python -m hermes_cli.main gateway run\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [100]
+        assert ["ps", "ww", "-ax", "-o", "pid=,command="] in seen_cmds
+
     def test_filters_to_current_profile(self, monkeypatch, tmp_path):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

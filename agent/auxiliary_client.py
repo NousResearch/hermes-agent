@@ -2148,7 +2148,17 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
-    if temperature is not None:
+    normalized_base_url = str(base_url or "").strip().lower()
+    normalized_provider = _normalize_aux_provider(provider)
+    # Kimi only accepts temperature=1 on these auxiliary models. Omit the
+    # parameter so the API uses its default when auto mode resolves to Kimi.
+    omit_temperature = (
+        normalized_provider == "kimi-coding"
+        or "api.moonshot.ai" in normalized_base_url
+        or "api.kimi.com" in normalized_base_url
+    )
+
+    if temperature is not None and not omit_temperature:
         kwargs["temperature"] = temperature
 
     if max_tokens is not None:
@@ -2320,7 +2330,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=str(getattr(client, "base_url", resolved_base_url) or resolved_base_url or ""))
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -2374,7 +2384,8 @@ def call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
         raise
@@ -2513,7 +2524,7 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=str(getattr(client, "base_url", resolved_base_url) or resolved_base_url or ""))
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -2552,7 +2563,8 @@ async def async_call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body,
+                    base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
                 async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):

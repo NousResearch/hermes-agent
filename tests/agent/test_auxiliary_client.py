@@ -1193,6 +1193,85 @@ class TestCallLlmPaymentFallback:
                 )
 
 
+class TestKimiTemperatureOmission:
+    """Kimi-backed auxiliary calls must not forward non-default temperature."""
+
+    def test_auto_kimi_omits_temperature_for_sync_calls(self):
+        client = MagicMock()
+        client.base_url = "https://api.moonshot.ai/v1"
+
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-k2.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "kimi-k2.5", None, None, None),
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.1,
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "kimi-k2.5"
+        assert "temperature" not in kwargs
+
+    @pytest.mark.asyncio
+    async def test_auto_kimi_omits_temperature_for_async_calls(self):
+        client = MagicMock()
+        client.base_url = "https://api.moonshot.ai/v1"
+
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "kimi-k2.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "kimi-k2.5", None, None, None),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.1,
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["model"] == "kimi-k2.5"
+        assert "temperature" not in kwargs
+
+    def test_non_kimi_providers_still_forward_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://openrouter.ai/api/v1"
+
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "google/gemini-3-flash-preview"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "google/gemini-3-flash-preview", None, None, None),
+        ):
+            result = call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.1,
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["temperature"] == 0.1
+
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------

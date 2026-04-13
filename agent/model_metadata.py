@@ -37,6 +37,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "mimo", "xiaomi-mimo",
     "arcee-ai", "arceeai",
     "qwen-portal",
+    "stepfun", "stepfun-plan", "step-fun", "stepplan", "step-plan",
 })
 
 
@@ -126,6 +127,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
+    # StepFun
+    "step-3.5": 262144,
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
     "minimax": 204800,
@@ -230,6 +233,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.x.ai": "xai",
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
+    "api.stepfun.com": "stepfun",
+    "api.stepfun.ai": "stepfun",
 }
 
 

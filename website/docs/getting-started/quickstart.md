@@ -55,6 +55,7 @@ hermes setup       # Or configure everything at once
 | **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
+| **StepFun** | Step-3.5-Flash — standard & plan endpoints (CN + intl) | Set `STEPFUN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
 | **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
 | **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |

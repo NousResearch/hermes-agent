@@ -70,6 +70,9 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "step-fun": "stepfun",
+    "stepplan": "stepfun-plan",
+    "step-plan": "stepfun-plan",
 }
 
 
@@ -104,6 +107,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "stepfun": "step-3.5-flash",
+    "stepfun-plan": "step-3.5-flash",
 }
 
 # Vision-specific model overrides for direct providers.

@@ -200,6 +200,13 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "stepfun": [
+        "step-3.5-flash",
+    ],
+    "stepfun-plan": [
+        "step-3.5-flash",
+        "step-3.5-flash-2603",
+    ],
     "arcee": [
         "trinity-large-thinking",
         "trinity-large-preview",
@@ -524,6 +531,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("kimi-coding-cn", "Kimi / Moonshot (China)",  "Kimi / Moonshot China (Moonshot CN direct API)"),
     ProviderEntry("minimax",        "MiniMax",                  "MiniMax (global direct API)"),
     ProviderEntry("minimax-cn",     "MiniMax (China)",          "MiniMax China (domestic direct API)"),
+    ProviderEntry("stepfun",        "StepFun",                  "StepFun (Step-3.5-Flash — standard & plan endpoints)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
@@ -536,6 +544,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
+_PROVIDER_LABELS["stepfun-plan"] = "StepFun Plan"
 
 _PROVIDER_ALIASES = {
     "glm": "zai",
@@ -582,6 +591,11 @@ _PROVIDER_ALIASES = {
     "huggingface-hub": "huggingface",
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
+    "step-fun": "stepfun",
+    "step_fun": "stepfun",
+    "stepplan": "stepfun-plan",
+    "step-plan": "stepfun-plan",
+    "step_plan": "stepfun-plan",
     "grok": "xai",
     "x-ai": "xai",
     "x.ai": "xai",

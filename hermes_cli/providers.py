@@ -136,6 +136,14 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "stepfun": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
+    "stepfun-plan": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="STEPFUN_PLAN_BASE_URL",
+    ),
     "arcee": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://api.arcee.ai/api/v1",
@@ -236,6 +244,13 @@ ALIASES: Dict[str, str] = {
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
 
+    # stepfun
+    "step-fun": "stepfun",
+    "step_fun": "stepfun",
+    "stepplan": "stepfun-plan",
+    "step-plan": "stepfun-plan",
+    "step_plan": "stepfun-plan",
+
     # arcee
     "arcee-ai": "arcee",
     "arceeai": "arcee",
@@ -261,6 +276,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
     "xiaomi": "Xiaomi MiMo",
+    "stepfun-plan": "StepFun Plan",
     "local": "Local endpoint",
 }
 

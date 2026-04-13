@@ -206,6 +206,22 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "stepfun": ProviderConfig(
+        id="stepfun",
+        name="StepFun",
+        auth_type="api_key",
+        inference_base_url="https://api.stepfun.com/v1",
+        api_key_env_vars=("STEPFUN_API_KEY",),
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
+    "stepfun-plan": ProviderConfig(
+        id="stepfun-plan",
+        name="StepFun Plan",
+        auth_type="api_key",
+        inference_base_url="https://api.stepfun.com/step_plan/v1",
+        api_key_env_vars=("STEPFUN_API_KEY",),
+        base_url_env_var="STEPFUN_PLAN_BASE_URL",
+    ),
     "deepseek": ProviderConfig(
         id="deepseek",
         name="DeepSeek",
@@ -919,6 +935,8 @@ def resolve_provider(
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
+        "step-fun": "stepfun", "step_fun": "stepfun",
+        "stepplan": "stepfun-plan", "step-plan": "stepfun-plan", "step_plan": "stepfun-plan",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

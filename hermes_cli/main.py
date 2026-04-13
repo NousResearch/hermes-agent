@@ -1139,6 +1139,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "stepfun":
+        _model_flow_stepfun(config, current_model)
     elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -2408,6 +2410,114 @@ def _model_flow_kimi(config, current_model=""):
         print(f"Default model set to: {selected} (via {endpoint_label})")
     else:
         print("No change.")
+
+
+def _model_flow_stepfun(config, current_model=""):
+    """StepFun model selection with endpoint mode and region routing.
+
+    Presents one provider entry that lets the user choose:
+    - Standard or Plan endpoint mode
+    - China (api.stepfun.com) or Global (api.stepfun.ai) region
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    stepfun_urls = {
+        ("standard", "cn"): "https://api.stepfun.com/v1",
+        ("standard", "intl"): "https://api.stepfun.ai/v1",
+        ("plan", "cn"): "https://api.stepfun.com/step_plan/v1",
+        ("plan", "intl"): "https://api.stepfun.ai/step_plan/v1",
+    }
+
+    key_env = "STEPFUN_API_KEY"
+    existing_key = get_env_value(key_env) or os.getenv(key_env, "")
+    if not existing_key:
+        print("No StepFun API key configured.")
+        try:
+            import getpass
+            new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not new_key:
+            print("Cancelled.")
+            return
+        save_env_value(key_env, new_key)
+        existing_key = new_key
+        print("API key saved.")
+        print()
+    else:
+        print(f"  StepFun API key: {existing_key[:8]}... ✓")
+        print()
+
+    endpoint_choices = [
+        ("standard", "cn", "Standard — China       (api.stepfun.com/v1)"),
+        ("standard", "intl", "Standard — Global/Intl  (api.stepfun.ai/v1)"),
+        ("plan", "cn", "Plan — China            (api.stepfun.com/step_plan/v1)"),
+        ("plan", "intl", "Plan — Global/Intl      (api.stepfun.ai/step_plan/v1)"),
+    ]
+    print("  Select StepFun endpoint:")
+    for i, (_, _, label) in enumerate(endpoint_choices, 1):
+        print(f"    {i}. {label}")
+    print(f"    {len(endpoint_choices) + 1}. Cancel")
+    try:
+        raw = input("  Choice [1]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    idx = (int(raw) if raw.isdigit() else 1) - 1
+    if idx < 0 or idx >= len(endpoint_choices):
+        print("No change.")
+        return
+
+    mode, region, _ = endpoint_choices[idx]
+    is_plan = mode == "plan"
+    provider_id = "stepfun-plan" if is_plan else "stepfun"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    base_url_env = pconfig.base_url_env_var or ""
+
+    current_base = ""
+    if base_url_env:
+        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    effective_base = current_base or stepfun_urls[(mode, region)]
+
+    mode_label = "Plan" if is_plan else "Standard"
+    region_label = "China" if region == "cn" else "Global"
+    endpoint_label = f"StepFun {mode_label} ({region_label})"
+    print(f"  Using {endpoint_label} → {effective_base}")
+    print()
+
+    model_list = _PROVIDER_MODELS.get(provider_id, [])
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Enter model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if not selected:
+        print("No change.")
+        return
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = effective_base
+    model.pop("api_mode", None)
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"Default model set to: {selected} (via {endpoint_label})")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -4559,7 +4669,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "stepfun", "stepfun-plan", "kilocode", "xiaomi", "arcee"],
         default=None,
         help="Inference provider (default: auto)"
     )

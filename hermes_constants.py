@@ -4,7 +4,10 @@ Import-safe module with no dependencies — can be imported from anywhere
 without risk of circular imports.
 """
 
+from __future__ import annotations
+
 import os
+import pwd
 from pathlib import Path
 
 
@@ -15,11 +18,17 @@ from pathlib import Path
 # value, so any code that needs the *real* OS user home must use this
 # module-level constant instead.
 #
-# Captured once at import time — before the sandbox can override it — so
-# downstream consumers always get the correct value even when ``HOME`` has
-# been repointed to a profile directory.
+# We use ``pwd.getpwuid()`` to bypass the ``HOME`` env var entirely and
+# get the actual user home from the system password database.  Falls back
+# to ``Path.home()`` on non-Unix platforms.
 
-_REAL_HOME: Path = Path(os.environ.get("HERMES_REAL_HOME", "")) or Path.home()
+def _get_real_home() -> Path:
+    try:
+        return Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except (KeyError, ImportError, AttributeError):
+        return Path.home()
+
+_REAL_HOME: Path = _get_real_home()
 
 
 def get_real_home() -> Path:

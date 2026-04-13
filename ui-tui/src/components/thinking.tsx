@@ -56,15 +56,31 @@ function Detail({ color, content, dimColor }: DetailRow) {
   )
 }
 
+// ── Streaming cursor ─────────────────────────────────────────────────
+
+function StreamCursor({ active = false, color, dimColor }: { active?: boolean; color: string; dimColor?: boolean }) {
+  const [on, setOn] = useState(true)
+
+  useEffect(() => {
+    const id = setInterval(() => setOn(v => !v), 420)
+
+    return () => clearInterval(id)
+  }, [])
+
+  return <Text color={color} dimColor={dimColor}>{active && on ? '▍' : ' '}</Text>
+}
+
 // ── Thinking (pre-tool fallback) ─────────────────────────────────────
 
 export const Thinking = memo(function Thinking({
   mode = 'truncated',
   reasoning,
+  streaming = false,
   t
 }: {
   mode?: ThinkingMode
   reasoning: string
+  streaming?: boolean
   t: Theme
 }) {
   const [tick, setTick] = useState(0)
@@ -88,6 +104,12 @@ export const Thinking = memo(function Thinking({
         <Text color={t.color.dim} dimColor {...(mode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
           <Text dimColor>└ </Text>
           {preview}
+          <StreamCursor active={streaming} color={t.color.dim} dimColor />
+        </Text>
+      ) : streaming ? (
+        <Text color={t.color.dim} dimColor>
+          <Text dimColor>└ </Text>
+          <StreamCursor active={streaming} color={t.color.dim} dimColor />
         </Text>
       ) : null}
     </Box>
@@ -102,6 +124,7 @@ export const ToolTrail = memo(function ToolTrail({
   busy = false,
   thinkingMode = 'truncated',
   reasoning = '',
+  reasoningStreaming = false,
   t,
   tools = [],
   trail = [],
@@ -110,6 +133,7 @@ export const ToolTrail = memo(function ToolTrail({
   busy?: boolean
   thinkingMode?: ThinkingMode
   reasoning?: string
+  reasoningStreaming?: boolean
   t: Theme
   tools?: ActiveTool[]
   trail?: string[]
@@ -214,7 +238,24 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   if (reasoningTail && groups.length) {
-    detail({ color: t.color.dim, content: reasoningTail, dimColor: true, key: 'cot' })
+    detail({
+      color: t.color.dim,
+      content: (
+        <>
+          {reasoningTail}
+          <StreamCursor active={reasoningStreaming} color={t.color.dim} dimColor />
+        </>
+      ),
+      dimColor: true,
+      key: 'cot'
+    })
+  } else if (reasoningStreaming && groups.length && thinkingMode === 'collapsed') {
+    detail({
+      color: t.color.dim,
+      content: <StreamCursor active={reasoningStreaming} color={t.color.dim} dimColor />,
+      dimColor: true,
+      key: 'cot'
+    })
   }
 
   // ── activity → meta ─────────────────────────────────────────────
@@ -230,7 +271,7 @@ export const ToolTrail = memo(function ToolTrail({
 
   return (
     <Box flexDirection="column">
-      {busy && !groups.length && <Thinking mode={thinkingMode} reasoning={reasoning} t={t} />}
+      {busy && !groups.length && <Thinking mode={thinkingMode} reasoning={reasoning} streaming={reasoningStreaming} t={t} />}
       {!busy && !groups.length && reasoningTail && (
         <Detail color={t.color.dim} content={reasoningTail} dimColor key="cot" />
       )}

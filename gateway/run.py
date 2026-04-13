@@ -1752,8 +1752,24 @@ class GatewayRunner:
         asyncio.create_task(self._platform_reconnect_watcher())
 
         logger.info("Press Ctrl+C to stop")
-        
+
+        # Send startup notification to Feishu home channel if configured
+        self._send_startup_notification()
+
         return True
+
+    async def _send_startup_notification(self) -> None:
+        """Send a startup notification to the Feishu home channel."""
+        feishu_home = os.environ.get("FEISHU_HOME_CHANNEL", "").strip()
+        feishu_adapter: "FeishuAdapter" = self.adapters.get(Platform.FEISHU)  # type: ignore
+        if not feishu_home or not feishu_adapter:
+            return
+        import datetime
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            await feishu_adapter.send(feishu_home, f"✅ Hermes Gateway 已启动 ({now})")
+        except Exception:
+            pass
     
     async def _session_expiry_watcher(self, interval: int = 300):
         """Background task that proactively flushes memories for expired sessions.

@@ -24,10 +24,12 @@ import { asRpcResult, rpcErrorMessage } from './lib/rpc.js'
 import {
   buildToolTrailLine,
   compactPreview,
+  estimateTokensRough,
   fmtK,
   hasInterpolation,
   isToolTrailResultLine,
   isTransientTrailLine,
+  pasteTokenLabel,
   pick,
   sameToolTrailGroup,
   stripTrailingPasteNewlines,
@@ -54,7 +56,7 @@ import type {
 // ── Constants ────────────────────────────────────────────────────────
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
-const PASTE_TOKEN_RE = /\[\[paste:(\d+)\]\]/g
+const PASTE_TOKEN_RE = /\[\[paste:(\d+)(?:[^\n]*?)\]\]/g
 const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 
 const LARGE_PASTE = { chars: 8000, lines: 80 }
@@ -109,13 +111,19 @@ const redactSecrets = (text: string) => {
   return { redactions, text: cleaned }
 }
 
-const pasteToken = (id: number) => `[[paste:${id}]]`
-
 const stripTokens = (text: string, re: RegExp) =>
   text
     .replace(re, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
+
+const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?: number } | null | undefined) => {
+  const dims = info?.width && info?.height ? `${info.width}x${info.height}` : ''
+  const tok =
+    typeof info?.token_estimate === 'number' && info.token_estimate > 0 ? `~${fmtK(info.token_estimate)} tok` : ''
+
+  return [dims, tok].filter(Boolean).join(' · ')
+}
 
 const toTranscriptMessages = (rows: unknown): Msg[] => {
   if (!Array.isArray(rows)) {
@@ -345,7 +353,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [pastes, setPastes] = useState<PendingPaste[]>([])
-  const [pasteReview, setPasteReview] = useState<{ largeIds: number[]; text: string } | null>(null)
   const [streaming, setStreaming] = useState('')
   const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
@@ -425,7 +432,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   )
 
   function blocked() {
-    return !!(clarify || approval || pasteReview || picker || secret || sudo || pager)
+    return !!(clarify || approval || picker || secret || sudo || pager)
   }
 
   const empty = !messages.length
@@ -617,7 +624,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     setBusy(false)
     setClarify(null)
     setApproval(null)
-    setPasteReview(null)
     setSudo(null)
     setSecret(null)
     setStreaming('')
@@ -632,7 +638,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const clearIn = () => {
     setInput('')
     setInputBuf([])
-    setPasteReview(null)
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
@@ -661,6 +666,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     (msg?: string) =>
       rpc('session.create', { cols: colsRef.current }).then((r: any) => {
         if (!r) {
+          setStatus('ready')
+
           return
         }
 
@@ -679,6 +686,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           setHistoryItems([introMsg(r.info)])
         } else {
           setInfo(null)
+        }
+
+        if (r.info?.credential_warning) {
+          sys(`warning: ${r.info.credential_warning}`)
         }
 
         if (msg) {
@@ -726,20 +737,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   )
 
   // ── Paste pipeline ───────────────────────────────────────────────
-
-  const listPasteIds = useCallback((text: string) => {
-    const ids = new Set<number>()
-
-    for (const m of text.matchAll(PASTE_TOKEN_RE)) {
-      const id = parseInt(m[1] ?? '-1', 10)
-
-      if (id > 0) {
-        ids.add(id)
-      }
-    }
-
-    return [...ids]
-  }, [])
 
   const resolvePasteTokens = useCallback(
     (text: string) => {
@@ -792,11 +789,20 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const paste = useCallback(
     (quiet = false) =>
-      rpc('clipboard.paste', { session_id: sid }).then((r: any) =>
-        r?.attached
-          ? sys(`📎 Image #${r.count} attached from clipboard`)
-          : quiet || sys(r?.message || 'No image found in clipboard')
-      ),
+      rpc('clipboard.paste', { session_id: sid }).then((r: any) => {
+        if (!r) {
+          return
+        }
+
+        if (r.attached) {
+          const meta = imageTokenMeta(r)
+          sys(`📎 Image #${r.count} attached from clipboard${meta ? ` · ${meta}` : ''}`)
+
+          return
+        }
+
+        quiet || sys(r.message || 'No image found in clipboard')
+      }),
     [rpc, sid, sys]
   )
 
@@ -830,7 +836,9 @@ export function App({ gw }: { gw: GatewayClient }) {
       pasteCounterRef.current++
       const id = pasteCounterRef.current
       const mode: PasteMode = 'attach'
-      const token = pasteToken(id)
+      const charCount = cleanedText.length
+      const tokenCount = estimateTokensRough(cleanedText)
+      const token = pasteTokenLabel({ charCount, id, lineCount, text: cleanedText, tokenCount })
       const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
       const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
       const insert = `${lead}${token}${tail}`
@@ -839,18 +847,19 @@ export function App({ gw }: { gw: GatewayClient }) {
         [
           ...prev,
           {
-            charCount: cleanedText.length,
+            charCount,
             createdAt: Date.now(),
             id,
             kind: classifyPaste(cleanedText),
             lineCount,
             mode,
-            text: cleanedText
+            text: cleanedText,
+            tokenCount
           }
         ].slice(-24)
       )
 
-      pushActivity(`captured ${lineCount}L paste as ${token} (${mode})`)
+      pushActivity(`captured ${lineCount} lines · ${fmtK(tokenCount)} tok as #${id} (${mode})`)
 
       return { cursor: cursor + insert.length, value: value.slice(0, cursor) + insert + value.slice(cursor) }
     },
@@ -898,7 +907,8 @@ export function App({ gw }: { gw: GatewayClient }) {
       .then((r: any) => {
         if (r?.matched) {
           if (r.is_image) {
-            pushActivity(`attached image: ${r.name}`)
+            const meta = imageTokenMeta(r)
+            pushActivity(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
           } else {
             pushActivity(`detected file: ${r.name}`)
           }
@@ -1017,7 +1027,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   // ── Dispatch ─────────────────────────────────────────────────────
 
   const dispatchSubmission = useCallback(
-    (full: string, allowLarge = false) => {
+    (full: string) => {
       if (!full.trim() || !sid) {
         return
       }
@@ -1049,19 +1059,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       if (missingIds.length) {
         pushActivity(`missing paste token(s): ${missingIds.join(', ')}`, 'warn')
-
-        return
-      }
-
-      const largeIds = listPasteIds(full).filter(id => {
-        const p = pastes.find(x => x.id === id)
-
-        return !!p && (p.charCount >= LARGE_PASTE.chars || p.lineCount >= LARGE_PASTE.lines)
-      })
-
-      if (!allowLarge && largeIds.length) {
-        setPasteReview({ largeIds, text: full })
-        setStatus(`review large paste (${largeIds.length})`)
 
         return
       }
@@ -1108,7 +1105,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       send(full)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appendMessage, busy, enqueue, gw, listPasteIds, pastes, pushHistory, resolvePasteTokens, sid]
+    [appendMessage, busy, enqueue, gw, pushHistory, resolvePasteTokens, sid]
   )
 
   // ── Input handling ───────────────────────────────────────────────
@@ -1130,18 +1127,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
         } else if (key.escape || ctrl(key, ch, 'c') || ch === 'q') {
           setPager(null)
-        }
-
-        return
-      }
-
-      if (pasteReview) {
-        if (key.return) {
-          setPasteReview(null)
-          dispatchSubmission(pasteReview.text, true)
-        } else if (key.escape || ctrl(key, ch, 'c')) {
-          setPasteReview(null)
-          setStatus('ready')
         }
 
         return
@@ -1450,6 +1435,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
 
+        case 'gateway.stderr':
+          if (p?.line) {
+            pushActivity(String(p.line).slice(0, 120), 'error')
+          }
+
+          break
+
         case 'gateway.protocol_error':
           setStatus('protocol warning')
 
@@ -1648,12 +1640,18 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'error':
           inflightPasteIdsRef.current = []
-          sys(`error: ${p?.message}`)
           idle()
           setReasoning('')
-          setActivity([])
           turnToolsRef.current = []
           persistedToolLabelsRef.current.clear()
+
+          if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current)
+            statusTimerRef.current = null
+          }
+
+          pushActivity(String(p?.message || 'unknown error'), 'error')
+          sys(`error: ${p?.message}`)
           setStatus('ready')
 
           break
@@ -1687,6 +1685,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     gw.on('event', handler)
     gw.on('exit', exitHandler)
+    gw.drain()
 
     return () => {
       gw.off('event', handler)
@@ -2002,7 +2001,8 @@ export function App({ gw }: { gw: GatewayClient }) {
               return
             }
 
-            sys(`attached image: ${r.name}`)
+            const meta = imageTokenMeta(r)
+            sys(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
 
             if (r?.remainder) {
               setInput(r.remainder)
@@ -2650,7 +2650,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           if (next && sid) {
             setQueueEdit(null)
-            dispatchSubmission(next, true)
+            dispatchSubmission(next)
           }
         }
 
@@ -2731,16 +2731,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           <Box>
             <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
           </Box>
-        )}
-
-        {pasteReview && (
-          <PromptBox color={theme.color.warn}>
-            <Text bold color={theme.color.warn}>
-              Review large paste before send
-            </Text>
-            <Text color={theme.color.dim}>pastes: {pasteReview.largeIds.map(id => `#${id}`).join(', ')}</Text>
-            <Text color={theme.color.dim}>Enter to send · Esc/Ctrl+C to cancel</Text>
-          </PromptBox>
         )}
 
         {clarify && (

@@ -88,6 +88,7 @@ export interface PendingPaste {
   lineCount: number
   mode: PasteMode
   text: string
+  tokenCount: number
 }
 
 export interface SlashCatalog {

@@ -43,6 +43,53 @@ export const compactPreview = (s: string, max: number) => {
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
 }
 
+export const estimateTokensRough = (text: string) => (!text ? 0 : (text.length + 3) >> 2)
+
+export const edgePreview = (s: string, head = 16, tail = 28) => {
+  const one = s.replace(/\s+/g, ' ').trim().replace(/\]\]/g, '] ]')
+
+  if (!one) {
+    return ''
+  }
+
+  if (one.length <= head + tail + 4) {
+    return one
+  }
+
+  return `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
+}
+
+export const pasteTokenLabel = ({
+  charCount,
+  id,
+  lineCount,
+  text,
+  tokenCount
+}: {
+  charCount: number
+  id: number
+  lineCount: number
+  text: string
+  tokenCount: number
+}) => {
+  const preview = edgePreview(text)
+  const counts = `[${fmtK(lineCount)} lines · ${fmtK(tokenCount)} tok · ${fmtK(charCount)} chars]`
+
+  if (!preview) {
+    return `[[paste:${id} ${counts}]]`
+  }
+
+  const one = text.replace(/\s+/g, ' ').trim().replace(/\]\]/g, '] ]')
+
+  if (one.length === preview.length) {
+    return `[[paste:${id} ${preview} ${counts}]]`
+  }
+
+  const [head = preview, tail = ''] = preview.split('.. ', 2)
+
+  return `[[paste:${id} ${head.trimEnd()}.. ${counts} .. ${tail.trimStart()}]]`
+}
+
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number) => {
   const text = reasoning.replace(/\n/g, ' ').trim()
 
@@ -196,4 +243,4 @@ export const userDisplay = (text: string): string => {
 }
 
 export const isPasteBackedText = (text: string): boolean =>
-  /\[\[paste:\d+\]\]|\[paste #\d+ (?:attached|excerpt)\]/.test(text)
+  /\[\[paste:\d+(?:[^\n]*?)\]\]|\[paste #\d+ (?:attached|excerpt)\]/.test(text)

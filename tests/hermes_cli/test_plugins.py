@@ -829,6 +829,7 @@ class TestAutoRegisterSkillsFromDirV1:
         assert count == 1
 
     def test_one_broken_skill_doesnt_block_others(self, tmp_path, caplog):
+        import logging
         from hermes_cli.plugins import _auto_register_skills_from_dir_v1
 
         ctx, manager, skills_dir = self._fake_register(tmp_path)
@@ -838,11 +839,21 @@ class TestAutoRegisterSkillsFromDirV1:
         bad_dir.mkdir()
         (bad_dir / "SKILL.md").write_text("---\nname: bad.name\n---\n")
 
-        count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            count = _auto_register_skills_from_dir_v1(ctx, skills_dir)
 
-        # Only the good one succeeds
+        # The good skill still registered
         assert count == 1
         assert manager.find_plugin_skill("myplugin:good") is not None
+
+        # The bad skill's failure was logged with actionable context:
+        # the failing skill name and the owning plugin name
+        assert any("bad.name" in r.message for r in caplog.records), (
+            "Expected 'bad.name' to appear in warning log records"
+        )
+        assert any("myplugin" in r.message for r in caplog.records), (
+            "Expected plugin name 'myplugin' to appear in warning log records"
+        )
 
     def test_empty_dir(self, tmp_path):
         from hermes_cli.plugins import _auto_register_skills_from_dir_v1

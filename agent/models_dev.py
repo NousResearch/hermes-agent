@@ -148,6 +148,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openai-codex": "openai",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",

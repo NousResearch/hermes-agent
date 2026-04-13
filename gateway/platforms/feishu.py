@@ -14,6 +14,35 @@ Supports:
 - Interactive card button-click events routed as synthetic COMMAND events
 - Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
 - Verification token validation as second auth layer (matches openclaw)
+
+Feishu identity model
+---------------------
+Feishu uses three user-ID tiers (official docs:
+https://open.feishu.cn/document/home/user-identity-introduction/introduction):
+
+  open_id  (ou_xxx)  — **App-scoped**.  The same person gets a different
+                        open_id under each Feishu app.  Always available in
+                        event payloads without extra permissions.
+  user_id  (u_xxx)   — **Tenant-scoped**.  Stable within a company but
+                        requires the ``contact:user.employee_id:readonly``
+                        scope.  May not be present.
+  union_id (on_xxx)  — **Developer-scoped**.  Same across all apps owned by
+                        one developer/ISV.  Best cross-app stable ID.
+
+For bots specifically:
+
+  app_id              — The application's canonical credential identifier.
+  bot open_id         — Returned by ``/bot/v3/info``.  This is the bot's own
+                        open_id *within its app context* and is what Feishu
+                        puts in ``mentions[].id.open_id`` when someone
+                        @-mentions the bot.  Used for mention gating only.
+
+In single-bot mode (what Hermes currently supports), open_id works as a
+de-facto unique user identifier since there is only one app context.
+
+Session-key participant isolation prefers ``union_id`` (via user_id_alt)
+over ``open_id`` (via user_id) so that sessions stay stable if the same
+user is seen through different apps in the future.
 """
 
 from __future__ import annotations
@@ -327,7 +356,7 @@ class FeishuNormalizedMessage:
 
 @dataclass(frozen=True)
 class FeishuAdapterSettings:
-    app_id: str
+    app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
     app_secret: str
     domain_name: str
     connection_mode: str
@@ -335,7 +364,11 @@ class FeishuAdapterSettings:
     verification_token: str
     group_policy: str
     allowed_group_users: frozenset[str]
+    # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
+    # @mention matching: Feishu puts this value in mentions[].id.open_id when
+    # a user @-mentions the bot in a group chat.
     bot_open_id: str
+    # Bot's user_id (tenant-scoped) — optional, used as fallback mention match.
     bot_user_id: str
     bot_name: str
     dedup_cache_size: int
@@ -3414,10 +3447,22 @@ class FeishuAdapter(BasePlatformAdapter):
         return "group"
 
     async def _resolve_sender_profile(self, sender_id: Any) -> Dict[str, Optional[str]]:
+        """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
+
+        Preference order for the primary ``user_id`` field:
+          1. user_id  (tenant-scoped, most stable — requires permission scope)
+          2. open_id  (app-scoped, always available — different per bot app)
+
+        ``user_id_alt`` carries the union_id (developer-scoped, stable across
+        all apps by the same developer).  Session-key generation prefers
+        user_id_alt when present, so participant isolation stays stable even
+        if the primary ID is the app-scoped open_id.
+        """
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        primary_id = open_id or user_id
+        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
+        primary_id = user_id or open_id
         display_name = await self._resolve_sender_name_from_api(primary_id or union_id)
         return {
             "user_id": primary_id,
@@ -4427,6 +4472,9 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
     Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
     Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
+
+    Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
+    that Feishu puts in @mention payloads.  It is NOT the app_id.
     """
     if FEISHU_AVAILABLE:
         return _probe_bot_sdk(app_id, app_secret, domain)

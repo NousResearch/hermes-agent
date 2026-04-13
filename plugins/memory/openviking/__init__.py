@@ -10,7 +10,7 @@ lifecycle instead of read-only search endpoints.
 Config via environment variables (profile-scoped via each profile's .env):
   OPENVIKING_ENDPOINT  — Server URL (default: http://127.0.0.1:1933)
   OPENVIKING_API_KEY   — API key (required for authenticated servers)
-  OPENVIKING_ACCOUNT   — Tenant account (default: root)
+  OPENVIKING_ACCOUNT   — Tenant account (default: default)
   OPENVIKING_USER      — Tenant user (default: default)
 
 Capabilities:
@@ -83,7 +83,7 @@ class _VikingClient:
                  account: str = "", user: str = ""):
         self._endpoint = endpoint.rstrip("/")
         self._api_key = api_key
-        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "root")
+        self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
         self._httpx = _get_httpx()
         if self._httpx is None:

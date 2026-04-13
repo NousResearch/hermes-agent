@@ -21,51 +21,56 @@ class HermesSseClient(
         onComplete: () -> Unit,
         onError: (String) -> Unit,
     ) {
-        val payload = JSONObject().apply {
-            put("model", request.model)
-            put("stream", true)
-            put(
-                "messages",
-                JSONArray().apply {
-                    request.messages.forEach { msg ->
-                        put(
-                            JSONObject().apply {
-                                put("role", msg.role)
-                                put("content", msg.content)
-                            }
-                        )
+        try {
+            val payload = JSONObject().apply {
+                put("model", request.model)
+                put("stream", true)
+                put(
+                    "messages",
+                    JSONArray().apply {
+                        request.messages.forEach { msg ->
+                            put(
+                                JSONObject().apply {
+                                    put("role", msg.role)
+                                    put("content", msg.content)
+                                }
+                            )
+                        }
                     }
-                }
-            )
-        }
-        val builder = Request.Builder()
-            .url("$normalizedBaseUrl/v1/chat/completions")
-            .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
-        if (!apiKey.isNullOrBlank()) {
-            builder.header("Authorization", "Bearer $apiKey")
-        }
-        if (!request.sessionId.isNullOrBlank()) {
-            builder.header(HermesApiClient.SESSION_HEADER, request.sessionId)
-        }
+                )
+            }
+            val builder = Request.Builder()
+                .url("$normalizedBaseUrl/v1/chat/completions")
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+            if (!apiKey.isNullOrBlank()) {
+                builder.header("Authorization", "Bearer $apiKey")
+            }
+            if (!request.sessionId.isNullOrBlank()) {
+                builder.header(HermesApiClient.SESSION_HEADER, request.sessionId)
+            }
 
-        httpClient.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) {
-                onError("SSE request failed: ${response.code}")
-                return
+            httpClient.newCall(builder.build()).execute().use { response ->
+                if (!response.isSuccessful) {
+                    onError("SSE request failed: ${response.code}")
+                    return
+                }
+                val source = response.body?.source()
+                if (source == null) {
+                    onError("SSE response body was empty")
+                    return
+                }
+                parseStream(source, onDelta, onComplete, onError)
             }
-            val source = response.body?.source()
-            if (source == null) {
-                onError("SSE response body was empty")
-                return
-            }
-            parseStream(source, onDelta, onComplete)
+        } catch (error: Exception) {
+            onError(error.message ?: error.javaClass.simpleName)
         }
     }
 
-    private fun parseStream(
+    internal fun parseStream(
         source: BufferedSource,
         onDelta: (String) -> Unit,
         onComplete: () -> Unit,
+        onError: (String) -> Unit,
     ) {
         while (!source.exhausted()) {
             val line = source.readUtf8Line() ?: break
@@ -77,7 +82,10 @@ class HermesSseClient(
                 onComplete()
                 return
             }
-            val delta = extractDelta(payload)
+            val delta = runCatching { extractDelta(payload) }.getOrElse { error ->
+                onError(error.message ?: error.javaClass.simpleName)
+                return
+            }
             if (!delta.isNullOrEmpty()) {
                 onDelta(delta)
             }

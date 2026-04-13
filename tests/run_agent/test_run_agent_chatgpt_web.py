@@ -323,6 +323,37 @@ def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_definition_lookup
 
 
 
+def test_build_api_kwargs_chatgpt_web_prefers_delegate_task_for_explicit_subagent_file_inspection(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "delegate_task", "description": "Delegate work to a subagent", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Use delegate_task to inspect the local file run_agent.py and answer only with the exact line that defines _parse_tool_call_arguments."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: delegate_task.' in rewritten_user
+    assert 'inspect the local file run_agent.py' in rewritten_user.lower()
+    assert 'Inspect only this local file: run_agent.py.' in rewritten_user
+    assert '_parse_tool_call_arguments' in rewritten_user
+    assert '"toolsets": ["file"]' in rewritten_user
+    assert '"max_iterations": 4' in rewritten_user
+    assert agent._chatgpt_web_forced_tool_call == {
+        "name": "delegate_task",
+        "arguments": {
+            "goal": "inspect the local file run_agent.py and answer only with the exact line that defines _parse_tool_call_arguments",
+            "context": "Inspect only this local file: run_agent.py. Do not search outside that file unless the file itself references another required location. The requested symbol/definition target is: _parse_tool_call_arguments. Use search_files against that exact path first, then read_file on the matching line if needed. Final response must preserve the user's exact answer-only formatting requirement. Use only the file toolset for this task.",
+            "toolsets": ["file"],
+            "max_iterations": 4,
+        },
+    }
+
+
+
 def test_build_api_kwargs_chatgpt_web_infers_read_file_after_search_result(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
@@ -1380,3 +1411,15 @@ def test_chatgpt_web_repair_answer_only_line_prefers_exact_tool_line(monkeypatch
     )
 
     assert repaired == "BETA = 1"
+
+
+
+def test_chatgpt_web_repair_answer_only_line_uses_delegate_task_summary(monkeypatch):
+    agent = _build_agent(monkeypatch, model="gpt-5-thinking")
+    repaired = agent._chatgpt_web_repair_answer_only_response(
+        "Use delegate_task to inspect the local file run_agent.py and answer only with the exact line that defines _parse_tool_call_arguments.",
+        "0",
+        [{"role": "tool", "content": '{"results": [{"summary": "def _parse_tool_call_arguments(raw_args: Any) -> Optional[dict[str, Any]]:"}], "total_duration_seconds": 27.05}' }],
+    )
+
+    assert repaired == "def _parse_tool_call_arguments(raw_args: Any) -> Optional[dict[str, Any]]:"

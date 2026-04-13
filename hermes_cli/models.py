@@ -667,13 +667,6 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
-def menu_labels(*, force_refresh: bool = False) -> list[str]:
-    """Return display labels like 'anthropic/claude-opus-4.6 (recommended)'."""
-    labels = []
-    for mid, desc in fetch_openrouter_models(force_refresh=force_refresh):
-        labels.append(f"{mid} ({desc})" if desc else mid)
-    return labels
-
 
 
 # ---------------------------------------------------------------------------

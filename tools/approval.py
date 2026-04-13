@@ -352,19 +352,6 @@ def load_permanent(patterns: set):
         _permanent_approved.update(patterns)
 
 
-def clear_session(session_key: str):
-    """Clear all approvals and pending requests for a session."""
-    with _lock:
-        _session_approved.pop(session_key, None)
-        _session_yolo.discard(session_key)
-        _pending.pop(session_key, None)
-        _gateway_notify_cbs.pop(session_key, None)
-        # Signal ALL blocked threads so they don't hang forever
-        entries = _gateway_queues.pop(session_key, [])
-        for entry in entries:
-            entry.event.set()
-
-
 
 # =========================================================================
 # Config persistence for permanent allowlist

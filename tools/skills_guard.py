@@ -872,55 +872,6 @@ def _unicode_char_name(char: str) -> str:
     return names.get(char, f"U+{ord(char):04X}")
 
 
-def _parse_llm_response(text: str, skill_name: str) -> List[Finding]:
-    """Parse the LLM's JSON response into Finding objects."""
-    import json as json_mod
-
-    # Extract JSON from the response (handle markdown code blocks)
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
-
-    try:
-        data = json_mod.loads(text)
-    except json_mod.JSONDecodeError:
-        return []
-
-    if not isinstance(data, dict):
-        return []
-
-    findings = []
-    for item in data.get("findings", []):
-        if not isinstance(item, dict):
-            continue
-        desc = item.get("description", "")
-        severity = item.get("severity", "medium")
-        if severity not in ("critical", "high", "medium", "low"):
-            severity = "medium"
-        if desc:
-            findings.append(Finding(
-                pattern_id="llm_audit",
-                severity=severity,
-                category="llm-detected",
-                file="(LLM analysis)",
-                line=0,
-                match=desc[:120],
-                description=f"LLM audit: {desc}",
-            ))
-
-    return findings
-
-
-def _get_configured_model() -> str:
-    """Load the user's configured model from ~/.hermes/config.yaml."""
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        return config.get("model", "")
-    except Exception:
-        return ""
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers

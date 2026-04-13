@@ -4474,53 +4474,6 @@ class HermesCLI:
             _ask()
         return result[0]
 
-    def _interactive_provider_selection(
-        self, providers: list, current_model: str, current_provider: str
-    ) -> str | None:
-        """Show provider picker, return slug or None on cancel."""
-        choices = []
-        for p in providers:
-            count = p.get("total_models", len(p.get("models", [])))
-            label = f"{p['name']} ({count} model{'s' if count != 1 else ''})"
-            if p.get("is_current"):
-                label += "  ← current"
-            choices.append(label)
-
-        default_idx = next(
-            (i for i, p in enumerate(providers) if p.get("is_current")), 0
-        )
-
-        idx = self._run_curses_picker(
-            f"Select a provider (current: {current_model} on {current_provider}):",
-            choices,
-            default_index=default_idx,
-        )
-        if idx is None:
-            return None
-        return providers[idx]["slug"]
-
-    def _interactive_model_selection(
-        self, model_list: list, provider_data: dict
-    ) -> str | None:
-        """Show model picker for a given provider, return model_id or None on cancel."""
-        pname = provider_data.get("name", provider_data.get("slug", ""))
-        total = provider_data.get("total_models", len(model_list))
-
-        if not model_list:
-            _cprint(f"\n  No models listed for {pname}.")
-            return self._prompt_text_input("  Enter model name manually (or Enter to cancel): ")
-
-        choices = list(model_list) + ["Enter custom model name"]
-        idx = self._run_curses_picker(
-            f"Select model from {pname} ({len(model_list)} of {total}):",
-            choices,
-        )
-        if idx is None:
-            return None
-        if idx < len(model_list):
-            return model_list[idx]
-        return self._prompt_text_input("  Enter model name: ")
-
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
         self._capture_modal_input_snapshot()

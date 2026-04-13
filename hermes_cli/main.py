@@ -2654,13 +2654,12 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
-    import os
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _prompt_model_selection, _save_model_choice,
         deactivate_provider,
     )
     from hermes_cli.config import (
-        get_env_value, save_env_value, load_config, save_config,
+        save_env_value, load_config, save_config,
         save_anthropic_api_key,
     )
     from hermes_cli.models import _PROVIDER_MODELS

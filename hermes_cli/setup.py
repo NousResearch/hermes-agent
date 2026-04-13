@@ -43,14 +43,6 @@ def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
-def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
-    if not model_name:
-        return
-    model_cfg = _model_config_dict(config)
-    model_cfg["default"] = model_name
-    config["model"] = model_cfg
-
-
 def _get_credential_pool_strategies(config: Dict[str, Any]) -> Dict[str, str]:
     strategies = config.get("credential_pool_strategies")
     return dict(strategies) if isinstance(strategies, dict) else {}
@@ -135,43 +127,6 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
         config["agent"] = agent_cfg
     agent_cfg["reasoning_effort"] = effort
 
-
-def _setup_copilot_reasoning_selection(
-    config: Dict[str, Any],
-    model_id: str,
-    prompt_choice,
-    *,
-    catalog: Optional[list[dict[str, Any]]] = None,
-    api_key: str = "",
-) -> None:
-    from hermes_cli.models import github_model_reasoning_efforts, normalize_copilot_model_id
-
-    normalized_model = normalize_copilot_model_id(
-        model_id,
-        catalog=catalog,
-        api_key=api_key,
-    ) or model_id
-    efforts = github_model_reasoning_efforts(normalized_model, catalog=catalog, api_key=api_key)
-    if not efforts:
-        return
-
-    current_effort = _current_reasoning_effort(config)
-    choices = list(efforts) + ["Disable reasoning", f"Keep current ({current_effort or 'default'})"]
-
-    if current_effort == "none":
-        default_idx = len(efforts)
-    elif current_effort in efforts:
-        default_idx = efforts.index(current_effort)
-    elif "medium" in efforts:
-        default_idx = efforts.index("medium")
-    else:
-        default_idx = len(choices) - 1
-
-    effort_idx = prompt_choice("Select reasoning effort:", choices, default_idx)
-    if effort_idx < len(efforts):
-        _set_reasoning_effort(config, efforts[effort_idx])
-    elif effort_idx == len(efforts):
-        _set_reasoning_effort(config, "none")
 
 
 

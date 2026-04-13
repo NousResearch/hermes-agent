@@ -6,7 +6,6 @@ mcp_config.py, and memory_setup.py.
 """
 
 import getpass
-import sys
 
 from hermes_cli.colors import Colors, color
 

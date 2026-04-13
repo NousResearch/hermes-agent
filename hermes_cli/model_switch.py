@@ -41,7 +41,6 @@ from agent.models_dev import (
     get_model_capabilities,
     get_model_info,
     list_provider_models,
-    search_models_dev,
 )
 
 logger = logging.getLogger(__name__)

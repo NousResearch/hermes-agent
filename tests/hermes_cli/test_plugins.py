@@ -18,7 +18,6 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     get_plugin_manager,
-    get_plugin_tool_names,
     discover_plugins,
     invoke_hook,
 )

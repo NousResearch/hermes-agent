@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
+from agent.skill_utils import NAMESPACE_PATTERN
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 
@@ -262,6 +263,56 @@ class PluginContext:
             )
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+
+    # -- skill registration -------------------------------------------------
+
+    def register_skill(
+        self,
+        name: str,
+        path: Path,
+        description: str = "",
+    ) -> None:
+        """Register a skill provided by this plugin.
+
+        The skill is made resolvable as '<plugin_name>:<name>' via
+        skill_view(). It does NOT enter the flat ~/.hermes/skills/ tree
+        and is NOT listed in the system prompt's <available_skills> index
+        — plugin skills are opt-in explicit loads only.
+
+        Args:
+            name: bare skill name (the namespace prefix is automatically
+                derived from self.manifest.name)
+            path: absolute Path to the SKILL.md file (typically under
+                plugin_dir/skills/<name>/)
+            description: optional description for plugin listing / diagnostics
+
+        Raises:
+            ValueError: if name contains ':' or other invalid characters
+            FileNotFoundError: if path does not exist
+        """
+        if ":" in name:
+            raise ValueError(
+                f"Skill name '{name}' contains ':' which is reserved for "
+                f"namespace separation. Use a bare name (the namespace is "
+                f"automatically set to the plugin name '{self.manifest.name}')."
+            )
+        if not name or not NAMESPACE_PATTERN.match(name):
+            raise ValueError(
+                f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+."
+            )
+        if not path.exists():
+            raise FileNotFoundError(f"SKILL.md not found at {path}")
+
+        self._manager._register_plugin_skill(
+            plugin_name=self.manifest.name,
+            skill_name=name,
+            path=path,
+            description=description,
+        )
+        logger.debug(
+            "Plugin %s registered skill: %s:%s",
+            self.manifest.name, self.manifest.name, name,
+        )
 
 
 # ---------------------------------------------------------------------------

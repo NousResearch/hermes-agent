@@ -697,3 +697,68 @@ class TestPluginManagerSkillRegistry:
 
         assert pm.list_plugin_skills("foo") == ["alpha"]
         assert pm.list_plugin_skills("foo-bar") == ["beta"]
+
+
+class TestPluginContextRegisterSkill:
+    def _make_context(self, tmp_path, plugin_name="myplugin"):
+        """Build a PluginContext backed by a fresh PluginManager."""
+        from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+        manifest = PluginManifest(
+            name=plugin_name,
+            source="user",
+            path=str(tmp_path),
+        )
+        manager = PluginManager()
+        return PluginContext(manifest, manager), manager
+
+    def test_register_skill_happy_path(self, tmp_path):
+        ctx, manager = self._make_context(tmp_path)
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n")
+
+        ctx.register_skill(name="foo", path=skill_md, description="test")
+
+        assert manager.find_plugin_skill("myplugin:foo") == skill_md
+        entry = manager._plugin_skills["myplugin:foo"]
+        assert entry["description"] == "test"
+
+    def test_register_skill_rejects_colon_in_name(self, tmp_path):
+        ctx, _ = self._make_context(tmp_path)
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n")
+
+        with pytest.raises(ValueError, match="reserved for namespace"):
+            ctx.register_skill(name="bad:name", path=skill_md)
+
+    def test_register_skill_rejects_dot_in_name(self, tmp_path):
+        ctx, _ = self._make_context(tmp_path)
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n")
+
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            ctx.register_skill(name="bad.name", path=skill_md)
+
+    def test_register_skill_rejects_empty_name(self, tmp_path):
+        ctx, _ = self._make_context(tmp_path)
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n")
+
+        with pytest.raises(ValueError, match="Invalid skill name"):
+            ctx.register_skill(name="", path=skill_md)
+
+    def test_register_skill_rejects_missing_file(self, tmp_path):
+        ctx, _ = self._make_context(tmp_path)
+
+        with pytest.raises(FileNotFoundError):
+            ctx.register_skill(name="foo", path=tmp_path / "does-not-exist.md")
+
+    def test_register_skill_default_description_empty(self, tmp_path):
+        ctx, manager = self._make_context(tmp_path)
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: foo\n---\n")
+
+        ctx.register_skill(name="foo", path=skill_md)
+
+        entry = manager._plugin_skills["myplugin:foo"]
+        assert entry["description"] == ""

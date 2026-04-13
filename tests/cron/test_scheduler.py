@@ -67,6 +67,10 @@ class TestResolveDeliveryTarget:
     @pytest.mark.parametrize(
         ("platform", "env_var", "chat_id"),
         [
+            ("matrix", "MATRIX_HOME_ROOM", "!bot-room:example.org"),
+            ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
+            ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
+            ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
             ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
             ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
             ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
@@ -76,10 +80,14 @@ class TestResolveDeliveryTarget:
         self, monkeypatch, platform, env_var, chat_id
     ):
         for fallback_env in (
+            "MATRIX_HOME_ROOM",
             "MATRIX_HOME_CHANNEL",
             "TELEGRAM_HOME_CHANNEL",
             "DISCORD_HOME_CHANNEL",
             "SLACK_HOME_CHANNEL",
+            "SIGNAL_HOME_CHANNEL",
+            "MATTERMOST_HOME_CHANNEL",
+            "SMS_HOME_CHANNEL",
             "BLUEBUBBLES_HOME_CHANNEL",
             "FEISHU_HOME_CHANNEL",
             "WECOM_HOME_CHANNEL",
@@ -91,6 +99,16 @@ class TestResolveDeliveryTarget:
         assert _resolve_delivery_target({"deliver": "origin"}) == {
             "platform": platform,
             "chat_id": chat_id,
+            "thread_id": None,
+        }
+
+    def test_bare_matrix_delivery_uses_matrix_home_room(self, monkeypatch):
+        monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room123:example.org")
+
+        assert _resolve_delivery_target({"deliver": "matrix"}) == {
+            "platform": "matrix",
+            "chat_id": "!room123:example.org",
             "thread_id": None,
         }
 

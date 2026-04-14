@@ -44,7 +44,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
-        ("ai-gateway", "AI Gateway", "api_key"),
+        ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
     def test_provider_registered(self, provider_id, name, auth_type):

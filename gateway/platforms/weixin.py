@@ -66,14 +66,6 @@ from gateway.platforms.base import (
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
-try:
-    import pilk
-
-    PILK_AVAILABLE = True
-except ImportError:  # pragma: no cover - optional dependency
-    pilk = None  # type: ignore[assignment]
-    PILK_AVAILABLE = False
-
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 ILINK_APP_ID = "bot"
@@ -1695,11 +1687,6 @@ class WeixinAdapter(BasePlatformAdapter):
             item_kwargs["encode_type"] = 6
             item_kwargs["sample_rate"] = 24000
             item_kwargs["bits_per_sample"] = 16
-            if PILK_AVAILABLE:
-                try:
-                    item_kwargs["playtime"] = pilk.get_duration(path)
-                except Exception as exc:
-                    logger.warning("[%s] failed to read SILK duration for %s: %s", self.name, path, exc)
         media_item = item_builder(**item_kwargs)
 
         last_message_id = None

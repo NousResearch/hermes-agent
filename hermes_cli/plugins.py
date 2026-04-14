@@ -85,6 +85,13 @@ def _get_disabled_plugins() -> set:
         return set()
 
 
+def load_plugin_manifest(manifest_file: Path) -> Any:
+    """Load a plugin manifest using UTF-8 instead of the host locale."""
+    if yaml is None:
+        raise RuntimeError("PyYAML not installed")
+    return yaml.safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------
@@ -394,7 +401,7 @@ class PluginManager:
                 if yaml is None:
                     logger.warning("PyYAML not installed – cannot load %s", manifest_file)
                     continue
-                data = yaml.safe_load(manifest_file.read_text()) or {}
+                data = load_plugin_manifest(manifest_file)
                 manifest = PluginManifest(
                     name=data.get("name", child.name),
                     version=str(data.get("version", "")),

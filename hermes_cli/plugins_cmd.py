@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.plugins import load_plugin_manifest
 
 logger = logging.getLogger(__name__)
 
@@ -118,10 +119,8 @@ def _read_manifest(plugin_dir: Path) -> dict:
     if not manifest_file.exists():
         return {}
     try:
-        import yaml
-
-        with open(manifest_file) as f:
-            return yaml.safe_load(f) or {}
+        data = load_plugin_manifest(manifest_file)
+        return data if isinstance(data, dict) else {}
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
@@ -539,11 +538,6 @@ def cmd_list() -> None:
     from rich.console import Console
     from rich.table import Table
 
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
-
     console = Console()
     plugins_dir = _plugins_dir()
 
@@ -563,21 +557,16 @@ def cmd_list() -> None:
     table.add_column("Source", style="dim")
 
     for d in dirs:
-        manifest_file = d / "plugin.yaml"
         name = d.name
         version = ""
         description = ""
         source = "local"
 
-        if manifest_file.exists() and yaml:
-            try:
-                with open(manifest_file) as f:
-                    manifest = yaml.safe_load(f) or {}
-                name = manifest.get("name", d.name)
-                version = manifest.get("version", "")
-                description = manifest.get("description", "")
-            except Exception:
-                pass
+        manifest = _read_manifest(d)
+        if manifest:
+            name = manifest.get("name", d.name)
+            version = manifest.get("version", "")
+            description = manifest.get("description", "")
 
         # Check if it's a git repo (installed via hermes plugins install)
         if (d / ".git").exists():
@@ -742,11 +731,6 @@ def cmd_toggle() -> None:
     """Interactive composite UI — general plugins + provider plugin categories."""
     from rich.console import Console
 
-    try:
-        import yaml
-    except ImportError:
-        yaml = None
-
     console = Console()
     plugins_dir = _plugins_dir()
 
@@ -759,18 +743,13 @@ def cmd_toggle() -> None:
     plugin_selected = set()
 
     for i, d in enumerate(dirs):
-        manifest_file = d / "plugin.yaml"
         name = d.name
         description = ""
 
-        if manifest_file.exists() and yaml:
-            try:
-                with open(manifest_file) as f:
-                    manifest = yaml.safe_load(f) or {}
-                name = manifest.get("name", d.name)
-                description = manifest.get("description", "")
-            except Exception:
-                pass
+        manifest = _read_manifest(d)
+        if manifest:
+            name = manifest.get("name", d.name)
+            description = manifest.get("description", "")
 
         plugin_names.append(name)
         label = f"{name} \u2014 {description}" if description else name

@@ -62,6 +62,33 @@ class TestPluginDiscovery:
         assert "hello_plugin" in mgr._plugins
         assert mgr._plugins["hello_plugin"].enabled
 
+    def test_discover_user_plugins_reads_utf8_manifest(self, tmp_path, monkeypatch):
+        """UTF-8 plugin manifests load correctly regardless of host locale."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "utf8_plugin"
+        plugin_dir.mkdir(parents=True)
+        description = "UTF-8 manifest — loaded across locales"
+        (plugin_dir / "plugin.yaml").write_text(
+            (
+                'name: utf8_plugin\n'
+                'version: "0.1.0"\n'
+                f'description: "{description}"\n'
+            ),
+            encoding="utf-8",
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    pass\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert "utf8_plugin" in mgr._plugins
+        assert mgr._plugins["utf8_plugin"].enabled
+        assert mgr._plugins["utf8_plugin"].manifest.description == description
+
     def test_discover_project_plugins(self, tmp_path, monkeypatch):
         """Plugins in ./.hermes/plugins/ are discovered."""
         project_dir = tmp_path / "project"

@@ -2578,9 +2578,24 @@ class HermesCLI:
 
         # Emit complete lines, keep partial remainder in buffer
         _tc = getattr(self, "_stream_text_ansi", "")
+        _wrap_w = shutil.get_terminal_size().columns - 1  # -1 avoids edge wrap
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            # Word-wrap long lines so words don't break mid-character.
+            # Preserve leading whitespace (code blocks) and don't break URLs.
+            if len(line) > _wrap_w and _wrap_w > 20:
+                _indent = len(line) - len(line.lstrip(" "))
+                _wrapped = textwrap.wrap(
+                    line, width=_wrap_w,
+                    initial_indent="",
+                    subsequent_indent=" " * _indent,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+                for wl in (_wrapped or [line]):
+                    _cprint(f"{_tc}{wl}{_RST}" if _tc else wl)
+            else:
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2597,7 +2612,21 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            _wrap_w = shutil.get_terminal_size().columns - 1
+            line = self._stream_buf
+            if len(line) > _wrap_w and _wrap_w > 20:
+                _indent = len(line) - len(line.lstrip(" "))
+                _wrapped = textwrap.wrap(
+                    line, width=_wrap_w,
+                    initial_indent="",
+                    subsequent_indent=" " * _indent,
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+                for wl in (_wrapped or [line]):
+                    _cprint(f"{_tc}{wl}{_RST}" if _tc else wl)
+            else:
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
             self._stream_buf = ""
 
         # Close the response box

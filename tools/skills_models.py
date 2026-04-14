@@ -56,7 +56,7 @@ class SkillMetadata(BaseModel):
 
 class SkillFrontmatter(BaseModel):
     name: str = Field(..., max_length=64)
-    description: Optional[str] = Field(default="", max_length=1024)
+    description: Optional[str] = Field(default="")
     version: Optional[str] = None
     license: Optional[str] = None
     platforms: Optional[List[str]] = None

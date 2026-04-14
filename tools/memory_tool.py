@@ -33,15 +33,16 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+msvcrt = None
 try:
     import fcntl
 except ImportError:
     fcntl = None
-
-try:
-    import msvcrt
-except ImportError:
-    msvcrt = None
+    try:
+        import msvcrt
+    except ImportError:
+        pass
 
 logger = logging.getLogger(__name__)
 

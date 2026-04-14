@@ -33,20 +33,33 @@ logger = logging.getLogger(__name__)
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
     "description": (
-        "Retrieve the user's peer card from Honcho — a curated list of key facts "
-        "about them (name, role, preferences, communication style, patterns). "
-        "Fast, no LLM reasoning, minimal cost. "
-        "Use this at conversation start or when you need a quick factual snapshot."
+        "Retrieve or update a peer card from Honcho — a curated list of key facts "
+        "about that peer (name, role, preferences, communication style, patterns). "
+        "Pass `card` to update; omit `card` to read."
     ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "peer": {
+                "type": "string",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+            },
+            "card": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "New peer card as a list of fact strings. Omit to read the current card.",
+            },
+        },
+        "required": [],
+    },
 }
 
 SEARCH_SCHEMA = {
     "name": "honcho_search",
     "description": (
-        "Semantic search over Honcho's stored context about the user. "
+        "Semantic search over Honcho's stored context about a peer. "
         "Returns raw excerpts ranked by relevance — no LLM synthesis. "
-        "Cheaper and faster than honcho_context. "
+        "Cheaper and faster than honcho_reasoning. "
         "Good when you want to find specific past facts and reason over them yourself."
     ),
     "parameters": {
@@ -60,17 +73,23 @@ SEARCH_SCHEMA = {
                 "type": "integer",
                 "description": "Token budget for returned context (default 800, max 2000).",
             },
+            "peer": {
+                "type": "string",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+            },
         },
         "required": ["query"],
     },
 }
 
-CONTEXT_SCHEMA = {
-    "name": "honcho_context",
+REASONING_SCHEMA = {
+    "name": "honcho_reasoning",
     "description": (
         "Ask Honcho a natural language question and get a synthesized answer. "
         "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer: the user (default) or the AI assistant."
+        "Can query about any peer via alias or explicit peer ID. "
+        "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
+        "medium, high, max (deep/expensive). Omit for configured default."
     ),
     "parameters": {
         "type": "object",
@@ -79,37 +98,83 @@ CONTEXT_SCHEMA = {
                 "type": "string",
                 "description": "A natural language question.",
             },
+            "reasoning_level": {
+                "type": "string",
+                "description": (
+                    "Override the default reasoning depth. "
+                    "Omit to use the configured default (typically low). "
+                    "Guide:\n"
+                    "- minimal: quick factual lookups (name, role, simple preference)\n"
+                    "- low: straightforward questions with clear answers\n"
+                    "- medium: multi-aspect questions requiring synthesis across observations\n"
+                    "- high: complex behavioral patterns, contradictions, deep analysis\n"
+                    "- max: thorough audit-level analysis, leave no stone unturned"
+                ),
+                "enum": ["minimal", "low", "medium", "high", "max"],
+            },
             "peer": {
                 "type": "string",
-                "description": "Which peer to query about: 'user' (default) or 'ai'.",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": ["query"],
     },
 }
 
+CONTEXT_SCHEMA = {
+    "name": "honcho_context",
+    "description": (
+        "Retrieve full session context from Honcho — summary, peer representation, "
+        "peer card, and recent messages. No LLM synthesis. "
+        "Cheaper than honcho_reasoning. Use this to see what Honcho knows about "
+        "the current conversation and the specified peer."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Optional focus query to filter context. Omit for full session context snapshot.",
+            },
+            "peer": {
+                "type": "string",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+            },
+        },
+        "required": [],
+    },
+}
+
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write a conclusion about the user back to Honcho's memory. "
-        "Conclusions are persistent facts that build the user's profile. "
-        "Use when the user states a preference, corrects you, or shares "
-        "something to remember across sessions."
+        "Write or delete a conclusion about a peer in Honcho's memory. "
+        "Conclusions are persistent facts that build a peer's profile. "
+        "Pass `conclusion` to create. Pass `delete_id` to remove a conclusion "
+        "containing personal information — Honcho self-heals incorrect "
+        "conclusions over time, so deletion is only needed for PII removal."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "conclusion": {
                 "type": "string",
-                "description": "A factual statement about the user to persist.",
+                "description": "A factual statement to persist. Omit when using delete_id.",
+            },
+            "delete_id": {
+                "type": "string",
+                "description": "Conclusion ID to delete (for removing PII). Omit when creating.",
+            },
+            "peer": {
+                "type": "string",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             }
         },
-        "required": ["conclusion"],
     },
 }
 
 
-ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +204,8 @@ class HonchoMemoryProvider(MemoryProvider):
         self._turn_count = 0
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
-        self._dialectic_cadence = 1  # minimum turns between dialectic API calls
-        self._reasoning_level_cap: Optional[str] = None  # "minimal", "low", "mid", "high"
+        self._dialectic_cadence = 3  # minimum turns between dialectic API calls
+        self._reasoning_level_cap: Optional[str] = None  # "minimal", "low", "medium", "high"
         self._last_context_turn = -999
         self._last_dialectic_turn = -999
 
@@ -236,9 +301,9 @@ class HonchoMemoryProvider(MemoryProvider):
                 raw = cfg.raw or {}
                 self._injection_frequency = raw.get("injectionFrequency", "every-turn")
                 self._context_cadence = int(raw.get("contextCadence", 1))
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
+                self._dialectic_cadence = int(raw.get("dialecticCadence", 3))
                 cap = raw.get("reasoningLevelCap")
-                if cap and cap in ("minimal", "low", "mid", "high"):
+                if cap and cap in ("minimal", "low", "medium", "high"):
                     self._reasoning_level_cap = cap
             except Exception as e:
                 logger.debug("Honcho cost-awareness config parse error: %s", e)
@@ -251,9 +316,7 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #1957: lazy session init for tools-only mode -----
             if self._recall_mode == "tools":
                 if cfg.init_on_session_start:
-                    # Eager init: create session now so sync_turn() works from turn 1.
-                    # Does NOT enable auto-injection — prefetch() still returns empty.
-                    logger.debug("Honcho tools-only mode — eager session init (initOnSessionStart=true)")
+                    # Eager init even in tools mode (opt-in)
                     self._do_session_init(cfg, session_id, **kwargs)
                     return
                 # Defer actual session creation until first tool call
@@ -287,8 +350,13 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # ----- B3: resolve_session_name -----
         session_title = kwargs.get("session_title")
+        gateway_session_key = kwargs.get("gateway_session_key")
         self._session_key = (
-            cfg.resolve_session_name(session_title=session_title, session_id=session_id)
+            cfg.resolve_session_name(
+                session_title=session_title,
+                session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
             or session_id
             or "hermes-default"
         )
@@ -299,12 +367,21 @@ class HonchoMemoryProvider(MemoryProvider):
         self._session_initialized = True
 
         # ----- B6: Memory file migration (one-time, for new sessions) -----
+        # Skip under per-session strategy: every Hermes run creates a fresh
+        # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
+        # each one would flood the backend with short-lived duplicates instead
+        # of performing a one-time migration.
         try:
-            if not session.messages:
+            if not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
                 mem_dir = str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
                 logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
+            elif cfg.session_strategy == "per-session":
+                logger.debug(
+                    "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
+                    self._session_key,
+                )
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
@@ -382,7 +459,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 return (
                     "# Honcho Memory\n"
                     "Active (tools-only mode). Use honcho_profile, honcho_search, "
-                    "honcho_context, and honcho_conclude tools to access user memory."
+                    "honcho_reasoning, honcho_context, and honcho_conclude tools to access user memory."
                 )
             return ""
 
@@ -412,7 +489,8 @@ class HonchoMemoryProvider(MemoryProvider):
             header = (
                 "# Honcho Memory\n"
                 "Active (tools-only mode). Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for synthesized answers, "
+                "honcho_search for raw excerpts, honcho_context for raw peer context, "
+                "honcho_reasoning for synthesized answers, "
                 "honcho_conclude to save facts about the user. "
                 "No automatic context injection — you must use tools to access memory."
             )
@@ -421,7 +499,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 "# Honcho Memory\n"
                 "Active (hybrid mode). Relevant context is auto-injected AND memory tools are available. "
                 "Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for synthesized answers, "
+                "honcho_search for raw excerpts, honcho_context for raw peer context, "
+                "honcho_reasoning for synthesized answers, "
                 "honcho_conclude to save facts about the user."
             )
 
@@ -458,7 +537,7 @@ class HonchoMemoryProvider(MemoryProvider):
         # ----- Port #3265: token budget enforcement -----
         result = self._truncate_to_budget(result)
 
-        return f"## Honcho Context\n{result}"
+        return result
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to fit within context_tokens budget if set."""
@@ -659,7 +738,14 @@ class HonchoMemoryProvider(MemoryProvider):
 
         try:
             if tool_name == "honcho_profile":
-                card = self._manager.get_peer_card(self._session_key)
+                peer = args.get("peer", "user")
+                card_update = args.get("card")
+                if card_update:
+                    result = self._manager.set_peer_card(self._session_key, card_update, peer=peer)
+                    if result is None:
+                        return tool_error("Failed to update peer card.")
+                    return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
+                card = self._manager.get_peer_card(self._session_key, peer=peer)
                 if not card:
                     return json.dumps({"result": "No profile facts available yet."})
                 return json.dumps({"result": card})
@@ -669,30 +755,62 @@ class HonchoMemoryProvider(MemoryProvider):
                 if not query:
                     return tool_error("Missing required parameter: query")
                 max_tokens = min(int(args.get("max_tokens", 800)), 2000)
+                peer = args.get("peer", "user")
                 result = self._manager.search_context(
-                    self._session_key, query, max_tokens=max_tokens
+                    self._session_key, query, max_tokens=max_tokens, peer=peer
                 )
                 if not result:
                     return json.dumps({"result": "No relevant context found."})
                 return json.dumps({"result": result})
 
-            elif tool_name == "honcho_context":
+            elif tool_name == "honcho_reasoning":
                 query = args.get("query", "")
                 if not query:
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
+                reasoning_level = args.get("reasoning_level")
                 result = self._manager.dialectic_query(
-                    self._session_key, query, peer=peer
+                    self._session_key, query,
+                    reasoning_level=reasoning_level,
+                    peer=peer,
                 )
                 return json.dumps({"result": result or "No result from Honcho."})
 
+            elif tool_name == "honcho_context":
+                peer = args.get("peer", "user")
+                ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                if not ctx:
+                    return json.dumps({"result": "No context available yet."})
+                parts = []
+                if ctx.get("summary"):
+                    parts.append(f"## Summary\n{ctx['summary']}")
+                if ctx.get("representation"):
+                    parts.append(f"## Representation\n{ctx['representation']}")
+                if ctx.get("card"):
+                    parts.append(f"## Card\n{ctx['card']}")
+                if ctx.get("recent_messages"):
+                    msgs = ctx["recent_messages"]
+                    msg_str = "\n".join(
+                        f"  [{m['role']}] {m['content'][:200]}"
+                        for m in msgs[-5:]  # last 5 for brevity
+                    )
+                    parts.append(f"## Recent messages\n{msg_str}")
+                return json.dumps({"result": "\n\n".join(parts) or "No context available."})
+
             elif tool_name == "honcho_conclude":
+                delete_id = args.get("delete_id")
+                peer = args.get("peer", "user")
+                if delete_id:
+                    ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
+                    if ok:
+                        return json.dumps({"result": f"Conclusion {delete_id} deleted."})
+                    return tool_error(f"Failed to delete conclusion {delete_id}.")
                 conclusion = args.get("conclusion", "")
                 if not conclusion:
-                    return tool_error("Missing required parameter: conclusion")
-                ok = self._manager.create_conclusion(self._session_key, conclusion)
+                    return tool_error("Missing required parameter: conclusion or delete_id")
+                ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
-                    return json.dumps({"result": f"Conclusion saved: {conclusion}"})
+                    return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")
 
             return tool_error(f"Unknown tool: {tool_name}")

@@ -125,7 +125,7 @@ Settings changed in the [Honcho dashboard](https://app.honcho.dev) are synced ba
 |-----|------|---------|-------|-------------|
 | `contextTokens` | int | SDK default | root / host | Token budget for `context()` API calls. Also gates prefetch truncation (tokens x 4 chars) |
 | `dialecticReasoningLevel` | string | `"low"` | root / host | Base reasoning level for `peer.chat()`: `"minimal"`, `"low"`, `"medium"`, `"high"`, `"max"` |
-| `dialecticDynamic` | bool | `true` | root / host | Auto-bump reasoning based on query length: `<120` chars = base level, `120-400` = +1, `>400` = +2 (capped at `"high"`). Set `false` to always use `dialecticReasoningLevel` as-is |
+| `dialecticDynamic` | bool | `true` | root / host | When `true`, the model can override reasoning level per-call via the `honcho_reasoning` tool `reasoning_level` param (agentic). When `false`, always uses `dialecticReasoningLevel` and ignores model overrides |
 | `dialecticMaxChars` | int | `600` | root / host | Max chars of dialectic result injected into system prompt |
 | `dialecticMaxInputChars` | int | `10000` | root / host | Max chars for dialectic query input to `peer.chat()`. Honcho cloud limit: 10k |
 | `messageMaxChars` | int | `25000` | root / host | Max chars per message sent via `add_messages()`. Messages exceeding this are chunked with `[continued]` markers. Honcho cloud limit: 25k |
@@ -139,7 +139,7 @@ These are read from the root config object, not the host block. Must be set manu
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject context only on turn 0) |
 | `contextCadence` | int | `1` | Minimum turns between `context()` API calls |
 | `dialecticCadence` | int | `1` | Minimum turns between `peer.chat()` API calls |
-| `reasoningLevelCap` | string | -- | Hard cap on auto-bumped reasoning: `"minimal"`, `"low"`, `"mid"`, `"high"` |
+| `reasoningLevelCap` | string | -- | Hard cap on reasoning level: `"minimal"`, `"low"`, `"medium"`, `"high"` |
 
 ### Hardcoded Limits (Not Configurable)
 

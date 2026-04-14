@@ -51,7 +51,7 @@ AI-native cross-session user modeling with dialectic Q&A, semantic search, and p
 | **Data storage** | Honcho Cloud or self-hosted |
 | **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
-**Tools:** `honcho_profile` (peer card), `honcho_search` (semantic search), `honcho_context` (LLM-synthesized), `honcho_conclude` (store facts)
+**Tools:** `honcho_profile` (read/update peer card), `honcho_search` (semantic search), `honcho_context` (session context — summary, representation, card, messages), `honcho_reasoning` (LLM-synthesized), `honcho_conclude` (create/delete conclusions)
 
 **Setup Wizard:**
 ```bash
@@ -74,10 +74,12 @@ hermes memory setup        # select "honcho"
 | `workspace` | host key | Shared workspace ID |
 | `recallMode` | `hybrid` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
 | `observation` | all on | Per-peer `observeMe`/`observeOthers` booleans |
-| `writeFrequency` | `async` | `async`, `turn`, `session`, or integer N |
+| `writeFrequency` | `async` | When to flush messages to Honcho: `async` (background thread), `turn` (sync each turn), `session` (flush on end), or integer N (every N turns) |
 | `sessionStrategy` | `per-directory` | `per-directory`, `per-repo`, `per-session`, `global` |
+| `contextTokens` | uncapped | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap |
 | `dialecticReasoningLevel` | `low` | `minimal`, `low`, `medium`, `high`, `max` |
-| `dialecticDynamic` | `true` | Auto-bump reasoning by query length |
+| `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
+| `dialecticCadence` | `3` | Turns between Honcho LLM calls — only applies to `hybrid`/`context` modes. In `tools` mode the model calls `honcho_reasoning` explicitly |
 | `messageMaxChars` | `25000` | Max chars per message (chunked if exceeded) |
 
 </details>
@@ -165,6 +167,7 @@ This inherits settings from the default `hermes` host block and creates new AI p
       },
       "dialecticReasoningLevel": "low",
       "dialecticDynamic": true,
+      "dialecticCadence": 3,
       "dialecticMaxChars": 600,
       "messageMaxChars": 25000,
       "saveMessages": true

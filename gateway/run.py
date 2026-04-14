@@ -3442,6 +3442,7 @@ class GatewayRunner:
                                     model=_hyg_model,
                                     max_iterations=4,
                                     quiet_mode=True,
+                                    skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
                                 )
@@ -5901,6 +5902,7 @@ class GatewayRunner:
                 model=model,
                 max_iterations=4,
                 quiet_mode=True,
+                skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
             )
@@ -8189,6 +8191,7 @@ class GatewayRunner:
                     session_id=session_id,
                     platform=platform_key,
                     user_id=source.user_id,
+                    gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )

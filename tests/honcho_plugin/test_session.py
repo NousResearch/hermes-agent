@@ -205,27 +205,62 @@ class TestPeerLookupHelpers:
 
     def test_get_peer_card_uses_direct_peer_lookup(self):
         mgr, session = self._make_cached_manager()
-        user_peer = MagicMock()
-        user_peer.get_card.return_value = ["Name: Robert"]
-        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+        assistant_peer = MagicMock()
+        assistant_peer.get_card.return_value = ["Name: Robert"]
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
-        user_peer.get_card.assert_called_once_with()
+        assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
 
-    def test_search_context_uses_peer_context_response(self):
+    def test_search_context_uses_assistant_perspective_with_target(self):
         mgr, session = self._make_cached_manager()
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
             representation="Robert runs neuralancer",
             peer_card=["Location: Melbourne"],
         )
-        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
 
         result = mgr.search_context(session.key, "neuralancer")
 
         assert "Robert runs neuralancer" in result
         assert "- Location: Melbourne" in result
-        user_peer.context.assert_called_once_with(search_query="neuralancer")
+        assistant_peer.context.assert_called_once_with(
+            target=session.user_peer_id,
+            search_query="neuralancer",
+        )
+
+    def test_search_context_unified_mode_uses_user_self_context(self):
+        mgr, session = self._make_cached_manager()
+        mgr._ai_observe_others = False
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="Unified self context",
+            peer_card=["Name: Robert"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        result = mgr.search_context(session.key, "self")
+
+        assert "Unified self context" in result
+        user_peer.context.assert_called_once_with(search_query="self")
+
+    def test_search_context_accepts_explicit_ai_peer_id(self):
+        mgr, session = self._make_cached_manager()
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="Assistant self context",
+            peer_card=["Role: Assistant"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
+
+        result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
+
+        assert "Assistant self context" in result
+        ai_peer.context.assert_called_once_with(
+            target=session.assistant_peer_id,
+            search_query="assistant",
+        )
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()
@@ -235,9 +270,15 @@ class TestPeerLookupHelpers:
             peer_card=["Name: Robert"],
         )
         ai_peer = MagicMock()
-        ai_peer.context.return_value = SimpleNamespace(
-            representation="AI representation",
-            peer_card=["Owner: Robert"],
+        ai_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
+            representation=(
+                "AI representation" if kwargs.get("target") == session.assistant_peer_id
+                else "Mixed representation"
+            ),
+            peer_card=(
+                ["Role: Assistant"] if kwargs.get("target") == session.assistant_peer_id
+                else ["Name: Robert"]
+            ),
         )
         mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
 
@@ -247,17 +288,23 @@ class TestPeerLookupHelpers:
             "representation": "User representation",
             "card": "Name: Robert",
             "ai_representation": "AI representation",
-            "ai_card": "Owner: Robert",
+            "ai_card": "Role: Assistant",
         }
-        user_peer.context.assert_called_once_with()
-        ai_peer.context.assert_called_once_with()
+        user_peer.context.assert_called_once_with(target=session.user_peer_id)
+        ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
 
     def test_get_ai_representation_uses_peer_api(self):
         mgr, session = self._make_cached_manager()
         ai_peer = MagicMock()
-        ai_peer.context.return_value = SimpleNamespace(
-            representation="AI representation",
-            peer_card=["Owner: Robert"],
+        ai_peer.context.side_effect = lambda **kwargs: SimpleNamespace(
+            representation=(
+                "AI representation" if kwargs.get("target") == session.assistant_peer_id
+                else "Mixed representation"
+            ),
+            peer_card=(
+                ["Role: Assistant"] if kwargs.get("target") == session.assistant_peer_id
+                else ["Name: Robert"]
+            ),
         )
         mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
 
@@ -265,9 +312,152 @@ class TestPeerLookupHelpers:
 
         assert result == {
             "representation": "AI representation",
-            "card": "Owner: Robert",
+            "card": "Role: Assistant",
         }
-        ai_peer.context.assert_called_once_with()
+        ai_peer.context.assert_called_once_with(target=session.assistant_peer_id)
+
+    def test_create_conclusion_defaults_to_user_target(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        ok = mgr.create_conclusion(session.key, "User prefers dark mode")
+
+        assert ok is True
+        assistant_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
+        scope.create.assert_called_once_with([{
+            "content": "User prefers dark mode",
+            "session_id": session.honcho_session_id,
+        }])
+
+    def test_create_conclusion_can_target_ai_peer(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        ok = mgr.create_conclusion(session.key, "Assistant prefers terse summaries", peer="ai")
+
+        assert ok is True
+        assistant_peer.conclusions_of.assert_called_once_with(session.assistant_peer_id)
+        scope.create.assert_called_once_with([{
+            "content": "Assistant prefers terse summaries",
+            "session_id": session.honcho_session_id,
+        }])
+
+    def test_create_conclusion_accepts_explicit_user_peer_id(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        scope = MagicMock()
+        assistant_peer.conclusions_of.return_value = scope
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        ok = mgr.create_conclusion(session.key, "Robert prefers vinyl", peer=session.user_peer_id)
+
+        assert ok is True
+        assistant_peer.conclusions_of.assert_called_once_with(session.user_peer_id)
+        scope.create.assert_called_once_with([{
+            "content": "Robert prefers vinyl",
+            "session_id": session.honcho_session_id,
+        }])
+
+
+class TestConcludeToolDispatch:
+    def test_honcho_conclude_defaults_to_user_peer(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = True
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode"},
+        )
+
+        assert "Conclusion saved for user" in result
+        provider._manager.create_conclusion.assert_called_once_with(
+            "telegram:123",
+            "User prefers dark mode",
+            peer="user",
+        )
+
+    def test_honcho_conclude_can_target_ai_peer(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.create_conclusion.return_value = True
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "Assistant likes terse replies", "peer": "ai"},
+        )
+
+        assert "Conclusion saved for ai" in result
+        provider._manager.create_conclusion.assert_called_once_with(
+            "telegram:123",
+            "Assistant likes terse replies",
+            peer="ai",
+        )
+
+    def test_honcho_profile_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_peer_card.return_value = ["Role: Assistant"]
+
+        result = provider.handle_tool_call(
+            "honcho_profile",
+            {"peer": "hermes"},
+        )
+
+        assert "Role: Assistant" in result
+        provider._manager.get_peer_card.assert_called_once_with("telegram:123", peer="hermes")
+
+    def test_honcho_search_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.search_context.return_value = "Assistant self context"
+
+        result = provider.handle_tool_call(
+            "honcho_search",
+            {"query": "assistant", "peer": "hermes"},
+        )
+
+        assert "Assistant self context" in result
+        provider._manager.search_context.assert_called_once_with(
+            "telegram:123",
+            "assistant",
+            max_tokens=800,
+            peer="hermes",
+        )
+
+    def test_honcho_reasoning_can_target_explicit_peer_id(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.dialectic_query.return_value = "Assistant answer"
+
+        result = provider.handle_tool_call(
+            "honcho_reasoning",
+            {"query": "who are you", "peer": "hermes"},
+        )
+
+        assert "Assistant answer" in result
+        provider._manager.dialectic_query.assert_called_once_with(
+            "telegram:123",
+            "who are you",
+            reasoning_level=None,
+            peer="hermes",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +556,54 @@ class TestToolsModeInitBehavior:
         assert cfg.peer_name == "8439114563"
 
 
+class TestPerSessionMigrateGuard:
+    """Verify migrate_memory_files is skipped under per-session strategy.
+
+    per-session creates a fresh Honcho session every Hermes run. Uploading
+    MEMORY.md/USER.md/SOUL.md to each short-lived session floods the backend
+    with duplicate content. The guard was added to prevent orphan sessions
+    containing only <prior_memory_file> wrappers.
+    """
+
+    def _make_provider_with_strategy(self, strategy, init_on_session_start=True):
+        """Create a HonchoMemoryProvider and track migrate_memory_files calls."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from unittest.mock import patch, MagicMock
+
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            enabled=True,
+            recall_mode="tools",
+            init_on_session_start=init_on_session_start,
+            session_strategy=strategy,
+        )
+
+        provider = HonchoMemoryProvider()
+
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []  # empty = new session → triggers migration path
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        return provider, mock_manager
+
+    def test_migrate_skipped_for_per_session(self):
+        """per-session strategy must NOT call migrate_memory_files."""
+        _, mock_manager = self._make_provider_with_strategy("per-session")
+        mock_manager.migrate_memory_files.assert_not_called()
+
+    def test_migrate_runs_for_per_directory(self):
+        """per-directory strategy with empty session SHOULD call migrate_memory_files."""
+        _, mock_manager = self._make_provider_with_strategy("per-directory")
+        mock_manager.migrate_memory_files.assert_called_once()
+
+
 class TestChunkMessage:
     def test_short_message_single_chunk(self):
         result = HonchoMemoryProvider._chunk_message("hello world", 100)
@@ -421,6 +659,60 @@ class TestChunkMessage:
 
 
 # ---------------------------------------------------------------------------
+# Context token budget enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateToBudget:
+    def test_truncates_oversized_context(self):
+        """Text exceeding context_tokens budget is truncated at a word boundary."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=10)
+
+        long_text = "word " * 200  # ~1000 chars, well over 10*4=40 char budget
+        result = provider._truncate_to_budget(long_text)
+
+        assert len(result) <= 50  # budget_chars + ellipsis + word boundary slack
+        assert result.endswith(" …")
+
+    def test_no_truncation_within_budget(self):
+        """Text within budget passes through unchanged."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=1000)
+
+        short_text = "Name: Robert, Location: Melbourne"
+        assert provider._truncate_to_budget(short_text) == short_text
+
+    def test_no_truncation_when_context_tokens_none(self):
+        """When context_tokens is None (explicit opt-out), no truncation."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=None)
+
+        long_text = "word " * 500
+        assert provider._truncate_to_budget(long_text) == long_text
+
+    def test_context_tokens_cap_bounds_prefetch(self):
+        """With an explicit token budget, oversized prefetch is bounded."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        provider = HonchoMemoryProvider()
+        provider._config = HonchoClientConfig(context_tokens=1200)
+
+        # Simulate a massive representation (10k chars)
+        huge_text = "x" * 10000
+        result = provider._truncate_to_budget(huge_text)
+
+        # 1200 tokens * 4 chars = 4800 chars + " …"
+        assert len(result) <= 4805
+
+
+# ---------------------------------------------------------------------------
 # Dialectic input guard
 # ---------------------------------------------------------------------------
 
@@ -452,3 +744,44 @@ class TestDialecticInputGuard:
         # The query passed to chat() should be truncated
         actual_query = mock_peer.chat.call_args[0][0]
         assert len(actual_query) <= 100
+
+
+# ---------------------------------------------------------------------------
+
+
+class TestDialecticCadenceDefaults:
+    """Regression tests for dialectic_cadence default value."""
+
+    @staticmethod
+    def _make_provider(cfg_extra=None):
+        """Create a HonchoMemoryProvider with mocked dependencies."""
+        from unittest.mock import patch, MagicMock
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        defaults = dict(api_key="test-key", enabled=True, recall_mode="hybrid")
+        if cfg_extra:
+            defaults.update(cfg_extra)
+        cfg = HonchoClientConfig(**defaults)
+        provider = HonchoMemoryProvider()
+        mock_manager = MagicMock()
+        mock_session = MagicMock()
+        mock_session.messages = []
+        mock_manager.get_or_create.return_value = mock_session
+
+        with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
+             patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
+             patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
+            provider.initialize(session_id="test-session-001")
+
+        return provider
+
+    def test_default_is_3(self):
+        """Default dialectic_cadence should be 3 to avoid per-turn LLM calls."""
+        provider = self._make_provider()
+        assert provider._dialectic_cadence == 3
+
+    def test_config_override(self):
+        """dialecticCadence from config overrides the default."""
+        provider = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 5}})
+        assert provider._dialectic_cadence == 5

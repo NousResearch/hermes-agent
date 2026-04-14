@@ -49,33 +49,70 @@ Get an API key at [honcho.dev](https://honcho.dev).
 
 ## Configuration Options
 
-```yaml
-# ~/.hermes/config.yaml
-honcho:
-  observation: directional    # "unified" (default for new installs) or "directional"
-  peer_name: ""               # auto-detected from platform, or set manually
-```
+Honcho is configured in `~/.honcho/config.json` (global) or `$HERMES_HOME/honcho.json` (profile-local). The setup wizard handles this for you.
 
-**Observation modes:**
-- `unified` — All observations go into a single pool. Simpler, good for single-agent setups.
-- `directional` — Observations are tagged with direction (user→agent, agent→user). Enables richer analysis of conversation dynamics.
+**Key settings:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `sessionStrategy` | `per-directory` | `per-directory`, `per-repo`, `per-session`, or `global` |
+| `recallMode` | `hybrid` | `hybrid` (auto-inject + tools), `context` (inject only), `tools` (tools only) |
+| `contextTokens` | uncapped | Token budget for auto-injected context per turn. Set to an integer (e.g. 1200) to cap |
+| `dialecticReasoningLevel` | `low` | Base reasoning level: `minimal`, `low`, `medium`, `high`, `max` |
+| `dialecticDynamic` | `true` | When `true`, model can override reasoning level per-call via tool param |
+| `dialecticCadence` | `3` | Turns between Honcho LLM calls (higher = fewer calls) |
+| `writeFrequency` | `async` | When to flush messages to Honcho: `async` (background thread), `turn` (sync each turn), `session` (flush on end), or integer N (every N turns) |
+| `observation` | all on | Per-peer `observeMe`/`observeOthers` booleans |
+
+**Session strategy** controls how Honcho sessions map to your work:
+- `per-session` — each `hermes` run gets a fresh session. Clean starts, memory via tools. Recommended for new users.
+- `per-directory` — one Honcho session per working directory. Context accumulates across runs.
+- `per-repo` — one session per git repository.
+- `global` — single session across all directories.
+
+**Recall mode** controls how memory flows into conversations:
+- `hybrid` — context auto-injected into system prompt AND tools available (model decides when to query).
+- `context` — auto-injection only, tools hidden.
+- `tools` — tools only, no auto-injection. Agent must explicitly call `honcho_reasoning`, `honcho_search`, etc.
+
+**Dialectic cadence** controls cost. With default `3`, Honcho rebuilds the user model every 3 turns instead of every turn — ~66% fewer LLM calls without losing model fidelity.
+
+**Settings per recall mode:**
+
+| Setting | `hybrid` | `context` | `tools` |
+|---------|----------|-----------|---------|
+| `writeFrequency` | flushes messages | flushes messages | flushes messages |
+| `dialecticCadence` | gates auto LLM calls | gates auto LLM calls | irrelevant — model calls explicitly |
+| `contextTokens` | caps injection | caps injection | irrelevant — no injection |
+| `dialecticDynamic` | gates model override | N/A (no tools) | gates model override |
+
+In `tools` mode, the model is fully in control — it calls `honcho_reasoning` when it wants, at whatever `reasoning_level` it picks. `dialecticCadence` and `contextTokens` only apply to modes with auto-injection (`hybrid` and `context`).
 
 ## Tools
 
-When Honcho is active as the memory provider, four additional tools become available:
+When Honcho is active as the memory provider, five tools become available:
 
 | Tool | Purpose |
 |------|---------|
-| `honcho_conclude` | Trigger server-side dialectic reasoning on recent conversations |
-| `honcho_context` | Retrieve relevant context from Honcho's memory for the current conversation |
-| `honcho_profile` | View or update the user's Honcho profile |
-| `honcho_search` | Semantic search across all stored conclusions and observations |
+| `honcho_profile` | Read or update peer card — pass `card` (list of facts) to update, omit to read |
+| `honcho_search` | Semantic search over context — raw excerpts, no LLM synthesis |
+| `honcho_context` | Full session context — summary, representation, card, recent messages |
+| `honcho_reasoning` | Synthesized answer from Honcho's LLM — pass `reasoning_level` (minimal/low/medium/high/max) to control depth |
+| `honcho_conclude` | Create or delete conclusions — pass `conclusion` to create, `delete_id` to remove (PII only) |
 
 ## CLI Commands
 
 ```bash
-hermes honcho status          # Show connection status and config
+hermes honcho status          # Connection status, config, and key settings
+hermes honcho setup           # Interactive setup wizard
+hermes honcho strategy        # Show or set session strategy
 hermes honcho peer            # Update peer names for multi-agent setups
+hermes honcho mode            # Show or set recall mode
+hermes honcho tokens          # Show or set context token budget
+hermes honcho identity        # Show Honcho peer identity
+hermes honcho sync            # Sync host blocks for all profiles
+hermes honcho enable          # Enable Honcho
+hermes honcho disable         # Disable Honcho
 ```
 
 ## Migrating from `hermes honcho`

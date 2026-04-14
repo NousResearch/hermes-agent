@@ -106,9 +106,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
+    # OpenAI — GPT-5 family (most have 400k; specific overrides first)
+    # Source: https://developers.openai.com/api/docs/models
+    "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    "gpt-5.3-codex-spark": 128000,    # Spark variant has reduced 128k context
+    "gpt-5.1-chat": 128000,           # Chat variant has 128k context
+    "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
-    "gpt-5": 128000,
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,

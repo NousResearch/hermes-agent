@@ -7458,7 +7458,18 @@ class GatewayRunner:
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        _matrix_adapter = self.adapters.get(source.platform)
+        _matrix_thinking_active = bool(
+            source.platform == Platform.MATRIX
+            and _matrix_adapter
+            and getattr(_matrix_adapter, "_thinking_enabled", False)
+        )
+        _matrix_tool_activity_enabled = _matrix_thinking_active and progress_mode != "off"
+        tool_progress_enabled = (
+            progress_mode != "off"
+            and source.platform != Platform.WEBHOOK
+            and not _matrix_thinking_active
+        )
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
@@ -7715,11 +7726,56 @@ class GatewayRunner:
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _thinking_started = [False]
+        _tool_field_started = [False]
+        _thinking_task_id = session_key or session_id or ""
+        _model_label_holder = [None]
+
+        def _set_model_label(model_name: str = "", provider_name: str = "") -> None:
+            model_name = (model_name or "").strip()
+            provider_name = (provider_name or "").strip()
+            if model_name:
+                _model_label_holder[0] = (
+                    f"{model_name} via {provider_name}" if provider_name else model_name
+                )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
                 return
             try:
+                if message:
+                    _fb_match = re.search(
+                        r"switching to fallback:\s*(.+?)\s+via\s+([^\s]+)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if _fb_match:
+                        _set_model_label(_fb_match.group(1), _fb_match.group(2))
+                if _matrix_thinking_active:
+                    if message and not _thinking_started[0]:
+                        _thinking_started[0] = True
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.start_thinking(
+                                _status_chat_id,
+                                _thinking_task_id,
+                                message,
+                                model_label=_model_label_holder[0] or "",
+                                initial_content_md=message,
+                                thread_id=_progress_thread_id,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=10)
+                    elif message:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.update_thinking(
+                                _thinking_task_id,
+                                message,
+                                message,
+                                model_label=_model_label_holder[0],
+                            ),
+                            _loop_for_step,
+                        )
+                    return
                 asyncio.run_coroutine_threadsafe(
                     _status_adapter.send(
                         _status_chat_id,
@@ -7730,6 +7786,50 @@ class GatewayRunner:
                 )
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
+
+        def _matrix_tool_progress_sync(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+            if not (_matrix_tool_activity_enabled and _status_adapter):
+                return
+            if event_type not in ("tool.started",):
+                return
+            try:
+                from agent.display import get_tool_emoji
+                import json as _json
+
+                emoji = get_tool_emoji(tool_name, default="⚙️")
+                if progress_mode == "verbose" and args:
+                    args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                elif preview:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                else:
+                    msg = f"{emoji} {tool_name}"
+
+                if not _tool_field_started[0]:
+                    _tool_field_started[0] = True
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.start_tool_activity(
+                            _status_chat_id,
+                            _thinking_task_id,
+                            "Tool activity",
+                            model_label=_model_label_holder[0] or "",
+                            initial_content_md=msg,
+                            thread_id=_progress_thread_id,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=10)
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.update_tool_activity(
+                            _thinking_task_id,
+                            tool_name or "Tool activity",
+                            msg,
+                            model_label=_model_label_holder[0],
+                        ),
+                        _loop_for_step,
+                    )
+            except Exception as _e:
+                logger.debug("matrix tool activity callback error: %s", _e)
 
         def run_sync():
             # The conditional re-assignment of `message` further below
@@ -7862,6 +7962,10 @@ class GatewayRunner:
                     logger.debug("interim_assistant_callback error: %s", _e)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            _set_model_label(
+                turn_route.get("model", ""),
+                turn_route.get("runtime", {}).get("provider", ""),
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -7915,7 +8019,11 @@ class GatewayRunner:
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
-            agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            agent.tool_progress_callback = (
+                _matrix_tool_progress_sync
+                if _matrix_thinking_active
+                else (progress_callback if tool_progress_enabled else None)
+            )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -7923,6 +8031,73 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
+
+            if _matrix_thinking_active:
+                def _thinking_callback_sync(text: str) -> None:
+                    if not text:
+                        return
+                    try:
+                        if not _thinking_started[0]:
+                            _thinking_started[0] = True
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.start_thinking(
+                                    _status_chat_id,
+                                    _thinking_task_id,
+                                    "Processing request...",
+                                    model_label=_model_label_holder[0] or "",
+                                    initial_content_md=text,
+                                    thread_id=_progress_thread_id,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.update_thinking(
+                                    _thinking_task_id,
+                                    "Thinking...",
+                                    text,
+                                    model_label=_model_label_holder[0],
+                                ),
+                                _loop_for_step,
+                            )
+                    except Exception as _e:
+                        logger.debug("thinking_callback error: %s", _e)
+
+                def _reasoning_callback_sync(text: str) -> None:
+                    if not text:
+                        return
+                    try:
+                        if not _thinking_started[0]:
+                            _thinking_started[0] = True
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.start_thinking(
+                                    _status_chat_id,
+                                    _thinking_task_id,
+                                    "Reasoning...",
+                                    model_label=_model_label_holder[0] or "",
+                                    initial_content_md=text,
+                                    thread_id=_progress_thread_id,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.update_thinking(
+                                    _thinking_task_id,
+                                    "Reasoning...",
+                                    text,
+                                    model_label=_model_label_holder[0],
+                                ),
+                                _loop_for_step,
+                            )
+                    except Exception as _e:
+                        logger.debug("reasoning_callback error: %s", _e)
+
+                agent.thinking_callback = _thinking_callback_sync
+                agent.reasoning_callback = _reasoning_callback_sync
+            else:
+                agent.thinking_callback = None
+                agent.reasoning_callback = None
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:
@@ -8105,6 +8280,54 @@ class GatewayRunner:
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
                 _stream_consumer.finish()
+
+            _final_model_label = _model_label_holder[0]
+            _final_agent = agent_holder[0]
+            if _final_agent:
+                _set_model_label(
+                    getattr(_final_agent, "model", "") or "",
+                    getattr(_final_agent, "provider", "") or "",
+                )
+                _final_model_label = _model_label_holder[0]
+
+            if _matrix_thinking_active and _thinking_started[0]:
+                _is_error = result.get("failed") or result.get("error")
+                try:
+                    if _is_error:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.abort_thinking(
+                                _thinking_task_id,
+                                str(result.get("error", "Agent error")),
+                                model_label=_final_model_label,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=10)
+                    else:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.finalize_thinking(
+                                _thinking_task_id,
+                                f"Complete ({result.get('api_calls', 0)} API calls)",
+                                collapse=True,
+                                model_label=_final_model_label,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=10)
+                except Exception as _e:
+                    logger.debug("thinking finalize error: %s", _e)
+
+            if _matrix_thinking_active and _tool_field_started[0]:
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.finalize_tool_activity(
+                            _thinking_task_id,
+                            f"Complete ({result.get('api_calls', 0)} API calls)",
+                            collapse=True,
+                            model_label=_final_model_label,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=10)
+                except Exception as _e:
+                    logger.debug("tool activity finalize error: %s", _e)
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")

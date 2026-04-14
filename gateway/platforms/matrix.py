@@ -270,6 +270,13 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_state: Dict[str, Dict[str, Any]] = {}
         self._model_picker_state: Dict[str, Dict[str, Any]] = {}
 
+        # Matrix thinking / acting panes.
+        self._thinking_enabled: bool = config.extra.get(
+            "thinking_fields_enabled",
+            os.getenv("MATRIX_THINKING_FIELDS_ENABLED", "false").lower() in ("true", "1", "yes"),
+        )
+        self._thinking_manager: Optional[Any] = None
+
         # Text batching: merge rapid successive messages (Telegram-style).
         # Matrix clients split long messages around 4000 chars.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
@@ -596,6 +603,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 await api.session.close()
                 return False
 
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(self)
+        except ImportError:
+            pass
+
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
 
@@ -656,6 +669,12 @@ class MatrixAdapter(BasePlatformAdapter):
         """Disconnect from Matrix."""
         self._closing = True
 
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(None)
+        except ImportError:
+            pass
+
         if self._approval_state:
             try:
                 from tools.approval import resolve_gateway_approval
@@ -667,6 +686,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_state.clear()
         self._model_picker_state.clear()
         self._event_roles.clear()
+
+        if self._thinking_manager:
+            try:
+                await self._thinking_manager.abort_all("Gateway restarting")
+            except Exception as exc:
+                logger.debug("Matrix: could not abort active thinking panes on disconnect: %s", exc)
 
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -690,6 +715,167 @@ class MatrixAdapter(BasePlatformAdapter):
             self._client = None
 
         logger.info("Matrix: disconnected")
+
+    # ------------------------------------------------------------------
+    # Thinking / acting panes
+    # ------------------------------------------------------------------
+
+    def _get_thinking_manager(self):
+        if self._thinking_manager is None and self._client:
+            from gateway.platforms.matrix_thinking import ThinkingManager
+
+            self._thinking_manager = ThinkingManager(self)
+        return self._thinking_manager
+
+    async def start_thinking(
+        self,
+        room_id: str,
+        task_id: str,
+        initial_summary: str = "Processing request...",
+        model_label: str = "",
+        initial_content_md: str = "",
+        thread_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self._thinking_enabled or not self._client:
+            return None
+        mgr = self._get_thinking_manager()
+        if not mgr:
+            return None
+        return await mgr.start(
+            room_id,
+            task_id,
+            initial_summary,
+            field_kind="thinking",
+            model_label=model_label,
+            initial_content_md=initial_content_md,
+            thread_id=thread_id,
+        )
+
+    async def update_thinking(
+        self,
+        task_id: str,
+        step_info: str,
+        content_md: str = "",
+        model_label: Optional[str] = None,
+        append_line: bool = True,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id,
+            step_info,
+            content_md,
+            field_kind="thinking",
+            model_label=model_label,
+            append_line=append_line,
+        )
+
+    async def finalize_thinking(
+        self,
+        task_id: str,
+        final_summary: str = "Task complete",
+        collapse: bool = True,
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id,
+            final_summary,
+            collapse,
+            field_kind="thinking",
+            model_label=model_label,
+        )
+
+    async def abort_thinking(
+        self,
+        task_id: str,
+        reason: str = "Aborted",
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id,
+            reason,
+            field_kind="thinking",
+            model_label=model_label,
+        )
+
+    async def start_tool_activity(
+        self,
+        room_id: str,
+        task_id: str,
+        initial_summary: str = "Tool activity",
+        model_label: str = "",
+        initial_content_md: str = "",
+        thread_id: Optional[str] = None,
+    ) -> Optional[str]:
+        if not self._thinking_enabled or not self._client:
+            return None
+        mgr = self._get_thinking_manager()
+        if not mgr:
+            return None
+        return await mgr.start(
+            room_id,
+            task_id,
+            initial_summary,
+            field_kind="tools",
+            model_label=model_label,
+            initial_content_md=initial_content_md,
+            thread_id=thread_id,
+        )
+
+    async def update_tool_activity(
+        self,
+        task_id: str,
+        step_info: str,
+        content_md: str = "",
+        model_label: Optional[str] = None,
+        append_line: bool = True,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id,
+            step_info,
+            content_md,
+            field_kind="tools",
+            model_label=model_label,
+            append_line=append_line,
+        )
+
+    async def finalize_tool_activity(
+        self,
+        task_id: str,
+        final_summary: str = "Tool activity complete",
+        collapse: bool = True,
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id,
+            final_summary,
+            collapse,
+            field_kind="tools",
+            model_label=model_label,
+        )
+
+    async def abort_tool_activity(
+        self,
+        task_id: str,
+        reason: str = "Aborted",
+        model_label: Optional[str] = None,
+    ) -> None:
+        if not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id,
+            reason,
+            field_kind="tools",
+            model_label=model_label,
+        )
 
     async def send(
         self,
@@ -1509,6 +1695,10 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
             return None
+
+    async def send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
+        """Public wrapper for sending an emoji reaction to a Matrix event."""
+        return await self._send_reaction(room_id, event_id, emoji)
 
     async def _redact_reaction(
         self, room_id: str, reaction_event_id: str, reason: str = "",

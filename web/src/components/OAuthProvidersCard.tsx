@@ -188,7 +188,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     {!p.status.logged_in && (
                       <span className="text-xs text-muted-foreground/80">
                         Not connected. Run{" "}
-                        <code className="text-foreground bg-secondary/40 px-1 rounded">
+                        <code className="text-foreground bg-secondary/40 px-1">
                           {p.cli_command}
                         </code>{" "}
                         in a terminal.

@@ -183,6 +183,14 @@ class TestSubdirectoryHintTracker:
         assert tracker.check_tool_call("read_file", {}) is None
         assert tracker.check_tool_call("terminal", {"command": ""}) is None
 
+    def test_disabled_tracker_returns_none(self, project):
+        """Disabled trackers should never append hint text."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project), enabled=False)
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+        )
+        assert result is None
+
     def test_url_in_command_ignored(self, project):
         """URLs in shell commands should not be treated as paths."""
         tracker = SubdirectoryHintTracker(working_dir=str(project))

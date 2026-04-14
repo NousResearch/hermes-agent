@@ -40,6 +40,7 @@ import {
   hasInterpolation,
   isToolTrailResultLine,
   isTransientTrailLine,
+  pasteTokenLabel,
   pick,
   sameToolTrailGroup,
   stripTrailingPasteNewlines,
@@ -66,10 +67,12 @@ import type {
 const PLACEHOLDER = pick(PLACEHOLDERS)
 const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 
+const LARGE_PASTE = { chars: 8000, lines: 80 }
 const MAX_HISTORY = 800
 const REASONING_PULSE_MS = 700
 const WHEEL_SCROLL_STEP = 3
 const MOUSE_TRACKING = !/^(1|true|yes|on)$/.test((process.env.HERMES_TUI_DISABLE_MOUSE ?? '').trim().toLowerCase())
+const PASTE_SNIPPET_RE = /\[\[[^\n]*?\]\]/g
 
 const DETAILS_MODES: DetailsMode[] = ['hidden', 'collapsed', 'expanded']
 
@@ -90,6 +93,7 @@ const nextDetailsMode = (m: DetailsMode): DetailsMode =>
 // ── Pure helpers ─────────────────────────────────────────────────────
 
 const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
+type PasteSnippet = { label: string; text: string }
 
 const shortCwd = (cwd: string, max = 28) => {
   const home = process.env.HOME
@@ -339,6 +343,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
+  const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
   const [streaming, setStreaming] = useState('')
   const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
@@ -672,6 +677,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     setInfo(null)
     setHistoryItems([])
     setMessages([])
+    setPasteSnips([])
     setActivity([])
     setBgTasks(new Set())
     setUsage(ZERO)
@@ -687,6 +693,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     setHistoryItems(info ? [introMsg(info)] : [])
     setInfo(info)
     setUsage(info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+    setPasteSnips([])
     setActivity([])
     setLastUserMsg('')
     turnToolsRef.current = []
@@ -852,9 +859,25 @@ export function App({ gw }: { gw: GatewayClient }) {
         return null
       }
 
+      const lineCount = cleanedText.split('\n').length
+
+      if (cleanedText.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
+        return {
+          cursor: cursor + cleanedText.length,
+          value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
+        }
+      }
+
+      const label = pasteTokenLabel(cleanedText, lineCount)
+      const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
+      const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
+      const insert = `${lead}${label}${tail}`
+
+      setPasteSnips(prev => [...prev, { label, text: cleanedText }].slice(-32))
+
       return {
-        cursor: cursor + cleanedText.length,
-        value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
+        cursor: cursor + insert.length,
+        value: value.slice(0, cursor) + insert + value.slice(cursor)
       }
     },
     [paste]
@@ -863,6 +886,15 @@ export function App({ gw }: { gw: GatewayClient }) {
   // ── Send ─────────────────────────────────────────────────────────
 
   const send = (text: string) => {
+    const expandPasteSnips = (value: string) => {
+      const byLabel = new Map<string, string[]>()
+      for (const item of pasteSnips) {
+        const list = byLabel.get(item.label)
+        list ? list.push(item.text) : byLabel.set(item.label, [item.text])
+      }
+      return value.replace(PASTE_SNIPPET_RE, token => byLabel.get(token)?.shift() ?? token)
+    }
+
     const startSubmit = (displayText: string, submitText: string) => {
       if (statusTimerRef.current) {
         clearTimeout(statusTimerRef.current)
@@ -893,14 +925,14 @@ export function App({ gw }: { gw: GatewayClient }) {
             pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, r.text || text)
+          startSubmit(r.text || text, expandPasteSnips(r.text || text))
 
           return
         }
 
-        startSubmit(text, text)
+        startSubmit(text, expandPasteSnips(text))
       })
-      .catch(() => startSubmit(text, text))
+      .catch(() => startSubmit(text, expandPasteSnips(text)))
   }
 
   const shellExec = (cmd: string) => {

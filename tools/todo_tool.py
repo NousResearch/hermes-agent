@@ -220,7 +220,8 @@ TODO_SCHEMA = {
         "status: pending|in_progress|completed|cancelled}\n"
         "List order is priority. Only ONE item in_progress at a time.\n"
         "Mark items completed immediately when done. If something fails, "
-        "cancel it and add a revised item.\n\n"
+        "cancel it and add a revised item.\n"
+        "Do NOT declare the task done while any item remains pending or in_progress unless you explicitly cancel it and explain why.\n\n"
         "Always returns the full current list."
     ),
     "parameters": {

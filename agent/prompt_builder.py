@@ -166,7 +166,10 @@ SKILLS_GUIDANCE = (
     "or discovering a non-trivial workflow, save the approach as a "
     "skill with skill_manage so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
+    "patch it immediately with skill_manage(action='patch') — don't wait to be asked.\n"
+    "If you used an existing skill and had to compensate for missing steps, bad commands, "
+    "or new pitfalls, updating that skill is part of done. Do not declare the task finished "
+    "until the skill is patched or you explicitly confirm that no skill update was needed. "
     "Skills that aren't maintained become liabilities."
 )
 
@@ -182,7 +185,14 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "A task is NOT complete just because nothing crashed or because you produced a plausible "
+    "status update. If the requested result did not happen, call it interrupted, failed, or "
+    "not completed. Do not soften this with phrases like 'almost done' or 'basically finished'.\n"
+    "Before your final response, verify the actual outcome. If you changed files, read them or "
+    "run tests. If you executed commands, check their real effect. If you used a todo list, do "
+    "not finish while items remain pending or in_progress unless you explicitly mark them "
+    "cancelled and explain why."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -242,6 +252,10 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Formatting: does the output match the requested format or schema?\n"
     "- Safety: if the next step has side effects (file writes, commands, API calls), "
     "confirm scope before executing.\n"
+    "- Completion truthfulness: if the requested result did not happen, do NOT present the task as done. "
+    "Say it was interrupted, failed, or not completed.\n"
+    "- Verification evidence: if you modified anything, verify the post-change state with a tool before finalizing.\n"
+    "- Todo closure: if you used the todo tool, all remaining items must be completed or cancelled before you stop.\n"
     "</verification>\n"
     "\n"
     "<missing_context>\n"

@@ -21,6 +21,7 @@ from agent.prompt_builder import (
     build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    SKILLS_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -48,6 +49,20 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_skills_guidance_requires_patch_before_done(self):
+        assert "updating that skill is part of done" in SKILLS_GUIDANCE
+        assert "until the skill is patched" in SKILLS_GUIDANCE
+
+    def test_tool_use_enforcement_guidance_requires_truthful_completion(self):
+        assert "A task is NOT complete just because nothing crashed" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "not completed" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "pending or in_progress" in TOOL_USE_ENFORCEMENT_GUIDANCE
+
+    def test_openai_execution_guidance_mentions_completion_truthfulness_and_todo_closure(self):
+        assert "Completion truthfulness" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "Verification evidence" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "Todo closure" in OPENAI_MODEL_EXECUTION_GUIDANCE
 
 
 # =========================================================================

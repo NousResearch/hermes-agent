@@ -7258,14 +7258,26 @@ class GatewayRunner:
                             from gateway.platforms.base import MessageEvent, MessageType
                             from gateway.session import SessionSource
                             from gateway.config import Platform
-                            _platform_enum = Platform(platform_name)
-                            _source = SessionSource(
-                                platform=_platform_enum,
-                                chat_id=chat_id,
-                                thread_id=thread_id or None,
-                                user_id=user_id or None,
-                                user_name=user_name or None,
-                            )
+
+                            _source = None
+                            try:
+                                session_entry = getattr(self.session_store, "_entries", {}).get(session_key)
+                                if session_entry and getattr(session_entry, "origin", None):
+                                    _source = session_entry.origin
+                            except Exception:
+                                _source = None
+
+                            if _source is None:
+                                _platform_enum = Platform(platform_name)
+                                _source = SessionSource(
+                                    platform=_platform_enum,
+                                    chat_id=chat_id,
+                                    chat_type="group" if str(chat_id).startswith("-") else "dm",
+                                    thread_id=thread_id or None,
+                                    user_id=user_id or None,
+                                    user_name=user_name or None,
+                                )
+
                             synth_event = MessageEvent(
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
@@ -8118,6 +8130,10 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+            exit_reason = result.get("exit_reason") or ""
+            _task_completed = bool(result.get("completed"))
+            if final_response and not _task_completed and exit_reason and not final_response.startswith("⚠️ Task not completed"):
+                final_response = f"⚠️ Task not completed - {exit_reason}\n\n" + final_response
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
@@ -8142,6 +8158,8 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "exit_reason": exit_reason,
+                    "completed": _task_completed,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -8233,6 +8251,8 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "exit_reason": exit_reason,
+                "completed": _task_completed,
             }
         
         # Start progress message sender if enabled

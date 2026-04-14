@@ -8,6 +8,7 @@ Contributed by @PeterFile (PR #593), reimplemented on current main.
 """
 
 import asyncio
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -15,6 +16,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session import SessionEntry, SessionSource
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +34,9 @@ class _FakeRegistry:
             return self._sessions.pop(0)
         return None
 
+    def is_completion_consumed(self, session_id):
+        return False
+
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     """Create a GatewayRunner with a fake config for the given mode."""
@@ -45,7 +50,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -243,3 +248,62 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_reuses_session_origin(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="echo hi",
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    session_key = "telegram:origin-session"
+    origin = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-100999",
+        chat_type="group",
+        thread_id="77",
+        user_id="user-123",
+        user_name="tester",
+    )
+    runner.session_store._entries[session_key] = SessionEntry(
+        session_key=session_key,
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=origin,
+        platform=Platform.TELEGRAM,
+        chat_type="group",
+    )
+
+    watcher = _watcher_dict()
+    watcher.update({
+        "session_key": session_key,
+        "chat_id": "fallback-chat",
+        "thread_id": "fallback-thread",
+        "user_id": "fallback-user",
+        "user_name": "fallback-name",
+        "notify_on_complete": True,
+    })
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source is origin
+    assert synth_event.source.chat_id == "-100999"
+    assert synth_event.source.thread_id == "77"

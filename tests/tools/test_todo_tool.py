@@ -2,7 +2,7 @@
 
 import json
 
-from tools.todo_tool import TodoStore, todo_tool
+from tools.todo_tool import TODO_SCHEMA, TodoStore, todo_tool
 
 
 class TestWriteAndRead:
@@ -96,6 +96,13 @@ class TestMergeMode:
         )
         items = store.read()
         assert len(items) == 2
+
+
+class TestSchemaDescription:
+    def test_schema_warns_against_declaring_done_with_active_items(self):
+        desc = TODO_SCHEMA["description"]
+        assert "Do NOT declare the task done" in desc
+        assert "pending or in_progress" in desc
 
 
 class TestTodoToolFunction:

@@ -1684,6 +1684,7 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+        assert "exit_reason" in result
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -1754,6 +1755,28 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
         assert result["interrupted"] is True
+
+    def test_active_todos_and_skill_nudge_are_injected_into_system_prompt(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names = list(set(agent.valid_tool_names) | {"skill_manage"})
+        agent._todo_store.write([
+            {"id": "todo-1", "content": "Finish verification", "status": "in_progress"},
+        ])
+        agent._iters_since_skill = agent._skill_nudge_interval
+        resp = _mock_response(content="Done", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Done"
+        api_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert api_messages[0]["role"] == "system"
+        assert "You still have active todo items" in api_messages[0]["content"]
+        assert "skill-review threshold" in api_messages[0]["content"]
 
     def test_invalid_tool_name_retry(self, agent):
         """Model hallucinates an invalid tool name, agent retries and succeeds."""
@@ -2390,6 +2413,7 @@ class TestRetryExhaustion:
             f"Expected completed=False, got: {result}"
         )
         assert result.get("failed") is True
+        assert result.get("exit_reason") == "invalid_api_response"
         assert "error" in result
         assert "Invalid API response" in result["error"]
 

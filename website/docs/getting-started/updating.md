@@ -50,10 +50,10 @@ Already up to date.  (or: Updating abc1234..def5678)
 `hermes update` handles the main update path, but a quick validation confirms everything landed cleanly:
 
 1. `git status --short` — if the tree is unexpectedly dirty, inspect before continuing
-2. `hermes doctor` — checks config, dependencies, and service health
+2. `hermes doctor` — checks config, dependencies, npm security, and service health
 3. `hermes --version` — confirm the version bumped as expected
 4. If you use the gateway: `hermes gateway status`
-5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+5. If `doctor` reports npm or Python package vulnerabilities: run `hermes doctor --fix` to auto-remediate both (`npm audit fix` for Node.js, `pip-audit --fix` + `uv lock` for Python), or fix manually using the commands shown in the issue summary
 
 :::warning Dirty working tree after update
 If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.

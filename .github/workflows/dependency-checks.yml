@@ -1,0 +1,131 @@
+name: Dependency checks
+
+# Runs automatically on any PR that touches dependency files (npm or Python).
+# Each job is path-filtered so only the affected ecosystem is tested.
+# Dependabot PRs that bump any package will trigger the matching job(s).
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      # npm — root
+      - 'package.json'
+      - 'package-lock.json'
+      # npm — WhatsApp bridge
+      - 'scripts/whatsapp-bridge/package.json'
+      - 'scripts/whatsapp-bridge/package-lock.json'
+      # Python — uv / pyproject
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements.txt'
+      # workflow itself
+      - '.github/workflows/dependency-checks.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/whatsapp-bridge/package.json'
+      - 'scripts/whatsapp-bridge/package-lock.json'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'requirements.txt'
+
+concurrency:
+  group: dependency-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Root package.json — agent-browser / camoufox-browser
+  # ─────────────────────────────────────────────────────────────────────────────
+  root-npm:
+    name: Root npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      contains(github.event.head_commit.modified, 'package.json') ||
+      contains(github.event.head_commit.modified, 'package-lock.json') ||
+      github.event_name == 'pull_request'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Audit root npm dependencies
+        # Fails the job if moderate or higher vulnerabilities are found
+        run: npm audit --audit-level=moderate
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # WhatsApp bridge — express / baileys / pino / qrcode-terminal
+  # ─────────────────────────────────────────────────────────────────────────────
+  whatsapp-bridge:
+    name: WhatsApp bridge — audit + tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: scripts/whatsapp-bridge/package-lock.json
+
+      - name: Install WhatsApp bridge dependencies
+        run: npm ci
+        working-directory: scripts/whatsapp-bridge
+
+      - name: Audit WhatsApp bridge npm dependencies
+        # Fails the job if moderate or higher vulnerabilities remain after the bump
+        run: npm audit --audit-level=moderate
+        working-directory: scripts/whatsapp-bridge
+
+      - name: Run WhatsApp bridge unit tests
+        # Uses Node's built-in test runner — no extra dependencies needed
+        run: node --test allowlist.test.mjs
+        working-directory: scripts/whatsapp-bridge
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Python packages — pyproject.toml / uv.lock
+  # ─────────────────────────────────────────────────────────────────────────────
+  python-audit:
+    name: Python package audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install dependencies (including pip-audit)
+        run: |
+          uv venv .venv --python 3.11
+          source .venv/bin/activate
+          uv pip install -e ".[all,dev]"
+
+      - name: Run pip-audit
+        # --skip-editable: skip the hermes-agent package itself (no PyPI advisory for it)
+        # --json: structured output for clear failure messages
+        # Exit code is non-zero when any vulnerability is found → job fails automatically
+        run: |
+          source .venv/bin/activate
+          pip-audit --skip-editable
+        env:
+          # Prevent any accidental API calls from installed packages during audit
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""

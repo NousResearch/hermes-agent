@@ -282,9 +282,68 @@ Subscriptions persist to `~/.hermes/webhook_subscriptions.json` and are hot-relo
 hermes doctor [--fix]
 ```
 
+Runs a comprehensive health check across config files, API credentials, external tools, Node.js dependencies, and running services.
+
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+
+### What it checks
+
+| Section | Details |
+|---------|---------|
+| **Python & packages** | Python version, required pip packages |
+| **Config files** | `.env` presence, `config.yaml` validity, stale keys, schema validation |
+| **Auth providers** | API key presence for configured LLM providers |
+| **External tools** | `git`, `rg`, `docker`, `ssh`, `daytona`, Node.js, `agent-browser` |
+| **npm security** | Runs `npm audit` in browser tools and WhatsApp bridge directories; reports critical, high, and moderate vulnerabilities |
+| **API connectivity** | Live reachability check for configured providers |
+| **Tool availability** | Which toolsets are active vs. missing prerequisites |
+| **Skills Hub** | Skill index reachability |
+| **Memory provider** | Active provider health (built-in, Honcho, Mem0) |
+| **Profiles** | Orphan aliases, missing configs |
+
+### npm security checks
+
+`hermes doctor` runs `npm audit` in two directories when `node_modules` is present:
+
+- **Browser tools** (`/` — `agent-browser`, `camoufox-browser`)
+- **WhatsApp bridge** (`scripts/whatsapp-bridge/`)
+
+Severity thresholds:
+
+| Severity | Reported as |
+|----------|-------------|
+| Critical or High | `⚠` warning + listed in issues summary |
+| Moderate or Low | `⚠` warning + listed in issues summary |
+| None | `✓` clean |
+
+With `--fix`, Hermes automatically runs `npm audit fix` in each affected directory. If `npm audit fix` cannot resolve the issue automatically, it is surfaced as a manual action item.
+
+```bash
+hermes doctor          # report npm vulnerabilities
+hermes doctor --fix    # attempt npm audit fix automatically
+```
+
+### Python package security checks
+
+`hermes doctor` also runs `pip-audit` against the active Python environment to detect known CVEs in installed packages.
+
+`pip-audit` is included in the `dev` extra (`pip install "hermes-agent[dev]"`). If it is not installed, the check prints an install hint and is skipped.
+
+| Outcome | Reported as |
+|---------|-------------|
+| No vulnerabilities found | `✓` clean |
+| One or more vulnerabilities | `⚠` warning with package names and count |
+| `pip-audit` not installed | Info hint: `pip install pip-audit` |
+| `pip-audit` crashes | `⚠` warning with the error |
+
+With `--fix`, Hermes runs `pip-audit --fix` to auto-upgrade vulnerable packages, then calls `uv lock` to keep `uv.lock` in sync with the new versions. If `uv lock` fails (e.g. a constraint conflict), a manual action item is added to the summary.
+
+```bash
+hermes doctor          # report Python package vulnerabilities
+hermes doctor --fix    # auto-fix via pip-audit --fix + re-sync uv.lock
+```
 
 ## `hermes dump`
 

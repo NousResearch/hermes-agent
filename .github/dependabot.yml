@@ -1,0 +1,78 @@
+version: 2
+updates:
+  # Root package.json (agent-browser, camoufox-browser)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # Commit / PR title convention: chore(browser): bump <pkg> from X to Y
+    # Matches project Conventional Commits: chore = dependency / build updates
+    commit-message:
+      prefix: "chore(browser)"
+    groups:
+      root-npm:
+        patterns:
+          - "*"
+
+  # WhatsApp bridge (express, baileys, pino, qrcode-terminal)
+  - package-ecosystem: "npm"
+    directory: "/scripts/whatsapp-bridge"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # Commit / PR title convention: chore(whatsapp): bump <pkg> from X to Y
+    commit-message:
+      prefix: "chore(whatsapp)"
+    groups:
+      whatsapp-bridge:
+        patterns:
+          - "*"
+
+  # Docusaurus website
+  - package-ecosystem: "npm"
+    directory: "/website"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # Commit / PR title convention: docs(deps): bump <pkg> from X to Y
+    commit-message:
+      prefix: "docs(deps)"
+    groups:
+      website-npm:
+        patterns:
+          - "*"
+
+  # Python packages (pyproject.toml / requirements.txt)
+  # Note: uv.lock is not natively supported; pip ecosystem covers declared deps in pyproject.toml.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # Commit / PR title convention: chore(deps): bump <pkg> from X to Y
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-deps:
+        patterns:
+          - "*"
+
+  # GitHub Actions workflow step versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    # Commit / PR title convention: chore(ci): bump <action> from X to Y
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

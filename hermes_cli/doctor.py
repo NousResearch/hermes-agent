@@ -4,6 +4,7 @@ Doctor command for hermes CLI.
 Diagnoses issues with Hermes Agent setup.
 """
 
+import json
 import os
 import sys
 import subprocess
@@ -637,25 +638,121 @@ def run_doctor(args):
                     cwd=str(npm_dir),
                     capture_output=True, text=True, timeout=30,
                 )
-                import json as _json
-                audit_data = _json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
+                audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
                 vuln_count = audit_data.get("metadata", {}).get("vulnerabilities", {})
                 critical = vuln_count.get("critical", 0)
                 high = vuln_count.get("high", 0)
                 moderate = vuln_count.get("moderate", 0)
-                total = critical + high + moderate
+                low = vuln_count.get("low", 0)
+                total = critical + high + moderate + low
                 if total == 0:
                     check_ok(f"{label} deps", "(no known vulnerabilities)")
                 elif critical > 0 or high > 0:
-                    check_warn(
-                        f"{label} deps",
-                        f"({critical} critical, {high} high, {moderate} moderate — run: cd {npm_dir} && npm audit fix)"
-                    )
-                    issues.append(f"{label} has {total} npm vulnerability(ies)")
+                    severity_str = f"{critical} critical, {high} high, {moderate} moderate, {low} low"
+                    issue_msg = f"{label} has {critical + high} critical/high npm vulnerability(ies)"
+                    if should_fix:
+                        fix_result = subprocess.run(
+                            ["npm", "audit", "fix"],
+                            cwd=str(npm_dir),
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        if fix_result.returncode == 0:
+                            fixed_count += 1
+                            check_ok(f"{label} deps", "(vulnerabilities fixed by npm audit fix)")
+                        else:
+                            check_warn(
+                                f"{label} deps",
+                                f"({severity_str} — npm audit fix failed, run manually: cd {npm_dir} && npm audit fix)"
+                            )
+                            manual_issues.append(f"{label}: npm audit fix failed — run: cd {npm_dir} && npm audit fix")
+                    else:
+                        check_warn(
+                            f"{label} deps",
+                            f"({severity_str} — run: cd {npm_dir} && npm audit fix)"
+                        )
+                        issues.append(issue_msg)
                 else:
-                    check_ok(f"{label} deps", f"({moderate} moderate vulnerability(ies))")
-            except Exception:
-                pass
+                    # moderate or low only
+                    mod_low_str = f"{moderate} moderate, {low} low"
+                    issue_msg = f"{label} has {moderate + low} moderate/low npm vulnerability(ies)"
+                    if should_fix:
+                        fix_result = subprocess.run(
+                            ["npm", "audit", "fix"],
+                            cwd=str(npm_dir),
+                            capture_output=True, text=True, timeout=60,
+                        )
+                        if fix_result.returncode == 0:
+                            fixed_count += 1
+                            check_ok(f"{label} deps", "(vulnerabilities fixed by npm audit fix)")
+                        else:
+                            check_warn(
+                                f"{label} deps",
+                                f"({mod_low_str} — npm audit fix failed, run manually: cd {npm_dir} && npm audit fix)"
+                            )
+                            manual_issues.append(f"{label}: npm audit fix failed — run: cd {npm_dir} && npm audit fix")
+                    else:
+                        check_warn(f"{label} deps", f"({mod_low_str} — run: cd {npm_dir} && npm audit fix)")
+                        issues.append(issue_msg)
+            except Exception as e:
+                check_warn(f"{label} deps", f"(npm audit failed: {e})")
+
+    # Python package security audit (pip-audit)
+    if shutil.which("pip-audit"):
+        try:
+            audit_result = subprocess.run(
+                ["pip-audit", "--json", "--skip-editable"],
+                capture_output=True, text=True, timeout=120,
+            )
+            audit_data = json.loads(audit_result.stdout) if audit_result.stdout.strip() else {}
+            deps = audit_data.get("dependencies", [])
+            vulnerable = [d for d in deps if d.get("vulns")]
+            vuln_count = sum(len(d["vulns"]) for d in vulnerable)
+            pkg_count = len(vulnerable)
+
+            if vuln_count == 0:
+                check_ok("Python packages", "(no known vulnerabilities)")
+            else:
+                severity_summary = f"{vuln_count} vulnerability(ies) across {pkg_count} package(s)"
+                issue_msg = f"Python packages have {severity_summary}"
+                if should_fix:
+                    fix_result = subprocess.run(
+                        ["pip-audit", "--fix", "--skip-editable"],
+                        capture_output=True, text=True, timeout=120,
+                    )
+                    if fix_result.returncode == 0:
+                        fixed_count += 1
+                        check_ok("Python packages", "(vulnerabilities fixed by pip-audit --fix)")
+                        # Sync uv.lock if uv is available so the lockfile stays current
+                        if shutil.which("uv"):
+                            uv_result = subprocess.run(
+                                ["uv", "lock"],
+                                cwd=str(PROJECT_ROOT),
+                                capture_output=True, text=True, timeout=120,
+                            )
+                            if uv_result.returncode == 0:
+                                check_ok("uv.lock", "(synced after pip-audit fix)")
+                            else:
+                                check_warn("uv.lock", "(sync failed — run: uv lock)")
+                                manual_issues.append("Run 'uv lock' to sync uv.lock after pip-audit fix")
+                    else:
+                        check_warn(
+                            "Python packages",
+                            f"({severity_summary} — pip-audit --fix failed, run manually: pip-audit --fix)"
+                        )
+                        manual_issues.append(f"Python packages: pip-audit --fix failed — run manually: pip-audit --fix")
+                else:
+                    pkgs_str = ", ".join(d["name"] for d in vulnerable[:5])
+                    if pkg_count > 5:
+                        pkgs_str += f" (+{pkg_count - 5} more)"
+                    check_warn(
+                        "Python packages",
+                        f"({severity_summary}: {pkgs_str} — run: pip-audit --fix)"
+                    )
+                    issues.append(issue_msg)
+        except Exception as e:
+            check_warn("Python packages", f"(pip-audit failed: {e})")
+    else:
+        check_info("Python packages: pip-audit not installed — run: pip install pip-audit")
 
     # =========================================================================
     # Check: API connectivity
@@ -844,7 +941,6 @@ def run_doctor(args):
         lock_file = hub_dir / "lock.json"
         if lock_file.exists():
             try:
-                import json
                 lock_data = json.loads(lock_file.read_text())
                 count = len(lock_data.get("installed", {}))
                 check_ok(f"Lock file OK ({count} hub-installed skill(s))")

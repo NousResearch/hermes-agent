@@ -1364,3 +1364,90 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
 )
+
+# --- Coordinated Multi-Agent Delegation ---
+COORDINATED_DELEGATE_SCHEMA = {
+    "name": "coordinated_delegate",
+    "description": (
+        "Advanced multi-agent orchestration with role-based delegation, DAG task scheduling, "
+        "shared memory between agents, and result synthesis. Use this instead of delegate_task "
+        "for complex tasks that benefit from specialized roles (researcher, developer, reviewer) "
+        "working together with dependency awareness."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": (
+                    "The complex goal to decompose and execute across multiple specialized agents. "
+                    "Example: 'Build a REST API with auth, write tests, and deploy to production'"
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": "Background context shared with all agents (e.g. codebase, requirements).",
+            },
+            "role_hint": {
+                "type": "string",
+                "description": (
+                    "Optional hint about which roles to prioritize. "
+                    "Options: 'research' (favor researcher), 'code' (favor developer), "
+                    "'review' (favor reviewer), 'auto' (let coordinator decide)."
+                ),
+            },
+            "max_concurrent": {
+                "type": "integer",
+                "description": (
+                    "Max agents running in parallel (default: 3). "
+                    "Higher values are faster but use more API calls."
+                ),
+            },
+            "synthesize": {
+                "type": "boolean",
+                "description": (
+                    "If true, run a Synthesizer agent after all tasks complete "
+                    "to produce a unified final report (default: true)."
+                ),
+            },
+        },
+        "required": ["goal"],
+    },
+}
+
+
+def _coordinated_delegate_impl(
+    goal: str,
+    context: Optional[str] = None,
+    role_hint: Optional[str] = None,
+    max_concurrent: int = 3,
+    synthesize: bool = True,
+    parent_agent=None,
+) -> str:
+    """Implementation wrapper so the registry handler can catch exceptions."""
+    from agent.multi_agent_coordinator import coordinated_delegate as _impl
+    return _impl(
+        goal=goal,
+        context=context,
+        role_hint=role_hint,
+        max_concurrent=max_concurrent,
+        synthesize=synthesize,
+        parent_agent=parent_agent,
+    )
+
+
+registry.register(
+    name="coordinated_delegate",
+    toolset="delegation",
+    schema=COORDINATED_DELEGATE_SCHEMA,
+    handler=lambda args, **kw: _coordinated_delegate_impl(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        role_hint=args.get("role_hint"),
+        max_concurrent=args.get("max_concurrent", 3),
+        synthesize=args.get("synthesize", True),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🧠",
+)

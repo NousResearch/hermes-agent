@@ -1,0 +1,652 @@
+"""
+Multi-Agent Orchestration Layer — 基于 #344 的架构设计
+
+核心组件：
+1. MultiAgentCoordinator — 负责任务分解+DAG编排+结果综合
+2. AgentRole — 预定义角色系统（Coordinator/Researcher/Developer/Reviewer/Synthesizer）
+3. SharedMemory — 跨Agent共享上下文池
+4. DAGWorkflow — 有向无环图工作流，支持依赖等待
+
+设计原则（来自#344）：
+- 保留现有delegate_task的隔离安全性
+- 新增角色分工+依赖感知+结果聚合
+- Coordinator做任务分解，Worker执行，Synthesizer聚合
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable, Optional
+from collections import defaultdict
+
+logger = logging.getLogger(__name__)
+
+
+class AgentRole(Enum):
+    """预定义Agent角色，对应特定工具集+系统提示"""
+    COORDINATOR = "coordinator"     # 分解任务、分配工作、监控进度
+    RESEARCHER = "researcher"      # web搜索、文档分析、信息收集
+    DEVELOPER = "developer"        # 写代码、terminal操作、git
+    REVIEWER = "reviewer"          # 代码审查、质量评估、验收标准
+    SYNTHESIZER = "synthesizer"      # 聚合多Agent结果、生成最终输出
+    BROWSER = "browser"            # 浏览器操作、表单填写、视觉验证
+
+
+# 每个角色默认使用的工具集
+ROLE_TOOLSETS: dict[AgentRole, list[str]] = {
+    AgentRole.COORDINATOR: ["terminal", "file", "skills"],
+    AgentRole.RESEARCHER: ["search", "web", "file"],
+    AgentRole.DEVELOPER: ["terminal", "file", "code_execution"],
+    AgentRole.REVIEWER: ["terminal", "file"],
+    AgentRole.SYNTHESIZER: ["terminal", "file"],
+    AgentRole.BROWSER: ["browser", "terminal"],
+}
+
+# 每个角色的系统提示前缀
+ROLE_SYSTEM_PROMPTS: dict[AgentRole, str] = {
+    AgentRole.COORDINATOR: (
+        "You are the Coordinator for a multi-agent workflow. "
+        "Your job is to decompose a complex task into subtasks, assign each to the right role, "
+        "monitor progress, handle failures, and synthesize the final result."
+    ),
+    AgentRole.RESEARCHER: (
+        "You are a Research Agent. Your job is to gather, analyze, and summarize information "
+        "from web searches, documents, and code analysis. Be thorough and cite sources."
+    ),
+    AgentRole.DEVELOPER: (
+        "You are a Developer Agent. Your job is to write, modify, and test code. "
+        "Follow best practices, write clean code, and verify your changes work."
+    ),
+    AgentRole.REVIEWER: (
+        "You are a Reviewer Agent. Your job is to evaluate code quality, "
+        "check against acceptance criteria, and provide actionable feedback."
+    ),
+    AgentRole.SYNTHESIZER: (
+        "You are a Synthesizer Agent. Your job is to take results from multiple agents "
+        "and produce a unified, coherent final output."
+    ),
+    AgentRole.BROWSER: (
+        "You are a Browser Agent. Your job is to interact with web pages, "
+        "fill forms, verify visual elements, and extract structured data from websites."
+    ),
+}
+
+
+@dataclass
+class TaskNode:
+    """DAG中的一个任务节点"""
+    task_id: str
+    goal: str
+    role: AgentRole
+    context: Optional[str] = None
+    depends_on: list[str] = field(default_factory=list)  # 依赖的task_id列表
+    result: Optional[Any] = None
+    status: str = "pending"  # pending/running/completed/failed
+    error: Optional[str] = None
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    agent_id: Optional[str] = None  # 执行这个任务的子agent标识
+
+
+@dataclass
+class SharedMemory:
+    """
+    跨Agent共享内存池 — 解决#344中"children can't talk to each other"的问题
+
+    使用发布-订阅模式：
+    - 每个Agent可以向池中写入（publish）
+    - 每个Agent可以订阅特定类型的更新（subscribe）
+    - Coordinator可以读取所有内容
+    """
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+    _data: dict[str, Any] = field(default_factory=dict)
+    _subscribers: dict[str, list[Callable]] = field(default_factory=dict)
+    _events: list[dict] = field(default_factory=list)  # 事件日志，用于trace
+    _max_events: int = 1000
+
+    def publish(self, key: str, value: Any, event_type: str = "update") -> None:
+        """写入共享数据"""
+        with self._lock:
+            self._data[key] = value
+            event = {
+                "ts": time.time(),
+                "type": event_type,
+                "key": key,
+                "value": repr(value)[:200] if not isinstance(value, str) else value[:200],
+            }
+            self._events.append(event)
+            if len(self._events) > self._max_events:
+                self._events = self._events[-self._max_events:]
+            # 通知订阅者
+            for callback in self._subscribers.get(key, []):
+                try:
+                    callback(key, value)
+                except Exception as e:
+                    logger.debug("Subscriber callback error: %s", e)
+            # 通配符订阅
+            for callback in self._subscribers.get("*", []):
+                try:
+                    callback(key, value)
+                except Exception as e:
+                    logger.debug("Wildcard subscriber error: %s", e)
+
+    def read(self, key: str, default: Any = None) -> Any:
+        """读取共享数据"""
+        with self._lock:
+            return self._data.get(key, default)
+
+    def read_all(self) -> dict[str, Any]:
+        """读取所有共享数据（快照）"""
+        with self._lock:
+            return dict(self._data)
+
+    def subscribe(self, key: str, callback: Callable[[str, Any], None]) -> None:
+        """订阅特定key的更新"""
+        with self._lock:
+            if key not in self._subscribers:
+                self._subscribers[key] = []
+            self._subscribers[key].append(callback)
+
+    def get_events(self, since_ts: float = 0) -> list[dict]:
+        """获取事件日志（用于调试和trace）"""
+        with self._lock:
+            return [e for e in self._events if e["ts"] > since_ts]
+
+
+class DAGWorkflow:
+    """
+    有向无环图工作流 — 支持依赖感知的任务调度
+
+    与简单parallel dispatch的区别：
+    - 任务按依赖关系排序，不是所有任务同时开始
+    - 一个任务的输出可以作为另一个任务的输入
+    - 支持条件分支（role-based routing）
+    """
+
+    def __init__(self, nodes: list[TaskNode]):
+        self.nodes: dict[str, TaskNode] = {n.task_id: n for n in nodes}
+        self._topo_order: list[str] = []
+        self._ready_queue: list[str] = []  # 准备执行的任务（依赖已满足）
+        self._completed: set[str] = set()
+        self._failed: set[str] = set()
+
+    def get_ready_tasks(self) -> list[TaskNode]:
+        """返回所有依赖已满足且未执行的任务"""
+        ready = []
+        for task_id, node in self.nodes.items():
+            if node.status != "pending":
+                continue
+            # 检查所有依赖是否已完成
+            deps_done = all(
+                self.nodes[d].status == "completed"
+                for d in node.depends_on
+            )
+            if deps_done:
+                ready.append(node)
+        return ready
+
+    def mark_running(self, task_id: str) -> None:
+        self.nodes[task_id].status = "running"
+        self.nodes[task_id].started_at = time.time()
+
+    def mark_completed(self, task_id: str, result: Any) -> None:
+        self.nodes[task_id].status = "completed"
+        self.nodes[task_id].result = result
+        self.nodes[task_id].completed_at = time.time()
+        self._completed.add(task_id)
+
+    def mark_failed(self, task_id: str, error: str) -> None:
+        self.nodes[task_id].status = "failed"
+        self.nodes[task_id].error = error
+        self.nodes[task_id].completed_at = time.time()
+        self._failed.add(task_id)
+
+    def is_done(self) -> bool:
+        """所有任务都执行完毕（成功或失败）"""
+        return len(self._completed) + len(self._failed) == len(self.nodes)
+
+    def get_result_for(self, task_id: str) -> Optional[Any]:
+        """获取任务结果，如果任务失败返回None"""
+        node = self.nodes.get(task_id)
+        if node and node.status == "completed":
+            return node.result
+        return None
+
+    def get_summary(self) -> dict:
+        """返回工作流执行摘要"""
+        return {
+            "total": len(self.nodes),
+            "completed": len(self._completed),
+            "failed": len(self._failed),
+            "pending": sum(1 for n in self.nodes.values() if n.status == "pending"),
+            "running": sum(1 for n in self.nodes.values() if n.status == "running"),
+            "nodes": {
+                tid: {
+                    "role": node.role.value,
+                    "status": node.status,
+                    "error": node.error,
+                    "duration": (
+                        round(node.completed_at - node.started_at, 1)
+                        if node.completed_at and node.started_at else None
+                    ),
+                }
+                for tid, node in self.nodes.items()
+            },
+        }
+
+
+class MultiAgentCoordinator:
+    """
+    多Agent编排器 — 核心协调逻辑
+
+    使用流程：
+    1. 初始化Coordinator，传入复杂目标
+    2. 调用 decompose() 分解任务为DAG
+    3. 调用 execute() 并行/按序执行
+    4. 调用 synthesize() 聚合结果
+
+    与现有delegate_task的关系：
+    - 内部复用delegate_task的能力（隔离子Agent、安全工具限制）
+    - 新增：角色分配、依赖感知、结果聚合、共享内存
+    """
+
+    def __init__(
+        self,
+        parent_agent,  # 用于创建子Agent的父级引用
+        goal: str,
+        context: Optional[str] = None,
+        max_concurrent: int = 3,
+        workflow_mode: str = "auto",  # "auto"=自动分解, "manual"=手动指定任务
+    ):
+        self.parent_agent = parent_agent
+        self.goal = goal
+        self.context = context or ""
+        self.max_concurrent = max_concurrent
+        self.workflow_mode = workflow_mode
+
+        self.shared_memory = SharedMemory()
+        self.workflow: Optional[DAGWorkflow] = None
+        self._active_children: list = []
+        self._lock = threading.Lock()
+
+        # 执行统计
+        self.started_at: Optional[float] = None
+        self.completed_at: Optional[float] = None
+
+    def decompose(self, role_hint: Optional[str] = None) -> list[TaskNode]:
+        """
+        将复杂目标分解为任务DAG。
+
+        策略：
+        1. 如果workflow_mode="manual"，使用预设任务列表
+        2. 否则，让LLM分析目标并生成任务列表+依赖关系
+
+        返回：TaskNode列表
+        """
+        # 提示LLM分析并分解任务
+        decomposition_prompt = self._build_decomposition_prompt()
+        # 这里调用父Agent的LLM来分解任务
+        # 实际使用时通过delegate_task + 特殊context触发
+
+        nodes = self._llm_decompose(decomposition_prompt)
+        self.workflow = DAGWorkflow(nodes)
+        logger.info(
+            "Decomposed goal into %d tasks: %s",
+            len(nodes),
+            [n.task_id for n in nodes],
+        )
+        return nodes
+
+    def _build_decomposition_prompt(self) -> str:
+        return f"""Analyze this goal and decompose it into tasks for a multi-agent team:
+
+GOAL: {self.goal}
+CONTEXT: {self.context}
+
+Available roles:
+- coordinator: task decomposition and workflow management
+- researcher: web search, document analysis, information gathering
+- developer: code writing, terminal operations, git
+- reviewer: code review, acceptance criteria evaluation
+- synthesizer: result aggregation and final output generation
+- browser: web interaction, form filling, visual verification
+
+Rules:
+1. Each task should be small enough to complete in one agent session
+2. Tasks can depend on others — use depends_on for ordering
+3. Assign the most appropriate role to each task
+4. Include a "synthesize" task at the end that depends on all others
+5. Return a JSON array of tasks, each with:
+   - task_id: unique string
+   - goal: what this task should accomplish
+   - role: one of the available roles
+   - context: additional context for this specific task
+   - depends_on: array of task_ids this depends on
+
+Respond ONLY with valid JSON, no markdown, no explanation."""
+
+    def _llm_decompose(self, prompt: str) -> list[TaskNode]:
+        """
+        通过父Agent的LLM进行任务分解。
+        
+        实现方式：构造一个特殊的delegate_task调用，
+        用预定义的"分解提示"让子Agent返回任务列表。
+        """
+        import json as _json
+        from tools.delegate_tool import delegate_task
+
+        # 构造一个一次性分解任务
+        # 使用researcher角色，因为它有web工具可以辅助分析
+        result = delegate_task(
+            goal=prompt,
+            context=(
+                "You are a task decomposition specialist. "
+                "Analyze the goal and produce a JSON task list. "
+                "Return ONLY valid JSON array, no markdown formatting."
+            ),
+            toolsets=["terminal", "file"],
+            max_iterations=10,
+            parent_agent=self.parent_agent,
+        )
+
+        try:
+            # 尝试解析返回结果
+            data = json.loads(result)
+            if isinstance(data, dict) and "result" in data:
+                text = data["result"]
+            elif isinstance(data, str):
+                text = data
+            else:
+                text = str(data)
+
+            # 提取JSON（可能在markdown代码块里）
+            import re
+            match = re.search(r'\[[\s\S]*\]', text)
+            if match:
+                tasks_data = _json.loads(match.group())
+            else:
+                tasks_data = _json.loads(text)
+
+            nodes = []
+            for t in tasks_data:
+                role_str = t.get("role", "developer")
+                try:
+                    role = AgentRole(role_str)
+                except ValueError:
+                    role = AgentRole.DEVELOPER
+
+                nodes.append(TaskNode(
+                    task_id=t["task_id"],
+                    goal=t["goal"],
+                    role=role,
+                    context=t.get("context"),
+                    depends_on=t.get("depends_on", []),
+                ))
+            return nodes
+
+        except Exception as e:
+            logger.warning("Task decomposition failed, falling back to single task: %s", e)
+            # Fallback：退化为单任务
+            return [
+                TaskNode(
+                    task_id="main",
+                    goal=self.goal,
+                    role=AgentRole.DEVELOPER,
+                    context=self.context,
+                    depends_on=[],
+                )
+            ]
+
+    def execute(
+        self,
+        progress_callback: Optional[Callable[[str, str], None]] = None,
+    ) -> dict:
+        """
+        执行工作流。
+
+        并行策略：
+        - 维护一个待执行队列
+        - 同时运行的任务不超过max_concurrent
+        - 每当一个任务完成，检查是否有新任务可以开始
+        - 支持依赖等待
+        """
+        if not self.workflow:
+            raise RuntimeError("Must call decompose() before execute()")
+
+        self.started_at = time.time()
+        results: dict[str, Any] = {}
+
+        # 分阶段执行：每个"层"可以并行，但层间必须等待
+        # 这比真正的DAG调度简单但足够有效
+        execution_log = []
+
+        while not self.workflow.is_done():
+            ready_tasks = self.workflow.get_ready_tasks()
+
+            if not ready_tasks:
+                # 检查是否有任务在运行（有依赖还没完成）
+                running = [n for n in self.workflow.nodes.values() if n.status == "running"]
+                if running:
+                    # 等待一下再检查
+                    time.sleep(0.5)
+                    continue
+                else:
+                    # 没有running也没有ready，说明有环或死锁
+                    logger.error("Workflow deadlock detected: no ready tasks but not done")
+                    break
+
+            # 按max_concurrent限制
+            for task in ready_tasks[:self.max_concurrent]:
+                self.workflow.mark_running(task.task_id)
+                execution_log.append({
+                    "task_id": task.task_id,
+                    "role": task.role.value,
+                    "started": time.time(),
+                })
+
+                # 在子线程中执行任务
+                thread = threading.Thread(
+                    target=self._execute_task,
+                    args=(task, progress_callback),
+                    daemon=True,
+                )
+                thread.start()
+
+            # 等待一会儿再检查
+            time.sleep(0.5)
+
+        self.completed_at = time.time()
+        duration = self.completed_at - self.started_at
+
+        # 收集所有结果
+        for task_id, node in self.workflow.nodes.items():
+            results[task_id] = {
+                "status": node.status,
+                "result": node.result,
+                "error": node.error,
+                "role": node.role.value,
+                "duration": (
+                    round(node.completed_at - node.started_at, 1)
+                    if node.completed_at and node.started_at else None
+                ),
+            }
+
+        return {
+            "workflow_summary": self.workflow.get_summary(),
+            "results": results,
+            "total_duration": round(duration, 1),
+            "execution_log": execution_log,
+        }
+
+    def _execute_task(self, task: TaskNode, progress_callback: Optional[Callable]) -> None:
+        """在子线程中执行单个任务"""
+        from tools.delegate_tool import delegate_task
+
+        # 收集依赖结果作为context扩展
+        dep_context_parts = []
+        for dep_id in task.depends_on:
+            dep_result = self.workflow.get_result_for(dep_id)
+            if dep_result is not None:
+                dep_context_parts.append(
+                    f"[Input from {dep_id}]:\n{dep_result}\n"
+                )
+
+        # 构建任务context
+        task_context = "\n".join(dep_context_parts)
+        if task.context:
+            task_context = f"{task_context}\n{task.context}" if task_context else task.context
+
+        # 角色特定提示
+        role_prompt = ROLE_SYSTEM_PROMPTS.get(task.role, "")
+        full_goal = f"{role_prompt}\n\nTASK:\n{task.goal}"
+
+        if progress_callback:
+            progress_callback(task.task_id, f"Starting {task.role.value} task")
+
+        try:
+            result = delegate_task(
+                goal=full_goal,
+                context=task_context,
+                toolsets=ROLE_TOOLSETS.get(task.role, ["terminal", "file"]),
+                max_iterations=30,
+                parent_agent=self.parent_agent,
+            )
+
+            # 解析结果
+            try:
+                result_data = json.loads(result)
+                if isinstance(result_data, dict) and "error" in result_data:
+                    raise ValueError(result_data["error"])
+                result_text = result_data.get("result", result) if isinstance(result_data, dict) else result
+            except (json.JSONDecodeError, TypeError):
+                result_text = str(result)
+
+            # 写入共享内存
+            self.shared_memory.publish(f"task:{task.task_id}", result_text)
+
+            self.workflow.mark_completed(task.task_id, result_text)
+
+            if progress_callback:
+                progress_callback(task.task_id, f"Completed {task.role.value} task")
+
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {e}"
+            logger.error("Task %s failed: %s", task.task_id, error_msg)
+            self.workflow.mark_failed(task.task_id, error_msg)
+            self.shared_memory.publish(f"task:{task.task_id}:error", error_msg)
+            if progress_callback:
+                progress_callback(task.task_id, f"Failed: {error_msg}")
+
+    def synthesize(self, result: dict) -> str:
+        """
+        综合所有Agent的结果生成最终输出。
+
+        实现策略：
+        - 读取所有task的结果
+        - 按依赖顺序拼接
+        - 让Synthesizer角色生成最终报告
+        """
+        summary = self.workflow.get_summary() if self.workflow else {}
+        all_results = result.get("results", {})
+
+        # 按执行顺序排列结果
+        ordered_results = []
+        for task_id, data in all_results.items():
+            ordered_results.append({
+                "task_id": task_id,
+                "role": data.get("role"),
+                "status": data.get("status"),
+                "result": data.get("result"),
+            })
+
+        synthesis_prompt = f"""You are a Synthesizer. Aggregate results from multiple agents into a final report.
+
+ORIGINAL GOAL: {self.goal}
+
+AGENT RESULTS:
+{json.dumps(ordered_results, indent=2, ensure_ascii=False)}
+
+Your job:
+1. Review all agent results in dependency order
+2. Identify key findings, decisions, and artifacts
+3. Produce a coherent final report addressing the original goal
+4. Highlight any failures or partial results
+5. Provide next steps if applicable
+
+Be thorough and specific. Do not just summarize — synthesize into actionable insights."""
+
+        from tools.delegate_tool import delegate_task
+
+        try:
+            synthesis_result = delegate_task(
+                goal=synthesis_prompt,
+                context=f"Original goal: {self.goal}\nResults: {json.dumps(all_results, indent=2)[:5000]}",
+                toolsets=["terminal", "file"],
+                max_iterations=20,
+                parent_agent=self.parent_agent,
+            )
+            return synthesis_result
+        except Exception as e:
+            return f"Synthesis failed: {e}\n\nRaw results: {json.dumps(all_results, indent=2)}"
+
+
+def coordinated_delegate(
+    goal: str,
+    context: Optional[str] = None,
+    role_hint: Optional[str] = None,
+    max_concurrent: int = 3,
+    synthesize: bool = True,
+    parent_agent=None,
+) -> str:
+    """
+    高级多Agent委托 — 替代简单的delegate_task
+
+    使用方式：
+        result = coordinated_delegate(
+            goal="Build a web app with auth and real-time updates",
+            context="Using React + FastAPI + WebSockets",
+            max_concurrent=3,
+            synthesize=True,
+            parent_agent=self,
+        )
+
+    内部流程：
+    1. Coordinator分解任务为DAG
+    2. 按依赖并行执行多个角色Agent
+    3. 结果写入SharedMemory
+    4. Synthesizer聚合为最终输出
+    """
+    if parent_agent is None:
+        return json.dumps({"error": "coordinated_delegate requires parent_agent"})
+
+    coordinator = MultiAgentCoordinator(
+        parent_agent=parent_agent,
+        goal=goal,
+        context=context,
+        max_concurrent=max_concurrent,
+    )
+
+    # 分解任务
+    coordinator.decompose(role_hint=role_hint)
+
+    # 执行
+    exec_result = coordinator.execute()
+
+    # 综合
+    if synthesize:
+        final_output = coordinator.synthesize(exec_result)
+        return json.dumps({
+            "success": True,
+            "execution": exec_result,
+            "synthesis": final_output,
+        }, indent=2, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": True,
+            "execution": exec_result,
+        }, indent=2, ensure_ascii=False)

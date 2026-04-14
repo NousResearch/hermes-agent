@@ -1660,6 +1660,27 @@ class HermesCLI:
                 _detected = _auto_detect_local_model(_base_url)
                 if _detected:
                     self.model = _detected
+
+        # Expand direct model aliases from config.yaml early in CLI startup.
+        # This ensures commands like `hermes chat -m example/gpt-5.4` pick up
+        # the aliased provider/base_url before lazy runtime resolution and
+        # provider-specific normalization run.
+        try:
+            from hermes_cli.model_switch import DIRECT_ALIASES, _ensure_direct_aliases
+
+            alias_key = (self.model or "").strip().lower()
+            if alias_key:
+                _ensure_direct_aliases()
+                direct_alias = DIRECT_ALIASES.get(alias_key)
+                if direct_alias is not None:
+                    self.model = direct_alias.model
+                    if provider is None and direct_alias.provider:
+                        provider = direct_alias.provider
+                    if base_url is None and direct_alias.base_url:
+                        base_url = direct_alias.base_url
+        except Exception:
+            pass
+
         # Track whether model was explicitly chosen by the user or fell back
         # to the global default.  Provider-specific normalisation may override
         # the default silently but should warn when overriding an explicit choice.
@@ -2200,17 +2221,20 @@ class HermesCLI:
         if resolved_provider != "openai-codex":
             return changed
 
-        # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
+        # 1. Strip only known Codex-facing provider prefixes
+        #    ("openai/gpt-5.4" → "gpt-5.4"). Do not strip unrelated custom
+        #    aliases like "example/gpt-5.4".
         if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
-            if not self._model_is_default:
-                self.console.print(
-                    f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
-                    f"using '{slug}' for OpenAI Codex.[/]"
-                )
-            self.model = slug
-            current_model = slug
-            changed = True
+            vendor, _, slug = current_model.partition("/")
+            if vendor.strip().lower() in {"openai", "openai-codex", "official"} and slug:
+                if not self._model_is_default:
+                    self.console.print(
+                        f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "
+                        f"using '{slug}' for OpenAI Codex.[/]"
+                    )
+                self.model = slug
+                current_model = slug
+                changed = True
 
         # 2. Replace untouched default with a Codex model
         if self._model_is_default:

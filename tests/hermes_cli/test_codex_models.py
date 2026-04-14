@@ -184,13 +184,13 @@ class TestNormalizeModelForProvider:
         assert changed is True
         assert cli.model == "gpt-5.4"
 
-    def test_any_provider_prefix_stripped(self):
-        """anthropic/claude-opus-4.6 → claude-opus-4.6 (strip prefix only).
-        User explicitly chose this — let the API decide if it works."""
+    def test_unrelated_provider_prefix_not_stripped_for_openai_codex(self):
+        """anthropic/claude-opus-4.6 should not be rewritten by Codex-specific normalization.
+        Only known Codex-facing prefixes are stripped."""
         cli = _make_cli(model="anthropic/claude-opus-4.6")
         changed = cli._normalize_model_for_provider("openai-codex")
-        assert changed is True
-        assert cli.model == "claude-opus-4.6"
+        assert changed is False
+        assert cli.model == "anthropic/claude-opus-4.6"
 
     def test_opencode_go_prefix_stripped(self):
         cli = _make_cli(model="opencode-go/kimi-k2.5")

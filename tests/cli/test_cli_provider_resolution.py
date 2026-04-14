@@ -200,6 +200,56 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.api_mode == "codex_responses"
 
 
+def test_cli_startup_expands_direct_model_alias_before_runtime_resolution(monkeypatch):
+    cli = _import_cli()
+    from hermes_cli import model_switch
+
+    monkeypatch.setattr(
+        cli,
+        "CLI_CONFIG",
+        {
+            "model": {
+                "default": "gpt-5.4",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+            },
+            "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
+            "agent": {},
+            "terminal": {"env_type": "local"},
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        model_switch,
+        "DIRECT_ALIASES",
+        {
+            "example/gpt-5.4": model_switch.DirectAlias(
+                model="gpt-5.4",
+                provider="custom-endpoint",
+                base_url="https://example.invalid/v1",
+            )
+        },
+    )
+
+    shell = cli.HermesCLI(model="example/gpt-5.4", compact=True, max_turns=1)
+
+    assert shell.model == "gpt-5.4"
+    assert shell.requested_provider == "custom-endpoint"
+    assert shell.provider == "custom-endpoint"
+    assert shell.base_url == "https://example.invalid/v1"
+    assert shell._explicit_base_url == "https://example.invalid/v1"
+
+
+def test_openai_codex_normalization_does_not_strip_unrelated_provider_prefix():
+    cli = _import_cli()
+    shell = cli.HermesCLI(model="example/gpt-5.4", provider="openai-codex", compact=True, max_turns=1)
+
+    changed = shell._normalize_model_for_provider("openai-codex")
+
+    assert changed is False
+    assert shell.model == "example/gpt-5.4"
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)

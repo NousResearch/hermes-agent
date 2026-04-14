@@ -12,18 +12,27 @@ Configuration in config.yaml:
     platforms:
       dingtalk:
         enabled: true
+        # Optional group-chat gating (mirrors Slack/Telegram/Discord):
+        require_mention: true            # or DINGTALK_REQUIRE_MENTION env var
+        # free_response_chats:           # conversations that skip require_mention
+        #   - cidABC==
+        # mention_patterns:              # regex wake-words (e.g. Chinese bot names)
+        #   - "^小马"
+        # allowed_users:                 # staff_id or sender_id list; "*" = any
+        #   - "manager1234"
         extra:
           client_id: "your-app-key"      # or DINGTALK_CLIENT_ID env var
           client_secret: "your-secret"   # or DINGTALK_CLIENT_SECRET env var
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 try:
     import dingtalk_stream
@@ -91,6 +100,10 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._dedup = MessageDeduplicator(max_size=1000)
         # Map chat_id -> session_webhook for reply routing
         self._session_webhooks: Dict[str, str] = {}
+
+        # Group-chat gating (mirrors Slack/Telegram/Discord/WhatsApp conventions)
+        self._mention_patterns: List[re.Pattern] = self._compile_mention_patterns()
+        self._allowed_users: Set[str] = self._load_allowed_users()
 
     # -- Connection lifecycle -----------------------------------------------
 
@@ -178,6 +191,118 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._dedup.clear()
         logger.info("[%s] Disconnected", self.name)
 
+    # -- Group gating --------------------------------------------------------
+
+    def _dingtalk_require_mention(self) -> bool:
+        """Return whether group chats should require an explicit bot trigger."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+
+    def _dingtalk_free_response_chats(self) -> Set[str]:
+        raw = self.config.extra.get("free_response_chats")
+        if raw is None:
+            raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _compile_mention_patterns(self) -> List[re.Pattern]:
+        """Compile optional regex wake-word patterns for group triggers."""
+        patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
+        if patterns is None:
+            raw = os.getenv("DINGTALK_MENTION_PATTERNS", "").strip()
+            if raw:
+                try:
+                    loaded = json.loads(raw)
+                except Exception:
+                    loaded = [part.strip() for part in raw.splitlines() if part.strip()]
+                    if not loaded:
+                        loaded = [part.strip() for part in raw.split(",") if part.strip()]
+                patterns = loaded
+
+        if patterns is None:
+            return []
+        if isinstance(patterns, str):
+            patterns = [patterns]
+        if not isinstance(patterns, list):
+            logger.warning(
+                "[%s] dingtalk mention_patterns must be a list or string; got %s",
+                self.name,
+                type(patterns).__name__,
+            )
+            return []
+
+        compiled: List[re.Pattern] = []
+        for pattern in patterns:
+            if not isinstance(pattern, str) or not pattern.strip():
+                continue
+            try:
+                compiled.append(re.compile(pattern, re.IGNORECASE))
+            except re.error as exc:
+                logger.warning("[%s] Invalid DingTalk mention pattern %r: %s", self.name, pattern, exc)
+        if compiled:
+            logger.info("[%s] Loaded %d DingTalk mention pattern(s)", self.name, len(compiled))
+        return compiled
+
+    def _load_allowed_users(self) -> Set[str]:
+        """Load allowed-users list from config.extra or env var.
+
+        IDs are matched case-insensitively against the sender's ``staff_id`` and
+        ``sender_id``. A wildcard ``*`` disables the check.
+        """
+        raw = self.config.extra.get("allowed_users") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_ALLOWED_USERS", "")
+        if isinstance(raw, list):
+            items = [str(part).strip() for part in raw if str(part).strip()]
+        else:
+            items = [part.strip() for part in str(raw).split(",") if part.strip()]
+        return {item.lower() for item in items}
+
+    def _is_user_allowed(self, sender_id: str, sender_staff_id: str) -> bool:
+        if not self._allowed_users or "*" in self._allowed_users:
+            return True
+        candidates = {(sender_id or "").lower(), (sender_staff_id or "").lower()}
+        candidates.discard("")
+        return bool(candidates & self._allowed_users)
+
+    def _message_mentions_bot(self, message: "ChatbotMessage") -> bool:
+        """True if the bot was @-mentioned in a group message.
+
+        dingtalk-stream sets ``is_in_at_list`` on the incoming ChatbotMessage
+        when the bot is addressed via @-mention.
+        """
+        return bool(getattr(message, "is_in_at_list", False))
+
+    def _message_matches_mention_patterns(self, text: str) -> bool:
+        if not text or not self._mention_patterns:
+            return False
+        return any(pattern.search(text) for pattern in self._mention_patterns)
+
+    def _should_process_message(self, message: "ChatbotMessage", text: str, is_group: bool, chat_id: str) -> bool:
+        """Apply DingTalk group trigger rules.
+
+        DMs remain unrestricted (subject to ``allowed_users`` which is enforced
+        earlier). Group messages are accepted when:
+        - the chat is explicitly allowlisted in ``free_response_chats``
+        - ``require_mention`` is disabled
+        - the bot is @mentioned (``is_in_at_list``)
+        - the text matches a configured regex wake-word pattern
+        """
+        if not is_group:
+            return True
+        if chat_id and chat_id in self._dingtalk_free_response_chats():
+            return True
+        if not self._dingtalk_require_mention():
+            return True
+        if self._message_mentions_bot(message):
+            return True
+        return self._message_matches_mention_patterns(text)
+
     # -- Inbound message processing -----------------------------------------
 
     async def _on_message(self, message: "ChatbotMessage") -> None:
@@ -202,6 +327,22 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         chat_id = conversation_id or sender_id
         chat_type = "group" if is_group else "dm"
+
+        # Allowed-users gate (applies to both DM and group)
+        if not self._is_user_allowed(sender_id, sender_staff_id):
+            logger.debug(
+                "[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s",
+                self.name, sender_staff_id, sender_id,
+            )
+            return
+
+        # Group mention/pattern gate
+        if not self._should_process_message(message, text, is_group, chat_id):
+            logger.debug(
+                "[%s] Dropping group message that failed mention gate message_id=%s chat_id=%s",
+                self.name, msg_id, chat_id,
+            )
+            return
 
         # Store session webhook for reply routing (validate origin to prevent SSRF)
         session_webhook = getattr(message, "session_webhook", None) or ""

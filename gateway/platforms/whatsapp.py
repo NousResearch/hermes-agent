@@ -120,8 +120,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
     - session_path: Path to store WhatsApp session data
     """
     
-    # WhatsApp message limits
-    MAX_MESSAGE_LENGTH = 65536  # WhatsApp allows longer messages
+    # WhatsApp message limits — practical UX limit, not protocol max.
+    # WhatsApp allows ~65K but long messages are unreadable on mobile.
+    MAX_MESSAGE_LENGTH = 4096
     
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
@@ -145,7 +146,6 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_log: Optional[Path] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
-        self._session_lock_identity: Optional[str] = None
 
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
@@ -290,23 +290,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         
         # Acquire scoped lock to prevent duplicate sessions
         try:
-            from gateway.status import acquire_scoped_lock
-
-            self._session_lock_identity = str(self._session_path)
-            acquired, existing = acquire_scoped_lock(
-                "whatsapp-session",
-                self._session_lock_identity,
-                metadata={"platform": self.platform.value},
-            )
-            if not acquired:
-                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
-                message = (
-                    "Another local Hermes gateway is already using this WhatsApp session"
-                    + (f" (PID {owner_pid})." if owner_pid else ".")
-                    + " Stop the other gateway before starting a second WhatsApp bridge."
-                )
-                logger.error("[%s] %s", self.name, message)
-                self._set_fatal_error("whatsapp_session_lock", message, retryable=False)
+            if not self._acquire_platform_lock('whatsapp-session', str(self._session_path), 'WhatsApp session'):
                 return False
         except Exception as e:
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
@@ -468,12 +452,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
             
         except Exception as e:
-            if self._session_lock_identity:
-                try:
-                    from gateway.status import release_scoped_lock
-                    release_scoped_lock("whatsapp-session", self._session_lock_identity)
-                except Exception:
-                    pass
+            self._release_platform_lock()
             logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
             self._close_bridge_log()
             return False
@@ -546,19 +525,70 @@ class WhatsAppAdapter(BasePlatformAdapter):
             await self._http_session.close()
         self._http_session = None
 
-        if self._session_lock_identity:
-            try:
-                from gateway.status import release_scoped_lock
-                release_scoped_lock("whatsapp-session", self._session_lock_identity)
-            except Exception as e:
-                logger.warning("[%s] Error releasing WhatsApp session lock: %s", self.name, e, exc_info=True)
+        self._release_platform_lock()
 
         self._mark_disconnected()
         self._bridge_process = None
         self._close_bridge_log()
-        self._session_lock_identity = None
         print(f"[{self.name}] Disconnected")
     
+    def format_message(self, content: str) -> str:
+        """Convert standard markdown to WhatsApp-compatible formatting.
+
+        WhatsApp supports: *bold*, _italic_, ~strikethrough~, ```code```,
+        and monospaced `inline`. Standard markdown uses different syntax
+        for bold/italic/strikethrough, so we convert here.
+
+        Code blocks (``` fenced) and inline code (`) are protected from
+        conversion via placeholder substitution.
+        """
+        if not content:
+            return content
+
+        # --- 1. Protect fenced code blocks from formatting changes ---
+        _FENCE_PH = "\x00FENCE"
+        fences: list[str] = []
+
+        def _save_fence(m: re.Match) -> str:
+            fences.append(m.group(0))
+            return f"{_FENCE_PH}{len(fences) - 1}\x00"
+
+        result = re.sub(r"```[\s\S]*?```", _save_fence, content)
+
+        # --- 2. Protect inline code ---
+        _CODE_PH = "\x00CODE"
+        codes: list[str] = []
+
+        def _save_code(m: re.Match) -> str:
+            codes.append(m.group(0))
+            return f"{_CODE_PH}{len(codes) - 1}\x00"
+
+        result = re.sub(r"`[^`\n]+`", _save_code, result)
+
+        # --- 3. Convert markdown formatting to WhatsApp syntax ---
+        # Bold: **text** or __text__ → *text*
+        result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
+        result = re.sub(r"__(.+?)__", r"*\1*", result)
+        # Strikethrough: ~~text~~ → ~text~
+        result = re.sub(r"~~(.+?)~~", r"~\1~", result)
+        # Italic: *text* is already WhatsApp italic — leave as-is
+        # _text_ is already WhatsApp italic — leave as-is
+
+        # --- 4. Convert markdown headers to bold text ---
+        # # Header → *Header*
+        result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
+
+        # --- 5. Convert markdown links: [text](url) → text (url) ---
+        result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
+
+        # --- 6. Restore protected sections ---
+        for i, fence in enumerate(fences):
+            result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
+        for i, code in enumerate(codes):
+            result = result.replace(f"{_CODE_PH}{i}\x00", code)
+
+        return result
+
     async def send(
         self,
         chat_id: str,
@@ -566,38 +596,57 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message via the WhatsApp bridge."""
+        """Send a message via the WhatsApp bridge.
+
+        Formats markdown for WhatsApp, splits long messages into chunks
+        that preserve code block boundaries, and sends each chunk sequentially.
+        """
         if not self._running or not self._http_session:
             return SendResult(success=False, error="Not connected")
         bridge_exit = await self._check_managed_bridge_exit()
         if bridge_exit:
             return SendResult(success=False, error=bridge_exit)
-        
+
+        if not content or not content.strip():
+            return SendResult(success=True, message_id=None)
+
         try:
             import aiohttp
 
-            payload = {
-                "chatId": chat_id,
-                "message": content,
-            }
-            if reply_to:
-                payload["replyTo"] = reply_to
-            
-            async with self._http_session.post(
-                f"http://127.0.0.1:{self._bridge_port}/send",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return SendResult(
-                        success=True,
-                        message_id=data.get("messageId"),
-                        raw_response=data
-                    )
-                else:
-                    error = await resp.text()
-                    return SendResult(success=False, error=error)
+            # Format and chunk the message
+            formatted = self.format_message(content)
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+
+            last_message_id = None
+            for chunk in chunks:
+                payload: Dict[str, Any] = {
+                    "chatId": chat_id,
+                    "message": chunk,
+                }
+                if reply_to and last_message_id is None:
+                    # Only reply-to on the first chunk
+                    payload["replyTo"] = reply_to
+
+                async with self._http_session.post(
+                    f"http://127.0.0.1:{self._bridge_port}/send",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        last_message_id = data.get("messageId")
+                    else:
+                        error = await resp.text()
+                        return SendResult(success=False, error=error)
+
+                # Small delay between chunks to avoid rate limiting
+                if len(chunks) > 1:
+                    await asyncio.sleep(0.3)
+
+            return SendResult(
+                success=True,
+                message_id=last_message_id,
+            )
         except Exception as e:
             return SendResult(success=False, error=str(e))
 

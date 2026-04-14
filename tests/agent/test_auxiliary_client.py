@@ -17,7 +17,6 @@ from agent.auxiliary_client import (
     call_llm,
     async_call_llm,
     _read_codex_access_token,
-    _get_auxiliary_provider,
     _get_provider_chain,
     _is_payment_error,
     _try_payment_fallback,
@@ -32,12 +31,6 @@ def _clean_env(monkeypatch):
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
-        # Per-task provider/model/direct-endpoint overrides
-        "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
-        "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
-        "AUXILIARY_WEB_EXTRACT_PROVIDER", "AUXILIARY_WEB_EXTRACT_MODEL",
-        "AUXILIARY_WEB_EXTRACT_BASE_URL", "AUXILIARY_WEB_EXTRACT_API_KEY",
-        "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -568,29 +561,6 @@ class TestGetTextAuxiliaryClient:
         call_kwargs = mock_openai.call_args
         assert call_kwargs.kwargs["base_url"] == "http://localhost:1234/v1"
 
-    def test_task_direct_endpoint_override(self, monkeypatch):
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_API_KEY", "task-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "task-model"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
-        assert mock_openai.call_args.kwargs["api_key"] == "task-key"
-
-    def test_task_direct_endpoint_without_openai_key_uses_placeholder(self, monkeypatch):
-        """Local endpoints without an API key should use 'no-key-required' placeholder."""
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_BASE_URL", "http://localhost:2345/v1")
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_MODEL", "task-model")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("web_extract")
-        assert client is not None
-        assert model == "task-model"
-        assert mock_openai.call_args.kwargs["api_key"] == "no-key-required"
-        assert mock_openai.call_args.kwargs["base_url"] == "http://localhost:2345/v1"
-
     def test_custom_endpoint_uses_config_saved_base_url(self, monkeypatch):
         config = {
             "model": {
@@ -879,72 +849,8 @@ class TestAuxiliaryPoolAwareness:
 
 
 
-class TestGetAuxiliaryProvider:
-    """Tests for _get_auxiliary_provider env var resolution."""
-
-    def test_no_task_returns_auto(self):
-        assert _get_auxiliary_provider() == "auto"
-        assert _get_auxiliary_provider("") == "auto"
-
-    def test_auxiliary_prefix_takes_priority(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "openrouter")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_context_prefix_fallback(self, monkeypatch):
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        assert _get_auxiliary_provider("compression") == "nous"
-
-    def test_auxiliary_prefix_over_context_prefix(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_COMPRESSION_PROVIDER", "openrouter")
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        assert _get_auxiliary_provider("compression") == "openrouter"
-
-    def test_auto_value_treated_as_auto(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "auto")
-        assert _get_auxiliary_provider("vision") == "auto"
-
-    def test_whitespace_stripped(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "  openrouter  ")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_case_insensitive(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "OpenRouter")
-        assert _get_auxiliary_provider("vision") == "openrouter"
-
-    def test_main_provider(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "main")
-        assert _get_auxiliary_provider("web_extract") == "main"
-
-
 class TestTaskSpecificOverrides:
     """Integration tests for per-task provider routing via get_text_auxiliary_client(task=...)."""
-
-    def test_text_with_vision_provider_override(self, monkeypatch):
-        """AUXILIARY_VISION_PROVIDER should not affect text tasks."""
-        monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "nous")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client()  # no task → auto
-        assert model == "google/gemini-3-flash-preview"  # OpenRouter, not Nous
-
-    def test_compression_task_reads_context_prefix(self, monkeypatch):
-        """Compression task should check CONTEXT_COMPRESSION_PROVIDER env var."""
-        monkeypatch.setenv("CONTEXT_COMPRESSION_PROVIDER", "nous")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")  # would win in auto
-        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
-             patch("agent.auxiliary_client.OpenAI"):
-            mock_nous.return_value = {"access_token": "***"}
-            client, model = get_text_auxiliary_client("compression")
-        # Config-first: model comes from config.yaml summary_model default,
-        # but provider is forced to Nous via env var
-        assert client is not None
-
-    def test_web_extract_task_override(self, monkeypatch):
-        monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "openrouter")
-        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        with patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_text_auxiliary_client("web_extract")
-        assert model == "google/gemini-3-flash-preview"
 
     def test_task_direct_endpoint_from_config(self, monkeypatch, tmp_path):
         hermes_home = tmp_path / "hermes"
@@ -971,24 +877,111 @@ class TestTaskSpecificOverrides:
             client, model = get_text_auxiliary_client("compression")
         assert model == "google/gemini-3-flash-preview"  # auto → OpenRouter
 
-    def test_compression_summary_base_url_from_config(self, monkeypatch, tmp_path):
-        """compression.summary_base_url should produce a custom-endpoint client."""
+    def test_resolve_auto_prefers_live_main_runtime_over_persisted_config(self, monkeypatch, tmp_path):
+        """Session-only live model switches should override persisted config for auto routing."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "config.yaml").write_text(
-            """compression:
-  summary_provider: custom
-  summary_model: glm-4.7
-  summary_base_url: https://api.z.ai/api/coding/paas/v4
+            """model:
+  default: glm-5.1
+  provider: opencode-go
 """
         )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        # Custom endpoints need an API key to build the client
-        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_text_auxiliary_client("compression")
-        assert model == "glm-4.7"
-        assert mock_openai.call_args.kwargs["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+        calls = []
+
+        def _fake_resolve(provider, model=None, *args, **kwargs):
+            calls.append((provider, model, kwargs))
+            return MagicMock(), model or "resolved-model"
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_fake_resolve):
+            client, model = _resolve_auto(
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                    "api_mode": "codex_responses",
+                }
+            )
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert calls[0][0] == "openai-codex"
+        assert calls[0][1] == "gpt-5.4"
+        assert calls[0][2]["api_mode"] == "codex_responses"
+
+    def test_explicit_compression_pin_still_wins_over_live_main_runtime(self, monkeypatch, tmp_path):
+        """Task-level compression config should beat a live session override."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: openrouter
+    model: google/gemini-3-flash-preview
+model:
+  default: glm-5.1
+  provider: opencode-go
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(MagicMock(), "google/gemini-3-flash-preview")) as mock_resolve:
+            client, model = get_text_auxiliary_client(
+                "compression",
+                main_runtime={
+                    "provider": "openai-codex",
+                    "model": "gpt-5.4",
+                },
+            )
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_resolve.call_args.args[0] == "openrouter"
+        assert mock_resolve.call_args.kwargs["main_runtime"] == {
+            "provider": "openai-codex",
+            "model": "gpt-5.4",
+        }
+
+
+def test_resolve_provider_client_supports_copilot_acp_external_process():
+    fake_client = MagicMock()
+
+    with patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4-mini"), \
+         patch("agent.auxiliary_client.CodexAuxiliaryClient", MagicMock()), \
+         patch("agent.copilot_acp_client.CopilotACPClient", return_value=fake_client) as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is fake_client
+    assert model == "gpt-5.4-mini"
+    assert mock_acp.call_args.kwargs["api_key"] == "copilot-acp"
+    assert mock_acp.call_args.kwargs["base_url"] == "acp://copilot"
+    assert mock_acp.call_args.kwargs["command"] == "/usr/bin/copilot"
+    assert mock_acp.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_resolve_provider_client_copilot_acp_requires_explicit_or_configured_model():
+    with patch("agent.auxiliary_client._read_main_model", return_value=""), \
+         patch("agent.copilot_acp_client.CopilotACPClient") as mock_acp, \
+         patch("hermes_cli.auth.resolve_external_process_provider_credentials", return_value={
+             "provider": "copilot-acp",
+             "api_key": "copilot-acp",
+             "base_url": "acp://copilot",
+             "command": "/usr/bin/copilot",
+             "args": ["--acp", "--stdio"],
+         }):
+        client, model = resolve_provider_client("copilot-acp")
+
+    assert client is None
+    assert model is None
+    mock_acp.assert_not_called()
 
 
 class TestAuxiliaryMaxTokensParam:
@@ -1560,3 +1553,74 @@ class TestStaleBaseUrlWarning:
 
         assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
             "Warning should not fire a second time"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic-compatible image block conversion
+# ---------------------------------------------------------------------------
+
+class TestAnthropicCompatImageConversion:
+    """Tests for _is_anthropic_compat_endpoint and _convert_openai_images_to_anthropic."""
+
+    def test_known_providers_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("minimax", "")
+        assert _is_anthropic_compat_endpoint("minimax-cn", "")
+
+    def test_openrouter_not_detected(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert not _is_anthropic_compat_endpoint("openrouter", "")
+        assert not _is_anthropic_compat_endpoint("anthropic", "")
+
+    def test_url_based_detection(self):
+        from agent.auxiliary_client import _is_anthropic_compat_endpoint
+        assert _is_anthropic_compat_endpoint("custom", "https://api.minimax.io/anthropic")
+        assert _is_anthropic_compat_endpoint("custom", "https://example.com/anthropic/v1")
+        assert not _is_anthropic_compat_endpoint("custom", "https://api.openai.com/v1")
+
+    def test_base64_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBOR="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][1]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "base64"
+        assert img_block["source"]["media_type"] == "image/png"
+        assert img_block["source"]["data"] == "iVBOR="
+
+    def test_url_image_converted(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "https://example.com/img.jpg"}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        img_block = result[0]["content"][0]
+        assert img_block["type"] == "image"
+        assert img_block["source"]["type"] == "url"
+        assert img_block["source"]["url"] == "https://example.com/img.jpg"
+
+    def test_text_only_messages_unchanged(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{"role": "user", "content": "Hello"}]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0] is messages[0]  # same object, not copied
+
+    def test_jpeg_media_type_parsed(self):
+        from agent.auxiliary_client import _convert_openai_images_to_anthropic
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/="}}
+            ]
+        }]
+        result = _convert_openai_images_to_anthropic(messages)
+        assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"

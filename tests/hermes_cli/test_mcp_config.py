@@ -46,6 +46,8 @@ def _make_args(**kwargs):
         "command": None,
         "args": None,
         "auth": None,
+        "preset": None,
+        "env": None,
         "mcp_action": None,
     }
     defaults.update(kwargs)
@@ -268,6 +270,145 @@ class TestMcpAdd:
 
         config = load_config()
         assert config["mcp_servers"]["broken"]["enabled"] is False
+
+    def test_add_stdio_server_with_env(self, tmp_path, capsys, monkeypatch):
+        """Stdio servers can persist explicit environment variables."""
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["env"] == {
+                "MY_API_KEY": "secret123",
+                "DEBUG": "true",
+            }
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            command="npx",
+            args=["@mcp/github"],
+            env=["MY_API_KEY=secret123", "DEBUG=true"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        srv = config["mcp_servers"]["github"]
+        assert srv["env"] == {
+            "MY_API_KEY": "secret123",
+            "DEBUG": "true",
+        }
+
+    def test_add_stdio_server_rejects_invalid_env_name(self, capsys):
+        """Invalid environment variable names are rejected up front."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="github",
+            command="npx",
+            args=["@mcp/github"],
+            env=["BAD-NAME=value"],
+        ))
+        out = capsys.readouterr().out
+        assert "Invalid --env variable name" in out
+
+    def test_add_http_server_rejects_env_flag(self, capsys):
+        """The --env flag is only valid for stdio transports."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(
+            name="ink",
+            url="https://mcp.ml.ink/mcp",
+            env=["DEBUG=true"],
+        ))
+        out = capsys.readouterr().out
+        assert "only supported for stdio MCP servers" in out
+
+    def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
+        """A preset fills in command/args when no explicit transport given."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {"testmcp": {"command": "npx", "args": ["-y", "test-mcp-server"], "display_name": "Test MCP"}},
+        )
+        fake_tools = [FakeTool("do_thing", "Does a thing")]
+
+        def mock_probe(name, config, **kw):
+            assert name == "myserver"
+            assert config["command"] == "npx"
+            assert config["args"] == ["-y", "test-mcp-server"]
+            assert "env" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(name="myserver", preset="testmcp"))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["myserver"]
+        assert srv["command"] == "npx"
+        assert srv["args"] == ["-y", "test-mcp-server"]
+        assert "env" not in srv
+
+    def test_preset_does_not_override_explicit_command(self, tmp_path, capsys, monkeypatch):
+        """Explicit transports win over presets."""
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._MCP_PRESETS",
+            {"testmcp": {"command": "npx", "args": ["-y", "test-mcp-server"], "display_name": "Test MCP"}},
+        )
+        fake_tools = [FakeTool("search", "Search repos")]
+
+        def mock_probe(name, config, **kw):
+            assert config["command"] == "uvx"
+            assert config["args"] == ["custom-server"]
+            assert "env" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(
+            name="custom",
+            preset="testmcp",
+            command="uvx",
+            args=["custom-server"],
+        ))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["custom"]
+        assert srv["command"] == "uvx"
+        assert srv["args"] == ["custom-server"]
+        assert "env" not in srv
+
+    def test_unknown_preset_rejected(self, capsys):
+        """An unknown preset name is rejected with a clear error."""
+        from hermes_cli.mcp_config import cmd_mcp_add
+
+        cmd_mcp_add(_make_args(name="foo", preset="nonexistent"))
+        out = capsys.readouterr().out
+        assert "Unknown MCP preset" in out
 
 
 # ---------------------------------------------------------------------------

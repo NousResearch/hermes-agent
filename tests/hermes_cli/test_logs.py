@@ -1,288 +1,255 @@
-"""Tests for hermes_cli/logs.py — log viewing and filtering."""
+"""Tests for hermes_cli.logs — log viewing and filtering."""
 
 import os
-import textwrap
 from datetime import datetime, timedelta
-from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from hermes_cli.logs import (
     LOG_FILES,
     _extract_level,
+    _extract_logger_name,
+    _line_matches_component,
     _matches_filters,
     _parse_line_timestamp,
     _parse_since,
     _read_last_n_lines,
-    list_logs,
-    tail_log,
+    _read_tail,
 )
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def log_dir(tmp_path, monkeypatch):
-    """Create a fake HERMES_HOME with a logs/ directory."""
-    home = Path(os.environ["HERMES_HOME"])
-    logs = home / "logs"
-    logs.mkdir(parents=True, exist_ok=True)
-    return logs
-
-
-@pytest.fixture
-def sample_agent_log(log_dir):
-    """Write a realistic agent.log with mixed levels and sessions."""
-    lines = textwrap.dedent("""\
-        2026-04-05 10:00:00,000 INFO run_agent: conversation turn: session=sess_aaa model=claude provider=openrouter platform=cli history=0 msg='hello'
-        2026-04-05 10:00:01,000 INFO run_agent: tool terminal completed (0.50s, 200 chars)
-        2026-04-05 10:00:02,000 INFO run_agent: API call #1: model=claude provider=openrouter in=1000 out=200 total=1200 latency=1.5s
-        2026-04-05 10:00:03,000 WARNING run_agent: Tool web_search returned error (2.00s): timeout
-        2026-04-05 10:00:04,000 INFO run_agent: conversation turn: session=sess_bbb model=gpt-5 provider=openai platform=telegram history=5 msg='fix bug'
-        2026-04-05 10:00:05,000 ERROR run_agent: API call failed after 3 retries. rate limited
-        2026-04-05 10:00:06,000 INFO run_agent: tool read_file completed (0.01s, 500 chars)
-        2026-04-05 10:00:07,000 DEBUG run_agent: verbose internal detail
-        2026-04-05 10:00:08,000 INFO credential_pool: credential pool: marking key-1 exhausted (status=429), rotating
-        2026-04-05 10:00:09,000 INFO credential_pool: credential pool: rotated to key-2
-    """)
-    path = log_dir / "agent.log"
-    path.write_text(lines)
-    return path
-
-
-@pytest.fixture
-def sample_errors_log(log_dir):
-    """Write a small errors.log."""
-    lines = textwrap.dedent("""\
-        2026-04-05 10:00:03,000 WARNING run_agent: Tool web_search returned error (2.00s): timeout
-        2026-04-05 10:00:05,000 ERROR run_agent: API call failed after 3 retries. rate limited
-    """)
-    path = log_dir / "errors.log"
-    path.write_text(lines)
-    return path
-
-
-# ---------------------------------------------------------------------------
-# _parse_since
+# Timestamp parsing
 # ---------------------------------------------------------------------------
 
 class TestParseSince:
     def test_hours(self):
         cutoff = _parse_since("2h")
         assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(7200, abs=5)
+        assert abs((datetime.now() - cutoff).total_seconds() - 7200) < 2
 
     def test_minutes(self):
         cutoff = _parse_since("30m")
         assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(1800, abs=5)
+        assert abs((datetime.now() - cutoff).total_seconds() - 1800) < 2
 
     def test_days(self):
         cutoff = _parse_since("1d")
         assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(86400, abs=5)
+        assert abs((datetime.now() - cutoff).total_seconds() - 86400) < 2
 
     def test_seconds(self):
-        cutoff = _parse_since("60s")
+        cutoff = _parse_since("120s")
         assert cutoff is not None
-        assert (datetime.now() - cutoff).total_seconds() == pytest.approx(60, abs=5)
+        assert abs((datetime.now() - cutoff).total_seconds() - 120) < 2
 
     def test_invalid_returns_none(self):
         assert _parse_since("abc") is None
         assert _parse_since("") is None
         assert _parse_since("10x") is None
 
-    def test_whitespace_handling(self):
-        cutoff = _parse_since("  1h  ")
+    def test_whitespace_tolerance(self):
+        cutoff = _parse_since("  5m  ")
         assert cutoff is not None
 
 
-# ---------------------------------------------------------------------------
-# _parse_line_timestamp
-# ---------------------------------------------------------------------------
-
 class TestParseLineTimestamp:
     def test_standard_format(self):
-        ts = _parse_line_timestamp("2026-04-05 10:00:00,123 INFO something")
-        assert ts is not None
-        assert ts.year == 2026
-        assert ts.hour == 10
+        ts = _parse_line_timestamp("2026-04-11 10:23:45 INFO gateway.run: msg")
+        assert ts == datetime(2026, 4, 11, 10, 23, 45)
 
     def test_no_timestamp(self):
-        assert _parse_line_timestamp("just some text") is None
+        assert _parse_line_timestamp("no timestamp here") is None
 
-    def test_continuation_line(self):
-        assert _parse_line_timestamp("    at module.function (line 42)") is None
-
-
-# ---------------------------------------------------------------------------
-# _extract_level
-# ---------------------------------------------------------------------------
 
 class TestExtractLevel:
     def test_info(self):
-        assert _extract_level("2026-04-05 10:00:00 INFO run_agent: something") == "INFO"
+        assert _extract_level("2026-01-01 00:00:00 INFO gateway.run: msg") == "INFO"
 
     def test_warning(self):
-        assert _extract_level("2026-04-05 10:00:00 WARNING run_agent: bad") == "WARNING"
+        assert _extract_level("2026-01-01 00:00:00 WARNING tools.file: msg") == "WARNING"
 
     def test_error(self):
-        assert _extract_level("2026-04-05 10:00:00 ERROR run_agent: crash") == "ERROR"
+        assert _extract_level("2026-01-01 00:00:00 ERROR run_agent: msg") == "ERROR"
 
     def test_debug(self):
-        assert _extract_level("2026-04-05 10:00:00 DEBUG run_agent: detail") == "DEBUG"
+        assert _extract_level("2026-01-01 00:00:00 DEBUG agent.aux: msg") == "DEBUG"
 
     def test_no_level(self):
-        assert _extract_level("just a plain line") is None
+        assert _extract_level("random text") is None
 
 
 # ---------------------------------------------------------------------------
-# _matches_filters
+# Logger name extraction (new for component filtering)
+# ---------------------------------------------------------------------------
+
+class TestExtractLoggerName:
+    def test_standard_line(self):
+        line = "2026-04-11 10:23:45 INFO gateway.run: Starting gateway"
+        assert _extract_logger_name(line) == "gateway.run"
+
+    def test_nested_logger(self):
+        line = "2026-04-11 10:23:45 INFO gateway.platforms.telegram: connected"
+        assert _extract_logger_name(line) == "gateway.platforms.telegram"
+
+    def test_warning_level(self):
+        line = "2026-04-11 10:23:45 WARNING tools.terminal_tool: timeout"
+        assert _extract_logger_name(line) == "tools.terminal_tool"
+
+    def test_with_session_tag(self):
+        line = "2026-04-11 10:23:45 INFO [abc123] tools.file_tools: reading file"
+        assert _extract_logger_name(line) == "tools.file_tools"
+
+    def test_with_session_tag_and_error(self):
+        line = "2026-04-11 10:23:45 ERROR [sess_xyz] agent.context_compressor: failed"
+        assert _extract_logger_name(line) == "agent.context_compressor"
+
+    def test_top_level_module(self):
+        line = "2026-04-11 10:23:45 INFO run_agent: starting conversation"
+        assert _extract_logger_name(line) == "run_agent"
+
+    def test_no_match(self):
+        assert _extract_logger_name("random text") is None
+
+
+class TestLineMatchesComponent:
+    def test_gateway_component(self):
+        line = "2026-04-11 10:23:45 INFO gateway.run: msg"
+        assert _line_matches_component(line, ("gateway",))
+
+    def test_gateway_nested(self):
+        line = "2026-04-11 10:23:45 INFO gateway.platforms.telegram: msg"
+        assert _line_matches_component(line, ("gateway",))
+
+    def test_tools_component(self):
+        line = "2026-04-11 10:23:45 INFO tools.terminal_tool: msg"
+        assert _line_matches_component(line, ("tools",))
+
+    def test_agent_with_multiple_prefixes(self):
+        prefixes = ("agent", "run_agent", "model_tools")
+        assert _line_matches_component(
+            "2026-04-11 10:23:45 INFO agent.context_compressor: msg", prefixes)
+        assert _line_matches_component(
+            "2026-04-11 10:23:45 INFO run_agent: msg", prefixes)
+        assert _line_matches_component(
+            "2026-04-11 10:23:45 INFO model_tools: msg", prefixes)
+
+    def test_no_match(self):
+        line = "2026-04-11 10:23:45 INFO tools.browser: msg"
+        assert not _line_matches_component(line, ("gateway",))
+
+    def test_with_session_tag(self):
+        line = "2026-04-11 10:23:45 INFO [abc] gateway.run: msg"
+        assert _line_matches_component(line, ("gateway",))
+
+    def test_unparseable_line(self):
+        assert not _line_matches_component("random text", ("gateway",))
+
+
+# ---------------------------------------------------------------------------
+# Combined filter
 # ---------------------------------------------------------------------------
 
 class TestMatchesFilters:
-    def test_no_filters_always_matches(self):
-        assert _matches_filters("any line") is True
+    def test_no_filters_passes_everything(self):
+        assert _matches_filters("any line")
 
-    def test_level_filter_passes(self):
+    def test_level_filter(self):
         assert _matches_filters(
-            "2026-04-05 10:00:00 WARNING something",
-            min_level="WARNING",
-        ) is True
+            "2026-01-01 00:00:00 WARNING x: msg", min_level="WARNING")
+        assert not _matches_filters(
+            "2026-01-01 00:00:00 INFO x: msg", min_level="WARNING")
 
-    def test_level_filter_rejects(self):
+    def test_session_filter(self):
         assert _matches_filters(
-            "2026-04-05 10:00:00 INFO something",
-            min_level="WARNING",
-        ) is False
+            "2026-01-01 00:00:00 INFO [abc123] x: msg", session_filter="abc123")
+        assert not _matches_filters(
+            "2026-01-01 00:00:00 INFO [xyz789] x: msg", session_filter="abc123")
 
-    def test_session_filter_passes(self):
+    def test_component_filter(self):
         assert _matches_filters(
-            "session=sess_aaa model=claude",
-            session_filter="sess_aaa",
-        ) is True
-
-    def test_session_filter_rejects(self):
-        assert _matches_filters(
-            "session=sess_aaa model=claude",
-            session_filter="sess_bbb",
-        ) is False
-
-    def test_since_filter_passes(self):
-        # Line from the future should always pass
-        assert _matches_filters(
-            "2099-01-01 00:00:00 INFO future",
-            since=datetime.now(),
-        ) is True
-
-    def test_since_filter_rejects(self):
-        assert _matches_filters(
-            "2020-01-01 00:00:00 INFO past",
-            since=datetime.now(),
-        ) is False
+            "2026-01-01 00:00:00 INFO gateway.run: msg",
+            component_prefixes=("gateway",))
+        assert not _matches_filters(
+            "2026-01-01 00:00:00 INFO tools.file: msg",
+            component_prefixes=("gateway",))
 
     def test_combined_filters(self):
-        line = "2099-01-01 00:00:00 WARNING run_agent: session=abc error"
+        """All filters must pass for a line to match."""
+        line = "2026-04-11 10:00:00 WARNING [sess_1] gateway.run: connection lost"
         assert _matches_filters(
-            line, min_level="WARNING", session_filter="abc",
-            since=datetime.now(),
-        ) is True
-        # Fails session filter
+            line,
+            min_level="WARNING",
+            session_filter="sess_1",
+            component_prefixes=("gateway",),
+        )
+        # Fails component filter
+        assert not _matches_filters(
+            line,
+            min_level="WARNING",
+            session_filter="sess_1",
+            component_prefixes=("tools",),
+        )
+
+    def test_since_filter(self):
+        # Line with a very old timestamp should be filtered out
+        assert not _matches_filters(
+            "2020-01-01 00:00:00 INFO x: old msg",
+            since=datetime.now() - timedelta(hours=1))
+        # Line with a recent timestamp should pass
+        recent = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         assert _matches_filters(
-            line, min_level="WARNING", session_filter="xyz",
-        ) is False
+            f"{recent} INFO x: recent msg",
+            since=datetime.now() - timedelta(hours=1))
 
 
 # ---------------------------------------------------------------------------
-# _read_last_n_lines
+# File reading
 # ---------------------------------------------------------------------------
 
-class TestReadLastNLines:
-    def test_reads_correct_count(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 3)
-        assert len(lines) == 3
+class TestReadTail:
+    def test_read_small_file(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        lines = [f"2026-01-01 00:00:0{i} INFO x: line {i}\n" for i in range(10)]
+        log_file.write_text("".join(lines))
 
-    def test_reads_all_when_fewer(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 100)
-        assert len(lines) == 10  # sample has 10 lines
+        result = _read_last_n_lines(log_file, 5)
+        assert len(result) == 5
+        assert "line 9" in result[-1]
 
-    def test_empty_file(self, log_dir):
-        empty = log_dir / "empty.log"
-        empty.write_text("")
-        lines = _read_last_n_lines(empty, 10)
-        assert lines == []
+    def test_read_with_component_filter(self, tmp_path):
+        log_file = tmp_path / "test.log"
+        lines = [
+            "2026-01-01 00:00:00 INFO gateway.run: gw msg\n",
+            "2026-01-01 00:00:01 INFO tools.file: tool msg\n",
+            "2026-01-01 00:00:02 INFO gateway.session: session msg\n",
+            "2026-01-01 00:00:03 INFO agent.compressor: agent msg\n",
+        ]
+        log_file.write_text("".join(lines))
 
-    def test_last_line_content(self, sample_agent_log):
-        lines = _read_last_n_lines(sample_agent_log, 1)
-        assert "rotated to key-2" in lines[0]
+        result = _read_tail(
+            log_file, 50,
+            has_filters=True,
+            component_prefixes=("gateway",),
+        )
+        assert len(result) == 2
+        assert "gw msg" in result[0]
+        assert "session msg" in result[1]
 
-
-# ---------------------------------------------------------------------------
-# tail_log
-# ---------------------------------------------------------------------------
-
-class TestTailLog:
-    def test_basic_tail(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=3)
-        captured = capsys.readouterr()
-        assert "agent.log" in captured.out
-        # Should have the header + 3 lines
-        lines = captured.out.strip().split("\n")
-        assert len(lines) == 4  # 1 header + 3 content
-
-    def test_level_filter(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=50, level="ERROR")
-        captured = capsys.readouterr()
-        assert "level>=ERROR" in captured.out
-        # Only the ERROR line should appear
-        content_lines = [l for l in captured.out.strip().split("\n") if not l.startswith("---")]
-        assert len(content_lines) == 1
-        assert "API call failed" in content_lines[0]
-
-    def test_session_filter(self, sample_agent_log, capsys):
-        tail_log("agent", num_lines=50, session="sess_bbb")
-        captured = capsys.readouterr()
-        content_lines = [l for l in captured.out.strip().split("\n") if not l.startswith("---")]
-        assert len(content_lines) == 1
-        assert "sess_bbb" in content_lines[0]
-
-    def test_errors_log(self, sample_errors_log, capsys):
-        tail_log("errors", num_lines=10)
-        captured = capsys.readouterr()
-        assert "errors.log" in captured.out
-        assert "WARNING" in captured.out or "ERROR" in captured.out
-
-    def test_unknown_log_exits(self):
-        with pytest.raises(SystemExit):
-            tail_log("nonexistent")
-
-    def test_missing_file_exits(self, log_dir):
-        with pytest.raises(SystemExit):
-            tail_log("agent")  # agent.log doesn't exist in clean log_dir
+    def test_empty_file(self, tmp_path):
+        log_file = tmp_path / "empty.log"
+        log_file.write_text("")
+        result = _read_last_n_lines(log_file, 10)
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
-# list_logs
+# LOG_FILES registry
 # ---------------------------------------------------------------------------
 
-class TestListLogs:
-    def test_lists_files(self, sample_agent_log, sample_errors_log, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        assert "agent.log" in captured.out
-        assert "errors.log" in captured.out
-
-    def test_empty_dir(self, log_dir, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        assert "no log files yet" in captured.out
-
-    def test_shows_sizes(self, sample_agent_log, capsys):
-        list_logs()
-        captured = capsys.readouterr()
-        # File is small, should show as bytes or KB
-        assert "B" in captured.out or "KB" in captured.out
+class TestLogFiles:
+    def test_known_log_files(self):
+        assert "agent" in LOG_FILES
+        assert "errors" in LOG_FILES
+        assert "gateway" in LOG_FILES

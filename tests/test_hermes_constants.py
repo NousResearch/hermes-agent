@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_constants import get_default_hermes_root
+import hermes_constants
+from hermes_constants import get_default_hermes_root, is_container
 
 
 class TestGetDefaultHermesRoot:
@@ -60,3 +61,53 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+
+class TestIsContainer:
+    """Tests for is_container() — Docker/Podman detection."""
+
+    def _reset_cache(self, monkeypatch):
+        """Reset the cached detection result before each test."""
+        monkeypatch.setattr(hermes_constants, "_container_detected", None)
+
+    def test_detects_dockerenv(self, monkeypatch, tmp_path):
+        """/.dockerenv triggers container detection."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: p == "/.dockerenv")
+        assert is_container() is True
+
+    def test_detects_containerenv(self, monkeypatch, tmp_path):
+        """/run/.containerenv triggers container detection (Podman)."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: p == "/run/.containerenv")
+        assert is_container() is True
+
+    def test_detects_cgroup_docker(self, monkeypatch, tmp_path):
+        """/proc/1/cgroup containing 'docker' triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/docker/abc123\n")
+        _real_open = builtins.open
+        monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
+        assert is_container() is True
+
+    def test_negative_case(self, monkeypatch, tmp_path):
+        """Returns False on a regular Linux host."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/\n")
+        _real_open = builtins.open
+        monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
+        assert is_container() is False
+
+    def test_caches_result(self, monkeypatch):
+        """Second call uses cached value without re-probing."""
+        monkeypatch.setattr(hermes_constants, "_container_detected", True)
+        assert is_container() is True
+        # Even if we make os.path.exists return False, cached value wins
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        assert is_container() is True

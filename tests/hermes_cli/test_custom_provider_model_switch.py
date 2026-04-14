@@ -122,3 +122,54 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "model-X"
+
+    def test_api_mode_set_from_provider_info(self, config_home):
+        """When custom_providers entry has api_mode, it should be applied."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Anthropic Proxy",
+            "base_url": "https://proxy.example.com/anthropic",
+            "api_key": "***",
+            "model": "claude-3",
+            "api_mode": "anthropic_messages",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("api_mode") == "anthropic_messages"
+
+    def test_api_mode_cleared_when_not_specified(self, config_home):
+        """When custom_providers entry has no api_mode, stale api_mode is removed."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        # Pre-seed a stale api_mode in config
+        config_path = config_home / "config.yaml"
+        config_path.write_text(yaml.dump({"model": {"api_mode": "anthropic_messages"}}))
+
+        provider_info = {
+            "name": "My vLLM",
+            "base_url": "https://vllm.example.com/v1",
+            "api_key": "***",
+            "model": "llama-3",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["llama-3"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert "api_mode" not in model, "Stale api_mode should be removed"

@@ -31,7 +31,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
-import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -584,18 +583,44 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
-def get_plugin_tool_names() -> Set[str]:
-    """Return the set of tool names registered by plugins."""
-    return get_plugin_manager()._plugin_tool_names
 
+def get_pre_tool_call_block_message(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[str]:
+    """Check ``pre_tool_call`` hooks for a blocking directive.
 
-def get_plugin_cli_commands() -> Dict[str, dict]:
-    """Return CLI commands registered by general plugins.
+    Plugins that need to enforce policy (rate limiting, security
+    restrictions, approval workflows) can return::
 
-    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
-    suitable for wiring into argparse subparsers.
+        {"action": "block", "message": "Reason the tool was blocked"}
+
+    from their ``pre_tool_call`` callback.  The first valid block
+    directive wins.  Invalid or irrelevant hook return values are
+    silently ignored so existing observer-only hooks are unaffected.
     """
-    return dict(get_plugin_manager()._cli_commands)
+    hook_results = invoke_hook(
+        "pre_tool_call",
+        tool_name=tool_name,
+        args=args if isinstance(args, dict) else {},
+        task_id=task_id,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message:
+            return message
+
+    return None
 
 
 def get_plugin_context_engine():

@@ -22,6 +22,9 @@ class TestLocalStreamReadTimeout:
         "http://0.0.0.0:5000",
         "http://192.168.1.100:8000",
         "http://10.0.0.5:1234",
+        "http://host.docker.internal:11434",
+        "http://host.containers.internal:11434",
+        "http://host.lima.internal:11434",
     ])
     def test_local_endpoint_bumps_read_timeout(self, base_url):
         """Local endpoint + default timeout -> bumps to base_timeout."""
@@ -68,3 +71,38 @@ class TestLocalStreamReadTimeout:
             if _stream_read_timeout == 120.0 and base_url and is_local_endpoint(base_url):
                 _stream_read_timeout = _base_timeout
             assert _stream_read_timeout == 120.0
+
+
+class TestIsLocalEndpoint:
+    """Direct unit tests for is_local_endpoint."""
+
+    @pytest.mark.parametrize("url", [
+        "http://localhost:11434",
+        "http://127.0.0.1:8080",
+        "http://0.0.0.0:5000",
+        "http://[::1]:11434",
+        "http://192.168.1.100:8000",
+        "http://10.0.0.5:1234",
+        "http://172.17.0.1:11434",
+    ])
+    def test_classic_local_addresses(self, url):
+        assert is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "http://host.docker.internal:11434",
+        "http://host.docker.internal:8080/v1",
+        "http://gateway.docker.internal:11434",
+        "http://host.containers.internal:11434",
+        "http://host.lima.internal:11434",
+    ])
+    def test_container_dns_names(self, url):
+        assert is_local_endpoint(url) is True
+
+    @pytest.mark.parametrize("url", [
+        "https://api.openai.com",
+        "https://openrouter.ai/api",
+        "https://api.anthropic.com",
+        "https://evil.docker.internal.example.com",
+    ])
+    def test_remote_endpoints(self, url):
+        assert is_local_endpoint(url) is False

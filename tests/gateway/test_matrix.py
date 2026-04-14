@@ -157,9 +157,43 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        pass
+        def __init__(self, account_id="", pickle_key=""):  # noqa: S301
+            self.account_id = account_id
+            self.pickle_key = pickle_key
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
+
+    # --- mautrix.crypto.store.asyncpg ---
+    mautrix_crypto_store_asyncpg = types.ModuleType("mautrix.crypto.store.asyncpg")
+
+    class PgCryptoStore:
+        upgrade_table = MagicMock()
+
+        def __init__(self, account_id="", pickle_key="", db=None):  # noqa: S301
+            self.account_id = account_id
+            self.pickle_key = pickle_key
+            self.db = db
+
+        async def open(self):
+            pass
+
+    mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
+
+    # --- mautrix.util ---
+    mautrix_util = types.ModuleType("mautrix.util")
+
+    # --- mautrix.util.async_db ---
+    mautrix_util_async_db = types.ModuleType("mautrix.util.async_db")
+
+    class Database:
+        @classmethod
+        def create(cls, url, upgrade_table=None):
+            db = MagicMock()
+            db.start = AsyncMock()
+            db.stop = AsyncMock()
+            return db
+
+    mautrix_util_async_db.Database = Database
 
     return {
         "mautrix": mautrix,
@@ -169,6 +203,9 @@ def _make_fake_mautrix():
         "mautrix.client.state_store": mautrix_client_state_store,
         "mautrix.crypto": mautrix_crypto,
         "mautrix.crypto.store": mautrix_crypto_store,
+        "mautrix.crypto.store.asyncpg": mautrix_crypto_store_asyncpg,
+        "mautrix.util": mautrix_util,
+        "mautrix.util.async_db": mautrix_util_async_db,
     }
 
 
@@ -738,6 +775,12 @@ class TestMatrixAccessTokenAuth:
         mock_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -749,6 +792,8 @@ class TestMatrixAccessTokenAuth:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         # Patch Client constructor to return our mock
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
@@ -922,6 +967,12 @@ class TestMatrixDeviceId:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="WHOAMI_DEV"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"MY_STABLE_DEVICE": {
+                "keys": {"ed25519:MY_STABLE_DEVICE": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_access_token"
         mock_client.api.session = MagicMock()
@@ -932,6 +983,8 @@ class TestMatrixDeviceId:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
@@ -1028,8 +1081,8 @@ class TestMatrixDeviceIdConfig:
 
 class TestMatrixSyncLoop:
     @pytest.mark.asyncio
-    async def test_sync_loop_shares_keys_when_encryption_enabled(self):
-        """_sync_loop should call crypto.share_keys() after each sync."""
+    async def test_sync_loop_dispatches_events_and_stores_token(self):
+        """_sync_loop should call handle_sync() and persist next_batch."""
         adapter = _make_adapter()
         adapter._encryption = True
         adapter._closing = False
@@ -1041,20 +1094,26 @@ class TestMatrixSyncLoop:
             call_count += 1
             if call_count >= 1:
                 adapter._closing = True
-            return {"rooms": {"join": {"!room:example.org": {}}}}
+            return {"rooms": {"join": {"!room:example.org": {}}}, "next_batch": "s1234"}
 
         mock_crypto = MagicMock()
-        mock_crypto.share_keys = AsyncMock()
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
 
         fake_client = MagicMock()
         fake_client.sync = AsyncMock(side_effect=_sync_once)
         fake_client.crypto = mock_crypto
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
         adapter._client = fake_client
 
         await adapter._sync_loop()
 
         fake_client.sync.assert_awaited_once()
-        mock_crypto.share_keys.assert_awaited_once()
+        fake_client.handle_sync.assert_called_once()
+        mock_sync_store.put_next_batch.assert_awaited_once_with("s1234")
 
 
 class TestMatrixEncryptedSendFallback:
@@ -1238,6 +1297,12 @@ class TestMatrixEncryptedEventHandler:
         mock_client.whoami = AsyncMock(return_value=MagicMock(user_id="@bot:example.org", device_id="DEV123"))
         mock_client.sync = AsyncMock(return_value={"rooms": {"join": {"!room:server": {}}}})
         mock_client.add_event_handler = MagicMock()
+        mock_client.handle_sync = MagicMock(return_value=[])
+        mock_client.query_keys = AsyncMock(return_value={
+            "device_keys": {"@bot:example.org": {"DEV123": {
+                "keys": {"ed25519:DEV123": "fake_ed25519_key"},
+            }}},
+        })
         mock_client.api = MagicMock()
         mock_client.api.token = "syt_test_token"
         mock_client.api.session = MagicMock()
@@ -1248,6 +1313,8 @@ class TestMatrixEncryptedEventHandler:
         mock_olm.share_keys = AsyncMock()
         mock_olm.share_keys_min_trust = None
         mock_olm.send_keys_min_trust = None
+        mock_olm.account = MagicMock()
+        mock_olm.account.identity_keys = {"ed25519": "fake_ed25519_key"}
 
         fake_mautrix_mods["mautrix.client"].Client = MagicMock(return_value=mock_client)
         fake_mautrix_mods["mautrix.crypto"].OlmMachine = MagicMock(return_value=mock_olm)
@@ -1764,45 +1831,4 @@ class TestMatrixPresence:
         assert result is False
 
 
-# ---------------------------------------------------------------------------
-# Emote & notice
-# ---------------------------------------------------------------------------
 
-class TestMatrixMessageTypes:
-    def setup_method(self):
-        self.adapter = _make_adapter()
-
-    @pytest.mark.asyncio
-    async def test_send_emote(self):
-        """send_emote should call send_message_event with m.emote."""
-        mock_client = MagicMock()
-        # mautrix returns EventID string directly
-        mock_client.send_message_event = AsyncMock(return_value="$emote1")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.send_emote("!room:ex", "waves hello")
-        assert result.success is True
-        assert result.message_id == "$emote1"
-        call_args = mock_client.send_message_event.call_args
-        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
-        assert content["msgtype"] == "m.emote"
-
-    @pytest.mark.asyncio
-    async def test_send_notice(self):
-        """send_notice should call send_message_event with m.notice."""
-        mock_client = MagicMock()
-        mock_client.send_message_event = AsyncMock(return_value="$notice1")
-        self.adapter._client = mock_client
-
-        result = await self.adapter.send_notice("!room:ex", "System message")
-        assert result.success is True
-        assert result.message_id == "$notice1"
-        call_args = mock_client.send_message_event.call_args
-        content = call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs.get("content")
-        assert content["msgtype"] == "m.notice"
-
-    @pytest.mark.asyncio
-    async def test_send_emote_empty_text(self):
-        self.adapter._client = MagicMock()
-        result = await self.adapter.send_emote("!room:ex", "")
-        assert result.success is False

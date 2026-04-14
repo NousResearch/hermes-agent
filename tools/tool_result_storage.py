@@ -24,6 +24,7 @@ Defense against context-window overflow operates at three levels:
 
 import logging
 import os
+import shlex
 import uuid
 
 from tools.budget_config import (
@@ -79,7 +80,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     marker = _heredoc_marker(content)
     storage_dir = os.path.dirname(remote_path)
     cmd = (
-        f"mkdir -p {storage_dir} && cat > {remote_path} << '{marker}'\n"
+        f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)} << '{marker}'\n"
         f"{content}\n"
         f"{marker}"
     )

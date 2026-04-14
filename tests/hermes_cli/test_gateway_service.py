@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -129,7 +130,7 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
@@ -155,7 +156,7 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop", **{"all": True}))
@@ -393,6 +394,21 @@ class TestLaunchdServiceRecovery:
 
 
 class TestGatewayServiceDetection:
+    def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+
+        assert gateway_cli.supports_systemd_services() is False
+
+    def test_supports_systemd_services_returns_true_when_systemctl_present(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: "/usr/bin/systemctl")
+
+        assert gateway_cli.supports_systemd_services() is True
+
     def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
         system_unit = SimpleNamespace(exists=lambda: True)
@@ -416,6 +432,23 @@ class TestGatewayServiceDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         assert gateway_cli._is_service_running() is True
+
+    def test_is_service_running_returns_false_when_systemctl_missing(self, monkeypatch):
+        unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit,
+        )
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_service_running() is False
 
 
 class TestGatewaySystemServiceRouting:
@@ -924,6 +957,23 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir.mkdir(parents=True)
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        profile_home = profile_dir / "home"
+        profile_home.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
+
 
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""
@@ -983,3 +1033,91 @@ class TestSystemUnitPathRemapping:
         # Target user paths should be present
         assert "/home/alice" in unit
         assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit
+
+
+class TestDockerAwareGateway:
+    """Tests for Docker container awareness in gateway commands."""
+
+    def test_run_systemctl_raises_runtimeerror_when_missing(self, monkeypatch):
+        """_run_systemctl raises RuntimeError with container guidance when systemctl is absent."""
+        import pytest
+
+        def fake_run(cmd, **kwargs):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        with pytest.raises(RuntimeError, match="systemctl is not available"):
+            gateway_cli._run_systemctl(["start", "hermes-gateway"])
+
+    def test_run_systemctl_passes_through_on_success(self, monkeypatch):
+        """_run_systemctl delegates to subprocess.run when systemctl exists."""
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli._run_systemctl(["status", "hermes-gateway"])
+        assert result.returncode == 0
+        assert len(calls) == 1
+        assert "status" in calls[0]
+
+    def test_install_in_container_prints_docker_guidance(self, monkeypatch, capsys):
+        """'hermes gateway install' inside Docker exits 0 with container guidance."""
+        import pytest
+
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+
+        args = SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "Docker" in out or "docker" in out
+        assert "restart" in out.lower()
+
+    def test_uninstall_in_container_prints_docker_guidance(self, monkeypatch, capsys):
+        """'hermes gateway uninstall' inside Docker exits 0 with container guidance."""
+        import pytest
+
+        monkeypatch.setattr(gateway_cli, "is_managed", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+
+        args = SimpleNamespace(gateway_command="uninstall", system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "docker" in out.lower()
+
+    def test_start_in_container_prints_docker_guidance(self, monkeypatch, capsys):
+        """'hermes gateway start' inside Docker exits 0 with container guidance."""
+        import pytest
+
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_wsl", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_container", lambda: True)
+
+        args = SimpleNamespace(gateway_command="start", system=False)
+        with pytest.raises(SystemExit) as exc_info:
+            gateway_cli.gateway_command(args)
+
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "docker" in out.lower()
+        assert "hermes gateway run" in out

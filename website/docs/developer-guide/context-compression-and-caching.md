@@ -53,7 +53,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (search for `_maybe_compress_session`). This is a **safety net** that
+Located in `gateway/run.py` (search for `Session hygiene: auto-compress`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 
@@ -84,7 +84,13 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
-  summary_model: null        # Override model for summaries (default: uses auxiliary)
+
+# Summarization model/provider configured under auxiliary:
+auxiliary:
+  compression:
+    model: null              # Override model for summaries (default: auto-detect)
+    provider: auto           # Provider: "auto", "openrouter", "nous", "main", etc.
+    base_url: null           # Custom OpenAI-compatible endpoint
 ```
 
 ### Parameter Details
@@ -142,6 +148,10 @@ The `_align_boundary_backward()` method walks past consecutive tool results
 to find the parent assistant message, keeping groups intact.
 
 ### Phase 3: Generate Structured Summary
+
+:::warning Summary model context length
+The summary model must have a context window **at least as large** as the main agent model's. The entire middle section is sent to the summary model in a single `call_llm(task="compression")` call. If the summary model's context is smaller, the API returns a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. The compressor then drops the middle turns **without a summary**, silently losing conversation context. This is the most common cause of degraded compaction quality.
+:::
 
 The middle turns are summarized using the auxiliary LLM with a structured
 template:

@@ -18,10 +18,8 @@ Other modules should import the dataclasses and query functions from here
 rather than parsing the raw JSON themselves.
 """
 
-import difflib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,8 +142,11 @@ class ProviderInfo:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "anthropic": "anthropic",
+    "openai": "openai",
+    "openai-codex": "openai",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
+    "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
@@ -161,6 +162,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "gemini": "google",
     "google": "google",
     "xai": "xai",
+    "xiaomi": "xiaomi",
     "nvidia": "nvidia",
     "groq": "groq",
     "mistral": "mistral",
@@ -172,13 +174,6 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
-
-def _get_reverse_mapping() -> Dict[str, str]:
-    """Return models.dev ID → Hermes provider ID mapping."""
-    global _MODELS_DEV_TO_PROVIDER
-    if _MODELS_DEV_TO_PROVIDER is None:
-        _MODELS_DEV_TO_PROVIDER = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
-    return _MODELS_DEV_TO_PROVIDER
 
 
 def _get_cache_path() -> Path:
@@ -383,7 +378,14 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
 
     # Extract capability flags (default to False if missing)
     supports_tools = bool(entry.get("tool_call", False))
-    supports_vision = bool(entry.get("attachment", False))
+    # Vision: check both the `attachment` flag and `modalities.input` for "image".
+    # Some models (e.g. gemma-4) list image in input modalities but not attachment.
+    input_mods = entry.get("modalities", {})
+    if isinstance(input_mods, dict):
+        input_mods = input_mods.get("input", [])
+    else:
+        input_mods = []
+    supports_vision = bool(entry.get("attachment", False)) or "image" in input_mods
     supports_reasoning = bool(entry.get("reasoning", False))
 
     # Extract limits
@@ -452,93 +454,6 @@ def list_agentic_models(provider: str) -> List[str]:
         result.append(mid)
     return result
 
-
-def search_models_dev(
-    query: str, provider: str = None, limit: int = 5
-) -> List[Dict[str, Any]]:
-    """Fuzzy search across models.dev catalog. Returns matching model entries.
-
-    Args:
-        query: Search string to match against model IDs.
-        provider: Optional Hermes provider ID to restrict search scope.
-                  If None, searches across all providers in PROVIDER_TO_MODELS_DEV.
-        limit: Maximum number of results to return.
-
-    Returns:
-        List of dicts, each containing 'provider', 'model_id', and the full
-        model 'entry' from models.dev.
-    """
-    data = fetch_models_dev()
-    if not data:
-        return []
-
-    # Build list of (provider_id, model_id, entry) candidates
-    candidates: List[tuple] = []
-
-    if provider is not None:
-        # Search only the specified provider
-        mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-        if not mdev_provider_id:
-            return []
-        provider_data = data.get(mdev_provider_id, {})
-        if isinstance(provider_data, dict):
-            models = provider_data.get("models", {})
-            if isinstance(models, dict):
-                for mid, mdata in models.items():
-                    candidates.append((provider, mid, mdata))
-    else:
-        # Search across all mapped providers
-        for hermes_prov, mdev_prov in PROVIDER_TO_MODELS_DEV.items():
-            provider_data = data.get(mdev_prov, {})
-            if isinstance(provider_data, dict):
-                models = provider_data.get("models", {})
-                if isinstance(models, dict):
-                    for mid, mdata in models.items():
-                        candidates.append((hermes_prov, mid, mdata))
-
-    if not candidates:
-        return []
-
-    # Use difflib for fuzzy matching — case-insensitive comparison
-    model_ids_lower = [c[1].lower() for c in candidates]
-    query_lower = query.lower()
-
-    # First try exact substring matches (more intuitive than pure edit-distance)
-    substring_matches = []
-    for prov, mid, mdata in candidates:
-        if query_lower in mid.lower():
-            substring_matches.append({"provider": prov, "model_id": mid, "entry": mdata})
-
-    # Then add difflib fuzzy matches for any remaining slots
-    fuzzy_ids = difflib.get_close_matches(
-        query_lower, model_ids_lower, n=limit * 2, cutoff=0.4
-    )
-
-    seen_ids: set = set()
-    results: List[Dict[str, Any]] = []
-
-    # Prioritize substring matches
-    for match in substring_matches:
-        key = (match["provider"], match["model_id"])
-        if key not in seen_ids:
-            seen_ids.add(key)
-            results.append(match)
-            if len(results) >= limit:
-                return results
-
-    # Add fuzzy matches
-    for fid in fuzzy_ids:
-        # Find original-case candidates matching this lowered ID
-        for prov, mid, mdata in candidates:
-            if mid.lower() == fid:
-                key = (prov, mid)
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    results.append({"provider": prov, "model_id": mid, "entry": mdata})
-                    if len(results) >= limit:
-                        return results
-
-    return results
 
 
 # ---------------------------------------------------------------------------

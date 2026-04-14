@@ -32,13 +32,15 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "AUXILIARY_VISION_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
     "WECOM_BOT_ID", "WECOM_SECRET",
+    "WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET", "WECOM_CALLBACK_AGENT_ID",
+    "WECOM_CALLBACK_TOKEN", "WECOM_CALLBACK_ENCODING_AES_KEY",
+    "WECOM_CALLBACK_HOST", "WECOM_CALLBACK_PORT",
     "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
@@ -48,6 +50,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
+    "MATRIX_RECOVERY_KEY",
 })
 import yaml
 
@@ -139,6 +142,55 @@ def format_managed_message(action: str = "modify this Hermes installation") -> s
 def managed_error(action: str = "modify configuration"):
     """Print user-friendly error for managed mode."""
     print(format_managed_message(action), file=sys.stderr)
+
+
+# =============================================================================
+# Container-aware CLI (NixOS container mode)
+# =============================================================================
+
+def get_container_exec_info() -> Optional[dict]:
+    """Read container mode metadata from HERMES_HOME/.container-mode.
+
+    Returns a dict with keys: backend, container_name, exec_user, hermes_bin
+    or None if container mode is not active, we're already inside the
+    container, or HERMES_DEV=1 is set.
+
+    The .container-mode file is written by the NixOS activation script when
+    container.enable = true. It tells the host CLI to exec into the container
+    instead of running locally.
+    """
+    if os.environ.get("HERMES_DEV") == "1":
+        return None
+
+    from hermes_constants import is_container
+    if is_container():
+        return None
+
+    container_mode_file = get_hermes_home() / ".container-mode"
+
+    try:
+        info = {}
+        with open(container_mode_file, "r") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, _, value = line.partition("=")
+                    info[key.strip()] = value.strip()
+    except FileNotFoundError:
+        return None
+    # All other exceptions (PermissionError, malformed data, etc.) propagate
+
+    backend = info.get("backend", "docker")
+    container_name = info.get("container_name", "hermes-agent")
+    exec_user = info.get("exec_user", "hermes")
+    hermes_bin = info.get("hermes_bin", "/data/current-package/bin/hermes")
+
+    return {
+        "backend": backend,
+        "container_name": container_name,
+        "exec_user": exec_user,
+        "hermes_bin": hermes_bin,
+    }
 
 
 # =============================================================================
@@ -285,6 +337,10 @@ DEFAULT_CONFIG = {
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
         "gateway_timeout_warning": 900,
+        # Periodic "still working" notification interval (seconds).
+        # Sends a status message every N seconds so the user knows the
+        # agent hasn't died during long tasks.  0 = disable notifications.
+        "gateway_notify_interval": 600,
     },
     
     "terminal": {
@@ -358,9 +414,7 @@ DEFAULT_CONFIG = {
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "summary_model": "",          # empty = use main configured model
-        "summary_provider": "auto",
-        "summary_base_url": None,
+
     },
     "smart_model_routing": {
         "enabled": False,
@@ -381,7 +435,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
+            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -446,9 +500,11 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
-        "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
+        "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
     # Privacy settings
@@ -635,8 +691,16 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Network settings — workarounds for connectivity issues.
+    "network": {
+        # Force IPv4 connections.  On servers with broken or unreachable IPv6,
+        # Python tries AAAA records first and hangs for the full TCP timeout
+        # before falling back to IPv4.  Set to true to skip IPv6 entirely.
+        "force_ipv4": False,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 17,
 }
 
 # =============================================================================
@@ -747,6 +811,30 @@ OPTIONAL_ENV_VARS = {
     "KIMI_BASE_URL": {
         "description": "Kimi / Moonshot base URL override",
         "prompt": "Kimi base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "KIMI_CN_API_KEY": {
+        "description": "Kimi / Moonshot China API key",
+        "prompt": "Kimi (China) API key",
+        "url": "https://platform.moonshot.cn/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ARCEEAI_API_KEY": {
+        "description": "Arcee AI API key",
+        "prompt": "Arcee AI API key",
+        "url": "https://chat.arcee.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ARCEE_BASE_URL": {
+        "description": "Arcee AI base URL override",
+        "prompt": "Arcee base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -863,6 +951,21 @@ OPTIONAL_ENV_VARS = {
     "HF_BASE_URL": {
         "description": "Hugging Face Inference Providers base URL override",
         "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XIAOMI_API_KEY": {
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "prompt": "Xiaomi MiMo API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_BASE_URL": {
+        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",
@@ -1089,7 +1192,7 @@ OPTIONAL_ENV_VARS = {
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, users:read, files:write",
+                       "im:history, im:read, im:write, users:read, files:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
@@ -1196,6 +1299,14 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Matrix device ID (stable across restarts)",
         "url": None,
         "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_RECOVERY_KEY": {
+        "description": "Matrix recovery key for cross-signing verification after device key rotation (from Element: Settings → Security → Recovery Key)",
+        "prompt": "Matrix recovery key",
+        "url": None,
+        "password": True,
         "category": "messaging",
         "advanced": True,
     },
@@ -1457,6 +1568,137 @@ def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
     return missing
 
 
+def _normalize_custom_provider_entry(
+    entry: Any,
+    *,
+    provider_key: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Return a runtime-compatible custom provider entry or ``None``."""
+    if not isinstance(entry, dict):
+        return None
+
+    base_url = ""
+    for url_key in ("api", "url", "base_url"):
+        raw_url = entry.get(url_key)
+        if isinstance(raw_url, str) and raw_url.strip():
+            base_url = raw_url.strip()
+            break
+    if not base_url:
+        return None
+
+    name = ""
+    raw_name = entry.get("name")
+    if isinstance(raw_name, str) and raw_name.strip():
+        name = raw_name.strip()
+    elif provider_key.strip():
+        name = provider_key.strip()
+    if not name:
+        return None
+
+    normalized: Dict[str, Any] = {
+        "name": name,
+        "base_url": base_url,
+    }
+
+    provider_key = provider_key.strip()
+    if provider_key:
+        normalized["provider_key"] = provider_key
+
+    api_key = entry.get("api_key")
+    if isinstance(api_key, str) and api_key.strip():
+        normalized["api_key"] = api_key.strip()
+
+    key_env = entry.get("key_env")
+    if isinstance(key_env, str) and key_env.strip():
+        normalized["key_env"] = key_env.strip()
+
+    api_mode = entry.get("api_mode") or entry.get("transport")
+    if isinstance(api_mode, str) and api_mode.strip():
+        normalized["api_mode"] = api_mode.strip()
+
+    model_name = entry.get("model") or entry.get("default_model")
+    if isinstance(model_name, str) and model_name.strip():
+        normalized["model"] = model_name.strip()
+
+    models = entry.get("models")
+    if isinstance(models, dict) and models:
+        normalized["models"] = models
+
+    context_length = entry.get("context_length")
+    if isinstance(context_length, int) and context_length > 0:
+        normalized["context_length"] = context_length
+
+    rate_limit_delay = entry.get("rate_limit_delay")
+    if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
+        normalized["rate_limit_delay"] = rate_limit_delay
+
+    return normalized
+
+
+def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, Any]]:
+    """Normalize ``providers`` config entries into the legacy custom-provider shape."""
+    if not isinstance(providers_dict, dict):
+        return []
+
+    custom_providers: List[Dict[str, Any]] = []
+    for key, entry in providers_dict.items():
+        normalized = _normalize_custom_provider_entry(entry, provider_key=str(key))
+        if normalized is not None:
+            custom_providers.append(normalized)
+
+    return custom_providers
+
+
+def get_compatible_custom_providers(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Return a deduplicated custom-provider view across legacy and v12+ config.
+
+    ``custom_providers`` remains the on-disk legacy format, while ``providers``
+    is the newer keyed schema.  Runtime and picker flows still need a single
+    list-shaped view, but we should not materialise that compatibility layer
+    back into config.yaml because it duplicates entries in UIs.
+    """
+    if config is None:
+        config = load_config()
+
+    compatible: List[Dict[str, Any]] = []
+    seen_provider_keys: set = set()
+    seen_name_url_pairs: set = set()
+
+    def _append_if_new(entry: Optional[Dict[str, Any]]) -> None:
+        if entry is None:
+            return
+        provider_key = str(entry.get("provider_key", "") or "").strip().lower()
+        name = str(entry.get("name", "") or "").strip().lower()
+        base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
+        model = str(entry.get("model", "") or "").strip().lower()
+        pair = (name, base_url, model)
+
+        if provider_key and provider_key in seen_provider_keys:
+            return
+        if name and base_url and pair in seen_name_url_pairs:
+            return
+
+        compatible.append(entry)
+        if provider_key:
+            seen_provider_keys.add(provider_key)
+        if name and base_url:
+            seen_name_url_pairs.add(pair)
+
+    custom_providers = config.get("custom_providers")
+    if custom_providers is not None:
+        if not isinstance(custom_providers, list):
+            return []
+        for entry in custom_providers:
+            _append_if_new(_normalize_custom_provider_entry(entry))
+
+    for entry in providers_dict_to_custom_providers(config.get("providers")):
+        _append_if_new(entry)
+
+    return compatible
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1483,7 +1725,7 @@ _KNOWN_ROOT_KEYS = {
 
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
-    "name", "base_url", "api_key", "api_mode", "models",
+    "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay",
 }
 
@@ -1774,8 +2016,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
-                # Remove the old list
-                del config["custom_providers"]
+                # Remove the old list — runtime reads via get_compatible_custom_providers()
+                config.pop("custom_providers", None)
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
@@ -1847,6 +2089,81 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+
+    # ── Version 14 → 15: add explicit gateway interim-message gate ──
+    if current_ver < 15:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "interim_assistant_messages" not in display:
+            display["interim_assistant_messages"] = True
+            config["display"] = display
+            results["config_added"].append("display.interim_assistant_messages=true (default)")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added display.interim_assistant_messages=true")
+
+    # ── Version 15 → 16: migrate tool_progress_overrides into display.platforms ──
+    if current_ver < 16:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        old_overrides = display.get("tool_progress_overrides")
+        if isinstance(old_overrides, dict) and old_overrides:
+            platforms = display.get("platforms", {})
+            if not isinstance(platforms, dict):
+                platforms = {}
+            for plat, mode in old_overrides.items():
+                if plat not in platforms:
+                    platforms[plat] = {}
+                if "tool_progress" not in platforms[plat]:
+                    platforms[plat]["tool_progress"] = mode
+            display["platforms"] = platforms
+            config["display"] = display
+            save_config(config)
+            if not quiet:
+                migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
+                print(f"  ✓ Migrated tool_progress_overrides → display.platforms: {migrated}")
+            results["config_added"].append("display.platforms (migrated from tool_progress_overrides)")
+
+    # ── Version 16 → 17: remove legacy compression.summary_* keys ──
+    if current_ver < 17:
+        config = read_raw_config()
+        comp = config.get("compression", {})
+        if isinstance(comp, dict):
+            s_model = comp.pop("summary_model", None)
+            s_provider = comp.pop("summary_provider", None)
+            s_base_url = comp.pop("summary_base_url", None)
+            migrated_keys = []
+            # Migrate non-empty, non-default values to auxiliary.compression
+            if s_model and str(s_model).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("model"):
+                    aux_comp["model"] = str(s_model).strip()
+                    migrated_keys.append(f"model={s_model}")
+            if s_provider and str(s_provider).strip() not in ("", "auto"):
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("provider") or aux_comp.get("provider") == "auto":
+                    aux_comp["provider"] = str(s_provider).strip()
+                    migrated_keys.append(f"provider={s_provider}")
+            if s_base_url and str(s_base_url).strip():
+                aux = config.setdefault("auxiliary", {})
+                aux_comp = aux.setdefault("compression", {})
+                if not aux_comp.get("base_url"):
+                    aux_comp["base_url"] = str(s_base_url).strip()
+                    migrated_keys.append(f"base_url={s_base_url}")
+            if migrated_keys or s_model is not None or s_provider is not None or s_base_url is not None:
+                config["compression"] = comp
+                save_config(config)
+                if not quiet:
+                    if migrated_keys:
+                        print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
+                    else:
+                        print("  ✓ Removed unused compression.summary_* keys")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -2160,6 +2477,7 @@ _FALLBACK_COMMENT = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
@@ -2203,6 +2521,7 @@ _COMMENTED_SECTIONS = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
+#   kimi-coding-cn (KIMI_CN_API_KEY)   — Kimi / Moonshot (China)
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
@@ -2257,7 +2576,13 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env."""
+    """Load environment variables from ~/.hermes/.env.
+
+    Sanitizes lines before parsing so that corrupted files (e.g.
+    concatenated KEY=VALUE pairs on a single line) are handled
+    gracefully instead of producing mangled values such as duplicated
+    bot tokens.  See #8908.
+    """
     env_path = get_env_path()
     env_vars = {}
     
@@ -2266,17 +2591,21 @@ def load_env() -> Dict[str, str]:
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
         open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
         with open(env_path, **open_kw) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
-                    env_vars[key.strip()] = value.strip().strip('"\'')
+            raw_lines = f.readlines()
+        # Sanitize before parsing: split concatenated lines & drop stale
+        # placeholders so corrupted .env files don't produce invalid tokens.
+        lines = _sanitize_env_lines(raw_lines)
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('#') and '=' in line:
+                key, _, value = line.partition('=')
+                env_vars[key.strip()] = value.strip().strip('"\'')
     
     return env_vars
 
 
 def _sanitize_env_lines(lines: list) -> list:
-    """Fix corrupted .env lines before writing.
+    """Fix corrupted .env lines before reading or writing.
 
     Handles two known corruption patterns:
     1. Concatenated KEY=VALUE pairs on a single line (missing newline between
@@ -2509,6 +2838,28 @@ def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:
 
 
 
+def reload_env() -> int:
+    """Re-read ~/.hermes/.env into os.environ. Returns count of vars updated.
+
+    Adds/updates vars that changed and removes vars that were deleted from
+    the .env file (but only vars known to Hermes — OPTIONAL_ENV_VARS and
+    _EXTRA_ENV_KEYS — to avoid clobbering unrelated environment).
+    """
+    env_vars = load_env()
+    known_keys = set(OPTIONAL_ENV_VARS.keys()) | _EXTRA_ENV_KEYS
+    count = 0
+    for key, value in env_vars.items():
+        if os.environ.get(key) != value:
+            os.environ[key] = value
+            count += 1
+    # Remove known Hermes vars that are no longer in .env
+    for key in known_keys:
+        if key not in env_vars and key in os.environ:
+            del os.environ[key]
+            count += 1
+    return count
+
+
 def get_env_value(key: str) -> Optional[str]:
     """Get a value from ~/.hermes/.env or environment."""
     # Check environment first
@@ -2568,7 +2919,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
-    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
     # Model settings
@@ -2630,10 +2982,11 @@ def show_config():
         print(f"  Threshold:    {compression.get('threshold', 0.50) * 100:.0f}%")
         print(f"  Target ratio: {compression.get('target_ratio', 0.20) * 100:.0f}% of threshold preserved")
         print(f"  Protect last: {compression.get('protect_last_n', 20)} messages")
-        _sm = compression.get('summary_model', '') or '(main model)'
+        _aux_comp = config.get('auxiliary', {}).get('compression', {})
+        _sm = _aux_comp.get('model', '') or '(auto)'
         print(f"  Model:        {_sm}")
-        comp_provider = compression.get('summary_provider', 'auto')
-        if comp_provider != 'auto':
+        comp_provider = _aux_comp.get('provider', 'auto')
+        if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
     
     # Auxiliary models
@@ -2784,8 +3137,8 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

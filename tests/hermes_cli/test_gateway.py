@@ -260,7 +260,7 @@ class TestWaitForGatewayExit:
     def test_kill_gateway_processes_force_uses_helper(self, monkeypatch):
         calls = []
 
-        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [11, 22])
+        monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None, all_profiles=False: [11, 22])
         monkeypatch.setattr(gateway, "terminate_pid", lambda pid, force=False: calls.append((pid, force)))
 
         killed = gateway.kill_gateway_processes(force=True)

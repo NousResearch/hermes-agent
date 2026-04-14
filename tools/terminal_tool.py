@@ -56,9 +56,6 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
-def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
-    """Backward-compatible no-op after minisweagent_path.py removal."""
-    return
 
 
 # =============================================================================
@@ -140,7 +137,6 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
-    check_dangerous_command as _check_dangerous_command_impl,
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -531,7 +527,6 @@ Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
-Important: cloud sandboxes may be cleaned up, idled out, or recreated between turns. Persistent filesystem means files can resume later; it does NOT guarantee a continuously running machine or surviving background processes. Use terminal sandboxes for task work, not durable hosting.
 """
 
 # Global state for environment lifecycle management
@@ -938,29 +933,6 @@ def is_persistent_env(task_id: str) -> bool:
     return bool(getattr(env, "_persistent", False))
 
 
-def get_active_environments_info() -> Dict[str, Any]:
-    """Get information about currently active environments."""
-    info = {
-        "count": len(_active_environments),
-        "task_ids": list(_active_environments.keys()),
-        "workdirs": {},
-    }
-    
-    # Calculate total disk usage (per-task to avoid double-counting)
-    total_size = 0
-    for task_id in _active_environments:
-        scratch_dir = _get_scratch_dir()
-        pattern = f"hermes-*{task_id[:8]}*"
-        import glob
-        for path in glob.glob(str(scratch_dir / pattern)):
-            try:
-                size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
-                total_size += size
-            except OSError as e:
-                logger.debug("Could not stat path %s: %s", path, e)
-    
-    info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
-    return info
 
 
 def cleanup_all_environments():
@@ -1137,7 +1109,6 @@ def terminal_tool(
     task_id: Optional[str] = None,
     force: bool = False,
     workdir: Optional[str] = None,
-    check_interval: Optional[int] = None,
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
@@ -1152,7 +1123,6 @@ def terminal_tool(
         task_id: Unique identifier for environment isolation (optional)
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
-        check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, auto-notify the agent when the process exits
         watch_patterns: List of strings to watch for in background output; triggers notification on match
@@ -1424,11 +1394,15 @@ def terminal_tool(
                     # turn.  CLI mode uses the completion_queue directly.
                     from gateway.session_context import get_session_env as _gse
                     _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
-                    if _gw_platform and not check_interval:
+                    if _gw_platform:
                         _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
                         _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
+                        _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
+                        _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
+                        proc_session.watcher_user_id = _gw_user_id
+                        proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
                         proc_session.watcher_interval = 5
                         process_registry.pending_watchers.append({
@@ -1437,6 +1411,8 @@ def terminal_tool(
                             "session_key": session_key,
                             "platform": _gw_platform,
                             "chat_id": _gw_chat_id,
+                            "user_id": _gw_user_id,
+                            "user_name": _gw_user_name,
                             "thread_id": _gw_thread_id,
                             "notify_on_complete": True,
                         })
@@ -1445,33 +1421,6 @@ def terminal_tool(
                 if watch_patterns and background:
                     proc_session.watch_patterns = list(watch_patterns)
                     result_data["watch_patterns"] = proc_session.watch_patterns
-
-                # Register check_interval watcher (gateway picks this up after agent run)
-                if check_interval and background:
-                    effective_interval = max(30, check_interval)
-                    if check_interval < 30:
-                        result_data["check_interval_note"] = (
-                            f"Requested {check_interval}s raised to minimum 30s"
-                        )
-                    from gateway.session_context import get_session_env as _gse2
-                    watcher_platform = _gse2("HERMES_SESSION_PLATFORM", "")
-                    watcher_chat_id = _gse2("HERMES_SESSION_CHAT_ID", "")
-                    watcher_thread_id = _gse2("HERMES_SESSION_THREAD_ID", "")
-
-                    # Store on session for checkpoint persistence
-                    proc_session.watcher_platform = watcher_platform
-                    proc_session.watcher_chat_id = watcher_chat_id
-                    proc_session.watcher_thread_id = watcher_thread_id
-                    proc_session.watcher_interval = effective_interval
-
-                    process_registry.pending_watchers.append({
-                        "session_id": proc_session.id,
-                        "check_interval": effective_interval,
-                        "session_key": session_key,
-                        "platform": watcher_platform,
-                        "chat_id": watcher_chat_id,
-                        "thread_id": watcher_thread_id,
-                    })
 
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
@@ -1755,11 +1704,6 @@ TERMINAL_SCHEMA = {
                 "type": "string",
                 "description": "Working directory for this command (absolute path). Defaults to the session working directory."
             },
-            "check_interval": {
-                "type": "integer",
-                "description": "Seconds between automatic status checks for background processes (gateway/messaging only, minimum 30). When set, I'll proactively report progress.",
-                "minimum": 30
-            },
             "pty": {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
@@ -1788,7 +1732,6 @@ def _handle_terminal(args, **kw):
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
         workdir=args.get("workdir"),
-        check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),

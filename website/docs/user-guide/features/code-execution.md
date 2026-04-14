@@ -153,7 +153,7 @@ When your script calls a function like `web_search("query")`:
 3. The result is sent back over the socket
 4. The function returns the parsed result
 
-This means tool calls inside scripts behave identically to normal tool calls — same rate limits, same error handling, same capabilities. The only restriction is that `terminal()` is foreground-only (no `background`, `pty`, or `check_interval` parameters).
+This means tool calls inside scripts behave identically to normal tool calls — same rate limits, same error handling, same capabilities. The only restriction is that `terminal()` is foreground-only (no `background` or `pty` parameters).
 
 ## Error Handling
 

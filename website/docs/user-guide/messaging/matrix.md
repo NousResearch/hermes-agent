@@ -272,6 +272,18 @@ When E2EE is enabled, Hermes:
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
 
+### Cross-Signing Verification (Recommended)
+
+If your Matrix account has cross-signing enabled (the default in Element), set the recovery key so the bot can self-sign its device on startup. Without this, other Matrix clients may refuse to share encryption sessions with the bot after a device key rotation.
+
+```bash
+MATRIX_RECOVERY_KEY=EsT... your recovery key here
+```
+
+**Where to find it:** In Element, go to **Settings** → **Security & Privacy** → **Encryption** → your recovery key (also called the "Security Key"). This is the key you were asked to save when you first set up cross-signing.
+
+On each startup, if `MATRIX_RECOVERY_KEY` is set, Hermes imports cross-signing keys from the homeserver's secure secret storage and signs the current device. This is idempotent and safe to leave enabled permanently.
+
 :::warning
 If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
 :::
@@ -344,8 +356,88 @@ pip install 'hermes-agent[matrix]'
 **Fix**:
 1. Verify `libolm` is installed on your system (see the E2EE section above).
 2. Make sure `MATRIX_ENCRYPTION=true` is set in your `.env`.
-3. In your Matrix client (Element), go to the bot's profile → **Sessions** → verify/trust the bot's device.
+3. In your Matrix client (Element), go to the bot's profile -> Sessions -> verify/trust the bot's device.
 4. If the bot just joined an encrypted room, it can only decrypt messages sent *after* it joined. Older messages are inaccessible.
+
+### Upgrading from a previous version with E2EE
+
+If you previously used Hermes with `MATRIX_ENCRYPTION=true` and are upgrading to
+a version that uses the new SQLite-based crypto store, the bot's encryption
+identity has changed. Your Matrix client (Element) may cache the old device keys
+and refuse to share encryption sessions with the bot.
+
+**Symptoms**: The bot connects and shows "E2EE enabled" in the logs, but all
+messages show "could not decrypt event" and the bot never responds.
+
+**What's happening**: The old encryption state (from the previous `matrix-nio` or
+serialization-based `mautrix` backend) is incompatible with the new SQLite crypto
+store. The bot creates a fresh encryption identity, but your Matrix client still
+has the old keys cached and won't share the room's encryption session with a
+device whose keys changed. This is a Matrix security feature -- clients treat
+changed identity keys for the same device as suspicious.
+
+**Fix** (one-time migration):
+
+1. **Generate a new access token** to get a fresh device ID. The simplest way:
+
+   ```bash
+   curl -X POST https://your-server/_matrix/client/v3/login \
+     -H "Content-Type: application/json" \
+     -d '{
+       "type": "m.login.password",
+       "identifier": {"type": "m.id.user", "user": "@hermes:your-server.org"},
+       "password": "***",
+       "initial_device_display_name": "Hermes Agent"
+     }'
+   ```
+
+   Copy the new `access_token` and update `MATRIX_ACCESS_TOKEN` in `~/.hermes/.env`.
+
+2. **Delete old encryption state**:
+
+   ```bash
+   rm -f ~/.hermes/platforms/matrix/store/crypto.db
+   rm -f ~/.hermes/platforms/matrix/store/crypto_store.*
+   ```
+
+3. **Set your recovery key** (if you use cross-signing — most Element users do). Add to `~/.hermes/.env`:
+
+   ```bash
+   MATRIX_RECOVERY_KEY=EsT... your recovery key here
+   ```
+
+   This lets the bot self-sign with cross-signing keys on startup, so Element trusts the new device immediately. Without this, Element may see the new device as unverified and refuse to share encryption sessions. Find your recovery key in Element under **Settings** → **Security & Privacy** → **Encryption**.
+
+4. **Force your Matrix client to rotate the encryption session**. In Element,
+   open the DM room with the bot and type `/discardsession`. This forces Element
+   to create a new encryption session and share it with the bot's new device.
+
+5. **Restart the gateway**:
+
+   ```bash
+   hermes gateway run
+   ```
+
+   If `MATRIX_RECOVERY_KEY` is set, you should see `Matrix: cross-signing verified via recovery key` in the logs.
+
+6. **Send a new message**. The bot should decrypt and respond normally.
+
+:::note
+After migration, messages sent *before* the upgrade cannot be decrypted -- the old
+encryption keys are gone. This only affects the transition; new messages work
+normally.
+:::
+
+:::tip
+**New installations are not affected.** This migration is only needed if you had
+a working E2EE setup with a previous version of Hermes and are upgrading.
+
+**Why a new access token?** Each Matrix access token is bound to a specific device
+ID. Reusing the same device ID with new encryption keys causes other Matrix
+clients to distrust the device (they see changed identity keys as a potential
+security breach). A new access token gets a new device ID with no stale key
+history, so other clients trust it immediately.
+:::
 
 ### Sync issues / bot falls behind
 

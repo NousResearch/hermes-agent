@@ -10,6 +10,7 @@ import logging
 import os
 import shlex
 import time
+from pathlib import Path
 from typing import Callable
 
 from tools.environments.base import _file_mtime_key
@@ -58,6 +59,16 @@ def iter_sync_files(container_base: str = "/root/.hermes") -> list[tuple[str, st
 def quoted_rm_command(remote_paths: list[str]) -> str:
     """Build a shell ``rm -f`` command for a batch of remote paths."""
     return "rm -f " + " ".join(shlex.quote(p) for p in remote_paths)
+
+
+def quoted_mkdir_command(dirs: list[str]) -> str:
+    """Build a shell ``mkdir -p`` command for a batch of directories."""
+    return "mkdir -p " + " ".join(shlex.quote(d) for d in dirs)
+
+
+def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
+    """Extract sorted unique parent directories from (host, remote) pairs."""
+    return sorted({str(Path(remote).parent) for _, remote in files})
 
 
 class FileSyncManager:

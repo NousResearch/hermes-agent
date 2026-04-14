@@ -48,6 +48,7 @@ def _make_event(
     room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
+    mention_user_ids=None,
 ):
     """Create a fake room message event.
 
@@ -59,6 +60,9 @@ def _make_event(
     if formatted_body:
         content["formatted_body"] = formatted_body
         content["format"] = "org.matrix.custom.html"
+
+    if mention_user_ids is not None:
+        content["m.mentions"] = {"user_ids": mention_user_ids}
 
     relates_to = {}
     if thread_id:
@@ -107,6 +111,44 @@ class TestIsBotMentioned:
     def test_partial_localpart_no_match(self):
         # "hermesbot" should not match word-boundary check for "hermes"
         assert not self.adapter._is_bot_mentioned("hermesbot is here")
+
+    # m.mentions.user_ids — MSC3952 / Matrix v1.7 authoritative mentions
+    # Ported from openclaw/openclaw#64796
+
+    def test_m_mentions_user_ids_authoritative(self):
+        """m.mentions.user_ids alone is sufficient — no body text needed."""
+        assert self.adapter._is_bot_mentioned(
+            "please reply",  # no @hermes anywhere in body
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_with_body_mention(self):
+        """Both m.mentions and body mention — should still be True."""
+        assert self.adapter._is_bot_mentioned(
+            "hey @hermes:example.org help",
+            mention_user_ids=["@hermes:example.org"],
+        )
+
+    def test_m_mentions_user_ids_other_user_only(self):
+        """m.mentions with a different user — bot is NOT mentioned."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello",
+            mention_user_ids=["@alice:example.org"],
+        )
+
+    def test_m_mentions_user_ids_empty_list(self):
+        """Empty user_ids list — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=[],
+        )
+
+    def test_m_mentions_user_ids_none(self):
+        """None mention_user_ids — falls through to text detection."""
+        assert not self.adapter._is_bot_mentioned(
+            "hello everyone",
+            mention_user_ids=None,
+        )
 
 
 class TestStripMention:
@@ -174,6 +216,44 @@ async def test_require_mention_html_pill(monkeypatch):
 
     await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_m_mentions_user_ids(monkeypatch):
+    """m.mentions.user_ids is authoritative per MSC3952 — no body mention needed.
+
+    Ported from openclaw/openclaw#64796.
+    """
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    # Body has NO mention, but m.mentions.user_ids includes the bot.
+    event = _make_event(
+        "please reply",
+        mention_user_ids=["@hermes:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_require_mention_m_mentions_other_user_ignored(monkeypatch):
+    """m.mentions.user_ids mentioning another user should NOT activate the bot."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    event = _make_event(
+        "hey alice check this",
+        mention_user_ids=["@alice:example.org"],
+    )
+
+    await adapter._on_room_message(event)
+    adapter.handle_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -247,7 +327,7 @@ async def test_require_mention_bot_participated_thread(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    adapter._bot_participated_threads.add("$thread1")
+    adapter._threads.mark("$thread1")
 
     event = _make_event("hello without mention", thread_id="$thread1")
 
@@ -298,7 +378,7 @@ async def test_auto_thread_preserves_existing_thread(monkeypatch):
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
-    adapter._bot_participated_threads.add("$thread_root")
+    adapter._threads.mark("$thread_root")
     event = _make_event("reply in thread", thread_id="$thread_root")
 
     await adapter._on_room_message(event)
@@ -340,17 +420,17 @@ async def test_auto_thread_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_auto_thread_tracks_participation(monkeypatch):
-    """Auto-created threads are tracked in _bot_participated_threads."""
+    """Auto-created threads are tracked in _threads."""
     monkeypatch.setenv("MATRIX_REQUIRE_MENTION", "false")
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
     event = _make_event("hello", event_id="$msg1")
 
-    with patch.object(adapter, "_save_participated_threads"):
+    with patch.object(adapter._threads, "_save"):
         await adapter._on_room_message(event)
 
-    assert "$msg1" in adapter._bot_participated_threads
+    assert "$msg1" in adapter._threads
 
 
 # ---------------------------------------------------------------------------
@@ -361,56 +441,54 @@ async def test_auto_thread_tracks_participation(monkeypatch):
 class TestThreadPersistence:
     def test_empty_state_file(self, tmp_path, monkeypatch):
         """No state file → empty set."""
-        from gateway.platforms.matrix import MatrixAdapter
+        from gateway.platforms.helpers import ThreadParticipationTracker
         monkeypatch.setattr(
-            MatrixAdapter, "_thread_state_path",
-            staticmethod(lambda: tmp_path / "matrix_threads.json"),
+            ThreadParticipationTracker, "_state_path",
+            lambda self: tmp_path / "matrix_threads.json",
         )
         adapter = _make_adapter()
-        loaded = adapter._load_participated_threads()
-        assert loaded == set()
+        assert "$nonexistent" not in adapter._threads
 
     def test_track_thread_persists(self, tmp_path, monkeypatch):
-        """_track_thread writes to disk."""
-        from gateway.platforms.matrix import MatrixAdapter
+        """mark() writes to disk."""
+        from gateway.platforms.helpers import ThreadParticipationTracker
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            MatrixAdapter, "_thread_state_path",
-            staticmethod(lambda: state_path),
+            ThreadParticipationTracker, "_state_path",
+            lambda self: state_path,
         )
         adapter = _make_adapter()
-        adapter._track_thread("$thread_abc")
+        adapter._threads.mark("$thread_abc")
 
         data = json.loads(state_path.read_text())
         assert "$thread_abc" in data
 
     def test_threads_survive_reload(self, tmp_path, monkeypatch):
         """Persisted threads are loaded by a new adapter instance."""
-        from gateway.platforms.matrix import MatrixAdapter
+        from gateway.platforms.helpers import ThreadParticipationTracker
         state_path = tmp_path / "matrix_threads.json"
         state_path.write_text(json.dumps(["$t1", "$t2"]))
         monkeypatch.setattr(
-            MatrixAdapter, "_thread_state_path",
-            staticmethod(lambda: state_path),
+            ThreadParticipationTracker, "_state_path",
+            lambda self: state_path,
         )
         adapter = _make_adapter()
-        assert "$t1" in adapter._bot_participated_threads
-        assert "$t2" in adapter._bot_participated_threads
+        assert "$t1" in adapter._threads
+        assert "$t2" in adapter._threads
 
     def test_cap_max_tracked_threads(self, tmp_path, monkeypatch):
-        """Thread set is trimmed to _MAX_TRACKED_THREADS."""
-        from gateway.platforms.matrix import MatrixAdapter
+        """Thread set is trimmed to max_tracked."""
+        from gateway.platforms.helpers import ThreadParticipationTracker
         state_path = tmp_path / "matrix_threads.json"
         monkeypatch.setattr(
-            MatrixAdapter, "_thread_state_path",
-            staticmethod(lambda: state_path),
+            ThreadParticipationTracker, "_state_path",
+            lambda self: state_path,
         )
         adapter = _make_adapter()
-        adapter._MAX_TRACKED_THREADS = 5
+        adapter._threads._max_tracked = 5
 
         for i in range(10):
-            adapter._bot_participated_threads.add(f"$t{i}")
-        adapter._save_participated_threads()
+            adapter._threads.mark(f"$t{i}")
 
         data = json.loads(state_path.read_text())
         assert len(data) == 5
@@ -447,7 +525,7 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
     _set_dm(adapter)
     event = _make_event("@hermes:example.org help me", event_id="$dm1")
 
-    with patch.object(adapter, "_save_participated_threads"):
+    with patch.object(adapter._threads, "_save"):
         await adapter._on_room_message(event)
 
     adapter.handle_message.assert_awaited_once()
@@ -480,7 +558,7 @@ async def test_dm_mention_thread_preserves_existing_thread(monkeypatch):
 
     adapter = _make_adapter()
     _set_dm(adapter)
-    adapter._bot_participated_threads.add("$existing_thread")
+    adapter._threads.mark("$existing_thread")
     event = _make_event("@hermes:example.org help me", thread_id="$existing_thread")
 
     await adapter._on_room_message(event)
@@ -491,7 +569,7 @@ async def test_dm_mention_thread_preserves_existing_thread(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dm_mention_thread_tracks_participation(monkeypatch):
-    """DM mention-thread tracks the thread in _bot_participated_threads."""
+    """DM mention-thread tracks the thread in _threads."""
     monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
@@ -499,10 +577,10 @@ async def test_dm_mention_thread_tracks_participation(monkeypatch):
     _set_dm(adapter)
     event = _make_event("@hermes:example.org help", event_id="$dm1")
 
-    with patch.object(adapter, "_save_participated_threads"):
+    with patch.object(adapter._threads, "_save"):
         await adapter._on_room_message(event)
 
-    assert "$dm1" in adapter._bot_participated_threads
+    assert "$dm1" in adapter._threads
 
 
 # ---------------------------------------------------------------------------

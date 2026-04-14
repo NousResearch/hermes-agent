@@ -6,11 +6,14 @@ Compatibility wrappers remain for direct Python callers and legacy tests.
 """
 
 import json
+import logging
 import os
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -68,11 +71,17 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
+        thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        if thread_id:
+            logger.debug(
+                "Cron origin captured thread_id=%s for %s:%s",
+                thread_id, origin_platform, origin_chat_id,
+            )
         return {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
-            "thread_id": get_session_env("HERMES_SESSION_THREAD_ID") or None,
+            "thread_id": thread_id,
         }
     return None
 
@@ -165,12 +174,12 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         )
 
     # Validate containment after resolution
+    from tools.path_security import validate_within_dir
+
     scripts_dir = get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
-    resolved = (scripts_dir / raw).resolve()
-    try:
-        resolved.relative_to(scripts_dir.resolve())
-    except ValueError:
+    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
+    if containment_error:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
@@ -373,42 +382,6 @@ def cronjob(
         return tool_error(str(e), success=False)
 
 
-# ---------------------------------------------------------------------------
-# Compatibility wrappers
-# ---------------------------------------------------------------------------
-
-def schedule_cronjob(
-    prompt: str,
-    schedule: str,
-    name: Optional[str] = None,
-    repeat: Optional[int] = None,
-    deliver: Optional[str] = None,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    task_id: str = None,
-) -> str:
-    return cronjob(
-        action="create",
-        prompt=prompt,
-        schedule=schedule,
-        name=name,
-        repeat=repeat,
-        deliver=deliver,
-        model=model,
-        provider=provider,
-        base_url=base_url,
-        task_id=task_id,
-    )
-
-
-def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
-    return cronjob(action="list", include_disabled=include_disabled, task_id=task_id)
-
-
-def remove_cronjob(job_id: str, task_id: str = None) -> str:
-    return cronjob(action="remove", job_id=job_id, task_id=task_id)
-
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
@@ -456,7 +429,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, weixin, matrix, mattermost, homeassistant, dingtalk, feishu, wecom, email, sms, bluebubbles, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), or platform:chat_id:thread_id for a specific destination. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting."
             },
             "skills": {
                 "type": "array",

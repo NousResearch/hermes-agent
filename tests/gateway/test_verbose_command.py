@@ -63,7 +63,7 @@ class TestVerboseCommand:
 
     @pytest.mark.asyncio
     async def test_enabled_cycles_mode(self, tmp_path, monkeypatch):
-        """When enabled, /verbose cycles tool_progress mode."""
+        """When enabled, /verbose cycles tool_progress mode per-platform."""
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -79,10 +79,11 @@ class TestVerboseCommand:
 
         # all -> verbose
         assert "VERBOSE" in result
+        assert "telegram" in result.lower()  # per-platform feedback
 
-        # Verify config was saved
+        # Verify config was saved to display.platforms.telegram
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["tool_progress"] == "verbose"
+        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
 
     @pytest.mark.asyncio
     async def test_cycles_through_all_modes(self, tmp_path, monkeypatch):
@@ -103,8 +104,9 @@ class TestVerboseCommand:
         for mode in expected:
             result = await runner._handle_verbose_command(_make_event())
             saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-            assert saved["display"]["tool_progress"] == mode, \
-                f"Expected {mode}, got {saved['display']['tool_progress']}"
+            actual = saved["display"]["platforms"]["telegram"]["tool_progress"]
+            assert actual == mode, \
+                f"Expected {mode}, got {actual}"
 
     @pytest.mark.asyncio
     async def test_defaults_to_all_when_no_tool_progress_set(self, tmp_path, monkeypatch):
@@ -122,10 +124,45 @@ class TestVerboseCommand:
         runner = _make_runner()
         result = await runner._handle_verbose_command(_make_event())
 
-        # default "all" -> verbose
+        # Telegram default is "all" (high tier) → cycles to verbose
         assert "VERBOSE" in result
         saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert saved["display"]["tool_progress"] == "verbose"
+        assert saved["display"]["platforms"]["telegram"]["tool_progress"] == "verbose"
+
+    @pytest.mark.asyncio
+    async def test_per_platform_isolation(self, tmp_path, monkeypatch):
+        """Cycling /verbose on Telegram doesn't change Slack's setting.
+
+        Without a global tool_progress, each platform uses its built-in
+        default: Telegram = 'all' (high tier), Slack = 'new' (medium tier).
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        # No global tool_progress → built-in platform defaults apply
+        config_path.write_text(
+            "display:\n  tool_progress_command: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        runner = _make_runner()
+
+        # Cycle on Telegram
+        await runner._handle_verbose_command(
+            _make_event(platform=Platform.TELEGRAM)
+        )
+        # Cycle on Slack
+        await runner._handle_verbose_command(
+            _make_event(platform=Platform.SLACK)
+        )
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        platforms = saved["display"]["platforms"]
+        # Telegram: all -> verbose (high tier default = all)
+        assert platforms["telegram"]["tool_progress"] == "verbose"
+        # Slack: new -> all (medium tier default = new, cycle to all)
+        assert platforms["slack"]["tool_progress"] == "all"
 
     @pytest.mark.asyncio
     async def test_no_config_file_returns_disabled(self, tmp_path, monkeypatch):

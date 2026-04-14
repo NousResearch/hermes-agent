@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
 )
+from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -89,18 +90,7 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
-def _strip_markdown(text: str) -> str:
-    """Strip common markdown formatting for iMessage plain-text delivery."""
-    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"\*(.+?)\*", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"__(.+?)__", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"_(.+?)_", r"\1", text, flags=re.DOTALL)
-    text = re.sub(r"```[a-zA-Z0-9_+-]*\n?", "", text)
-    text = re.sub(r"`(.+?)`", r"\1", text)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-    text = re.sub(r"\[([^\]]+)\]\(([^\)]+)\)", r"\1", text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
-    return text.strip()
+
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +383,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        text = _strip_markdown(content or "")
+        text = strip_markdown(content or "")
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
         chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
@@ -614,35 +604,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
-    async def send_reaction(
-        self,
-        chat_id: str,
-        message_guid: str,
-        reaction: str,
-        part_index: int = 0,
-    ) -> SendResult:
-        """Send a tapback reaction (requires Private API helper)."""
-        if not self._private_api_enabled or not self._helper_connected:
-            return SendResult(
-                success=False, error="Private API helper not connected"
-            )
-        guid = await self._resolve_chat_guid(chat_id)
-        if not guid:
-            return SendResult(success=False, error=f"Chat not found: {chat_id}")
-        try:
-            res = await self._api_post(
-                "/api/v1/message/react",
-                {
-                    "chatGuid": guid,
-                    "selectedMessageGuid": message_guid,
-                    "reaction": reaction,
-                    "partIndex": part_index,
-                },
-            )
-            return SendResult(success=True, raw_response=res)
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------
@@ -679,7 +640,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return info
 
     def format_message(self, content: str) -> str:
-        return _strip_markdown(content)
+        return strip_markdown(content)
 
     # ------------------------------------------------------------------
     # Inbound attachment downloading (from #4588)

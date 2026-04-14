@@ -201,7 +201,7 @@ def run_backup(args) -> None:
                 else:
                     zf.write(abs_path, arcname=str(rel_path))
                     total_bytes += abs_path.stat().st_size
-            except (PermissionError, OSError) as exc:
+            except (PermissionError, OSError, ValueError) as exc:
                 errors.append(f"  {rel_path}: {exc}")
                 continue
 

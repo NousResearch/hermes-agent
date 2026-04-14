@@ -13,6 +13,7 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -319,12 +320,56 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+_GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+
+
+def _probe_gateway_health() -> tuple[bool, dict | None]:
+    """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    Uses ``/health/detailed`` first (returns full state), falling back to
+    the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
+
+    This is a **blocking** call — run via ``run_in_executor`` from async code.
+    """
+    if not _GATEWAY_HEALTH_URL:
+        return False, None
+
+    base = _GATEWAY_HEALTH_URL.rstrip("/")
+    for path in (f"{base}/detailed", base):
+        try:
+            req = urllib.request.Request(path, method="GET")
+            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read())
+                    return True, body
+        except Exception:
+            continue
+    return False, None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
 
+    # --- Gateway liveness detection ---
+    # Try local PID check first (same-host).  If that fails and a remote
+    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+    # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
+    remote_health_body: dict | None = None
+
+    if not gateway_running and _GATEWAY_HEALTH_URL:
+        loop = asyncio.get_event_loop()
+        alive, remote_health_body = await loop.run_in_executor(
+            None, _probe_gateway_health
+        )
+        if alive:
+            gateway_running = True
+            # PID from the remote container (display only — not locally valid)
+            if remote_health_body:
+                gateway_pid = remote_health_body.get("pid")
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -341,7 +386,12 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
+    # Prefer the detailed health endpoint response (has full state) when the
+    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+        runtime = remote_health_body
+
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}

@@ -80,6 +80,7 @@ export const en: Translations = {
     notRunning: "Not running",
     startFailed: "Start failed",
     pid: "PID",
+    runningRemote: "Running (remote)",
     noneRunning: "None",
     gatewayFailedToStart: "Gateway failed to start",
     lastUpdate: "Last update",

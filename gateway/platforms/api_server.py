@@ -10,6 +10,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - GET  /health                     — health check
+- GET  /health/detailed            — rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -564,6 +565,27 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
+
+    async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
+        """GET /health/detailed — rich status for cross-container dashboard probing.
+
+        Returns gateway state, connected platforms, PID, and uptime so the
+        dashboard can display full status without needing a shared PID file or
+        /proc access.  No authentication required.
+        """
+        from gateway.status import read_runtime_status
+
+        runtime = read_runtime_status() or {}
+        return web.json_response({
+            "status": "ok",
+            "platform": "hermes-agent",
+            "gateway_state": runtime.get("gateway_state"),
+            "platforms": runtime.get("platforms", {}),
+            "active_agents": runtime.get("active_agents", 0),
+            "exit_reason": runtime.get("exit_reason"),
+            "updated_at": runtime.get("updated_at"),
+            "pid": os.getpid(),
+        })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -1783,6 +1805,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

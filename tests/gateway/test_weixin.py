@@ -363,6 +363,31 @@ class TestWeixinChunkDelivery:
         assert first_try["client_id"] == retry["client_id"]
 
 
+class TestWeixinMediaDelivery:
+    def test_send_image_file_accepts_image_path_keyword(self):
+        adapter = _make_adapter()
+
+        with patch.object(adapter, "send_document", new_callable=AsyncMock) as send_document_mock:
+            send_document_mock.return_value = {"success": True}
+
+            result = asyncio.run(
+                adapter.send_image_file(
+                    chat_id="wxid_test123",
+                    image_path="/tmp/demo.png",
+                    caption="screenshot",
+                    metadata={"source": "test"},
+                )
+            )
+
+        assert result == {"success": True}
+        send_document_mock.assert_awaited_once_with(
+            "wxid_test123",
+            file_path="/tmp/demo.png",
+            caption="screenshot",
+            metadata={"source": "test"},
+        )
+
+
 class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()

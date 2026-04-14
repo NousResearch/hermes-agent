@@ -8631,6 +8631,24 @@ class HermesCLI:
             self._should_exit = True
             event.app.exit()
 
+        _modal_prompt_active = Condition(
+            lambda: bool(self._secret_state or self._sudo_state)
+        )
+
+        @kb.add('escape', filter=_modal_prompt_active, eager=True)
+        def handle_escape_modal(event):
+            """ESC cancels active secret/sudo prompts."""
+            if self._secret_state:
+                self._cancel_secret_capture()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            if self._sudo_state:
+                self._sudo_state["response_queue"].put("")
+                self._sudo_state = None
+                event.app.invalidate()
+                return
+
         @kb.add('c-z')
         def handle_ctrl_z(event):
             """Handle Ctrl+Z - suspend process to background (Unix only)."""
@@ -8928,9 +8946,9 @@ class HermesCLI:
             if cli_ref._voice_processing:
                 return "transcribing..."
             if cli_ref._sudo_state:
-                return "type password (hidden), Enter to skip"
+                return "type password (hidden), Enter to submit · ESC to skip"
             if cli_ref._secret_state:
-                return "type secret (hidden), Enter to skip"
+                return "type secret (hidden), Enter to submit · ESC to skip"
             if cli_ref._approval_state:
                 return ""
             if cli_ref._clarify_freetext:
@@ -9173,7 +9191,7 @@ class HermesCLI:
             prompt = state.get("prompt") or f"Enter value for {state.get('var_name', 'secret')}"
             metadata = state.get("metadata") or {}
             help_text = metadata.get("help")
-            body = 'Enter secret below (hidden), or press Enter to skip'
+            body = 'Enter secret below (hidden), ESC or Ctrl+C to skip'
             content_lines = [prompt, body]
             if help_text:
                 content_lines.insert(1, str(help_text))

@@ -155,6 +155,7 @@ _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
 _DEFAULT_WEBHOOK_PATH = "/feishu/webhook"
+_MAX_TRACKED_THREADS = 500
 # ---------------------------------------------------------------------------
 # TTL, rate-limit and webhook security constants
 # ---------------------------------------------------------------------------
@@ -169,6 +170,7 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_PLACEHOLDER_EDIT_TTL = 300  # 5 minutes; covers the vast majority of agent response delays
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
@@ -294,6 +296,9 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+    auto_thread: bool = False
+    no_thread_groups: frozenset[str] = frozenset()
+    thread_require_mention: bool = False
 
 
 @dataclass
@@ -303,6 +308,8 @@ class FeishuGroupRule:
     policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
     allowlist: set[str] = field(default_factory=set)
     blacklist: set[str] = field(default_factory=set)
+    auto_thread: Optional[bool] = None
+    thread_require_mention: Optional[bool] = None
 
 
 @dataclass
@@ -1069,9 +1076,15 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._bot_participated_threads: set[str] = set()
+        self._bot_participated_thread_order: List[str] = []
+        self._thread_state_path = get_hermes_home() / "feishu_threads.json"
+        self._thread_state_lock = threading.Lock()
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        self._pending_placeholder_edits: dict[str, tuple[str, float]] = {}
+        self._load_participated_threads()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1087,6 +1100,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
                     allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
                     blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    auto_thread=rule_cfg.get("auto_thread"),
+                    thread_require_mention=rule_cfg.get("thread_require_mention"),
                 )
 
         # Bot-level admins
@@ -1095,6 +1110,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+        raw_no_thread_groups = extra.get("no_thread_groups", [])
+        if isinstance(raw_no_thread_groups, str):
+            config_no_thread_groups = [raw_no_thread_groups]
+        elif isinstance(raw_no_thread_groups, (list, tuple, set, frozenset)):
+            config_no_thread_groups = list(raw_no_thread_groups)
+        else:
+            config_no_thread_groups = []
 
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1152,6 +1174,16 @@ class FeishuAdapter(BasePlatformAdapter):
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
+            auto_thread=os.getenv("FEISHU_AUTO_THREAD", "false").strip().lower() in ("true", "1", "yes"),
+            no_thread_groups=frozenset(
+                item.strip()
+                for item in (
+                    os.getenv("FEISHU_NO_THREAD_GROUPS", "").split(",")
+                    + [str(item) for item in config_no_thread_groups]
+                )
+                if item.strip()
+            ),
+            thread_require_mention=os.getenv("FEISHU_THREAD_REQUIRE_MENTION", "false").strip().lower() in ("true", "1", "yes"),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1182,6 +1214,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._auto_thread = settings.auto_thread
+        self._no_thread_groups = settings.no_thread_groups
+        self._thread_require_mention = settings.thread_require_mention
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1289,6 +1324,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_thread_loop = None
         self._loop = None
         self._event_handler = None
+        self._save_participated_threads()
         self._persist_seen_message_ids()
         await self._release_app_lock()
 
@@ -1307,6 +1343,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_text_batches.clear()
         self._pending_text_batch_counts.clear()
         self._pending_media_batches.clear()
+        self._pending_placeholder_edits.clear()
 
     def _disable_websocket_auto_reconnect(self) -> None:
         if self._ws_client is None:
@@ -1346,8 +1383,30 @@ class FeishuAdapter(BasePlatformAdapter):
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         last_response = None
 
+        # Extract any pending placeholder edit for the current thread, if present.
+        # pop() is a synchronous atomic operation and is naturally safe under asyncio's single-threaded event loop.
+        placeholder_msg_id: Optional[str] = None
+        _ph_id: Optional[str] = None
+        thread_id = (metadata or {}).get("thread_id")
+        if thread_id:
+            entry = self._pending_placeholder_edits.pop(thread_id, None)
+            if entry:
+                _ph_id, _ph_ts = entry
+                if time.monotonic() - _ph_ts <= _PLACEHOLDER_EDIT_TTL:
+                    placeholder_msg_id = _ph_id
+
         try:
             for chunk in chunks:
+                if placeholder_msg_id:
+                    edit_result = await self.edit_message(chat_id, placeholder_msg_id, chunk)
+                    placeholder_msg_id = None  # Consume once regardless of success or failure
+                    if edit_result.success:
+                        last_response = edit_result
+                        continue
+                    logger.warning(
+                        "[Feishu] Placeholder edit failed (chat=%s, msg=%s): %s; falling back to append",
+                        chat_id, _ph_id, edit_result.error,
+                    )
                 msg_type, payload = self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
@@ -1383,6 +1442,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
+            if isinstance(last_response, SendResult):
+                return last_response  # edit succeeded and there was only one chunk
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
@@ -2163,13 +2224,30 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
+        raw_thread_id = getattr(message, "thread_id", None) or None
+        root_id = getattr(message, "root_id", None) or None
+        bootstrap_result = await self._maybe_bootstrap_auto_thread(
+            chat_id=chat_id,
+            message_id=message_id,
+            chat_type=chat_type,
+            raw_thread_id=raw_thread_id,
+            root_id=root_id,
+        )
+        if bootstrap_result:
+            bootstrap_root_id, placeholder_msg_id = bootstrap_result  # (root_id, placeholder_msg_id)
+            self._track_thread(bootstrap_root_id)
+            if placeholder_msg_id:
+                self._pending_placeholder_edits[bootstrap_root_id] = (placeholder_msg_id, time.monotonic())
+        else:
+            bootstrap_root_id = None
+        effective_root_id = bootstrap_root_id or root_id
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=effective_root_id or raw_thread_id,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -2974,6 +3052,53 @@ class FeishuAdapter(BasePlatformAdapter):
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
         return str(placeholder).strip() or None
 
+    def _resolve_auto_thread(self, chat_id: str) -> bool:
+        rule = self._group_rules.get(chat_id)
+        if rule and rule.auto_thread is not None:
+            return bool(rule.auto_thread)
+        if chat_id in self._no_thread_groups:
+            return False
+        return self._auto_thread
+
+    def _resolve_thread_require_mention(self, chat_id: str) -> bool:
+        rule = self._group_rules.get(chat_id)
+        if rule and rule.thread_require_mention is not None:
+            return bool(rule.thread_require_mention)
+        return self._thread_require_mention
+
+    async def _maybe_bootstrap_auto_thread(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        chat_type: str,
+        raw_thread_id: Optional[str],
+        root_id: Optional[str],
+    ) -> Optional[tuple[str, Optional[str]]]:
+        if chat_type == "p2p" or raw_thread_id or root_id:
+            return None
+        if not self._resolve_auto_thread(chat_id):
+            return None
+
+        response = await self._feishu_send_with_retry(
+            chat_id=chat_id,
+            msg_type="text",
+            payload=json.dumps({"text": "🔄 Thinking..."}, ensure_ascii=False),
+            reply_to=message_id,
+            metadata={"thread_id": message_id},
+        )
+        if not self._response_succeeded(response):
+            logger.warning(
+                "[Feishu] Auto-thread bootstrap failed: chat_id=%s message_id=%s msg=%s",
+                chat_id,
+                message_id,
+                getattr(response, "msg", "reply failed"),
+            )
+            return None
+
+        placeholder_msg_id = self._extract_response_field(response, "message_id")
+        return message_id, placeholder_msg_id  # (root_id, placeholder_msg_id)
+
     @staticmethod
     def _default_image_media_type(ext: str) -> str:
         normalized_ext = (ext or "").lower()
@@ -3028,6 +3153,15 @@ class FeishuAdapter(BasePlatformAdapter):
         """Require an explicit @mention before group messages enter the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        raw_thread_id = getattr(message, "thread_id", None) or None
+        root_id = getattr(message, "root_id", None) or None
+        effective_root_id = root_id or raw_thread_id
+        if (
+            effective_root_id
+            and effective_root_id in self._bot_participated_threads
+            and not self._resolve_thread_require_mention(chat_id)
+        ):
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
@@ -3153,6 +3287,43 @@ class FeishuAdapter(BasePlatformAdapter):
             self._persist_seen_message_ids()
             return False
 
+    def _load_participated_threads(self) -> None:
+        try:
+            payload = json.loads(self._thread_state_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError):
+            return
+        for root_id in payload.get("threads", []):
+            normalized = str(root_id).strip()
+            if not normalized:
+                continue
+            self._bot_participated_threads.add(normalized)
+            self._bot_participated_thread_order.append(normalized)
+
+    def _track_thread(self, root_id: str) -> None:
+        if not root_id:
+            return
+        with self._thread_state_lock:
+            if root_id in self._bot_participated_threads:
+                self._bot_participated_thread_order = [
+                    item for item in self._bot_participated_thread_order if item != root_id
+                ]
+            self._bot_participated_threads.add(root_id)
+            self._bot_participated_thread_order.append(root_id)
+            while len(self._bot_participated_thread_order) > _MAX_TRACKED_THREADS:
+                stale = self._bot_participated_thread_order.pop(0)
+                self._bot_participated_threads.discard(stale)
+        self._save_participated_threads()
+
+    def _save_participated_threads(self) -> None:
+        try:
+            self._thread_state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"threads": self._bot_participated_thread_order[-_MAX_TRACKED_THREADS:]}
+            self._thread_state_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            logger.warning("[Feishu] Failed to persist thread state to %s", self._thread_state_path, exc_info=True)
+
     # =========================================================================
     # Outbound payload construction and send pipeline
     # =========================================================================
@@ -3245,7 +3416,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 uuid_value=str(uuid.uuid4()),
             )
             request = self._build_reply_message_request(reply_to, body)
-            return await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            response = await asyncio.to_thread(self._client.im.v1.message.reply, request)
+            if reply_in_thread and self._response_succeeded(response):
+                self._track_thread(str((metadata or {}).get("thread_id") or ""))
+            return response
 
         body = self._build_create_message_body(
             receive_id=chat_id,

@@ -215,6 +215,44 @@ FEISHU_BOT_NAME=MyBot
 
 If none of these are set, the adapter will attempt to auto-discover the bot name via the Application Info API on startup. For this to work, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
 
+## Thread Routing
+
+Feishu topics can be used as routing boundaries for replies and conversation history. Hermes supports the following thread-routing controls:
+
+```bash
+FEISHU_AUTO_THREAD=true
+FEISHU_NO_THREAD_GROUPS=oc_alpha,oc_beta
+FEISHU_THREAD_REQUIRE_MENTION=false
+```
+
+- `FEISHU_AUTO_THREAD` enables automatic topic creation for the first top-level group message that reaches Hermes. Default: `false`.
+- `FEISHU_NO_THREAD_GROUPS` is a comma-separated list of open chat IDs that opt out of auto-threading even when it is enabled globally.
+- Messages inside a Feishu topic always carry their own independent conversation context. Each topic is treated as a separate session, identified by the topic root message.
+- `FEISHU_THREAD_REQUIRE_MENTION` controls whether follow-up messages in bot-participated topics still need an explicit @mention. Default: `false`.
+
+Group-level overrides are available in `config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      no_thread_groups:
+        - oc_alpha
+      group_rules:
+        oc_topic_enabled:
+          policy: open
+          auto_thread: true
+          thread_require_mention: false
+```
+
+Auto-thread routing follows this precedence order:
+
+```text
+group_rules.<chat_id>.auto_thread -> FEISHU_NO_THREAD_GROUPS exclusion -> FEISHU_AUTO_THREAD
+```
+
+When auto-threading creates a topic, Hermes first sends a `🔄 Thinking...` placeholder reply to establish the topic, then edits this placeholder with the actual response once the agent finishes processing. If the edit fails (e.g., message was withdrawn or edit timeout expired), the response is appended as a new message in the topic instead.
+
 ## Interactive Card Actions
 
 When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:
@@ -410,6 +448,9 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_CONNECTION_MODE` | — | `websocket` | `websocket` or `webhook` |
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
+| `FEISHU_AUTO_THREAD` | — | `false` | Automatically create a topic for qualifying top-level group messages |
+| `FEISHU_NO_THREAD_GROUPS` | — | _(empty)_ | Comma-separated group chat IDs that are excluded from auto-threading |
+| `FEISHU_THREAD_REQUIRE_MENTION` | — | `false` | Require a fresh @mention even inside a bot-participated topic |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
 | `FEISHU_GROUP_POLICY` | — | `allowlist` | Group message policy: `open`, `allowlist`, `disabled` |

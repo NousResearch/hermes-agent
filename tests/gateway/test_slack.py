@@ -93,6 +93,46 @@ def _redirect_cache(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# TestSlashCommandSessionIsolation
+# ---------------------------------------------------------------------------
+
+class TestSlashCommandSessionIsolation:
+    @pytest.mark.asyncio
+    async def test_channel_slash_command_uses_group_session_semantics(self, adapter):
+        command = {
+            "text": "hello",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "C123"
+        assert event.source.user_id == "U123"
+
+    @pytest.mark.asyncio
+    async def test_dm_slash_command_keeps_dm_session_semantics(self, adapter):
+        command = {
+            "text": "hello",
+            "user_id": "U123",
+            "channel_id": "D123",
+            "team_id": "T123",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.source.chat_type == "dm"
+        assert event.source.chat_id == "D123"
+        assert event.source.user_id == "U123"
+
+
+# ---------------------------------------------------------------------------
 # TestAppMentionHandler
 # ---------------------------------------------------------------------------
 

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,20 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
+
+
+def _get_provider_entry_base_url(entry: Dict[str, Any]) -> str:
+    for key in ("api", "url", "base_url", "baseUrl"):
+        raw_url = entry.get(key)
+        if not isinstance(raw_url, str):
+            continue
+        candidate = raw_url.strip()
+        if not candidate:
+            continue
+        parsed = urlparse(candidate)
+        if parsed.scheme and parsed.netloc:
+            return candidate
+    return ""
 
 
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
@@ -285,12 +300,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
+            key_env = str(entry.get("key_env") or entry.get("keyEnv") or "").strip()
+            resolved_api_key = str(entry.get("api_key") or entry.get("apiKey") or "").strip()
+            if not resolved_api_key and key_env:
+                resolved_api_key = os.getenv(key_env, "").strip()
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                base_url = _get_provider_entry_base_url(entry)
                 if base_url:
                     return {
                         "name": entry.get("name", ep_name),
@@ -304,7 +321,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 display_norm = _normalize_custom_provider_name(display_name)
                 if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
                     # Found match by display name
-                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
+                    base_url = _get_provider_entry_base_url(entry)
                     if base_url:
                         return {
                             "name": display_name,

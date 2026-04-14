@@ -170,6 +170,58 @@ def test_get_named_custom_provider_finds_by_display_name(monkeypatch, tmp_path):
     assert result["base_url"] == "http://ollama.example.com/v1"
 
 
+def test_get_named_custom_provider_accepts_camelcase_aliases(monkeypatch, tmp_path):
+    """providers: entries should accept baseUrl/apiKey aliases at runtime."""
+    config = {
+        "providers": {
+            "nvidia-direct": {
+                "baseUrl": "https://integrate.api.nvidia.com/v1",
+                "apiKey": "nvidia-key",
+                "apiMode": "chat_completions",
+                "name": "NVIDIA Direct",
+                "default_model": "llama-3.1",
+            }
+        }
+    }
+
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = rp._get_named_custom_provider("nvidia-direct")
+
+    assert result is not None
+    assert result["base_url"] == "https://integrate.api.nvidia.com/v1"
+    assert result["api_key"] == "nvidia-key"
+    assert result["model"] == "llama-3.1"
+
+
+def test_get_named_custom_provider_ignores_invalid_api_when_baseurl_exists(monkeypatch, tmp_path):
+    """A non-URL api field must not shadow a valid baseUrl entry."""
+    config = {
+        "providers": {
+            "nvidia-direct": {
+                "api": "openai-reverse-proxy",
+                "baseUrl": "https://integrate.api.nvidia.com/v1",
+                "name": "NVIDIA Direct",
+            }
+        }
+    }
+
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump(config))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    result = rp._get_named_custom_provider("nvidia-direct")
+
+    assert result is not None
+    assert result["base_url"] == "https://integrate.api.nvidia.com/v1"
+
+
 def test_get_named_custom_provider_falls_back_to_legacy_format(monkeypatch, tmp_path):
     """Should still work with custom_providers: list format."""
     config = {

@@ -159,6 +159,52 @@ class TestMissingModelSection:
         assert not any("no 'model' section" in i.message for i in issues)
 
 
+class TestProvidersValidation:
+    """Validate providers: dict structure diagnostics."""
+
+    def test_warns_on_camelcase_provider_keys(self):
+        issues = validate_config_structure({
+            "providers": {
+                "nvidia": {
+                    "baseUrl": "https://integrate.api.nvidia.com/v1",
+                    "apiKey": "${NVIDIA_API_KEY}",
+                    "apiMode": "chat_completions",
+                }
+            }
+        })
+
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("uses camelCase keys" in i.message for i in warnings)
+        assert any("baseUrl -> base_url" in i.hint for i in warnings)
+
+    def test_warns_on_invalid_provider_api_without_fallback_url(self):
+        issues = validate_config_structure({
+            "providers": {
+                "nvidia": {
+                    "api": "openai-reverse-proxy",
+                    "apiKey": "${NVIDIA_API_KEY}",
+                }
+            }
+        })
+
+        warnings = [i for i in issues if i.severity == "warning"]
+        assert any("is not a valid URL" in i.message for i in warnings)
+
+    def test_does_not_warn_on_invalid_api_when_base_url_fallback_exists(self):
+        issues = validate_config_structure({
+            "providers": {
+                "nvidia": {
+                    "api": "openai-reverse-proxy",
+                    "baseUrl": "https://integrate.api.nvidia.com/v1",
+                }
+            }
+        })
+
+        warnings = [i for i in issues if i.severity == "warning"]
+        invalid_api = [i for i in warnings if "is not a valid URL" in i.message]
+        assert invalid_api == []
+
+
 class TestConfigIssueDataclass:
     """ConfigIssue should be a proper dataclass."""
 

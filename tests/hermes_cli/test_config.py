@@ -531,6 +531,90 @@ class TestCustomProviderCompatibility:
             }
         ]
 
+    def test_providers_dict_accepts_camelcase_aliases(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "nvidia": {
+                            "name": "NVIDIA",
+                            "baseUrl": "https://integrate.api.nvidia.com/v1",
+                            "apiKey": "env:NVIDIA_API_KEY",
+                            "apiMode": "chat_completions",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "NVIDIA",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "provider_key": "nvidia",
+                "api_key": "env:NVIDIA_API_KEY",
+                "api_mode": "chat_completions",
+            }
+        ]
+
+    def test_providers_dict_ignores_invalid_api_when_valid_base_url_exists(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "nvidia": {
+                            "name": "NVIDIA",
+                            "api": "openai-reverse-proxy",
+                            "baseUrl": "https://integrate.api.nvidia.com/v1",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "NVIDIA",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "provider_key": "nvidia",
+            }
+        ]
+
+    def test_providers_dict_drops_entry_when_no_valid_url_is_present(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "nvidia": {
+                            "name": "NVIDIA",
+                            "api": "openai-reverse-proxy",
+                            "apiKey": "env:NVIDIA_API_KEY",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == []
+
     def test_dedup_across_legacy_and_providers(self, tmp_path):
         """Same name+url in both schemas should not produce duplicates."""
         config_path = tmp_path / "config.yaml"

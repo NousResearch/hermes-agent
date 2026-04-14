@@ -22,6 +22,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+from urllib.parse import urlparse
 
 from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
@@ -1577,10 +1578,21 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    def _first_string(*keys: str) -> str:
+        for key in keys:
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
+    def _is_valid_base_url(value: str) -> bool:
+        parsed = urlparse(value)
+        return bool(parsed.scheme and parsed.netloc)
+
     base_url = ""
-    for url_key in ("api", "url", "base_url"):
+    for url_key in ("api", "url", "base_url", "baseUrl"):
         raw_url = entry.get(url_key)
-        if isinstance(raw_url, str) and raw_url.strip():
+        if isinstance(raw_url, str) and raw_url.strip() and _is_valid_base_url(raw_url.strip()):
             base_url = raw_url.strip()
             break
     if not base_url:
@@ -1604,15 +1616,15 @@ def _normalize_custom_provider_entry(
     if provider_key:
         normalized["provider_key"] = provider_key
 
-    api_key = entry.get("api_key")
-    if isinstance(api_key, str) and api_key.strip():
-        normalized["api_key"] = api_key.strip()
+    api_key = _first_string("api_key", "apiKey")
+    if api_key:
+        normalized["api_key"] = api_key
 
-    key_env = entry.get("key_env")
-    if isinstance(key_env, str) and key_env.strip():
-        normalized["key_env"] = key_env.strip()
+    key_env = _first_string("key_env", "keyEnv")
+    if key_env:
+        normalized["key_env"] = key_env
 
-    api_mode = entry.get("api_mode") or entry.get("transport")
+    api_mode = _first_string("api_mode", "apiMode", "transport")
     if isinstance(api_mode, str) and api_mode.strip():
         normalized["api_mode"] = api_mode.strip()
 
@@ -1731,6 +1743,12 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+_PROVIDER_CAMELCASE_ALIASES = {
+    "apiKey": "api_key",
+    "baseUrl": "base_url",
+    "apiMode": "api_mode",
+    "keyEnv": "key_env",
+}
 
 
 @dataclass
@@ -1836,6 +1854,57 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "fallback_model appears inside custom_providers instead of at root level",
             "Move fallback_model to the top level of config.yaml (no indentation)",
         ))
+
+    # ── providers section: keyed user-defined providers ──────────────────
+    providers = config.get("providers")
+    if providers is not None:
+        if not isinstance(providers, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"providers should be a dict keyed by provider name, got {type(providers).__name__}",
+                "Change to:\n"
+                "  providers:\n"
+                "    my-provider:\n"
+                "      base_url: https://...\n"
+                "      api_key: ...",
+            ))
+        else:
+            for provider_name, entry in providers.items():
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"providers.{provider_name} is not a dict (got {type(entry).__name__})",
+                        "Each provider entry should define base_url/api plus optional api_key, key_env, and model fields",
+                    ))
+                    continue
+
+                used_aliases = [alias for alias in _PROVIDER_CAMELCASE_ALIASES if entry.get(alias)]
+                if used_aliases:
+                    alias_hints = ", ".join(
+                        f"{alias} -> {_PROVIDER_CAMELCASE_ALIASES[alias]}" for alias in used_aliases
+                    )
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"providers.{provider_name} uses camelCase keys: {', '.join(used_aliases)}",
+                        f"Prefer snake_case in config.yaml: {alias_hints}",
+                    ))
+
+                raw_api = entry.get("api")
+                if isinstance(raw_api, str) and raw_api.strip():
+                    parsed = urlparse(raw_api.strip())
+                    if not (parsed.scheme and parsed.netloc):
+                        fallback_url = (
+                            entry.get("base_url")
+                            or entry.get("baseUrl")
+                            or entry.get("url")
+                            or ""
+                        )
+                        if not fallback_url:
+                            issues.append(ConfigIssue(
+                                "warning",
+                                f"providers.{provider_name}.api is not a valid URL: {raw_api.strip()}",
+                                "Use base_url: https://... (or api: https://...) for endpoints; non-URL values are ignored",
+                            ))
 
     # ── model section: should exist when custom_providers is configured ──
     model_cfg = config.get("model")

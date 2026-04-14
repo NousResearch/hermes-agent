@@ -116,7 +116,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         app = web.Application()
         app.router.add_post("/webhooks/twilio", self._handle_webhook)
-        app.router.add_get("/health", lambda _: web.Response(text="ok"))
+        app.router.add_get("/health", self._handle_health)
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -282,6 +282,11 @@ class SmsAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Twilio webhook handler
     # ------------------------------------------------------------------
+
+    async def _handle_health(self, _request) -> "aiohttp.web.Response":
+        from aiohttp import web
+
+        return web.Response(text="ok")
 
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web

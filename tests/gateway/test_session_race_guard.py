@@ -67,6 +67,27 @@ def _make_event(text="hello", chat_id="12345"):
 
 
 # ------------------------------------------------------------------
+# Test 0: Missing user_id should still honor an explicit auth override
+# ------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_missing_user_id_respects_auth_override():
+    """Synthetic DM events in focused runner tests often omit user_id.
+    When the runner's auth check is explicitly stubbed to allow the source,
+    the no-user-id guard must not short-circuit the message before the
+    session/race handling logic runs."""
+    runner = _make_runner()
+    event = _make_event()
+
+    async def mock_inner(self_inner, ev, src, qk):
+        return "ok"
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
+        result = await runner._handle_message(event)
+
+    assert result == "ok"
+
+
+# ------------------------------------------------------------------
 # Test 1: Sentinel is placed before _handle_message_with_agent runs
 # ------------------------------------------------------------------
 @pytest.mark.asyncio

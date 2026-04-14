@@ -68,11 +68,11 @@ from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 @pytest.fixture()
 def adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    config = PlatformConfig(enabled=True, token="***")
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
-    a._app.client = AsyncMock()
+    a._app.client = MagicMock()
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -95,7 +95,8 @@ def _redirect_cache(tmp_path, monkeypatch):
 class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 
-    def test_app_mention_registered_on_connect(self):
+    @pytest.mark.asyncio
+    async def test_app_mention_registered_on_connect(self):
         """connect() should register message + assistant lifecycle handlers."""
         config = PlatformConfig(enabled=True, token="xoxb-fake")
         adapter = SlackAdapter(config)
@@ -120,7 +121,7 @@ class TestAppMentionHandler:
 
         mock_app.event = mock_event
         mock_app.command = mock_command
-        mock_app.client = AsyncMock()
+        mock_app.client = MagicMock()
         mock_app.client.auth_test = AsyncMock(return_value={
             "user_id": "U_BOT",
             "user": "testbot",
@@ -141,7 +142,7 @@ class TestAppMentionHandler:
              patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
              patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
              patch("asyncio.create_task"):
-            asyncio.run(adapter.connect())
+            await adapter.connect()
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
@@ -1056,7 +1057,7 @@ class TestThreadReplyHandling:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -1196,7 +1197,7 @@ class TestAssistantThreadLifecycle:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = MagicMock()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

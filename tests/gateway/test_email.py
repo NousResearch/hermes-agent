@@ -12,7 +12,9 @@ Covers:
 9. Message dispatch and threading
 """
 
+import json
 import os
+import tempfile
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -334,10 +336,41 @@ class TestChannelDirectory(unittest.TestCase):
     """Verify email in channel directory session-based discovery."""
 
     def test_email_in_session_discovery(self):
-        import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        from gateway.channel_directory import build_channel_directory
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sessions_path = Path(tmpdir) / "sessions" / "sessions.json"
+            sessions_path.parent.mkdir(parents=True)
+            sessions_path.write_text(
+                json.dumps(
+                    {
+                        "email_session": {
+                            "origin": {
+                                "platform": "email",
+                                "chat_id": "user@example.com",
+                                "chat_name": "user@example.com",
+                            },
+                            "chat_type": "dm",
+                        }
+                    }
+                )
+            )
+
+            with patch.dict(os.environ, {"HERMES_HOME": tmpdir}, clear=False):
+                directory = build_channel_directory({})
+
+        self.assertIn("email", directory["platforms"])
+        self.assertEqual(
+            directory["platforms"]["email"],
+            [
+                {
+                    "id": "user@example.com",
+                    "name": "user@example.com",
+                    "type": "dm",
+                    "thread_id": None,
+                }
+            ],
+        )
 
 
 class TestGatewaySetup(unittest.TestCase):

@@ -239,10 +239,12 @@ _CORS_HEADERS = {
 
 
 if AIOHTTP_AVAILABLE:
+    API_SERVER_APP_KEY = web.AppKey("api_server_adapter", object)
+
     @web.middleware
     async def cors_middleware(request, handler):
         """Add CORS headers for explicitly allowed origins; handle OPTIONS preflight."""
-        adapter = request.app.get("api_server_adapter")
+        adapter = request.app.get(API_SERVER_APP_KEY)
         origin = request.headers.get("Origin", "")
         cors_headers = None
         if adapter is not None:
@@ -875,11 +877,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
                 return time.monotonic()
 
+            # Poll the queue frequently enough that the keepalive interval is
+            # actually enforceable in tests and production. A fixed 0.5s poll
+            # can miss short keepalive windows entirely when the agent is quiet.
+            poll_timeout = min(0.5, max(0.05, CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS))
+
             # Stream content chunks as they arrive from the agent
             loop = asyncio.get_event_loop()
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
+                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=poll_timeout))
                 except _q.Empty:
                     if agent_task.done():
                         # Drain any remaining items
@@ -1781,7 +1788,7 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
-            self._app["api_server_adapter"] = self
+            self._app[API_SERVER_APP_KEY] = self
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)

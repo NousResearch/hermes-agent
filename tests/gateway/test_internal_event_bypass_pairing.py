@@ -19,6 +19,14 @@ from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pairing_dir(monkeypatch, tmp_path):
+    """Ensure PairingStore state is isolated per test to avoid full-suite leakage."""
+    import gateway.pairing as gateway_pairing
+
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

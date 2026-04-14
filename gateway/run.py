@@ -2388,16 +2388,19 @@ class GatewayRunner:
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
-        if getattr(event, "internal", False):
+        is_internal_event = getattr(event, "internal", False)
+        authorized = True if is_internal_event else self._is_user_authorized(source)
+        if is_internal_event:
             pass
-        elif source.user_id is None:
+        elif source.user_id is None and not authorized:
             # Messages with no user identity (Telegram service messages,
             # channel forwards, anonymous admin actions) cannot be
             # authorized — drop silently instead of triggering the pairing
-            # flow with a None user_id.
+            # flow with a None user_id.  Tests and adapters can still
+            # explicitly override authorization for synthetic DM events.
             logger.debug("Ignoring message with no user_id from %s", source.platform.value)
             return None
-        elif not self._is_user_authorized(source):
+        elif not authorized:
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":

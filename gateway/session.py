@@ -82,6 +82,7 @@ class SessionSource:
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
     user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    app_name: Optional[str] = None  # Per-platform app identifier (e.g. WeCom self-built app name)
     
     @property
     def description(self) -> str:
@@ -444,6 +445,8 @@ def build_session_key(
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
+      - app_name further differentiates multiple apps on the same platform
+        (e.g. WeCom self-built apps sharing a corp_id).
       - Without chat_id, thread_id is used as a best-effort fallback.
       - Without thread_id or chat_id, DMs share a single session.
 
@@ -461,14 +464,19 @@ def build_session_key(
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
     platform = source.platform.value
+    _app = source.app_name
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                base = f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
+                return f"{base}:{_app}" if _app else base
+            base = f"agent:main:{platform}:dm:{source.chat_id}"
+            return f"{base}:{_app}" if _app else base
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            base = f"agent:main:{platform}:dm:{source.thread_id}"
+            return f"{base}:{_app}" if _app else base
+        base = f"agent:main:{platform}:dm"
+        return f"{base}:{_app}" if _app else base
 
     participant_id = source.user_id_alt or source.user_id
     key_parts = ["agent:main", platform, source.chat_type]
@@ -487,6 +495,9 @@ def build_session_key(
 
     if isolate_user and participant_id:
         key_parts.append(str(participant_id))
+
+    if source.app_name:
+        key_parts.append(source.app_name)
 
     return ":".join(key_parts)
 

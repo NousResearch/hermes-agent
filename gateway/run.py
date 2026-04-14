@@ -1104,11 +1104,16 @@ class GatewayRunner:
             return []
 
     @staticmethod
-    def _load_ephemeral_system_prompt() -> str:
+    def _load_ephemeral_system_prompt(self, platform_key: str = "", bot_name: str = None) -> str:
         """Load ephemeral system prompt from config or env var.
         
-        Checks HERMES_EPHEMERAL_SYSTEM_PROMPT env var first, then falls back to
-        agent.system_prompt in ~/.hermes/config.yaml.
+        Priority:
+        1. HERMES_EPHEMERAL_SYSTEM_PROMPT env var
+        2. platform_system_prompts[platform_key][bot_name] (if dict)
+        3. platform_system_prompts[platform_key]['default'] (if dict)
+        4. platform_system_prompts[platform_key] (if string)
+        5. Per-app persona via app_personas[bot_name] → personalities lookup
+        6. agent.system_prompt
         """
         prompt = os.getenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", "")
         if prompt:
@@ -1119,7 +1124,34 @@ class GatewayRunner:
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
-                return (cfg.get("agent", {}).get("system_prompt", "") or "").strip()
+                agent_cfg = cfg.get("agent", {})
+                
+                # Check platform-specific prompts
+                plat_prompts = agent_cfg.get("platform_system_prompts", {})
+                if platform_key in plat_prompts:
+                    val = plat_prompts[platform_key]
+                    if isinstance(val, dict):
+                        if bot_name and bot_name in val:
+                            return (val[bot_name] or "").strip()
+                        if "default" in val:
+                            return (val["default"] or "").strip()
+                    elif isinstance(val, str):
+                        return val.strip()
+                
+                # Per-app persona mapping (e.g. WeCom bots → different personalities)
+                if bot_name:
+                    app_personas = agent_cfg.get("app_personas", {})
+                    if bot_name in app_personas:
+                        persona_name = app_personas[bot_name]
+                        if persona_name:
+                            personalities = agent_cfg.get("personalities", {})
+                            if persona_name in personalities:
+                                return (personalities[persona_name] or "").strip()
+                            # Treat as raw prompt if not a known personality name
+                            return persona_name.strip()
+                
+                # Fallback to global system prompt
+                return (agent_cfg.get("system_prompt", "") or "").strip()
         except Exception:
             pass
         return ""
@@ -7744,10 +7776,15 @@ class GatewayRunner:
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
             
-            # Combine platform context with user-configured ephemeral system prompt
+            # Resolve persona: per-platform/per-bot ephemeral prompt overrides global one
+            ephemeral_prompt = self._load_ephemeral_system_prompt(
+                platform_key=platform_key,
+                bot_name=source.app_name,
+            )
+            
             combined_ephemeral = context_prompt or ""
-            if self._ephemeral_system_prompt:
-                combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            if ephemeral_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + ephemeral_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).

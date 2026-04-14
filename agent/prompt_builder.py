@@ -882,8 +882,13 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
-def load_soul_md() -> Optional[str]:
+def load_soul_md(platform: Optional[str] = None) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
+
+    If *platform* is provided (e.g. ``"telegram"``, ``"wecom"``), first try
+    loading ``SOUL_{platform}.md``.  This lets users define distinct agent
+    identities per messaging platform while keeping ``SOUL.md`` as the
+    universal fallback.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
@@ -895,7 +900,22 @@ def load_soul_md() -> Optional[str]:
     except Exception as e:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
-    soul_path = get_hermes_home() / "SOUL.md"
+    home = get_hermes_home()
+
+    # 1. Platform-specific soul file (e.g. SOUL_telegram.md)
+    if platform:
+        platform_soul_path = home / f"SOUL_{platform}.md"
+        if platform_soul_path.exists():
+            try:
+                content = platform_soul_path.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, f"SOUL_{platform}.md")
+                    return _truncate_content(content, f"SOUL_{platform}.md")
+            except Exception as e:
+                logger.debug("Could not read %s: %s", platform_soul_path, e)
+
+    # 2. Default SOUL.md fallback
+    soul_path = home / "SOUL.md"
     if not soul_path.exists():
         return None
     try:

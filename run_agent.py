@@ -3138,7 +3138,7 @@ class AIAgent:
         # Try SOUL.md as primary identity (unless context files are skipped)
         _soul_loaded = False
         if not self.skip_context_files:
-            _soul_content = load_soul_md()
+            _soul_content = load_soul_md(platform=self.platform)
             if _soul_content:
                 prompt_parts = [_soul_content]
                 _soul_loaded = True

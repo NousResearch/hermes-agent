@@ -663,6 +663,11 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # Per-app persona mapping — assign different personalities to platform apps
+    # Key: app name (e.g. WeCom self-built app name), Value: personality name or raw prompt
+    # Example: {"查询机器人": "tianmei", "金价": "technical", "MR": "concise"}
+    "app_personas": {},
+
     # Pre-exec security scanning via tirith
     "security": {
         "redact_secrets": True,

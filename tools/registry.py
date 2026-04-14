@@ -117,11 +117,27 @@ class ToolRegistry:
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
-                logger.warning(
-                    "Tool name collision: '%s' (toolset '%s') is being "
-                    "overwritten by toolset '%s'",
-                    name, existing.toolset, toolset,
+                # Allow MCP-to-MCP overwrites (legitimate: server refresh,
+                # or two MCP servers with overlapping tool names).
+                both_mcp = (
+                    existing.toolset.startswith("mcp-")
+                    and toolset.startswith("mcp-")
                 )
+                if both_mcp:
+                    logger.debug(
+                        "Tool '%s': MCP toolset '%s' overwriting MCP toolset '%s'",
+                        name, toolset, existing.toolset,
+                    )
+                else:
+                    # Reject shadowing — prevent plugins/MCP from overwriting
+                    # built-in tools or vice versa.
+                    logger.error(
+                        "Tool registration REJECTED: '%s' (toolset '%s') would "
+                        "shadow existing tool from toolset '%s'. Deregister the "
+                        "existing tool first if this is intentional.",
+                        name, toolset, existing.toolset,
+                    )
+                    return
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,

@@ -1040,6 +1040,10 @@ class APIServerAdapter(BasePlatformAdapter):
         # Monotonic counter for call_id generation if the agent doesn't
         # provide one (it doesn't, from tool_progress_callback).
         call_counter = 0
+        # Canonical Responses SSE events include a monotonically increasing
+        # sequence_number. Add it server-side for every emitted event so
+        # clients that validate the OpenAI event schema can parse our stream.
+        sequence_number = 0
         # Track the assistant message item id + content index for text
         # delta events — the spec ties deltas to a specific item.
         message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
@@ -1047,6 +1051,10 @@ class APIServerAdapter(BasePlatformAdapter):
         message_opened = False
 
         async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
+            nonlocal sequence_number
+            if "sequence_number" not in data:
+                data["sequence_number"] = sequence_number
+            sequence_number += 1
             payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
             await response.write(payload.encode())
 
@@ -1105,6 +1113,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_index": message_output_index,
                     "content_index": 0,
                     "delta": delta_text,
+                    "logprobs": [],
                 })
 
             async def _emit_tool_started(payload: Dict[str, Any]) -> str:
@@ -1187,11 +1196,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 # function_call_output added (result)
                 result_str = result if isinstance(result, str) else json.dumps(result)
+                output_parts = [{"type": "input_text", "text": result_str}]
                 output_item = {
                     "id": f"fco_{uuid.uuid4().hex[:24]}",
                     "type": "function_call_output",
                     "call_id": pending["call_id"],
-                    "output": result_str,
+                    "output": output_parts,
                     "status": "completed",
                 }
                 idx = output_index
@@ -1199,10 +1209,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 emitted_items.append({
                     "type": "function_call_output",
                     "call_id": pending["call_id"],
-                    "output": result_str,
+                    "output": output_parts,
                 })
                 await _write_event("response.output_item.added", {
                     "type": "response.output_item.added",
+                    "output_index": idx,
+                    "item": output_item,
+                })
+                await _write_event("response.output_item.done", {
+                    "type": "response.output_item.done",
                     "output_index": idx,
                     "item": output_item,
                 })
@@ -1282,6 +1297,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_index": message_output_index,
                     "content_index": 0,
                     "text": final_response_text,
+                    "logprobs": [],
                 })
                 msg_done_item = {
                     "id": message_item_id,
@@ -1933,10 +1949,15 @@ class APIServerAdapter(BasePlatformAdapter):
                         "call_id": tc.get("id", ""),
                     })
             elif role == "tool":
+                output_content = msg.get("content", "")
+                if isinstance(output_content, list):
+                    output = output_content
+                else:
+                    output = [{"type": "input_text", "text": str(output_content)}]
                 items.append({
                     "type": "function_call_output",
                     "call_id": msg.get("tool_call_id", ""),
-                    "output": msg.get("content", ""),
+                    "output": output,
                 })
 
         # Final assistant message

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import PlatformConfig
@@ -580,3 +581,53 @@ class TestWeixinSendImageFileParameterName:
             caption="",
             metadata=None,
         )
+
+
+class TestWeixinVoiceSending:
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch.object(WeixinAdapter, "_send_file", new_callable=AsyncMock)
+    @patch.object(WeixinAdapter, "_prepare_voice_payload")
+    def test_send_voice_uses_silk_payload(self, prepare_mock, send_file_mock, tmp_path):
+        adapter = self._connected_adapter()
+        source = tmp_path / "voice.ogg"
+        silk = tmp_path / "voice.silk"
+        source.write_bytes(b"ogg")
+        silk.write_bytes(b"silk")
+        prepare_mock.return_value = str(silk)
+        send_file_mock.return_value = "msg-1"
+
+        result = asyncio.run(adapter.send_voice("wxid_test123", str(source)))
+
+        assert result.success is True
+        prepare_mock.assert_called_once_with(str(source))
+        send_file_mock.assert_awaited_once_with("wxid_test123", str(silk), "")
+
+    @patch("gateway.platforms.weixin.pilk.encode")
+    @patch.object(WeixinAdapter, "_transcode_audio_to_wav")
+    def test_prepare_voice_payload_transcodes_to_silk(self, transcode_mock, pilk_encode_mock, tmp_path):
+        adapter = _make_adapter()
+        src = tmp_path / "voice.ogg"
+        src.write_bytes(b"ogg")
+        wav = tmp_path / "voice.wav"
+        wav.write_bytes(b"wav")
+        transcode_mock.return_value = str(wav)
+
+        def _fake_encode(infile, outfile, **kwargs):
+            Path(outfile).write_bytes(b"silk-bytes")
+
+        pilk_encode_mock.side_effect = _fake_encode
+
+        silk_path = adapter._prepare_voice_payload(str(src))
+
+        assert silk_path.endswith('.silk')
+        assert Path(silk_path).read_bytes() == b"silk-bytes"
+        pilk_encode_mock.assert_called_once_with(str(wav), silk_path, tencent=True)
+        assert not wav.exists()
+        os.unlink(silk_path)

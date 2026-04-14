@@ -25,6 +25,7 @@ import struct
 import tempfile
 import time
 import uuid
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -65,6 +66,14 @@ from gateway.platforms.base import (
 )
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
+
+try:
+    import pilk
+
+    PILK_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    pilk = None  # type: ignore[assignment]
+    PILK_AVAILABLE = False
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
@@ -1590,7 +1599,74 @@ class WeixinAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self.send_document(chat_id, audio_path, caption=caption or "", metadata=metadata)
+        if not self._session or not self._token:
+            return SendResult(success=False, error="Not connected")
+
+        temp_paths: List[str] = []
+        try:
+            voice_path = self._prepare_voice_payload(audio_path)
+            if voice_path != audio_path:
+                temp_paths.append(voice_path)
+            message_id = await self._send_file(chat_id, voice_path, caption or "")
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.error("[%s] send_voice failed to=%s: %s", self.name, _safe_id(chat_id), exc)
+            return SendResult(success=False, error=str(exc))
+        finally:
+            for path in temp_paths:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+    def _prepare_voice_payload(self, audio_path: str) -> str:
+        path = str(audio_path)
+        if path.endswith(".silk"):
+            return path
+        if not PILK_AVAILABLE:
+            raise RuntimeError(
+                "Weixin native voice requires SILK encoding, but pilk is not installed"
+            )
+
+        wav_path = self._transcode_audio_to_wav(path)
+        try:
+            fd, silk_path = tempfile.mkstemp(suffix='.silk')
+            os.close(fd)
+            pilk.encode(wav_path, silk_path, tencent=True)
+            if not os.path.exists(silk_path) or os.path.getsize(silk_path) <= 0:
+                raise RuntimeError("Generated SILK voice file is empty")
+            return silk_path
+        finally:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+
+    def _transcode_audio_to_wav(self, input_path: str) -> str:
+        fd, wav_path = tempfile.mkstemp(suffix='.wav')
+        os.close(fd)
+        try:
+            result = subprocess.run(
+                [
+                    'ffmpeg', '-y', '-i', input_path,
+                    '-ar', '24000', '-ac', '1', '-f', 'wav', wav_path,
+                ],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.decode('utf-8', errors='ignore')[:400]
+                raise RuntimeError(f"ffmpeg voice conversion failed: {stderr}")
+            if not os.path.exists(wav_path) or os.path.getsize(wav_path) <= 0:
+                raise RuntimeError("ffmpeg produced empty wav for Weixin voice")
+            return wav_path
+        except Exception:
+            try:
+                os.unlink(wav_path)
+            except OSError:
+                pass
+            raise
 
     async def _download_remote_media(self, url: str) -> str:
         from tools.url_safety import is_safe_url

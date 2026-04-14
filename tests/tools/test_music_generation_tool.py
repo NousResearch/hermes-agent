@@ -225,3 +225,32 @@ def test_wake_message_includes_local_media_delivery_path():
 
     assert "Saved: /tmp/night-drive.mp3" in message
     assert "MEDIA:/tmp/night-drive.mp3" in message
+
+
+def test_get_music_provider_defaults_to_senseaudio():
+    from tools.music_generation_tool import DEFAULT_PROVIDER, _get_provider
+
+    assert DEFAULT_PROVIDER == "senseaudio"
+    assert _get_provider({}) == "senseaudio"
+
+
+def test_music_generate_dispatches_generate_to_configured_provider():
+    from tools.music_generation_tool import music_generate_tool
+
+    with patch("tools.music_generation_tool._load_music_config", return_value={"provider": "senseaudio"}), \
+         patch("tools.music_generation_tool._senseaudio_generate", return_value='{"status":"started"}') as mock_generate:
+        result = music_generate_tool(prompt="warm lofi beat")
+
+    assert json.loads(result) == {"status": "started"}
+    mock_generate.assert_called_once()
+
+
+def test_music_generate_dispatches_status_to_configured_provider():
+    from tools.music_generation_tool import music_generate_tool
+
+    with patch("tools.music_generation_tool._load_music_config", return_value={"provider": "senseaudio"}), \
+         patch("tools.music_generation_tool._senseaudio_status", return_value='{"status":"running"}') as mock_status:
+        result = music_generate_tool(action="status")
+
+    assert json.loads(result) == {"status": "running"}
+    mock_status.assert_called_once()

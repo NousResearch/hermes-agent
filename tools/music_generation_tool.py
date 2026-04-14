@@ -12,10 +12,6 @@ Workflow:
            → returns GenerateMusicRuntimeResult when done
   status   → GET /v1/music/song/pending/:task_id for the active task
 
-In gateway sessions (Telegram, Discord, etc.) generation runs as a
-background task so the agent turn is not blocked.  In CLI mode the
-tool falls back to a synchronous polling loop.
-
 Environment:
   SENSEAUDIO_API_KEY  — required
   SENSEAUDIO_BASE_URL — optional override (default: https://api.senseaudio.cn/v1)
@@ -45,7 +41,9 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-SENSEAUDIO_BASE_URL = os.getenv("SENSEAUDIO_BASE_URL", "https://api.senseaudio.cn/v1")
+DEFAULT_PROVIDER = "senseaudio"
+DEFAULT_SENSEAUDIO_BASE_URL = "https://api.senseaudio.cn/v1"
+SENSEAUDIO_BASE_URL = os.getenv("SENSEAUDIO_BASE_URL", DEFAULT_SENSEAUDIO_BASE_URL)
 SENSEAUDIO_MUSIC_MODEL = "senseaudio-music-1.0-260319"
 
 POLL_INTERVAL = 5     # seconds between status checks
@@ -53,9 +51,9 @@ POLL_MAX_WAIT = 1800  # total timeout (30 minutes)
 
 _debug = DebugSession("music_tools", env_var="MUSIC_TOOLS_DEBUG")
 
-# session_key → SenseAudio task_id, for status queries
-_active_task_ids: Dict[str, str] = {}
-_active_task_ids_lock = threading.Lock()
+# session_key → {"provider": str, "task_id": str}
+_active_music_tasks: Dict[str, Dict[str, str]] = {}
+_active_music_tasks_lock = threading.Lock()
 
 
 def _get_music_output_dir() -> Path:
@@ -89,16 +87,57 @@ def _download_track_to_local(audio_url: str, *, file_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Config helpers
+# ---------------------------------------------------------------------------
+
+def _load_music_config() -> Dict[str, Any]:
+    """Load the ``music`` section from user config, falling back to defaults."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        return config.get("music", {})
+    except ImportError:
+        logger.debug("hermes_cli.config not available, using default music config")
+        return {}
+    except Exception as exc:
+        logger.warning("Failed to load music config: %s", exc, exc_info=True)
+        return {}
+
+
+def _get_provider(music_config: Dict[str, Any]) -> str:
+    """Return the configured music provider name."""
+    return (music_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+def _get_senseaudio_config(music_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Return the provider-specific SenseAudio config section."""
+    config = music_config or {}
+    provider_cfg = config.get("senseaudio", {})
+    return provider_cfg if isinstance(provider_cfg, dict) else {}
+
+
+# ---------------------------------------------------------------------------
 # API helpers
 # ---------------------------------------------------------------------------
 
-def _api_key() -> Optional[str]:
-    return os.getenv("SENSEAUDIO_API_KEY")
+def _api_key(music_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    senseaudio_cfg = _get_senseaudio_config(music_config)
+    return (senseaudio_cfg.get("api_key") or os.getenv("SENSEAUDIO_API_KEY") or "").strip() or None
 
 
-def _auth_headers() -> Dict[str, str]:
+def _base_url(music_config: Optional[Dict[str, Any]] = None) -> str:
+    senseaudio_cfg = _get_senseaudio_config(music_config)
+    return (senseaudio_cfg.get("base_url") or os.getenv("SENSEAUDIO_BASE_URL") or DEFAULT_SENSEAUDIO_BASE_URL).rstrip("/")
+
+
+def _model_name(music_config: Optional[Dict[str, Any]] = None) -> str:
+    senseaudio_cfg = _get_senseaudio_config(music_config)
+    return (senseaudio_cfg.get("model") or SENSEAUDIO_MUSIC_MODEL).strip()
+
+
+def _auth_headers(music_config: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     return {
-        "Authorization": f"Bearer {_api_key()}",
+        "Authorization": f"Bearer {_api_key(music_config)}",
         "Content-Type": "application/json",
     }
 
@@ -138,16 +177,19 @@ def _raise_for_status_with_details(resp: httpx.Response) -> None:
         raise
 
 
-def _create_lyrics_from_prompt(prompt: str) -> Dict[str, Optional[str]]:
+def _create_lyrics_from_prompt(
+    prompt: str,
+    music_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[str]]:
     """Convert a free-form prompt into structured lyrics via SenseAudio."""
     body = {
         "prompt": prompt,
-        "provider": SENSEAUDIO_MUSIC_MODEL,
+        "provider": _model_name(music_config),
     }
 
-    url = f"{SENSEAUDIO_BASE_URL}/music/lyrics/create"
+    url = f"{_base_url(music_config)}/music/lyrics/create"
     with httpx.Client(timeout=30) as client:
-        resp = client.post(url, json=body, headers=_auth_headers())
+        resp = client.post(url, json=body, headers=_auth_headers(music_config))
         _raise_for_status_with_details(resp)
         data = resp.json()
 
@@ -169,6 +211,7 @@ def _create_song(
     style: Optional[str] = None,
     vocal_gender: Optional[str] = None,
     title: Optional[str] = None,
+    music_config: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Submit a song creation request. Returns the SenseAudio task_id."""
     # custom_mode=True: model uses `lyrics` field as a free-form prompt.
@@ -176,7 +219,7 @@ def _create_song(
     custom_mode = lyrics is None
 
     body: Dict[str, Any] = {
-        "model": SENSEAUDIO_MUSIC_MODEL,
+        "model": _model_name(music_config),
         "lyrics": lyrics if lyrics is not None else prompt,
         "custom_mode": custom_mode,
         "instrumental": instrumental,
@@ -188,9 +231,9 @@ def _create_song(
     if title:
         body["title"] = title
 
-    url = f"{SENSEAUDIO_BASE_URL}/music/song/create"
+    url = f"{_base_url(music_config)}/music/song/create"
     with httpx.Client(timeout=30) as client:
-        resp = client.post(url, json=body, headers=_auth_headers())
+        resp = client.post(url, json=body, headers=_auth_headers(music_config))
         _raise_for_status_with_details(resp)
         data = resp.json()
 
@@ -200,20 +243,20 @@ def _create_song(
     return task_id
 
 
-def _query_status(task_id: str) -> Dict[str, Any]:
+def _query_status(task_id: str, music_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Call the pending endpoint once. Returns the raw response dict."""
-    url = f"{SENSEAUDIO_BASE_URL}/music/song/pending/{task_id}"
+    url = f"{_base_url(music_config)}/music/song/pending/{task_id}"
     with httpx.Client(timeout=30) as client:
-        resp = client.get(url, headers=_auth_headers())
+        resp = client.get(url, headers=_auth_headers(music_config))
         _raise_for_status_with_details(resp)
         return resp.json()
 
 
-def _poll_sync(task_id: str) -> Dict[str, Any]:
+def _poll_sync(task_id: str, music_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Block until the task reaches SUCCESS/FAILED or POLL_MAX_WAIT elapses."""
     deadline = time.monotonic() + POLL_MAX_WAIT
     while time.monotonic() < deadline:
-        data = _query_status(task_id)
+        data = _query_status(task_id, music_config=music_config)
         status = data.get("status", "")
         if status == "SUCCESS":
             return data
@@ -225,12 +268,16 @@ def _poll_sync(task_id: str) -> Dict[str, Any]:
     )
 
 
-async def _poll_async(task_id: str, session_key: str) -> str:
+async def _poll_async(
+    task_id: str,
+    session_key: str,
+    music_config: Optional[Dict[str, Any]] = None,
+) -> str:
     """Background coroutine: poll until done, return the agent wake message."""
     deadline = time.monotonic() + POLL_MAX_WAIT
     try:
         while time.monotonic() < deadline:
-            data = _query_status(task_id)
+            data = _query_status(task_id, music_config=music_config)
             status = data.get("status", "")
             if status == "SUCCESS":
                 result = _format_result(data, ignored_overrides=[])
@@ -240,8 +287,8 @@ async def _poll_async(task_id: str, session_key: str) -> str:
             await asyncio.sleep(POLL_INTERVAL)
         return f"Music generation timed out after {POLL_MAX_WAIT}s (task_id={task_id})."
     finally:
-        with _active_task_ids_lock:
-            _active_task_ids.pop(session_key, None)
+        with _active_music_tasks_lock:
+            _active_music_tasks.pop(session_key, None)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +367,120 @@ def _wake_message(result: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Provider: SenseAudio
+# ---------------------------------------------------------------------------
+
+def _senseaudio_status(
+    *,
+    session_key: str,
+    music_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Query status for the active SenseAudio task in this session."""
+    with _active_music_tasks_lock:
+        task_info = _active_music_tasks.get(session_key)
+
+    task_id = (task_info or {}).get("task_id", "")
+    if not task_id:
+        handle = background_tasks.get_active(session_key)
+        if handle:
+            return tool_result(status=handle.status, task_id=handle.task_id)
+        return tool_error("No active music generation task for this session.")
+
+    try:
+        data = _query_status(task_id, music_config=music_config)
+        return tool_result(
+            status=data.get("status"),
+            task_id=task_id,
+            details=data,
+        )
+    except Exception as exc:
+        logger.error("Status query failed for task %s: %s", task_id, exc)
+        return tool_error(f"Failed to query task status: {exc}")
+
+
+def _senseaudio_generate(
+    *,
+    prompt: str,
+    lyrics: Optional[str],
+    instrumental: bool,
+    style: Optional[str],
+    vocal_gender: Optional[str],
+    title: Optional[str],
+    ignored_overrides: List[Dict[str, Any]],
+    origin,
+    session_key: str,
+    music_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Generate music via SenseAudio with sync or detached completion."""
+    if not prompt and not lyrics:
+        return tool_error("prompt is required for music generation")
+
+    if not _api_key(music_config):
+        return tool_error("SENSEAUDIO_API_KEY environment variable not set")
+
+    try:
+        resolved_lyrics = lyrics
+        resolved_title = title
+        if not resolved_lyrics:
+            generated = _create_lyrics_from_prompt(prompt, music_config=music_config)
+            resolved_lyrics = generated["lyrics"]
+            if not resolved_title:
+                resolved_title = generated.get("title")
+
+        task_id = _create_song(
+            prompt,
+            lyrics=resolved_lyrics,
+            instrumental=instrumental,
+            style=style,
+            vocal_gender=vocal_gender,
+            title=resolved_title,
+            music_config=music_config,
+        )
+        logger.info("SenseAudio song task created: %s", task_id)
+    except Exception as exc:
+        logger.error("Failed to create SenseAudio song task: %s", exc, exc_info=True)
+        return tool_error(f"Failed to start music generation: {exc}")
+
+    if session_key:
+        with _active_music_tasks_lock:
+            _active_music_tasks[session_key] = {
+                "provider": "senseaudio",
+                "task_id": task_id,
+            }
+
+    if session_key:
+        handle = background_tasks.create(
+            coro=_poll_async(task_id, session_key, music_config=music_config),
+            session_key=session_key,
+            origin=origin,
+            label="music generation",
+        )
+        if handle is not None:
+            logger.info("Music generation running in background, task_id=%s", task_id)
+            return tool_result(
+                status="started",
+                task_id=task_id,
+                message="Music is generating in the background. You will be notified automatically when it's ready. Do not check status again unless the user explicitly asks for a progress update.",
+            )
+
+    try:
+        pending_data = _poll_sync(task_id, music_config=music_config)
+        result = _format_result(pending_data, ignored_overrides)
+        _debug.log_call("music_generate_tool", {"task_id": task_id, "success": True})
+        _debug.save()
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        logger.error("Music generation polling failed: %s", exc, exc_info=True)
+        _debug.log_call("music_generate_tool", {"task_id": task_id, "success": False, "error": str(exc)})
+        _debug.save()
+        return tool_error(f"Music generation failed: {exc}")
+    finally:
+        if session_key:
+            with _active_music_tasks_lock:
+                _active_music_tasks.pop(session_key, None)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -367,103 +528,31 @@ def music_generate_tool(
     if images is not None:
         ignored_overrides.append({"key": "images", "value": images})
 
+    music_config = _load_music_config()
+    provider = _get_provider(music_config)
     origin = current_session_origin()
     session_key = origin.session_key
 
-    # ----------------------------------------------------------------
-    # action: status — query the active task for this session
-    # ----------------------------------------------------------------
-    if action == "status":
-        with _active_task_ids_lock:
-            task_id = _active_task_ids.get(session_key)
-
-        if not task_id:
-            # Also check the background task handle (task may not have a SA task_id yet)
-            handle = background_tasks.get_active(session_key)
-            if handle:
-                return tool_result(status=handle.status, task_id=handle.task_id)
-            return tool_error("No active music generation task for this session.")
-
-        try:
-            data = _query_status(task_id)
-            return tool_result(
-                status=data.get("status"),
-                task_id=task_id,
-                details=data,
+    if provider == "senseaudio":
+        if action == "status":
+            return _senseaudio_status(
+                session_key=session_key,
+                music_config=music_config,
             )
-        except Exception as e:
-            logger.error("Status query failed for task %s: %s", task_id, e)
-            return tool_error(f"Failed to query task status: {e}")
-
-    # ----------------------------------------------------------------
-    # action: generate
-    # ----------------------------------------------------------------
-    if not prompt and not lyrics:
-        return tool_error("prompt is required for music generation")
-
-    if not _api_key():
-        return tool_error("SENSEAUDIO_API_KEY environment variable not set")
-
-    # Submit the generation job
-    try:
-        resolved_lyrics = lyrics
-        resolved_title = title
-        if not resolved_lyrics:
-            generated = _create_lyrics_from_prompt(prompt)
-            resolved_lyrics = generated["lyrics"]
-            if not resolved_title:
-                resolved_title = generated.get("title")
-
-        task_id = _create_song(
-            prompt,
-            lyrics=resolved_lyrics,
+        return _senseaudio_generate(
+            prompt=prompt,
+            lyrics=lyrics,
             instrumental=instrumental,
             style=style,
             vocal_gender=vocal_gender,
-            title=resolved_title,
-        )
-        logger.info("SenseAudio song task created: %s", task_id)
-    except Exception as e:
-        logger.error("Failed to create SenseAudio song task: %s", e, exc_info=True)
-        return tool_error(f"Failed to start music generation: {e}")
-
-    # Persist task_id so status queries can reach the SenseAudio API
-    if session_key:
-        with _active_task_ids_lock:
-            _active_task_ids[session_key] = task_id
-
-    # Try background task (gateway session: Telegram / Discord / etc.)
-    if session_key:
-        handle = background_tasks.create(
-            coro=_poll_async(task_id, session_key),
-            session_key=session_key,
+            title=title,
+            ignored_overrides=ignored_overrides,
             origin=origin,
-            label="music generation",
+            session_key=session_key,
+            music_config=music_config,
         )
-        if handle is not None:
-            logger.info("Music generation running in background, task_id=%s", task_id)
-            return tool_result(
-                status="started",
-                task_id=task_id,
-                message="Music is generating in the background. You will be notified when it's ready.",
-            )
 
-    # Fallback: synchronous polling (CLI mode — no active gateway session)
-    try:
-        pending_data = _poll_sync(task_id)
-        result = _format_result(pending_data, ignored_overrides)
-        _debug.log_call("music_generate_tool", {"task_id": task_id, "success": True})
-        _debug.save()
-        return json.dumps(result, ensure_ascii=False)
-    except Exception as e:
-        logger.error("Music generation polling failed: %s", e, exc_info=True)
-        _debug.log_call("music_generate_tool", {"task_id": task_id, "success": False, "error": str(e)})
-        _debug.save()
-        return tool_error(f"Music generation failed: {e}")
-    finally:
-        if session_key:
-            with _active_task_ids_lock:
-                _active_task_ids.pop(session_key, None)
+    return tool_error(f"Unknown music provider: {provider}")
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +562,11 @@ def music_generate_tool(
 def check_music_generation_requirements() -> bool:
     try:
         import httpx  # noqa: F401
-        return bool(_api_key())
+        music_config = _load_music_config()
+        provider = _get_provider(music_config)
+        if provider == "senseaudio":
+            return bool(_api_key(music_config))
+        return False
     except ImportError:
         return False
 
@@ -487,8 +580,9 @@ MUSIC_GENERATE_SCHEMA = {
     "description": (
         "Generate music from a text prompt. "
         "Generation runs in the background "
-        "and you are notified when the audio is ready. "
-        "Use action='status' to check an in-progress generation."
+        "and you are notified automatically when the audio is ready. "
+        "After starting a generation, do not call this tool again to poll for status unless the user explicitly asks for a progress update. "
+        "Use action='status' only when the user explicitly wants to check an in-progress generation."
     ),
     "parameters": {
         "type": "object",
@@ -505,7 +599,7 @@ MUSIC_GENERATE_SCHEMA = {
                 "enum": ["generate", "status"],
                 "description": (
                     "'generate' starts a new generation task (default). "
-                    "'status' queries the active task for this session."
+                    "'status' queries the active task for this session, but only use it when the user explicitly asks to check progress."
                 ),
                 "default": "generate",
             },

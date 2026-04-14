@@ -62,3 +62,4 @@ mini-swe-agent/
 .direnv/
 result
 website/static/api/skills-index.json
+extraction-queue.txt

@@ -15,6 +15,7 @@ if "dotenv" not in sys.modules:
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     ProviderConfig,
+    format_api_key_env_var_hint,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -100,6 +101,14 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("HF_TOKEN",)
         assert pconfig.base_url_env_var == "HF_BASE_URL"
 
+    def test_alibaba_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["alibaba"]
+        assert pconfig.api_key_env_vars == ("DASHSCOPE_API_KEY", "ALIBABA_API_KEY")
+        assert pconfig.base_url_env_var == "DASHSCOPE_BASE_URL"
+
+    def test_alibaba_env_hint(self):
+        assert format_api_key_env_var_hint("alibaba") == "DASHSCOPE_API_KEY (or ALIBABA_API_KEY)"
+
     def test_base_urls(self):
         assert PROVIDER_REGISTRY["copilot"].inference_base_url == "https://api.githubcopilot.com"
         assert PROVIDER_REGISTRY["copilot-acp"].inference_base_url == "acp://copilot"
@@ -130,7 +139,7 @@ PROVIDER_ENV_VARS = (
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
-    "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
+    "DASHSCOPE_API_KEY", "ALIBABA_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
     "NOUS_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
     "OPENAI_BASE_URL", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH",
     "HERMES_COPILOT_ACP_ARGS", "COPILOT_ACP_BASE_URL",
@@ -215,6 +224,9 @@ class TestResolveProvider:
 
     def test_explicit_huggingface(self):
         assert resolve_provider("huggingface") == "huggingface"
+
+    def test_explicit_alibaba(self):
+        assert resolve_provider("alibaba") == "alibaba"
 
     def test_alias_hf(self):
         assert resolve_provider("hf") == "huggingface"

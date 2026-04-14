@@ -853,14 +853,21 @@ async def _send_nextcloud_talk(token, extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        from gateway.platforms.nextcloud_talk import _sign_payload, _sanitize_chat_id
+        from gateway.platforms.nextcloud_talk import (
+            _normalize_base_url,
+            _sanitize_chat_id,
+            _sign_payload,
+            _validate_backend_url,
+        )
 
         secret_value = token or os.getenv("NEXTCLOUD_TALK_SECRET", "")
-        base_url = (extra.get("base_url") or os.getenv("NEXTCLOUD_TALK_BASE_URL", "")).strip().rstrip("/")
+        base_url = _normalize_base_url(extra.get("base_url") or os.getenv("NEXTCLOUD_TALK_BASE_URL", ""))
         if not secret_value:
             return {"error": "Nextcloud Talk not configured (NEXTCLOUD_TALK_SECRET required)"}
         if not base_url:
             return {"error": "Nextcloud Talk not configured (NEXTCLOUD_TALK_BASE_URL required for direct sends)"}
+        if not _validate_backend_url(base_url):
+            return _error(f"Invalid Nextcloud Talk backend URL: {base_url!r}")
 
         safe_chat_id = _sanitize_chat_id(str(chat_id))
         if not safe_chat_id:

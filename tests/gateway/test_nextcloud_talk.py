@@ -155,6 +155,9 @@ class TestBackendUrlValidation:
     def test_accepts_http(self):
         assert _validate_backend_url("http://nextcloud.local") is True
 
+    def test_accepts_path_under_host(self):
+        assert _validate_backend_url("https://cloud.example.com/nextcloud") is True
+
     def test_rejects_ftp(self):
         assert _validate_backend_url("ftp://evil.com") is False
 
@@ -163,6 +166,9 @@ class TestBackendUrlValidation:
 
     def test_rejects_empty(self):
         assert _validate_backend_url("") is False
+
+    def test_rejects_missing_host(self):
+        assert _validate_backend_url("https:///missing-host") is False
 
 
 class TestNextcloudTalkWebhook:

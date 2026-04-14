@@ -41,6 +41,7 @@ import re
 import secrets
 import time
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 try:
     from aiohttp import ClientSession, ClientTimeout, web
@@ -88,7 +89,11 @@ def _normalize_base_url(value: str) -> str:
 
 def _validate_backend_url(url: str) -> bool:
     """Return True if *url* looks like a valid Nextcloud backend URL."""
-    return url.startswith("https://") or url.startswith("http://")
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _sanitize_chat_id(chat_id: str) -> Optional[str]:

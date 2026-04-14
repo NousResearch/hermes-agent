@@ -2655,6 +2655,18 @@ class GatewayRunner:
             if allow_bots in ("mentions", "all"):
                 return True
 
+        # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
+        # on_message pre-filter already verified role membership — if the
+        # message reached here, the user passed that check. Authorize
+        # directly to avoid the "no allowlists configured" branch below
+        # rejecting role-only setups where DISCORD_ALLOWED_USERS is empty
+        # (issue #7871).
+        if (
+            source.platform == Platform.DISCORD
+            and os.getenv("DISCORD_ALLOWED_ROLES", "").strip()
+        ):
+            return True
+
         # Check pairing store (always checked, regardless of allowlists)
         platform_name = source.platform.value if source.platform else ""
         if self.pairing_store.is_approved(platform_name, user_id):

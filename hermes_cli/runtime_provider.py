@@ -268,11 +268,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if not requested_norm.startswith("custom:"):
         try:
-            auth_mod.resolve_provider(requested_norm)
+            resolved_builtin = auth_mod.resolve_provider(requested_norm)
+            # If resolve_provider mapped the name to "custom" (e.g. "ollama"
+            # is aliased to "custom"), it's NOT a real built-in provider —
+            # fall through so we can check custom_providers entries instead.
+            if resolved_builtin == "custom":
+                pass  # continue to named custom provider lookup
+            else:
+                return None
         except AuthError:
             pass
-        else:
-            return None
 
     config = load_config()
     

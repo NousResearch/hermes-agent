@@ -12,7 +12,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps && \
+        build-essential nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime

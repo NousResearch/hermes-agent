@@ -1079,6 +1079,15 @@ install_node_deps() {
         npm install --silent 2>/dev/null || {
             log_warn "npm install failed (browser tools may not work)"
         }
+
+        # Build the web UI (web_dist/ is included in the pip package)
+        log_info "Building web UI..."
+        if ! npm run build 2>/dev/null; then
+            log_warn "Web UI build failed — CLI may lack the Web UI (not required for core functionality)"
+        else
+            log_success "Web UI built successfully"
+        fi
+
         log_success "Node.js dependencies installed"
 
         # Install Playwright browser + system dependencies.

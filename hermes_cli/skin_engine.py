@@ -94,6 +94,7 @@ BUILT-IN SKINS
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
 - ``daylight`` — Light background theme with dark text and blue accents
+- ``warm-lightmode`` — Warm brown/gold text for light terminal backgrounds
 
 USER SKINS
 ==========
@@ -347,6 +348,43 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "[?] Available Commands",
         },
         "tool_prefix": "│",
+    },
+    "warm-lightmode": {
+        "name": "warm-lightmode",
+        "description": "Warm light mode — dark brown/gold text for light terminal backgrounds",
+        "colors": {
+            "banner_border": "#8B6914",
+            "banner_title": "#5C3D11",
+            "banner_accent": "#8B4513",
+            "banner_dim": "#8B7355",
+            "banner_text": "#2C1810",
+            "ui_accent": "#8B4513",
+            "ui_label": "#5C3D11",
+            "ui_ok": "#2E7D32",
+            "ui_error": "#C62828",
+            "ui_warn": "#E65100",
+            "prompt": "#2C1810",
+            "input_rule": "#8B6914",
+            "response_border": "#8B6914",
+            "session_label": "#5C3D11",
+            "session_border": "#A0845C",
+            "status_bar_bg": "#F5F0E8",
+            "voice_status_bg": "#F5F0E8",
+            "completion_menu_bg": "#F5EFE0",
+            "completion_menu_current_bg": "#E8DCC8",
+            "completion_menu_meta_bg": "#F0E8D8",
+            "completion_menu_meta_current_bg": "#DFCFB0",
+        },
+        "spinner": {},
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! \u2695",
+            "response_label": " \u2695 Hermes ",
+            "prompt_symbol": "\u276f ",
+            "help_header": "(^_^)? Available Commands",
+        },
+        "tool_prefix": "\u250a",
     },
     "poseidon": {
         "name": "poseidon",

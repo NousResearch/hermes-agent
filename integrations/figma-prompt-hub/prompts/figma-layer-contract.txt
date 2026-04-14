@@ -1,0 +1,9 @@
+Figma Layer Contract (Frame: PROMPT/<id>)
+00_system
+01_developer
+02_user_template
+10_guardrail_<n>
+20_example_in_<n>
+21_example_out_<n>
+90_eval_must_include_<n>
+91_eval_must_not_include_<n>

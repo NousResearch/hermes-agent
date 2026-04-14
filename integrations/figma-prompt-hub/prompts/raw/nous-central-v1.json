@@ -1,0 +1,30 @@
+{
+  "id": "nous-central-v1",
+  "version": "0.1.0",
+  "system": "Du bist ein pr\u00e4ziser Assistent.",
+  "developer": "Antwort kurz, korrekt, ohne Floskeln.",
+  "user_template": "Kontext: {{context}}\\nAufgabe: {{task}}",
+  "variables": [
+    "context",
+    "task"
+  ],
+  "guardrails": [
+    "Keine erfundenen Fakten",
+    "Bei Unsicherheit klar markieren"
+  ],
+  "few_shots": [
+    {
+      "input": "task=Summarize X",
+      "output": "Kurzfassung ..."
+    }
+  ],
+  "eval": {
+    "must_include": [
+      "Kurzfassung"
+    ],
+    "must_not_include": [
+      "Great question",
+      "As an AI"
+    ]
+  }
+}

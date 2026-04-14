@@ -61,3 +61,45 @@ async def test_handle_model_command_lists_saved_custom_provider(tmp_path, monkey
     assert "Local (127.0.0.1:4141)" in result
     assert "custom:local-(127.0.0.1:4141)" in result
     assert "rotator-openrouter-coding" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_lists_custom_provider_models_dict_keys(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "qwen3.5:27b",
+                    "provider": "custom",
+                    "base_url": "http://localhost:11434/v1",
+                },
+                "providers": {},
+                "custom_providers": [
+                    {
+                        "name": "My Local LLM",
+                        "base_url": "http://localhost:11434/v1",
+                        "model": "qwen3.5:27b",
+                        "models": {
+                            "qwen3.5:27b": {"context_length": 32768},
+                            "deepseek-r1:70b": {"context_length": 65536},
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    result = await _make_runner()._handle_model_command(_make_event())
+
+    assert result is not None
+    assert "My Local LLM" in result
+    assert "qwen3.5:27b" in result
+    assert "deepseek-r1:70b" in result

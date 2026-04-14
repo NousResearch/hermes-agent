@@ -1031,13 +1031,12 @@ def list_authenticated_providers(
             })
 
     # --- 4. Saved custom providers from config ---
-    # Each ``custom_providers`` entry represents one model under a named
-    # provider. Entries sharing the same provider name are grouped into a
-    # single picker row so that e.g. four Ollama Cloud entries
-    # (qwen3-coder, glm-5.1, kimi-k2, minimax-m2.7) appear as one
-    # "Ollama Cloud" row with four models inside instead of four
-    # duplicate "Ollama Cloud" rows. Entries with distinct provider names
-    # still produce separate rows (e.g. Ollama Cloud vs Moonshot).
+    # Legacy ``custom_providers`` entries store one saved ``model`` plus an
+    # optional ``models`` mapping for per-model metadata (for example
+    # ``context_length`` overrides keyed by model ID). The v12+ ``providers``
+    # compatibility layer can also surface ``models`` as a list. Show the saved
+    # model plus any additional model IDs from either representation in a single
+    # picker row per named provider.
     if custom_providers and isinstance(custom_providers, list):
         from collections import OrderedDict
 
@@ -1067,11 +1066,16 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[slug]["models"]:
                 groups[slug]["models"].append(default_model)
 
-            # Also include the full models array from config
+            # Also include any extra models declared in config.
             cfg_models = entry.get("models", [])
-            if isinstance(cfg_models, list):
-                for m in cfg_models:
-                    m_str = str(m).strip()
+            if isinstance(cfg_models, dict):
+                for model_id in cfg_models.keys():
+                    m_str = str(model_id).strip()
+                    if m_str and m_str not in groups[slug]["models"]:
+                        groups[slug]["models"].append(m_str)
+            elif isinstance(cfg_models, list):
+                for model_id in cfg_models:
+                    m_str = str(model_id).strip()
                     if m_str and m_str not in groups[slug]["models"]:
                         groups[slug]["models"].append(m_str)
 

@@ -285,6 +285,135 @@ class TestRunAgentViaProxy:
         assert messages[0]["content"] == "hello"
 
 
+class TestStreamingResilience:
+    """Tests for SSE streaming robustness — hang avoidance and malformed-chunk tolerance."""
+
+    @pytest.mark.asyncio
+    async def test_done_marker_stops_reading_trailing_chunks(self, monkeypatch):
+        """After `[DONE]`, no further SSE chunks must be processed.
+
+        A buggy upstream that holds the connection open and streams more
+        chunks after `[DONE]` should not leak those chunks into the
+        response. Regression test for the inner `break` that only exited
+        the line-parse loop, leaving the outer chunk loop to keep reading
+        until sock_read timeout.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        # Content → [DONE] → MORE content. The trailing chunk must be
+        # dropped. With the pre-fix code it would be appended to
+        # full_response, since `break` only exited the inner loop.
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: [DONE]\n',
+                'data: {"choices":[{"delta":{"content":" IGNORED"}}]}\n',
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello"
+
+    @pytest.mark.asyncio
+    async def test_client_timeout_sets_sock_connect(self, monkeypatch):
+        """ClientTimeout must bound the TCP connect phase.
+
+        Without an explicit ``sock_connect``, an unreachable proxy host
+        hangs for the OS default (minutes) before failing. The fix sets
+        a short connect cap so the gateway surfaces the error quickly.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(status=200, sse_chunks=['data: [DONE]\n'])
+        session = _FakeSession(resp)
+
+        captured = {}
+
+        def _capture_timeout(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout", side_effect=_capture_timeout):
+                    await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert "sock_connect" in captured, (
+            "ClientTimeout should set sock_connect to bound TCP connect"
+        )
+        assert 0 < captured["sock_connect"] <= 60, (
+            f"sock_connect should be a short, reasonable cap — got {captured['sock_connect']}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_malformed_chunk_is_skipped_not_fatal(self, monkeypatch):
+        """One bad SSE chunk must not abort the whole stream.
+
+        Pre-fix: `choices[0].get(...)` raised ``AttributeError`` when
+        ``choices[0]`` was ``None``, escaping the narrow
+        ``except json.JSONDecodeError`` and bubbling to the outer
+        ``except Exception`` which returned whatever partial response
+        was accumulated. All later chunks were lost.
+
+        Post-fix: type guards + broader exception handling skip the bad
+        chunk and keep parsing.
+        """
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        source = _make_source()
+
+        resp = _FakeSSEResponse(
+            status=200,
+            sse_chunks=[
+                'data: {"choices":[{"delta":{"content":"Hello"}}]}\n',
+                'data: {"choices":[null]}\n',
+                'data: {"choices":"wrong-type"}\n',
+                'data: {"choices":[{"delta":"wrong-type"}]}\n',
+                'data: {"choices":[{"delta":{"content":" world"}}]}\n',
+                'data: [DONE]\n',
+            ],
+        )
+        session = _FakeSession(resp)
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="hi",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="test",
+                    )
+
+        assert result["final_response"] == "Hello world"
+
+
 class TestEnvVarRegistration:
     """Verify GATEWAY_PROXY_URL and GATEWAY_PROXY_KEY are registered."""
 

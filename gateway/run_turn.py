@@ -2568,8 +2568,35 @@ class GatewayTurnMixin:
 
         full_response = ""
         _start = time.time()
+        saw_done = False
+
+        def _consume_sse_line(line: str) -> bool:
+            """Parse one SSE line into full_response; True when the terminal ``[DONE]`` was seen.
+
+            Malformed frames (bad JSON, ``choices: [null]``, non-dict deltas) are skipped —
+            one bad chunk must not abort the whole stream."""
+            nonlocal full_response
+            line = line.strip()
+            if not line.startswith("data: "):
+                return False
+            data = line[6:]
+            if data.strip() == "[DONE]":
+                return True
+            try:
+                choices = json.loads(data).get("choices") or []
+                content = choices[0].get("delta", {}).get("content", "") if choices else ""
+            except (json.JSONDecodeError, TypeError, AttributeError, IndexError):
+                return False
+            if content:
+                full_response += content
+                if _stream_consumer:
+                    _stream_consumer.on_delta(content)
+            return False
+
         try:
-            _timeout = ClientTimeout(total=0, sock_read=1800)
+            # sock_connect bounds the TCP connect phase so an unreachable proxy host
+            # (DNS fail, firewall, remote down) fails fast instead of hanging on the OS default.
+            _timeout = ClientTimeout(total=0, sock_read=1800, sock_connect=30)
             async with _AioClientSession(timeout=_timeout) as session:
                 async with session.post(f"{proxy_url}/v1/chat/completions", json=body, headers=headers) as resp:
                     if resp.status != 200:
@@ -2579,28 +2606,35 @@ class GatewayTurnMixin:
 
                     buffer = ""
                     async for chunk in resp.content.iter_any():
+                        if saw_done:
+                            # A buggy upstream that holds the connection open after [DONE]
+                            # would otherwise block us for up to sock_read seconds.
+                            break
                         if not _run_still_current():
                             return _stale_result("stream")
                         buffer += chunk.decode("utf-8", errors="replace")
                         while "\n" in buffer:
                             line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            if not line.startswith("data: "):
-                                continue
-                            data = line[6:]
-                            if data.strip() == "[DONE]":
+                            if _consume_sse_line(line):
+                                saw_done = True
                                 break
-                            try:
-                                choices = json.loads(data).get("choices", [])
-                            except json.JSONDecodeError:
-                                continue
-                            content = choices[0].get("delta", {}).get("content", "") if choices else ""
-                            if content:
-                                full_response += content
-                                if _stream_consumer:
-                                    _stream_consumer.on_delta(content)
                         if len(buffer) > _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS:
                             raise ValueError("Proxy SSE stream exceeded max buffer size without a line boundary")
+                    # The final SSE frame may not be newline-terminated: flush the residual
+                    # buffer after EOF instead of silently dropping its content.
+                    if not saw_done and buffer:
+                        saw_done = _consume_sse_line(buffer)
+                    if not saw_done:
+                        # Clean EOF without [DONE] — the upstream dropped the response
+                        # mid-stream. Keep any partial text but say so instead of
+                        # presenting the truncation as a complete answer.
+                        logger.warning(
+                            "Proxy SSE stream from %s ended without [DONE] — response may be truncated "
+                            "(%d chars received)", proxy_url, len(full_response),
+                        )
+                        if not full_response:
+                            return self._proxy_error_result(
+                                "⚠️ Proxy connection closed before the response completed")
         except asyncio.CancelledError:
             raise
         except Exception as e:

@@ -243,6 +243,22 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
     assert agent.provider == "openrouter"
 
 
+def test_copilot_acp_stays_on_chat_completions_for_gpt_5_models(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.4-mini",
+        base_url="acp://copilot",
+        provider="copilot-acp",
+        api_key="copilot-acp",
+        quiet_mode=True,
+        max_iterations=1,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    assert agent.provider == "copilot-acp"
+    assert agent.api_mode == "chat_completions"
+
+
 def test_build_api_kwargs_codex(monkeypatch):
     agent = _build_agent(monkeypatch)
     kwargs = agent._build_api_kwargs(
@@ -269,6 +285,69 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert "timeout" not in kwargs
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
+    """'minimal' reasoning effort is clamped to 'low' on the Responses API.
+
+    GPT-5.4 supports none/low/medium/high/xhigh but NOT 'minimal'.
+    Users may configure 'minimal' via OpenRouter conventions, so the Codex
+    Responses path must clamp it to the nearest supported level.
+    """
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "minimal"},
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["reasoning"]["effort"] == "low"
+
+
+def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
+    """Effort levels natively supported by the Responses API pass through unchanged."""
+    _patch_agent_bootstrap(monkeypatch)
+
+    for effort in ("low", "medium", "high", "xhigh"):
+        agent = run_agent.AIAgent(
+            model="gpt-5-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="codex-token",
+            quiet_mode=True,
+            max_iterations=4,
+            skip_context_files=True,
+            skip_memory=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        agent._cleanup_task_resources = lambda task_id: None
+        agent._persist_session = lambda messages, history=None: None
+        agent._save_trajectory = lambda messages, user_message, completed: None
+        agent._save_session_log = lambda messages: None
+
+        kwargs = agent._build_api_kwargs(
+            [
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+        assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):

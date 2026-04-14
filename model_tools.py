@@ -20,6 +20,7 @@ Public API (signatures preserved from the original 2,400-line version):
     check_tool_availability(quiet) -> tuple
 """
 
+import atexit
 import json
 import asyncio
 import logging
@@ -39,6 +40,46 @@ logger = logging.getLogger(__name__)
 _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_atexit_registered = False  # lazy atexit registration guard
+
+# Track worker thread loops for cleanup at exit.
+_worker_loops: Dict[int, asyncio.AbstractEventLoop] = {}
+_worker_loops_lock = threading.Lock()
+
+
+def _register_atexit_once():
+    """Lazily register atexit handlers the first time a loop is created."""
+    global _atexit_registered
+    if _atexit_registered:
+        return
+    _atexit_registered = True
+    atexit.register(_cleanup_all_loops)
+
+
+def _cleanup_all_loops():
+    """Close all persistent event loops on process exit to release resources.
+
+    Closes both the main tool loop and any worker-thread loops that are
+    still alive.  Each close() cancels pending tasks and releases file
+    descriptors bound to the loop (httpx transports, DNS resolvers, etc.).
+    """
+    # Close main tool loop
+    global _tool_loop
+    if _tool_loop is not None and not _tool_loop.is_closed():
+        try:
+            _tool_loop.close()
+        except Exception:
+            pass
+
+    # Close worker-thread loops
+    with _worker_loops_lock:
+        for loop in _worker_loops.values():
+            if loop is not None and not loop.is_closed():
+                try:
+                    loop.close()
+                except Exception:
+                    pass
+        _worker_loops.clear()
 
 
 def _get_tool_loop():
@@ -53,6 +94,7 @@ def _get_tool_loop():
     with _tool_loop_lock:
         if _tool_loop is None or _tool_loop.is_closed():
             _tool_loop = asyncio.new_event_loop()
+            _register_atexit_once()
         return _tool_loop
 
 
@@ -75,6 +117,10 @@ def _get_worker_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         _worker_thread_local.loop = loop
+        tid = threading.get_ident()
+        with _worker_loops_lock:
+            _worker_loops[tid] = loop
+        _register_atexit_once()
     return loop
 
 
@@ -110,7 +156,18 @@ def _run_async(coro):
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=300)
+            try:
+                return future.result(timeout=300)
+            except concurrent.futures.TimeoutError:
+                # future.cancel() only cancels the Future wrapper, NOT the
+                # underlying asyncio.run() task. The background thread
+                # continues running until the coroutine finishes or the
+                # process exits. We raise here to unblock the caller.
+                future.cancel()
+                raise TimeoutError(
+                    "_run_async: coroutine did not complete within 300s "
+                    "(background thread continues running)"
+                )
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
@@ -465,6 +522,7 @@ def handle_function_call(
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -485,31 +543,53 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
-    # Notify the read-loop tracker when a non-read/search tool runs,
-    # so the *consecutive* counter resets (reads after other work are fine).
-    if function_name not in _READ_SEARCH_TOOLS:
-        try:
-            from tools.file_tools import notify_other_tool_call
-            notify_other_tool_call(task_id or "default")
-        except Exception:
-            pass  # file_tools may not be loaded yet
-
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "pre_tool_call",
-                tool_name=function_name,
-                args=function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-            )
-        except Exception:
-            pass
+        # Check plugin hooks for a block directive (unless caller already
+        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # avoid double-firing the hook).
+        if not skip_pre_tool_call_hook:
+            block_message: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+            if block_message is not None:
+                return json.dumps({"error": block_message}, ensure_ascii=False)
+        else:
+            # Still fire the hook for observers — just don't check for blocking
+            # (the caller already did that).
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook(
+                    "pre_tool_call",
+                    tool_name=function_name,
+                    args=function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+        # Notify the read-loop tracker when a non-read/search tool runs,
+        # so the *consecutive* counter resets (reads after other work are fine).
+        if function_name not in _READ_SEARCH_TOOLS:
+            try:
+                from tools.file_tools import notify_other_tool_call
+                notify_other_tool_call(task_id or "default")
+            except Exception:
+                pass  # file_tools may not be loaded yet
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite

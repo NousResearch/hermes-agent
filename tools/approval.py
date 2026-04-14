@@ -313,6 +313,17 @@ def disable_session_yolo(session_key: str) -> None:
         _session_yolo.discard(session_key)
 
 
+def clear_session(session_key: str) -> None:
+    """Remove all approval and yolo state for a given session."""
+    if not session_key:
+        return
+    with _lock:
+        _session_approved.pop(session_key, None)
+        _session_yolo.discard(session_key)
+        _pending.pop(session_key, None)
+        _gateway_queues.pop(session_key, None)
+
+
 def is_session_yolo_enabled(session_key: str) -> bool:
     """Return True when YOLO bypass is enabled for a specific session."""
     if not session_key:
@@ -350,19 +361,6 @@ def load_permanent(patterns: set):
     """Bulk-load permanent allowlist entries from config."""
     with _lock:
         _permanent_approved.update(patterns)
-
-
-def clear_session(session_key: str):
-    """Clear all approvals and pending requests for a session."""
-    with _lock:
-        _session_approved.pop(session_key, None)
-        _session_yolo.discard(session_key)
-        _pending.pop(session_key, None)
-        _gateway_notify_cbs.pop(session_key, None)
-        # Signal ALL blocked threads so they don't hang forever
-        entries = _gateway_queues.pop(session_key, [])
-        for entry in entries:
-            entry.event.set()
 
 
 

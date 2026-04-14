@@ -604,35 +604,6 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Tapback reactions
     # ------------------------------------------------------------------
 
-    async def send_reaction(
-        self,
-        chat_id: str,
-        message_guid: str,
-        reaction: str,
-        part_index: int = 0,
-    ) -> SendResult:
-        """Send a tapback reaction (requires Private API helper)."""
-        if not self._private_api_enabled or not self._helper_connected:
-            return SendResult(
-                success=False, error="Private API helper not connected"
-            )
-        guid = await self._resolve_chat_guid(chat_id)
-        if not guid:
-            return SendResult(success=False, error=f"Chat not found: {chat_id}")
-        try:
-            res = await self._api_post(
-                "/api/v1/message/react",
-                {
-                    "chatGuid": guid,
-                    "selectedMessageGuid": message_guid,
-                    "reaction": reaction,
-                    "partIndex": part_index,
-                },
-            )
-            return SendResult(success=True, raw_response=res)
-        except Exception as exc:
-            return SendResult(success=False, error=str(exc))
-
     # ------------------------------------------------------------------
     # Chat info
     # ------------------------------------------------------------------

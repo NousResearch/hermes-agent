@@ -12,7 +12,6 @@ Usage:
 import asyncio
 import json
 import logging
-import os
 import secrets
 import sys
 import threading
@@ -95,6 +94,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "model": {
         "type": "string",
         "description": "Default model (e.g. anthropic/claude-sonnet-4.6)",
+        "category": "general",
+    },
+    "model_context_length": {
+        "type": "number",
+        "description": "Context window override (0 = auto-detect from model metadata)",
         "category": "general",
     },
     "terminal.backend": {
@@ -246,6 +250,17 @@ def _build_schema_from_config(
 
 
 CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
+
+# Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
+# by the normalize/denormalize cycle.  Insert model_context_length right after
+# the "model" key so it renders adjacent in the frontend.
+_mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+_ordered_schema: Dict[str, Dict[str, Any]] = {}
+for _k, _v in CONFIG_SCHEMA.items():
+    _ordered_schema[_k] = _v
+    if _k == "model":
+        _ordered_schema["model_context_length"] = _mcl_entry
+CONFIG_SCHEMA = _ordered_schema
 
 
 class ConfigUpdate(BaseModel):
@@ -409,11 +424,19 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     or a dict (``{default: ..., provider: ..., base_url: ...}``).  The schema is built
     from DEFAULT_CONFIG where ``model`` is a string, but user configs often have the
     dict form.  Normalize to the string form so the frontend schema matches.
+
+    Also surfaces ``model_context_length`` as a top-level field so the web UI can
+    display and edit it.  A value of 0 means "auto-detect".
     """
     config = dict(config)  # shallow copy
     model_val = config.get("model")
     if isinstance(model_val, dict):
+        # Extract context_length before flattening the dict
+        ctx_len = model_val.get("context_length", 0)
         config["model"] = model_val.get("default", model_val.get("name", ""))
+        config["model_context_length"] = ctx_len if isinstance(ctx_len, int) else 0
+    else:
+        config["model_context_length"] = 0
     return config
 
 
@@ -434,6 +457,93 @@ async def get_schema():
     return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
 
 
+_EMPTY_MODEL_INFO: dict = {
+    "model": "",
+    "provider": "",
+    "auto_context_length": 0,
+    "config_context_length": 0,
+    "effective_context_length": 0,
+    "capabilities": {},
+}
+
+
+@app.get("/api/model/info")
+def get_model_info():
+    """Return resolved model metadata for the currently configured model.
+
+    Calls the same context-length resolution chain the agent uses, so the
+    frontend can display "Auto-detected: 200K" alongside the override field.
+    Also returns model capabilities (vision, reasoning, tools) when available.
+    """
+    try:
+        cfg = load_config()
+        model_cfg = cfg.get("model", "")
+
+        # Extract model name and provider from the config
+        if isinstance(model_cfg, dict):
+            model_name = model_cfg.get("default", model_cfg.get("name", ""))
+            provider = model_cfg.get("provider", "")
+            base_url = model_cfg.get("base_url", "")
+            config_ctx = model_cfg.get("context_length")
+        else:
+            model_name = str(model_cfg) if model_cfg else ""
+            provider = ""
+            base_url = ""
+            config_ctx = None
+
+        if not model_name:
+            return dict(_EMPTY_MODEL_INFO, provider=provider)
+
+        # Resolve auto-detected context length (pass config_ctx=None to get
+        # purely auto-detected value, then separately report the override)
+        try:
+            from agent.model_metadata import get_model_context_length
+            auto_ctx = get_model_context_length(
+                model=model_name,
+                base_url=base_url,
+                provider=provider,
+                config_context_length=None,  # ignore override — we want auto value
+            )
+        except Exception:
+            auto_ctx = 0
+
+        config_ctx_int = 0
+        if isinstance(config_ctx, int) and config_ctx > 0:
+            config_ctx_int = config_ctx
+
+        # Effective is what the agent actually uses
+        effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
+
+        # Try to get model capabilities from models.dev
+        caps = {}
+        try:
+            from agent.models_dev import get_model_capabilities
+            mc = get_model_capabilities(provider=provider, model=model_name)
+            if mc is not None:
+                caps = {
+                    "supports_tools": mc.supports_tools,
+                    "supports_vision": mc.supports_vision,
+                    "supports_reasoning": mc.supports_reasoning,
+                    "context_window": mc.context_window,
+                    "max_output_tokens": mc.max_output_tokens,
+                    "model_family": mc.model_family,
+                }
+        except Exception:
+            pass
+
+        return {
+            "model": model_name,
+            "provider": provider,
+            "auto_context_length": auto_ctx,
+            "config_context_length": config_ctx_int,
+            "effective_context_length": effective_ctx,
+            "capabilities": caps,
+        }
+    except Exception:
+        _log.exception("GET /api/model/info failed")
+        return dict(_EMPTY_MODEL_INFO)
+
+
 def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     """Reverse _normalize_config_for_web before saving.
 
@@ -441,11 +551,23 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     to recover model subkeys (provider, base_url, api_mode, etc.) that were
     stripped from the GET response.  The frontend only sees model as a flat
     string; the rest is preserved transparently.
+
+    Also handles ``model_context_length`` — writes it back into the model dict
+    as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
+    from the dict so get_model_context_length() uses its normal resolution).
     """
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
     # with the stripped GET response, but be defensive)
     config.pop("_model_meta", None)
+
+    # Extract and remove model_context_length before processing model
+    ctx_override = config.pop("model_context_length", 0)
+    if not isinstance(ctx_override, int):
+        try:
+            ctx_override = int(ctx_override)
+        except (TypeError, ValueError):
+            ctx_override = 0
 
     model_val = config.get("model")
     if isinstance(model_val, str) and model_val:
@@ -456,7 +578,20 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(disk_model, dict):
                 # Preserve all subkeys, update default with the new value
                 disk_model["default"] = model_val
+                # Write context_length into the model dict (0 = remove/auto)
+                if ctx_override > 0:
+                    disk_model["context_length"] = ctx_override
+                else:
+                    disk_model.pop("context_length", None)
                 config["model"] = disk_model
+            else:
+                # Model was previously a bare string — upgrade to dict if
+                # user is setting a context_length override
+                if ctx_override > 0:
+                    config["model"] = {
+                        "default": model_val,
+                        "context_length": ctx_override,
+                    }
         except Exception:
             pass  # can't read disk config — just use the string form
     return config
@@ -1217,6 +1352,22 @@ def _nous_poller(session_id: str) -> None:
             "base_url": full_state.get("inference_base_url"),
         })
         pool.add_entry(entry)
+        # Also persist to auth store so get_nous_auth_status() sees it
+        # (matches what _login_nous in auth.py does for the CLI flow).
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store, _save_provider_state, _save_auth_store,
+                _auth_store_lock,
+            )
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                _save_provider_state(auth_store, "nous", full_state)
+                _save_auth_store(auth_store)
+        except Exception as store_exc:
+            _log.warning(
+                "oauth/device: credential pool saved but auth store write failed "
+                "(session=%s): %s", session_id, store_exc,
+            )
         with _oauth_sessions_lock:
             sess["status"] = "approved"
         _log.info("oauth/device: nous login completed (session=%s)", session_id)

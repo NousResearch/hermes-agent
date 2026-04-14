@@ -1034,29 +1034,9 @@ def select_provider_and_model(args=None):
     if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
         active = "custom"
 
-    provider_labels = {
-        "openrouter": "OpenRouter",
-        "nous": "Nous Portal",
-        "openai-codex": "OpenAI Codex",
-        "qwen-oauth": "Qwen OAuth",
-        "copilot-acp": "GitHub Copilot ACP",
-        "copilot": "GitHub Copilot",
-        "anthropic": "Anthropic",
-        "gemini": "Google AI Studio",
-        "zai": "Z.AI / GLM",
-        "kimi-coding": "Kimi / Moonshot",
-        "kimi-coding-cn": "Kimi / Moonshot (China)",
-        "minimax": "MiniMax",
-        "minimax-cn": "MiniMax (China)",
-        "opencode-zen": "OpenCode Zen",
-        "opencode-go": "OpenCode Go",
-        "ai-gateway": "AI Gateway",
-        "kilocode": "Kilo Code",
-        "alibaba": "Alibaba Cloud (DashScope)",
-        "huggingface": "Hugging Face",
-        "xiaomi": "Xiaomi MiMo",
-        "custom": "Custom endpoint",
-    }
+    from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+
+    provider_labels = dict(_PROVIDER_LABELS)  # derive from canonical list
     active_label = provider_labels.get(active, active) if active else "none"
 
     print()
@@ -1064,32 +1044,8 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — top providers shown first, rest behind "More..."
-    top_providers = [
-        ("nous", "Nous Portal (Nous Research subscription)"),
-        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
-        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
-        ("openai-codex", "OpenAI Codex"),
-        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
-        ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
-    ]
-
-    extended_providers = [
-        ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-        ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
-        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
-        ("kimi-coding-cn", "Kimi / Moonshot China (Moonshot CN direct API)"),
-        ("minimax", "MiniMax (global direct API)"),
-        ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("kilocode", "Kilo Code (Kilo Gateway API)"),
-        ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-        ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
-        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-        ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
-    ]
+    # Step 1: Provider selection — flat list from CANONICAL_PROVIDERS
+    all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         custom_provider_map = {}
@@ -1126,29 +1082,22 @@ def select_provider_and_model(args=None):
         short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
         saved_model = provider_info.get("model", "")
         model_hint = f" — {saved_model}" if saved_model else ""
-        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
+        all_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
-    top_keys = {k for k, _ in top_providers}
-    extended_keys = {k for k, _ in extended_providers}
-
-    # If the active provider is in the extended list, promote it into top
-    if active and active in extended_keys:
-        promoted = [(k, l) for k, l in extended_providers if k == active]
-        extended_providers = [(k, l) for k, l in extended_providers if k != active]
-        top_providers = promoted + top_providers
-        top_keys.add(active)
-
-    # Build the primary menu
+    # Build the menu
     ordered = []
     default_idx = 0
-    for key, label in top_providers:
+    for key, label in all_providers:
         if active and key == active:
             ordered.append((key, f"{label}  ← currently active"))
             default_idx = len(ordered) - 1
         else:
             ordered.append((key, label))
 
-    ordered.append(("more", "More providers..."))
+    ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(config.get("custom_providers"))
+    if _has_saved_custom_list:
+        ordered.append(("remove-custom", "Remove a saved custom provider"))
     ordered.append(("cancel", "Cancel"))
 
     provider_idx = _prompt_provider_choice(
@@ -1159,23 +1108,6 @@ def select_provider_and_model(args=None):
         return
 
     selected_provider = ordered[provider_idx][0]
-
-    # "More providers..." — show the extended list
-    if selected_provider == "more":
-        ext_ordered = list(extended_providers)
-        ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
-        _has_saved_custom_list = isinstance(config.get("custom_providers"), list) and bool(config.get("custom_providers"))
-        if _has_saved_custom_list:
-            ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
-        ext_ordered.append(("cancel", "Cancel"))
-
-        ext_idx = _prompt_provider_choice(
-            [label for _, label in ext_ordered], default=0,
-        )
-        if ext_idx is None or ext_ordered[ext_idx][0] == "cancel":
-            print("No change.")
-            return
-        selected_provider = ext_ordered[ext_idx][0]
 
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
@@ -1207,7 +1139,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("gemini", "deepseek", "xai", "zai", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "arcee"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -1686,6 +1618,10 @@ def _model_flow_custom(config):
             model_name = input("Model name (e.g. gpt-4, llama-3-70b): ").strip()
 
         context_length_str = input("Context length in tokens [leave blank for auto-detect]: ").strip()
+
+        # Prompt for a display name — shown in the provider menu on future runs
+        default_name = _auto_provider_name(effective_url)
+        display_name = input(f"Display name [{default_name}]: ").strip() or default_name
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
@@ -1741,15 +1677,37 @@ def _model_flow_custom(config):
         print("Endpoint saved. Use `/model` in chat or `hermes model` to set a model.")
 
     # Auto-save to custom_providers so it appears in the menu next time
-    _save_custom_provider(effective_url, effective_key, model_name or "", context_length=context_length)
+    _save_custom_provider(effective_url, effective_key, model_name or "",
+                          context_length=context_length, name=display_name)
 
 
-def _save_custom_provider(base_url, api_key="", model="", context_length=None):
+def _auto_provider_name(base_url: str) -> str:
+    """Generate a display name from a custom endpoint URL.
+
+    Returns a human-friendly label like "Local (localhost:11434)" or
+    "RunPod (xyz.runpod.io)".  Used as the default when prompting the
+    user for a display name during custom endpoint setup.
+    """
+    import re
+    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+    clean = re.sub(r"/v1/?$", "", clean)
+    name = clean.split("/")[0]
+    if "localhost" in name or "127.0.0.1" in name:
+        name = f"Local ({name})"
+    elif "runpod" in name.lower():
+        name = f"RunPod ({name})"
+    else:
+        name = name.capitalize()
+    return name
+
+
+def _save_custom_provider(base_url, api_key="", model="", context_length=None,
+                          name=None):
     """Save a custom endpoint to custom_providers in config.yaml.
 
     Deduplicates by base_url — if the URL already exists, updates the
     model name and context_length but doesn't add a duplicate entry.
-    Auto-generates a display name from the URL hostname.
+    Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
 
@@ -1777,20 +1735,9 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None):
                 save_config(cfg)
             return  # already saved, updated if needed
 
-    # Auto-generate a name from the URL
-    import re
-    clean = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-    # Remove /v1 suffix for cleaner names
-    clean = re.sub(r"/v1/?$", "", clean)
-    # Use hostname:port as the name
-    name = clean.split("/")[0]
-    # Capitalize for readability
-    if "localhost" in name or "127.0.0.1" in name:
-        name = f"Local ({name})"
-    elif "runpod" in name.lower():
-        name = f"RunPod ({name})"
-    else:
-        name = name.capitalize()
+    # Use provided name or auto-generate from URL
+    if not name:
+        name = _auto_provider_name(base_url)
 
     entry = {"name": name, "base_url": base_url}
     if api_key:
@@ -2696,13 +2643,12 @@ def _run_anthropic_oauth_flow(save_env_value):
 
 def _model_flow_anthropic(config, current_model=""):
     """Flow for Anthropic provider — OAuth subscription, API key, or Claude Code creds."""
-    import os
     from hermes_cli.auth import (
-        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        _prompt_model_selection, _save_model_choice,
         deactivate_provider,
     )
     from hermes_cli.config import (
-        get_env_value, save_env_value, load_config, save_config,
+        save_env_value, load_config, save_config,
         save_anthropic_api_key,
     )
     from hermes_cli.models import _PROVIDER_MODELS
@@ -4640,7 +4586,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "kilocode", "xiaomi", "arcee"],
         default=None,
         help="Inference provider (default: auto)"
     )

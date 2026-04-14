@@ -1499,6 +1499,7 @@ class GatewayRunner:
                        "WECOM_CALLBACK_ALLOWED_USERS",
                        "WEIXIN_ALLOWED_USERS",
                        "BLUEBUBBLES_ALLOWED_USERS",
+                       "QQ_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1512,7 +1513,8 @@ class GatewayRunner:
                        "WECOM_ALLOW_ALL_USERS",
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
                        "WEIXIN_ALLOW_ALL_USERS",
-                       "BLUEBUBBLES_ALLOW_ALL_USERS")
+                       "BLUEBUBBLES_ALLOW_ALL_USERS",
+                       "QQ_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -2255,8 +2257,15 @@ class GatewayRunner:
                 return None
             return BlueBubblesAdapter(config)
 
+        elif platform == Platform.QQBOT:
+            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+            if not check_qq_requirements():
+                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
+                return None
+            return QQAdapter(config)
+
         return None
-    
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -2296,6 +2305,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+            Platform.QQBOT: "QQ_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -2313,6 +2323,7 @@ class GatewayRunner:
             Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
             Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+            Platform.QQBOT: "QQ_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2546,11 +2557,8 @@ class GatewayRunner:
                 self._pending_messages.pop(_quick_key, None)
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
-                # Mark session suspended so the next message starts fresh
-                # instead of resuming the stuck context (#7536).
-                self.session_store.suspend_session(_quick_key)
-                logger.info("HARD STOP for session %s — suspended, session lock released", _quick_key[:20])
-                return "⚡ Force-stopped. The session is suspended — your next message will start fresh."
+                logger.info("STOP for session %s — agent interrupted, session lock released", _quick_key[:20])
+                return "⚡ Stopped. You can continue this session."
 
             # /reset and /new must bypass the running-agent guard so they
             # actually dispatch as commands instead of being queued as user
@@ -4120,9 +4128,7 @@ class GatewayRunner:
         only through normal command dispatch (no running agent) or as a
         fallback.  Force-clean the session lock in all cases for safety.
 
-        When there IS a running/pending agent, the session is also marked
-        as *suspended* so the next message starts a fresh session instead
-        of resuming the stuck context (#7536).
+        The session is preserved so the user can continue the conversation.
         """
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
@@ -4133,17 +4139,15 @@ class GatewayRunner:
             # Force-clean the sentinel so the session is unlocked.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
-            self.session_store.suspend_session(session_key)
-            logger.info("HARD STOP (pending) for session %s — suspended, sentinel cleared", session_key[:20])
-            return "⚡ Force-stopped. The agent was still starting — your next message will start fresh."
+            logger.info("STOP (pending) for session %s — sentinel cleared", session_key[:20])
+            return "⚡ Stopped. The agent hadn't started yet — you can continue this session."
         if agent:
             agent.interrupt("Stop requested")
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
             if session_key in self._running_agents:
                 del self._running_agents[session_key]
-            self.session_store.suspend_session(session_key)
-            return "⚡ Force-stopped. Your next message will start a fresh session."
+            return "⚡ Stopped. You can continue this session."
         else:
             return "No active task to stop."
 
@@ -6303,7 +6307,7 @@ class GatewayRunner:
         """Handle /reload-mcp command -- disconnect and reconnect all MCP servers."""
         loop = asyncio.get_event_loop()
         try:
-            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _load_mcp_config, _servers, _lock
+            from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
             with _lock:
@@ -6476,7 +6480,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
@@ -7816,13 +7820,19 @@ class GatewayRunner:
                     _adapter = self.adapters.get(source.platform)
                     if _adapter:
                         # Platforms that don't support editing sent messages
-                        # (e.g. WeChat) must not show a cursor in intermediate
-                        # sends — the cursor would be permanently visible because
-                        # it can never be edited away.  Use an empty cursor for
-                        # such platforms so streaming still delivers the final
-                        # response, just without the typing indicator.
+                        # (e.g. QQ, WeChat) should skip streaming entirely —
+                        # without edit support, the consumer sends a partial
+                        # first message that can never be updated, resulting in
+                        # duplicate messages (partial + final).
                         _adapter_supports_edit = getattr(_adapter, "SUPPORTS_MESSAGE_EDITING", True)
-                        _effective_cursor = _scfg.cursor if _adapter_supports_edit else ""
+                        if not _adapter_supports_edit:
+                            raise RuntimeError("skip streaming for non-editable platform")
+                        _effective_cursor = _scfg.cursor
+                        # Some Matrix clients render the streaming cursor
+                        # as a visible tofu/white-box artifact.  Keep
+                        # streaming text on Matrix, but suppress the cursor.
+                        if source.platform == Platform.MATRIX:
+                            _effective_cursor = ""
                         _consumer_cfg = StreamConsumerConfig(
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,

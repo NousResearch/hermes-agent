@@ -245,6 +245,9 @@ def _get_required_environment_variables(
         if isinstance(required_for, str) and required_for.strip():
             normalized["required_for"] = required_for.strip()
 
+        if entry.get("optional"):
+            normalized["optional"] = True
+
         seen.add(env_name)
         required.append(normalized)
 
@@ -378,6 +381,8 @@ def _remaining_required_environment_names(
     remaining = []
     for entry in required_env_vars:
         name = entry["name"]
+        if entry.get("optional"):
+            continue
         if name in missing_names or not _is_env_var_persisted(name, env_snapshot):
             remaining.append(name)
     return remaining
@@ -445,10 +450,6 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
         except ValueError:
             continue
     return None
-
-
-# Token estimation — use the shared implementation from model_metadata.
-from agent.model_metadata import estimate_tokens_rough as _estimate_tokens
 
 
 def _parse_tags(tags_value) -> List[str]:
@@ -627,85 +628,6 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             "Error parsing category description %s: %s", desc_file, e, exc_info=True
         )
         return None
-
-
-def skills_categories(verbose: bool = False, task_id: str = None) -> str:
-    """
-    List available skill categories with descriptions (progressive disclosure tier 0).
-
-    Returns category names and descriptions for efficient discovery before drilling down.
-    Categories can have a DESCRIPTION.md file with a description frontmatter field
-    or first paragraph to explain what skills are in that category.
-
-    Args:
-        verbose: If True, include skill counts per category (default: False, but currently always included)
-        task_id: Optional task identifier used to probe the active backend
-
-    Returns:
-        JSON string with list of categories and their descriptions
-    """
-    try:
-        # Use module-level SKILLS_DIR (respects monkeypatching) + external dirs
-        all_dirs = [SKILLS_DIR] if SKILLS_DIR.exists() else []
-        try:
-            from agent.skill_utils import get_external_skills_dirs
-            all_dirs.extend(d for d in get_external_skills_dirs() if d.exists())
-        except Exception:
-            pass
-        if not all_dirs:
-            return json.dumps(
-                {
-                    "success": True,
-                    "categories": [],
-                    "message": "No skills directory found.",
-                },
-                ensure_ascii=False,
-            )
-
-        category_dirs = {}
-        category_counts: Dict[str, int] = {}
-        for scan_dir in all_dirs:
-            for skill_md in scan_dir.rglob("SKILL.md"):
-                if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                    continue
-
-                try:
-                    frontmatter, _ = _parse_frontmatter(
-                        skill_md.read_text(encoding="utf-8")[:4000]
-                    )
-                except Exception:
-                    frontmatter = {}
-
-                if not skill_matches_platform(frontmatter):
-                    continue
-
-                category = _get_category_from_path(skill_md)
-                if category:
-                    category_counts[category] = category_counts.get(category, 0) + 1
-                    if category not in category_dirs:
-                        category_dirs[category] = skill_md.parent.parent
-
-        categories = []
-        for name in sorted(category_dirs.keys()):
-            category_dir = category_dirs[name]
-            description = _load_category_description(category_dir)
-
-            cat_entry = {"name": name, "skill_count": category_counts[name]}
-            if description:
-                cat_entry["description"] = description
-            categories.append(cat_entry)
-
-        return json.dumps(
-            {
-                "success": True,
-                "categories": categories,
-                "hint": "If a category is relevant to your task, use skills_list with that category to see available skills",
-            },
-            ensure_ascii=False,
-        )
-
-    except Exception as e:
-        return tool_error(str(e), success=False)
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -1125,7 +1047,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         missing_required_env_vars = [
             e
             for e in required_env_vars
-            if not _is_env_var_persisted(e["name"], env_snapshot)
+            if not e.get("optional")
+            and not _is_env_var_persisted(e["name"], env_snapshot)
         ]
         capture_result = _capture_required_environment_variables(
             skill_name,
@@ -1240,19 +1163,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-# Tool description for model_tools.py
-SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
-
-Progressive disclosure workflow:
-1. skills_list() - Returns metadata (name, description, tags, linked_file_count) for all skills
-2. skill_view(name) - Loads full SKILL.md content + shows available linked_files
-3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
-
-Skills may include:
-- references/: Additional documentation, API specs, examples
-- templates/: Output formats, config files, boilerplate code
-- assets/: Supplementary files (agentskills.io standard)
-- scripts/: Executable helpers (Python, shell scripts)"""
 
 
 if __name__ == "__main__":

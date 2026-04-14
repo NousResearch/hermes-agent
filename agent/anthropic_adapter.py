@@ -1230,9 +1230,10 @@ def build_anthropic_kwargs(
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
 
-    When *fast_mode* is True, adds ``speed: "fast"`` and the fast-mode beta
-    header for ~2.5x faster output throughput on Opus 4.6.  Currently only
-    supported on native Anthropic endpoints (not third-party compatible ones).
+    When *fast_mode* is True, adds ``extra_body["speed"] = "fast"`` and the
+    fast-mode beta header for ~2.5x faster output throughput on Opus 4.6.
+    Currently only supported on native Anthropic endpoints (not third-party
+    compatible ones).
     """
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
@@ -1333,11 +1334,11 @@ def build_anthropic_kwargs(
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
-    # Adds speed:"fast" + the fast-mode beta header for ~2.5x output speed.
-    # Only for native Anthropic endpoints — third-party providers would
-    # reject the unknown beta header and speed parameter.
+    # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
+    # output speed. Only for native Anthropic endpoints — third-party
+    # providers would reject the unknown beta header and speed parameter.
     if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
-        kwargs["speed"] = "fast"
+        kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
         betas = list(_common_betas_for_base_url(base_url))

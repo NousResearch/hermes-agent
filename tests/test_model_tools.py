@@ -92,6 +92,91 @@ class TestAgentLoopTools:
 
 
 # =========================================================================
+# Pre-tool-call blocking via plugin hooks
+# =========================================================================
+
+class TestPreToolCallBlocking:
+    """Verify that pre_tool_call hooks can block tool execution."""
+
+    def test_blocked_tool_returns_error_and_skips_dispatch(self, monkeypatch):
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [{"action": "block", "message": "Blocked by policy"}]
+            return []
+
+        dispatch_called = False
+        _orig_dispatch = None
+
+        def fake_dispatch(*args, **kwargs):
+            nonlocal dispatch_called
+            dispatch_called = True
+            raise AssertionError("dispatch should not run when blocked")
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
+        assert result == {"error": "Blocked by policy"}
+        assert not dispatch_called
+
+    def test_blocked_tool_skips_read_loop_notification(self, monkeypatch):
+        notifications = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [{"action": "block", "message": "Blocked"}]
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not run")))
+        monkeypatch.setattr("tools.file_tools.notify_other_tool_call",
+                            lambda task_id: notifications.append(task_id))
+
+        result = json.loads(handle_function_call("web_search", {"q": "test"}, task_id="t1"))
+        assert result == {"error": "Blocked"}
+        assert notifications == []
+
+    def test_invalid_hook_returns_do_not_block(self, monkeypatch):
+        """Malformed hook returns should be ignored — tool executes normally."""
+        def fake_invoke_hook(hook_name, **kwargs):
+            if hook_name == "pre_tool_call":
+                return [
+                    "block",
+                    {"action": "block"},           # missing message
+                    {"action": "deny", "message": "nope"},
+                ]
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
+
+        result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
+        assert result == {"ok": True}
+
+    def test_skip_flag_prevents_double_block_check(self, monkeypatch):
+        """When skip_pre_tool_call_hook=True, blocking is not checked (caller did it)."""
+        hook_calls = []
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            hook_calls.append(hook_name)
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("model_tools.registry.dispatch",
+                            lambda *a, **kw: json.dumps({"ok": True}))
+
+        handle_function_call("web_search", {"q": "test"}, task_id="t1",
+                             skip_pre_tool_call_hook=True)
+
+        # Hook still fires for observer notification, but get_pre_tool_call_block_message
+        # is not called — invoke_hook fires directly in the skip=True branch.
+        assert "pre_tool_call" in hook_calls
+        assert "post_tool_call" in hook_calls
+
+
+# =========================================================================
 # Legacy toolset map
 # =========================================================================
 

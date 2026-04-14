@@ -10,7 +10,6 @@ Uses discord.py library for:
 """
 
 import asyncio
-import json
 import logging
 import os
 import struct
@@ -19,7 +18,6 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from pathlib import Path
 from typing import Callable, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)

@@ -126,10 +126,6 @@ class SkinConfig:
         """Get a color value with fallback."""
         return self.colors.get(key, fallback)
 
-    def get_spinner_list(self, key: str) -> List[str]:
-        """Get a spinner list (faces, verbs, etc.)."""
-        return self.spinner.get(key, [])
-
     def get_spinner_wings(self) -> List[Tuple[str, str]]:
         """Get spinner wing pairs, or empty list if none."""
         raw = self.spinner.get("wings", [])

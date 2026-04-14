@@ -94,6 +94,7 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "kennyx102@gmail.com": "bobashopcashier",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",
@@ -315,6 +316,28 @@ def clean_subject(subject: str) -> str:
     return cleaned
 
 
+def parse_coauthors(body: str) -> list:
+    """Extract Co-authored-by trailers from a commit message body.
+
+    Returns a list of {'name': ..., 'email': ...} dicts.
+    Filters out AI assistants and bots (Claude, Copilot, Cursor, etc.).
+    """
+    if not body:
+        return []
+    # AI/bot emails to ignore in co-author trailers
+    _ignored_emails = {"noreply@anthropic.com", "noreply@github.com",
+                       "cursoragent@cursor.com", "hermes@nousresearch.com"}
+    _ignored_names = re.compile(r"^(Claude|Copilot|Cursor Agent|GitHub Actions?|dependabot|renovate)", re.IGNORECASE)
+    pattern = re.compile(r"Co-authored-by:\s*(.+?)\s*<([^>]+)>", re.IGNORECASE)
+    results = []
+    for m in pattern.finditer(body):
+        name, email = m.group(1).strip(), m.group(2).strip()
+        if email in _ignored_emails or _ignored_names.match(name):
+            continue
+        results.append({"name": name, "email": email})
+    return results
+
+
 def get_commits(since_tag=None):
     """Get commits since a tag (or all commits if None)."""
     if since_tag:
@@ -322,10 +345,11 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject
+    # Format: hash|author_name|author_email|subject\0body
+    # Using %x00 (null) as separator between subject and body
     log = git(
         "log", range_spec,
-        "--format=%H|%an|%ae|%s",
+        "--format=%H|%an|%ae|%s%x00%b%x00",
         "--no-merges",
     )
 
@@ -333,13 +357,25 @@ def get_commits(since_tag=None):
         return []
 
     commits = []
-    for line in log.split("\n"):
-        if not line.strip():
+    # Split on double-null to get each commit entry, since body ends with \0
+    # and format ends with \0, each record ends with \0\0 between entries
+    for entry in log.split("\0\0"):
+        entry = entry.strip()
+        if not entry:
             continue
-        parts = line.split("|", 3)
+        # Split on first null to separate "hash|name|email|subject" from "body"
+        if "\0" in entry:
+            header, body = entry.split("\0", 1)
+            body = body.strip()
+        else:
+            header = entry
+            body = ""
+        parts = header.split("|", 3)
         if len(parts) != 4:
             continue
         sha, name, email, subject = parts
+        coauthor_info = parse_coauthors(body)
+        coauthors = [resolve_author(ca["name"], ca["email"]) for ca in coauthor_info]
         commits.append({
             "sha": sha,
             "short_sha": sha[:8],
@@ -348,6 +384,7 @@ def get_commits(since_tag=None):
             "subject": subject,
             "category": categorize_commit(subject),
             "github_author": resolve_author(name, email),
+            "coauthors": coauthors,
         })
 
     return commits
@@ -389,6 +426,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         author = commit["github_author"]
         if author not in teknium_aliases:
             all_authors.add(author)
+        for coauthor in commit.get("coauthors", []):
+            if coauthor not in teknium_aliases:
+                all_authors.add(coauthor)
 
     # Category display order and emoji
     category_order = [
@@ -437,6 +477,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             author = commit["github_author"]
             if author not in teknium_aliases:
                 author_counts[author] += 1
+            for coauthor in commit.get("coauthors", []):
+                if coauthor not in teknium_aliases:
+                    author_counts[coauthor] += 1
 
         sorted_authors = sorted(author_counts.items(), key=lambda x: -x[1])
 

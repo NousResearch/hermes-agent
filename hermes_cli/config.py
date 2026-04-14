@@ -824,6 +824,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ARCEEAI_API_KEY": {
+        "description": "Arcee AI API key",
+        "prompt": "Arcee AI API key",
+        "url": "https://chat.arcee.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ARCEE_BASE_URL": {
+        "description": "Arcee AI base URL override",
+        "prompt": "Arcee base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",
@@ -1176,7 +1192,7 @@ OPTIONAL_ENV_VARS = {
     "SLACK_BOT_TOKEN": {
         "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
                        "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, users:read, files:write",
+                       "im:history, im:read, im:write, users:read, files:read, files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "url": "https://api.slack.com/apps",
         "password": True,
@@ -1656,7 +1672,8 @@ def get_compatible_custom_providers(
         provider_key = str(entry.get("provider_key", "") or "").strip().lower()
         name = str(entry.get("name", "") or "").strip().lower()
         base_url = str(entry.get("base_url", "") or "").strip().rstrip("/").lower()
-        pair = (name, base_url)
+        model = str(entry.get("model", "") or "").strip().lower()
+        pair = (name, base_url, model)
 
         if provider_key and provider_key in seen_provider_keys:
             return

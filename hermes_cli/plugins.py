@@ -31,7 +31,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
-import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -263,6 +262,53 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- skill registration -------------------------------------------------
+
+    def register_skill(
+        self,
+        name: str,
+        path: Path,
+        description: str = "",
+    ) -> None:
+        """Register a read-only skill provided by this plugin.
+
+        The skill becomes resolvable as ``'<plugin_name>:<name>'`` via
+        ``skill_view()``.  It does **not** enter the flat
+        ``~/.hermes/skills/`` tree and is **not** listed in the system
+        prompt's ``<available_skills>`` index — plugin skills are
+        opt-in explicit loads only.
+
+        Raises:
+            ValueError: if *name* contains ``':'`` or invalid characters.
+            FileNotFoundError: if *path* does not exist.
+        """
+        from agent.skill_utils import _NAMESPACE_RE
+
+        if ":" in name:
+            raise ValueError(
+                f"Skill name '{name}' must not contain ':' "
+                f"(the namespace is derived from the plugin name "
+                f"'{self.manifest.name}' automatically)."
+            )
+        if not name or not _NAMESPACE_RE.match(name):
+            raise ValueError(
+                f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+."
+            )
+        if not path.exists():
+            raise FileNotFoundError(f"SKILL.md not found at {path}")
+
+        qualified = f"{self.manifest.name}:{name}"
+        self._manager._plugin_skills[qualified] = {
+            "path": path,
+            "plugin": self.manifest.name,
+            "bare_name": name,
+            "description": description,
+        }
+        logger.debug(
+            "Plugin %s registered skill: %s",
+            self.manifest.name, qualified,
+        )
+
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -279,6 +325,8 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        # Plugin skill registry: qualified name → metadata dict.
+        self._plugin_skills: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -555,6 +603,28 @@ class PluginManager:
             )
         return result
 
+    # -----------------------------------------------------------------------
+    # Plugin skill lookups
+    # -----------------------------------------------------------------------
+
+    def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
+        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
+        entry = self._plugin_skills.get(qualified_name)
+        return entry["path"] if entry else None
+
+    def list_plugin_skills(self, plugin_name: str) -> List[str]:
+        """Return sorted bare names of all skills registered by *plugin_name*."""
+        prefix = f"{plugin_name}:"
+        return sorted(
+            e["bare_name"]
+            for qn, e in self._plugin_skills.items()
+            if qn.startswith(prefix)
+        )
+
+    def remove_plugin_skill(self, qualified_name: str) -> None:
+        """Remove a stale registry entry (silently ignores missing keys)."""
+        self._plugin_skills.pop(qualified_name, None)
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton & convenience functions
@@ -584,18 +654,44 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
-def get_plugin_tool_names() -> Set[str]:
-    """Return the set of tool names registered by plugins."""
-    return get_plugin_manager()._plugin_tool_names
 
+def get_pre_tool_call_block_message(
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+    task_id: str = "",
+    session_id: str = "",
+    tool_call_id: str = "",
+) -> Optional[str]:
+    """Check ``pre_tool_call`` hooks for a blocking directive.
 
-def get_plugin_cli_commands() -> Dict[str, dict]:
-    """Return CLI commands registered by general plugins.
+    Plugins that need to enforce policy (rate limiting, security
+    restrictions, approval workflows) can return::
 
-    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
-    suitable for wiring into argparse subparsers.
+        {"action": "block", "message": "Reason the tool was blocked"}
+
+    from their ``pre_tool_call`` callback.  The first valid block
+    directive wins.  Invalid or irrelevant hook return values are
+    silently ignored so existing observer-only hooks are unaffected.
     """
-    return dict(get_plugin_manager()._cli_commands)
+    hook_results = invoke_hook(
+        "pre_tool_call",
+        tool_name=tool_name,
+        args=args if isinstance(args, dict) else {},
+        task_id=task_id,
+        session_id=session_id,
+        tool_call_id=tool_call_id,
+    )
+
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        if result.get("action") != "block":
+            continue
+        message = result.get("message")
+        if isinstance(message, str) and message:
+            return message
+
+    return None
 
 
 def get_plugin_context_engine():
@@ -622,7 +718,7 @@ def get_plugin_toolsets() -> List[tuple]:
     toolset_tools: Dict[str, List[str]] = {}
     toolset_plugin: Dict[str, LoadedPlugin] = {}
     for tool_name in manager._plugin_tool_names:
-        entry = registry._tools.get(tool_name)
+        entry = registry.get_entry(tool_name)
         if not entry:
             continue
         ts = entry.toolset
@@ -631,7 +727,7 @@ def get_plugin_toolsets() -> List[tuple]:
     # Map toolsets back to the plugin that registered them
     for _name, loaded in manager._plugins.items():
         for tool_name in loaded.tools_registered:
-            entry = registry._tools.get(tool_name)
+            entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:
                 toolset_plugin.setdefault(entry.toolset, loaded)
 

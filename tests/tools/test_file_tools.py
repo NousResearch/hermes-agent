@@ -9,29 +9,11 @@ import logging
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
-    FILE_TOOLS,
     READ_FILE_SCHEMA,
     WRITE_FILE_SCHEMA,
     PATCH_SCHEMA,
     SEARCH_FILES_SCHEMA,
 )
-
-
-class TestFileToolsList:
-    def test_has_expected_entries(self):
-        names = {t["name"] for t in FILE_TOOLS}
-        assert names == {"read_file", "write_file", "patch", "search_files"}
-
-    def test_each_entry_has_callable_function(self):
-        for tool in FILE_TOOLS:
-            assert callable(tool["function"]), f"{tool['name']} missing callable"
-
-    def test_schemas_have_required_fields(self):
-        """All schemas must have name, description, and parameters with properties."""
-        for schema in [READ_FILE_SCHEMA, WRITE_FILE_SCHEMA, PATCH_SCHEMA, SEARCH_FILES_SCHEMA]:
-            assert "name" in schema
-            assert "description" in schema
-            assert "properties" in schema["parameters"]
 
 
 class TestReadFileHandler:
@@ -258,8 +240,8 @@ class TestSearchHints:
 
     def setup_method(self):
         """Clear read/search tracker between tests to avoid cross-test state."""
-        from tools.file_tools import clear_read_tracker
-        clear_read_tracker()
+        from tools.file_tools import _read_tracker
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
     def test_truncated_results_hint(self, mock_get):

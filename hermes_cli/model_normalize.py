@@ -51,6 +51,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "grok": "x-ai",
     "qwen": "qwen",
     "mimo": "xiaomi",
+    "trinity": "arcee-ai",
     "nemotron": "nvidia",
     "llama": "meta-llama",
     "step": "stepfun",
@@ -88,11 +89,13 @@ _AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
 _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
+    "kimi-coding-cn",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
     "custom",
 })
 

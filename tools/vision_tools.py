@@ -689,15 +689,6 @@ def check_vision_requirements() -> bool:
         return False
 
 
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
-
 
 if __name__ == "__main__":
     """

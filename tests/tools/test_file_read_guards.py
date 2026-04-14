@@ -16,11 +16,11 @@ from unittest.mock import patch, MagicMock
 
 from tools.file_tools import (
     read_file_tool,
-    clear_read_tracker,
     reset_file_dedup,
     _is_blocked_device,
     _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
+    _read_tracker,
 )
 
 
@@ -95,10 +95,10 @@ class TestCharacterCountGuard(unittest.TestCase):
     """Large reads should be rejected with guidance to use offset/limit."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
     @patch("tools.file_tools._get_max_read_chars", return_value=_DEFAULT_MAX_READ_CHARS)
@@ -145,14 +145,14 @@ class TestFileDedup(unittest.TestCase):
     """Re-reading an unchanged file should return a lightweight stub."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "dedup_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("line one\nline two\n")
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -224,14 +224,14 @@ class TestDedupResetOnCompression(unittest.TestCase):
     reads return full content."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "compress_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("original content\n")
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -305,10 +305,10 @@ class TestLargeFileHint(unittest.TestCase):
     """Large truncated files should include a hint about targeted reads."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     @patch("tools.file_tools._get_file_ops")
     def test_large_truncated_file_gets_hint(self, mock_ops):
@@ -341,13 +341,13 @@ class TestConfigOverride(unittest.TestCase):
     """file_read_max_chars in config.yaml should control the char guard."""
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         # Reset the cached value so each test gets a fresh lookup
         import tools.file_tools as _ft
         _ft._max_read_chars_cached = None
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         import tools.file_tools as _ft
         _ft._max_read_chars_cached = None
 

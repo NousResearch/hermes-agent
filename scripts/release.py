@@ -94,9 +94,11 @@ AUTHOR_MAP = {
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
+    "kennyx102@gmail.com": "bobashopcashier",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",
+    "chinmingcock@gmail.com": "ChimingLiu",
     "openclaw@sparklab.ai": "openclaw",
     "semihcvlk53@gmail.com": "Himess",
     "erenkar950@gmail.com": "erenkarakus",
@@ -111,6 +113,85 @@ AUTHOR_MAP = {
     "dalvidjr2022@gmail.com": "Jr-kenny",
     "m@statecraft.systems": "mbierling",
     "balyan.sid@gmail.com": "balyansid",
+    "oluwadareab12@gmail.com": "bennytimz",
+    # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
+    #    crossref, and GH contributor list matching (April 2026 audit) ──
+    "1115117931@qq.com": "aaronagent",
+    "1506751656@qq.com": "hqhq1025",
+    "364939526@qq.com": "luyao618",
+    "aaronwong1999@icloud.com": "AaronWong1999",
+    "agents@kylefrench.dev": "DeployFaith",
+    "angelos@oikos.lan.home.malaiwah.com": "angelos",
+    "aptx4561@gmail.com": "cokemine",
+    "arilotter@gmail.com": "ethernet8023",
+    "ben@nousresearch.com": "benbarclay",
+    "birdiegyal@gmail.com": "yyovil",
+    "boschi1997@gmail.com": "nicoloboschi",
+    "chef.ya@gmail.com": "cherifya",
+    "chlqhdtn98@gmail.com": "BongSuCHOI",
+    "coffeemjj@gmail.com": "Cafexss",
+    "dalianmao0107@gmail.com": "dalianmao000",
+    "der@konsi.org": "konsisumer",
+    "dgrieco@redhat.com": "DomGrieco",
+    "dhicham.pro@gmail.com": "spideystreet",
+    "dipp.who@gmail.com": "dippwho",
+    "don.rhm@gmail.com": "donrhmexe",
+    "dorukardahan@hotmail.com": "dorukardahan",
+    "dsocolobsky@gmail.com": "dsocolobsky",
+    "duerzy@gmail.com": "duerzy",
+    "emozilla@nousresearch.com": "emozilla",
+    "fancydirty@gmail.com": "fancydirty",
+    "floptopbot33@gmail.com": "flobo3",
+    "fontana.pedro93@gmail.com": "pefontana",
+    "francis.x.fitzpatrick@gmail.com": "fxfitz",
+    "frank@helmschrott.de": "Helmi",
+    "gaixg94@gmail.com": "gaixianggeng",
+    "geoff.wellman@gmail.com": "geoffwellman",
+    "han.shan@live.cn": "jamesarch",
+    "haolong@microsoft.com": "LongOddCode",
+    "hata1234@gmail.com": "hata1234",
+    "hmbown@gmail.com": "Hmbown",
+    "iacobs@m0n5t3r.info": "m0n5t3r",
+    "jiayuw794@gmail.com": "JiayuuWang",
+    "jonny@nousresearch.com": "jquesnelle",
+    "juan.ovalle@mistral.ai": "jjovalle99",
+    "julien.talbot@ergonomia.re": "Julientalbot",
+    "kagura.chen28@gmail.com": "kagura-agent",
+    "kamil@gwozdz.me": "kamil-gwozdz",
+    "karamusti912@gmail.com": "MustafaKara7",
+    "kira@ariaki.me": "kira-ariaki",
+    "knopki@duck.com": "knopki",
+    "limars874@gmail.com": "limars874",
+    "lisicheng168@gmail.com": "lesterli",
+    "mingjwan@microsoft.com": "MagicRay1217",
+    "niyant@spicefi.xyz": "spniyant",
+    "olafthiele@gmail.com": "olafthiele",
+    "oncuevtv@gmail.com": "sprmn24",
+    "programming@olafthiele.com": "olafthiele",
+    "r2668940489@gmail.com": "r266-tech",
+    "s5460703@gmail.com": "BlackishGreen33",
+    "saul.jj.wu@gmail.com": "SaulJWu",
+    "shenhaocheng19990111@gmail.com": "hcshen0111",
+    "sjtuwbh@gmail.com": "Cygra",
+    "srhtsrht17@gmail.com": "Sertug17",
+    "stephenschoettler@gmail.com": "stephenschoettler",
+    "tanishq231003@gmail.com": "yyovil",
+    "tesseracttars@gmail.com": "tesseracttars-creator",
+    "tianliangjay@gmail.com": "xingkongliang",
+    "tranquil_flow@protonmail.com": "Tranquil-Flow",
+    "unayung@gmail.com": "Unayung",
+    "vorvul.danylo@gmail.com": "WorldInnovationsDepartment",
+    "win4r@outlook.com": "win4r",
+    "xush@xush.org": "KUSH42",
+    "yangzhi.see@gmail.com": "SeeYangZhi",
+    "yongtenglei@gmail.com": "yongtenglei",
+    "young@YoungdeMacBook-Pro.local": "YoungYang963",
+    "ysfalweshcan@gmail.com": "Awsh1",
+    "ysfwaxlycan@gmail.com": "WAXLYY",
+    "yusufalweshdemir@gmail.com": "Dusk1e",
+    "zhouboli@gmail.com": "zhouboli",
+    "zqiao@microsoft.com": "tomqiaozc",
+    "zzn+pa@zzn.im": "xinbenlv",
 }
 
 
@@ -315,6 +396,28 @@ def clean_subject(subject: str) -> str:
     return cleaned
 
 
+def parse_coauthors(body: str) -> list:
+    """Extract Co-authored-by trailers from a commit message body.
+
+    Returns a list of {'name': ..., 'email': ...} dicts.
+    Filters out AI assistants and bots (Claude, Copilot, Cursor, etc.).
+    """
+    if not body:
+        return []
+    # AI/bot emails to ignore in co-author trailers
+    _ignored_emails = {"noreply@anthropic.com", "noreply@github.com",
+                       "cursoragent@cursor.com", "hermes@nousresearch.com"}
+    _ignored_names = re.compile(r"^(Claude|Copilot|Cursor Agent|GitHub Actions?|dependabot|renovate)", re.IGNORECASE)
+    pattern = re.compile(r"Co-authored-by:\s*(.+?)\s*<([^>]+)>", re.IGNORECASE)
+    results = []
+    for m in pattern.finditer(body):
+        name, email = m.group(1).strip(), m.group(2).strip()
+        if email in _ignored_emails or _ignored_names.match(name):
+            continue
+        results.append({"name": name, "email": email})
+    return results
+
+
 def get_commits(since_tag=None):
     """Get commits since a tag (or all commits if None)."""
     if since_tag:
@@ -322,10 +425,11 @@ def get_commits(since_tag=None):
     else:
         range_spec = "HEAD"
 
-    # Format: hash|author_name|author_email|subject
+    # Format: hash|author_name|author_email|subject\0body
+    # Using %x00 (null) as separator between subject and body
     log = git(
         "log", range_spec,
-        "--format=%H|%an|%ae|%s",
+        "--format=%H|%an|%ae|%s%x00%b%x00",
         "--no-merges",
     )
 
@@ -333,13 +437,25 @@ def get_commits(since_tag=None):
         return []
 
     commits = []
-    for line in log.split("\n"):
-        if not line.strip():
+    # Split on double-null to get each commit entry, since body ends with \0
+    # and format ends with \0, each record ends with \0\0 between entries
+    for entry in log.split("\0\0"):
+        entry = entry.strip()
+        if not entry:
             continue
-        parts = line.split("|", 3)
+        # Split on first null to separate "hash|name|email|subject" from "body"
+        if "\0" in entry:
+            header, body = entry.split("\0", 1)
+            body = body.strip()
+        else:
+            header = entry
+            body = ""
+        parts = header.split("|", 3)
         if len(parts) != 4:
             continue
         sha, name, email, subject = parts
+        coauthor_info = parse_coauthors(body)
+        coauthors = [resolve_author(ca["name"], ca["email"]) for ca in coauthor_info]
         commits.append({
             "sha": sha,
             "short_sha": sha[:8],
@@ -348,6 +464,7 @@ def get_commits(since_tag=None):
             "subject": subject,
             "category": categorize_commit(subject),
             "github_author": resolve_author(name, email),
+            "coauthors": coauthors,
         })
 
     return commits
@@ -389,6 +506,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
         author = commit["github_author"]
         if author not in teknium_aliases:
             all_authors.add(author)
+        for coauthor in commit.get("coauthors", []):
+            if coauthor not in teknium_aliases:
+                all_authors.add(coauthor)
 
     # Category display order and emoji
     category_order = [
@@ -437,6 +557,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
             author = commit["github_author"]
             if author not in teknium_aliases:
                 author_counts[author] += 1
+            for coauthor in commit.get("coauthors", []):
+                if coauthor not in teknium_aliases:
+                    author_counts[coauthor] += 1
 
         sorted_authors = sorted(author_counts.items(), key=lambda x: -x[1])
 

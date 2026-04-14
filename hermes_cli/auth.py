@@ -160,6 +160,21 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "kimi-coding-cn": ProviderConfig(
+        id="kimi-coding-cn",
+        name="Kimi / Moonshot (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.cn/v1",
+        api_key_env_vars=("KIMI_CN_API_KEY",),
+    ),
+    "arcee": ProviderConfig(
+        id="arcee",
+        name="Arcee AI",
+        auth_type="api_key",
+        inference_base_url="https://api.arcee.ai/api/v1",
+        api_key_env_vars=("ARCEEAI_API_KEY",),
+        base_url_env_var="ARCEE_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -209,7 +224,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
-        name="AI Gateway",
+        name="Vercel AI Gateway",
         auth_type="api_key",
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
@@ -892,6 +907,8 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+        "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
@@ -2245,7 +2262,40 @@ def resolve_nous_runtime_credentials(
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output."""
+    """Status snapshot for `hermes status` output.
+
+    Checks the credential pool first (where the dashboard device-code flow
+    and ``hermes auth`` store credentials), then falls back to the legacy
+    auth-store provider state.
+    """
+    # Check credential pool first — the dashboard device-code flow saves
+    # here but may not have written to the auth store yet.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("nous")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                access_token = (
+                    getattr(entry, "access_token", None)
+                    or getattr(entry, "runtime_api_key", "")
+                )
+                if access_token:
+                    return {
+                        "logged_in": True,
+                        "portal_base_url": getattr(entry, "portal_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "inference_base_url": getattr(entry, "inference_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "access_token": access_token,
+                        "access_expires_at": getattr(entry, "expires_at", None),
+                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+                    }
+    except Exception:
+        pass
+
+    # Fall back to auth-store provider state
     state = get_provider_auth_state("nous")
     if not state:
         return {

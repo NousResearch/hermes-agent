@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -24,17 +23,19 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
+    "arcee",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
+    "arcee-ai", "arceeai",
     "qwen-portal",
 })
 
@@ -105,9 +106,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude-sonnet-4.6": 1000000,
     # Catch-all for older Claude models (must sort after specific entries)
     "claude": 200000,
-    # OpenAI
+    # OpenAI — GPT-5 family (most have 400k; specific overrides first)
+    # Source: https://developers.openai.com/api/docs/models
+    "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
+    "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
+    "gpt-5.3-codex-spark": 128000,    # Spark variant has reduced 128k context
+    "gpt-5.1-chat": 128000,           # Chat variant has 128k context
+    "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
     "gpt-4.1": 1047576,
-    "gpt-5": 128000,
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
@@ -149,6 +156,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi": 262144,
     # Arcee
     "trinity": 262144,
+    # OpenRouter
+    "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,
@@ -211,7 +220,9 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
+    "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
+    "api.arcee.ai": "arcee",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",

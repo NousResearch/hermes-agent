@@ -18,7 +18,7 @@ from hermes_cli.plugins import (
     PluginManager,
     PluginManifest,
     get_plugin_manager,
-    get_plugin_tool_names,
+    get_pre_tool_call_block_message,
     discover_plugins,
     invoke_hook,
 )
@@ -309,6 +309,50 @@ class TestPluginHooks:
             mgr.discover_and_load()
 
         assert any("on_banana" in record.message for record in caplog.records)
+
+
+class TestPreToolCallBlocking:
+    """Tests for the pre_tool_call block directive helper."""
+
+    def test_block_message_returned_for_valid_directive(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [{"action": "block", "message": "blocked by plugin"}],
+        )
+        assert get_pre_tool_call_block_message("todo", {}, task_id="t1") == "blocked by plugin"
+
+    def test_invalid_returns_are_ignored(self, monkeypatch):
+        """Various malformed hook returns should not trigger a block."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                "block",                                 # not a dict
+                123,                                     # not a dict
+                {"action": "block"},                     # missing message
+                {"action": "deny", "message": "nope"},   # wrong action
+                {"message": "missing action"},            # no action key
+                {"action": "block", "message": 123},     # message not str
+            ],
+        )
+        assert get_pre_tool_call_block_message("todo", {}, task_id="t1") is None
+
+    def test_none_when_no_hooks(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+        assert get_pre_tool_call_block_message("web_search", {"q": "test"}) is None
+
+    def test_first_valid_block_wins(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "allow"},
+                {"action": "block", "message": "first blocker"},
+                {"action": "block", "message": "second blocker"},
+            ],
+        )
+        assert get_pre_tool_call_block_message("terminal", {}) == "first blocker"
 
 
 # ── TestPluginContext ──────────────────────────────────────────────────────

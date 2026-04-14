@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -188,52 +191,6 @@ def resolve_command(name: str) -> CommandDef | None:
     Accepts names with or without the leading slash.
     """
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
-
-
-def rebuild_lookups() -> None:
-    """Rebuild all derived lookup dicts from the current COMMAND_REGISTRY.
-
-    Called after plugin commands are registered so they appear in help,
-    autocomplete, gateway dispatch, Telegram menu, and Slack mapping.
-    """
-    global GATEWAY_KNOWN_COMMANDS
-
-    _COMMAND_LOOKUP.clear()
-    _COMMAND_LOOKUP.update(_build_command_lookup())
-
-    COMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            COMMANDS[f"/{cmd.name}"] = _build_description(cmd)
-            for alias in cmd.aliases:
-                COMMANDS[f"/{alias}"] = f"{cmd.description} (alias for /{cmd.name})"
-
-    COMMANDS_BY_CATEGORY.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            cat = COMMANDS_BY_CATEGORY.setdefault(cmd.category, {})
-            cat[f"/{cmd.name}"] = COMMANDS[f"/{cmd.name}"]
-            for alias in cmd.aliases:
-                cat[f"/{alias}"] = COMMANDS[f"/{alias}"]
-
-    SUBCOMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if cmd.subcommands:
-            SUBCOMMANDS[f"/{cmd.name}"] = list(cmd.subcommands)
-    for cmd in COMMAND_REGISTRY:
-        key = f"/{cmd.name}"
-        if key in SUBCOMMANDS or not cmd.args_hint:
-            continue
-        m = _PIPE_SUBS_RE.search(cmd.args_hint)
-        if m:
-            SUBCOMMANDS[key] = m.group(0).split("|")
-
-    GATEWAY_KNOWN_COMMANDS = frozenset(
-        name
-        for cmd in COMMAND_REGISTRY
-        if not cmd.cli_only or cmd.gateway_config_gate
-        for name in (cmd.name, *cmd.aliases)
-    )
 
 
 def _build_description(cmd: CommandDef) -> str:
@@ -656,6 +613,10 @@ class SlashCommandCompleter(Completer):
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        # Cached project file list for fuzzy @ completions
+        self._file_cache: list[str] = []
+        self._file_cache_time: float = 0.0
+        self._file_cache_cwd: str = ""
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -840,46 +801,138 @@ class SlashCommandCompleter(Completer):
                     count += 1
                 return
 
-        # Bare @ or @partial — show matching files/folders from cwd
+        # Bare @ or @partial — fuzzy project-wide file search
         query = word[1:]  # strip the @
-        if not query:
-            search_dir, match_prefix = ".", ""
-        else:
-            expanded = os.path.expanduser(query)
-            if expanded.endswith("/"):
-                search_dir, match_prefix = expanded, ""
-            else:
-                search_dir = os.path.dirname(expanded) or "."
-                match_prefix = os.path.basename(expanded)
+        yield from self._fuzzy_file_completions(word, query, limit)
 
-        try:
-            entries = os.listdir(search_dir)
-        except OSError:
+    def _get_project_files(self) -> list[str]:
+        """Return cached list of project files (refreshed every 5s)."""
+        cwd = os.getcwd()
+        now = time.monotonic()
+        if (
+            self._file_cache
+            and self._file_cache_cwd == cwd
+            and now - self._file_cache_time < 5.0
+        ):
+            return self._file_cache
+
+        files: list[str] = []
+        # Try rg first (fast, respects .gitignore), then fd, then find.
+        for cmd in [
+            ["rg", "--files", "--sortr=modified", cwd],
+            ["rg", "--files", cwd],
+            ["fd", "--type", "f", "--base-directory", cwd],
+        ]:
+            tool = cmd[0]
+            if not shutil.which(tool):
+                continue
+            try:
+                proc = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=2,
+                    cwd=cwd,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    raw = proc.stdout.strip().split("\n")
+                    # Store relative paths
+                    for p in raw[:5000]:
+                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        files.append(rel)
+                    break
+            except (subprocess.TimeoutExpired, OSError):
+                continue
+
+        self._file_cache = files
+        self._file_cache_time = now
+        self._file_cache_cwd = cwd
+        return files
+
+    @staticmethod
+    def _score_path(filepath: str, query: str) -> int:
+        """Score a file path against a fuzzy query. Higher = better match."""
+        if not query:
+            return 1  # show everything when query is empty
+
+        filename = os.path.basename(filepath)
+        lower_file = filename.lower()
+        lower_path = filepath.lower()
+        lower_q = query.lower()
+
+        # Exact filename match
+        if lower_file == lower_q:
+            return 100
+        # Filename starts with query
+        if lower_file.startswith(lower_q):
+            return 80
+        # Filename contains query as substring
+        if lower_q in lower_file:
+            return 60
+        # Full path contains query
+        if lower_q in lower_path:
+            return 40
+        # Initials / abbreviation match: e.g. "fo" matches "file_operations"
+        # Check if query chars appear in order in filename
+        qi = 0
+        for c in lower_file:
+            if qi < len(lower_q) and c == lower_q[qi]:
+                qi += 1
+        if qi == len(lower_q):
+            # Bonus if matches land on word boundaries (after _, -, /, .)
+            boundary_hits = 0
+            qi = 0
+            prev = "_"  # treat start as boundary
+            for c in lower_file:
+                if qi < len(lower_q) and c == lower_q[qi]:
+                    if prev in "_-./":
+                        boundary_hits += 1
+                    qi += 1
+                prev = c
+            if boundary_hits >= len(lower_q) * 0.5:
+                return 35
+            return 25
+        return 0
+
+    def _fuzzy_file_completions(self, word: str, query: str, limit: int = 20):
+        """Yield fuzzy file completions for bare @query."""
+        files = self._get_project_files()
+
+        if not query:
+            # No query — show recently modified files (already sorted by mtime)
+            for fp in files[:limit]:
+                is_dir = fp.endswith("/")
+                filename = os.path.basename(fp)
+                kind = "folder" if is_dir else "file"
+                meta = "dir" if is_dir else _file_size_label(
+                    os.path.join(os.getcwd(), fp)
+                )
+                yield Completion(
+                    f"@{kind}:{fp}",
+                    start_position=-len(word),
+                    display=filename,
+                    display_meta=meta,
+                )
             return
 
-        count = 0
-        prefix_lower = match_prefix.lower()
-        for entry in sorted(entries):
-            if match_prefix and not entry.lower().startswith(prefix_lower):
-                continue
-            if entry.startswith("."):
-                continue  # skip hidden files in bare @ mode
-            if count >= limit:
-                break
-            full_path = os.path.join(search_dir, entry)
-            is_dir = os.path.isdir(full_path)
-            display_path = os.path.relpath(full_path)
-            suffix = "/" if is_dir else ""
+        # Score and rank
+        scored = []
+        for fp in files:
+            s = self._score_path(fp, query)
+            if s > 0:
+                scored.append((s, fp))
+        scored.sort(key=lambda x: (-x[0], x[1]))
+
+        for _, fp in scored[:limit]:
+            is_dir = fp.endswith("/")
+            filename = os.path.basename(fp)
             kind = "folder" if is_dir else "file"
-            meta = "dir" if is_dir else _file_size_label(full_path)
-            completion = f"@{kind}:{display_path}{suffix}"
-            yield Completion(
-                completion,
-                start_position=-len(word),
-                display=entry + suffix,
-                display_meta=meta,
+            meta = "dir" if is_dir else _file_size_label(
+                os.path.join(os.getcwd(), fp)
             )
-            count += 1
+            yield Completion(
+                f"@{kind}:{fp}",
+                start_position=-len(word),
+                display=filename,
+                display_meta=f"{fp}  {meta}" if meta else fp,
+            )
 
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""

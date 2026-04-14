@@ -143,5 +143,5 @@ The crypto implementation is compatible with Tencent's official WXBizMsgCrypt SD
 
 - **No streaming** — replies arrive as complete messages after the agent finishes
 - **No typing indicators** — the callback model doesn't support typing status
-- **Text only** — currently supports text messages; image/file/voice not yet implemented
+- **Text only** — currently supports text messages for input; image/file/voice input not yet implemented. The agent is aware of outbound media capabilities via the WeCom platform hint (images, documents, video, voice).
 - **Response latency** — agent sessions take 3–30 minutes; users see the reply when processing completes

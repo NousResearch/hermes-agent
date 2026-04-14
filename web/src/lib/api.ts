@@ -1,11 +1,22 @@
 const BASE = "";
 
-// Ephemeral session token for protected endpoints (reveal).
-// Fetched once on first reveal request and cached in memory.
+// Ephemeral session token for protected endpoints.
+// Injected into index.html by the server — never fetched via API.
+declare global {
+  interface Window {
+    __HERMES_SESSION_TOKEN__?: string;
+  }
+}
 let _sessionToken: string | null = null;
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  // Inject the session token into all /api/ requests.
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -15,14 +26,18 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
-  const resp = await fetchJSON<{ token: string }>("/api/auth/session-token");
-  _sessionToken = resp.token;
-  return _sessionToken;
+  const injected = window.__HERMES_SESSION_TOKEN__;
+  if (injected) {
+    _sessionToken = injected;
+    return _sessionToken;
+  }
+  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: () => fetchJSON<SessionInfo[]>("/api/sessions"),
+  getSessions: (limit = 20, offset = 0) =>
+    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   deleteSession: (id: string) =>
@@ -42,6 +57,7 @@ export const api = {
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -110,6 +126,62 @@ export const api = {
   // Session search (FTS5)
   searchSessions: (q: string) =>
     fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+
+  // OAuth provider management
+  getOAuthProviders: () =>
+    fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
+  disconnectOAuthProvider: async (providerId: string) => {
+    const token = await getSessionToken();
+    return fetchJSON<{ ok: boolean; provider: string }>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+  },
+  startOAuthLogin: async (providerId: string) => {
+    const token = await getSessionToken();
+    return fetchJSON<OAuthStartResponse>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: "{}",
+      },
+    );
+  },
+  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
+    const token = await getSessionToken();
+    return fetchJSON<OAuthSubmitResponse>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ session_id: sessionId, code }),
+      },
+    );
+  },
+  pollOAuthSession: (providerId: string, sessionId: string) =>
+    fetchJSON<OAuthPollResponse>(
+      `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
+    ),
+  cancelOAuthSession: async (sessionId: string) => {
+    const token = await getSessionToken();
+    return fetchJSON<{ ok: boolean }>(
+      `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    );
+  },
 };
 
 export interface PlatformStatus {
@@ -150,6 +222,13 @@ export interface SessionInfo {
   input_tokens: number;
   output_tokens: number;
   preview: string | null;
+}
+
+export interface PaginatedSessions {
+  sessions: SessionInfo[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface EnvVarInfo {
@@ -259,4 +338,80 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+// ── Model info types ──────────────────────────────────────────────────
+
+export interface ModelInfoResponse {
+  model: string;
+  provider: string;
+  auto_context_length: number;
+  config_context_length: number;
+  effective_context_length: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
+}
+
+// ── OAuth provider types ────────────────────────────────────────────────
+
+export interface OAuthProviderStatus {
+  logged_in: boolean;
+  source?: string | null;
+  source_label?: string | null;
+  token_preview?: string | null;
+  expires_at?: string | null;
+  has_refresh_token?: boolean;
+  last_refresh?: string | null;
+  error?: string;
+}
+
+export interface OAuthProvider {
+  id: string;
+  name: string;
+  /** "pkce" (browser redirect + paste code), "device_code" (show code + URL),
+   *  or "external" (delegated to a separate CLI like Claude Code or Qwen). */
+  flow: "pkce" | "device_code" | "external";
+  cli_command: string;
+  docs_url: string;
+  status: OAuthProviderStatus;
+}
+
+export interface OAuthProvidersResponse {
+  providers: OAuthProvider[];
+}
+
+/** Discriminated union — the shape of /start depends on the flow. */
+export type OAuthStartResponse =
+  | {
+      session_id: string;
+      flow: "pkce";
+      auth_url: string;
+      expires_in: number;
+    }
+  | {
+      session_id: string;
+      flow: "device_code";
+      user_code: string;
+      verification_url: string;
+      expires_in: number;
+      poll_interval: number;
+    };
+
+export interface OAuthSubmitResponse {
+  ok: boolean;
+  status: "approved" | "error";
+  message?: string;
+}
+
+export interface OAuthPollResponse {
+  session_id: string;
+  status: "pending" | "approved" | "denied" | "expired" | "error";
+  error_message?: string | null;
+  expires_at?: number | null;
 }

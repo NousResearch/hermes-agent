@@ -555,6 +555,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     Also handles ``model_context_length`` — writes it back into the model dict
     as ``context_length``.  A value of 0 or absent means "auto-detect" (omitted
     from the dict so get_model_context_length() uses its normal resolution).
+
+    When the model string changes, provider auto-detection is run so that
+    ``model.provider`` is kept in sync with ``model.default`` — matching the
+    behaviour of the ``hermes model`` CLI command.
     """
     config = dict(config)
     # Remove any _model_meta that might have leaked in (shouldn't happen
@@ -576,7 +580,23 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             disk_config = load_config()
             disk_model = disk_config.get("model")
             if isinstance(disk_model, dict):
-                # Preserve all subkeys, update default with the new value
+                # Only re-detect the provider when the model value actually
+                # changed — avoids overwriting an explicit provider when the
+                # user saves unrelated config fields.
+                disk_default = disk_model.get("default", "") or ""
+                if model_val != disk_default:
+                    current_provider = disk_model.get("provider", "") or ""
+                    try:
+                        from hermes_cli.models import detect_provider_for_model
+
+                        detected = detect_provider_for_model(model_val, current_provider)
+                        if detected is not None:
+                            new_provider, _ = detected
+                            disk_model["provider"] = new_provider
+                    except Exception:
+                        pass  # auto-detection failed — keep existing provider
+
+                # Always update default (even if provider was not re-detected)
                 disk_model["default"] = model_val
                 # Write context_length into the model dict (0 = remove/auto)
                 if ctx_override > 0:

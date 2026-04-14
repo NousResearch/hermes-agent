@@ -29,11 +29,23 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars",
+        # Runtime metadata (Phase A1)
+        "mutates_local_fs", "mutates_agent_state",
+        "mutates_browser_session", "mutates_external_world",
+        "requires_confirmation_default", "allowed_in_plan_mode_default",
+        "parallel_safe_default", "risk_level",
+        "deferred", "always_load", "search_hint",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None,
+                 mutates_local_fs=False, mutates_agent_state=False,
+                 mutates_browser_session=False, mutates_external_world=False,
+                 requires_confirmation_default=False,
+                 allowed_in_plan_mode_default=False,
+                 parallel_safe_default=False, risk_level="low",
+                 deferred=False, always_load=False, search_hint=""):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -44,6 +56,17 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        self.mutates_local_fs = mutates_local_fs
+        self.mutates_agent_state = mutates_agent_state
+        self.mutates_browser_session = mutates_browser_session
+        self.mutates_external_world = mutates_external_world
+        self.requires_confirmation_default = requires_confirmation_default
+        self.allowed_in_plan_mode_default = allowed_in_plan_mode_default
+        self.parallel_safe_default = parallel_safe_default
+        self.risk_level = risk_level
+        self.deferred = deferred
+        self.always_load = always_load
+        self.search_hint = search_hint
 
 
 class ToolRegistry:
@@ -61,6 +84,10 @@ class ToolRegistry:
         """Return a coherent snapshot of registry entries and toolset checks."""
         with self._lock:
             return list(self._tools.values()), dict(self._toolset_checks)
+
+    def snapshot(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
+        """Return a public coherent snapshot of registry state."""
+        return self._snapshot_state()
 
     def _snapshot_entries(self) -> List[ToolEntry]:
         """Return a stable snapshot of registered tool entries."""
@@ -112,8 +139,30 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        # Runtime metadata (Phase A1)
+        mutates_local_fs: bool = False,
+        mutates_agent_state: bool = False,
+        mutates_browser_session: bool = False,
+        mutates_external_world: bool = False,
+        requires_confirmation_default: bool = False,
+        allowed_in_plan_mode_default: bool = False,
+        parallel_safe_default: bool = False,
+        risk_level: str = "low",
+        deferred: bool = False,
+        always_load: bool = False,
+        search_hint: str = "",
     ):
         """Register a tool.  Called at module-import time by each tool file."""
+        description_text = description or schema.get("description", "")
+        if deferred and always_load:
+            raise ValueError(
+                f"Tool '{name}' cannot be both deferred and always_load"
+            )
+        if deferred and not search_hint and not description_text:
+            logger.warning(
+                "Deferred tool '%s' has no search_hint or description; it may be hard to discover",
+                name,
+            )
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:
@@ -130,9 +179,20 @@ class ToolRegistry:
                 check_fn=check_fn,
                 requires_env=requires_env or [],
                 is_async=is_async,
-                description=description or schema.get("description", ""),
+                description=description_text,
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
+                mutates_local_fs=mutates_local_fs,
+                mutates_agent_state=mutates_agent_state,
+                mutates_browser_session=mutates_browser_session,
+                mutates_external_world=mutates_external_world,
+                requires_confirmation_default=requires_confirmation_default,
+                allowed_in_plan_mode_default=allowed_in_plan_mode_default,
+                parallel_safe_default=parallel_safe_default,
+                risk_level=risk_level,
+                deferred=deferred,
+                always_load=always_load,
+                search_hint=search_hint,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
@@ -215,6 +275,25 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
+
+    def get_metadata(self, name: str) -> dict:
+        """Return runtime metadata for a tool, or empty dict if unknown."""
+        entry = self.get_entry(name)
+        if not entry:
+            return {}
+        return {
+            "mutates_local_fs": entry.mutates_local_fs,
+            "mutates_agent_state": entry.mutates_agent_state,
+            "mutates_browser_session": entry.mutates_browser_session,
+            "mutates_external_world": entry.mutates_external_world,
+            "requires_confirmation_default": entry.requires_confirmation_default,
+            "allowed_in_plan_mode_default": entry.allowed_in_plan_mode_default,
+            "parallel_safe_default": entry.parallel_safe_default,
+            "risk_level": entry.risk_level,
+            "deferred": entry.deferred,
+            "always_load": entry.always_load,
+            "search_hint": entry.search_hint,
+        }
 
     def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
         """Return per-tool max result size, or *default* (or global default)."""

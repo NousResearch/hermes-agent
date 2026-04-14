@@ -1100,4 +1100,7 @@ registry.register(
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+    mutates_external_world=True,
+    requires_confirmation_default=True,
+    allowed_in_plan_mode_default=False,
 )

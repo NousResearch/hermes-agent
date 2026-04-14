@@ -230,6 +230,21 @@ class TestPluginHooks:
         # Should not raise despite 1/0
         mgr.invoke_hook("post_tool_call", tool_name="x", args={}, result="r", task_id="")
 
+    def test_pre_tool_hook_exception_fails_closed(self, tmp_path, monkeypatch):
+        """pre_tool_call hook exceptions should deny instead of failing open."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "bad_pre_hook",
+            register_body='ctx.register_hook("pre_tool_call", lambda **kw: 1/0)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={}, task_id="")
+        assert results == [{"action": "deny", "reason": "Tool control hook failed: division by zero"}]
+
     def test_hook_return_values_collected(self, tmp_path, monkeypatch):
         """invoke_hook() collects non-None return values from callbacks."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

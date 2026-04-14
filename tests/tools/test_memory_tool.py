@@ -255,3 +255,22 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_smart_recall_returns_results(self, store):
+        store.add("memory", "Auth rollout deadline is Friday", memory_type="project")
+        store.add("memory", "Billing docs live at https://example.com/billing", memory_type="reference")
+
+        result = json.loads(
+            memory_tool(
+                action="smart_recall",
+                query="auth deadline",
+                top_k=1,
+                types=["project"],
+                store=store,
+            )
+        )
+
+        assert result["success"] is True
+        assert len(result["results"]) == 1
+        assert result["results"][0]["type"] == "project"
+        assert "deadline" in result["results"][0]["content"].lower()

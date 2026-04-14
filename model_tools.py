@@ -9,7 +9,7 @@ the public API that run_agent.py, cli.py, batch_runner.py, and the RL
 environments consume.
 
 Public API (signatures preserved from the original 2,400-line version):
-    get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode) -> list
+    get_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode, activated_tools) -> list
     handle_function_call(function_name, function_args, task_id, user_task) -> str
     TOOL_TO_TOOLSET_MAP: dict          (for batch_runner.py)
     TOOLSET_REQUIREMENTS: dict         (for cli.py, doctor.py)
@@ -149,6 +149,8 @@ def _discover_tools():
         "tools.rl_training_tool",
         "tools.tts_tool",
         "tools.todo_tool",
+        "tools.task_tools",
+        "tools.coordinator_tool",
         "tools.memory_tool",
         "tools.session_search_tool",
         "tools.clarify_tool",
@@ -158,6 +160,8 @@ def _discover_tools():
         "tools.send_message_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
+        "tools.tool_search_tool",
+        "tools.plan_tool",
     ]
     import importlib
     for mod_name in _modules:
@@ -235,6 +239,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    activated_tools: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -245,10 +250,13 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        activated_tools: Explicit tool names to include even when deferred.
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    activated_tools_set = set(activated_tools or [])
+
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
@@ -292,6 +300,32 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    if activated_tools_set:
+        unknown_activated = activated_tools_set.difference(registry.get_all_tool_names())
+        if unknown_activated and not quiet_mode:
+            print(f"⚠️  Unknown activated tools ignored: {', '.join(sorted(unknown_activated))}")
+        tools_to_include.update(activated_tools_set)
+
+    always_load_tools = {
+        name for name in registry.get_all_tool_names()
+        if registry.get_metadata(name).get("always_load")
+    }
+    tools_to_include.update(always_load_tools)
+
+    eligible_tools: set = set()
+    for name in tools_to_include:
+        meta = registry.get_metadata(name)
+        if not meta:
+            continue
+        if meta.get("always_load"):
+            eligible_tools.add(name)
+            continue
+        if meta.get("deferred") and name not in activated_tools_set:
+            if not quiet_mode:
+                print(f"⏸️  Deferred tool '{name}' not loaded by default")
+            continue
+        eligible_tools.add(name)
+
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
     # all check the tool registry for plugin-provided toolsets.  No bypass
@@ -299,7 +333,7 @@ def get_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(eligible_tools, quiet=quiet_mode)
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -484,33 +518,82 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    function_args = function_args or {}
+    resolved_session_id = function_args.get("session_id") or session_id
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        # Check plugin hooks for a block directive (unless caller already
-        # checked — e.g. run_agent._invoke_tool passes skip=True to
-        # avoid double-firing the hook).
+        # Check plugin hooks for pre-tool control (unless the caller already
+        # evaluated them — e.g. run_agent._invoke_tool passes skip=True to
+        # avoid enforcing the hook twice).
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
+            pre_hook_results = []
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
-                    function_name,
-                    function_args,
+                from hermes_cli.plugins import get_pre_tool_call_block_message, invoke_hook
+                pre_hook_results = invoke_hook(
+                    "pre_tool_call",
+                    tool_name=function_name,
+                    args=function_args,
                     task_id=task_id or "",
-                    session_id=session_id or "",
+                    session_id=resolved_session_id or "",
                     tool_call_id=tool_call_id or "",
-                )
-            except Exception:
-                pass
+                ) or []
+
+                # Keep compatibility with the legacy block-only shim:
+                # get_pre_tool_call_block_message() looks for
+                # {"action": "block", "message": "..."}.
+                for hook_result in pre_hook_results:
+                    if not isinstance(hook_result, dict):
+                        continue
+                    if hook_result.get("action") != "block":
+                        continue
+                    message = hook_result.get("message")
+                    if isinstance(message, str) and message:
+                        block_message = message
+                        break
+            except Exception as exc:
+                try:
+                    from hermes_cli.plugins import get_pre_tool_call_block_message
+                    block_message = get_pre_tool_call_block_message(
+                        function_name,
+                        function_args,
+                        task_id=task_id or "",
+                        session_id=resolved_session_id or "",
+                        tool_call_id=tool_call_id or "",
+                    )
+                except Exception:
+                    block_message = None
+
+                if block_message is None:
+                    pre_hook_results = [{
+                        "action": "deny",
+                        "reason": f"Tool control unavailable: {exc}",
+                    }]
 
             if block_message is not None:
                 return json.dumps({"error": block_message}, ensure_ascii=False)
+
+            try:
+                from agent.tool_control import resolve_pre_tool_control
+                control = resolve_pre_tool_control(pre_hook_results, function_args)
+                action = control.get("action", "allow")
+                if action == "deny":
+                    return json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+                if action == "short_circuit":
+                    return control.get("result", "")
+                if action == "ask":
+                    return json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+                if action == "modify" and "args" in control:
+                    function_args = control["args"]
+                    resolved_session_id = function_args.get("session_id") or session_id
+            except Exception as exc:
+                return json.dumps({"error": f"工具控制失败，已拒绝执行: {exc}"}, ensure_ascii=False)
         else:
-            # Still fire the hook for observers — just don't check for blocking
-            # (the caller already did that).
+            # Still fire the hook for observers — just don't enforce
+            # blocking/control here because the caller already did that.
             try:
                 from hermes_cli.plugins import invoke_hook
                 invoke_hook(
@@ -518,7 +601,7 @@ def handle_function_call(
                     tool_name=function_name,
                     args=function_args,
                     task_id=task_id or "",
-                    session_id=session_id or "",
+                    session_id=resolved_session_id or "",
                     tool_call_id=tool_call_id or "",
                 )
             except Exception:
@@ -540,26 +623,36 @@ def handle_function_call(
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
+                session_id=resolved_session_id,
                 enabled_tools=sandbox_enabled,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
+                session_id=resolved_session_id,
                 user_task=user_task,
             )
 
+        # --- Post-tool control (Phase A3) ---
+        post_hook_results = []
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook(
+            post_hook_results = invoke_hook(
                 "post_tool_call",
                 tool_name=function_name,
                 args=function_args,
                 result=result,
                 task_id=task_id or "",
-                session_id=session_id or "",
+                session_id=resolved_session_id or "",
                 tool_call_id=tool_call_id or "",
-            )
+            ) or []
+        except Exception:
+            pass
+
+        try:
+            from agent.tool_control import resolve_post_tool_control
+            result = resolve_post_tool_control(post_hook_results, result)
         except Exception:
             pass
 

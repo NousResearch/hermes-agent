@@ -11,9 +11,12 @@ from tools.budget_config import (
 )
 from tools.tool_result_storage import (
     HEREDOC_MARKER,
+    INLINE_TRUNCATED_OUTPUT_TAG,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
+    SINGLE_RESULT_REASON,
     STORAGE_DIR,
+    TURN_BUDGET_REASON,
     _build_persisted_message,
     _heredoc_marker,
     _resolve_storage_dir,
@@ -205,6 +208,19 @@ class TestBuildPersistedMessage:
 # ── maybe_persist_tool_result ─────────────────────────────────────────
 
 class TestMaybePersistToolResult:
+    def test_small_result_not_persisted(self):
+        content = "small result"
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_small",
+            env=None,
+            threshold=50_000,
+        )
+        assert result == content
+        assert PERSISTED_OUTPUT_TAG not in result
+        assert INLINE_TRUNCATED_OUTPUT_TAG not in result
+
     def test_below_threshold_returns_unchanged(self):
         content = "small result"
         result = maybe_persist_tool_result(
@@ -228,9 +244,25 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
+        assert SINGLE_RESULT_REASON in result
         assert "tc_456.txt" in result
         assert len(result) < len(content)
         env.execute.assert_called_once()
+
+    def test_over_threshold_result_persisted(self):
+        env = MagicMock()
+        env.execute.return_value = {"output": "", "returncode": 0}
+        content = "y" * 60_000
+        result = maybe_persist_tool_result(
+            content=content,
+            tool_name="terminal",
+            tool_use_id="tc_over",
+            env=env,
+            threshold=30_000,
+        )
+        assert PERSISTED_OUTPUT_TAG in result
+        assert SINGLE_RESULT_REASON in result
+        assert "tc_over.txt" in result
 
     def test_persists_full_content_as_is(self):
         """Content is persisted verbatim — no JSON extraction."""
@@ -261,6 +293,8 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG not in result
+        assert INLINE_TRUNCATED_OUTPUT_TAG in result
+        assert SINGLE_RESULT_REASON in result
         assert "Truncated" in result
         assert len(result) < len(content)
 
@@ -442,6 +476,29 @@ class TestEnforceTurnBudget:
         enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+        assert TURN_BUDGET_REASON in msgs[1]["content"]
+
+    def test_turn_budget_exceeded_handles_largest_non_persisted_result_first(self):
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "a" * 80_000},
+            {"role": "tool", "tool_call_id": "t2", "content": "b" * 130_000},
+            {"role": "tool", "tool_call_id": "t3", "content": "c" * 20_000},
+        ]
+        call_order = []
+
+        def fake_process(*, content, tool_name, tool_use_id, env, config, threshold, reason):
+            call_order.append(tool_use_id)
+            return (
+                f"{PERSISTED_OUTPUT_TAG}\n"
+                f"Reason: {reason}.\n"
+                f"{PERSISTED_OUTPUT_CLOSING_TAG}"
+            )
+
+        with patch("tools.tool_result_storage._process_tool_result", side_effect=fake_process):
+            enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+
+        assert call_order == ["t2"]
+        assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
     def test_already_persisted_results_skipped(self):
         env = MagicMock()
@@ -456,6 +513,46 @@ class TestEnforceTurnBudget:
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
+
+    def test_already_persisted_content_not_reprocessed(self):
+        msgs = [
+            {
+                "role": "tool",
+                "tool_call_id": "t1",
+                "content": (
+                    f"{PERSISTED_OUTPUT_TAG}\n"
+                    "Reason: per-result threshold exceeded.\n"
+                    f"{PERSISTED_OUTPUT_CLOSING_TAG}"
+                ),
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "t2",
+                "content": (
+                    f"{INLINE_TRUNCATED_OUTPUT_TAG}\n"
+                    "Reason: per-result threshold exceeded.\n"
+                    "[Truncated: tool response was 250,000 chars. Full output could not be saved to sandbox.]\n"
+                    "</inline-truncated-output>"
+                ),
+            },
+            {"role": "tool", "tool_call_id": "t3", "content": "x" * 180_000},
+        ]
+        call_order = []
+
+        def fake_process(*, content, tool_name, tool_use_id, env, config, threshold, reason):
+            call_order.append(tool_use_id)
+            return (
+                f"{PERSISTED_OUTPUT_TAG}\n"
+                f"Reason: {reason}.\n"
+                f"{PERSISTED_OUTPUT_CLOSING_TAG}"
+            )
+
+        with patch("tools.tool_result_storage._process_tool_result", side_effect=fake_process):
+            enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=100_000))
+
+        assert call_order == ["t3"]
+        assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
+        assert msgs[1]["content"].startswith(INLINE_TRUNCATED_OUTPUT_TAG)
 
     def test_medium_result_regression(self):
         """6 results of 42K chars each (252K total) — each under 100K default
@@ -478,8 +575,19 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
         ]
         enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
-        # Should be truncated (no sandbox available)
-        assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
+        assert INLINE_TRUNCATED_OUTPUT_TAG in msgs[0]["content"]
+        assert TURN_BUDGET_REASON in msgs[0]["content"]
+        assert "Truncated" in msgs[0]["content"]
+
+    def test_env_unavailable_safe_fallback_to_inline_truncation(self):
+        msgs = [
+            {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
+        ]
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
+        assert result is msgs
+        assert INLINE_TRUNCATED_OUTPUT_TAG in msgs[0]["content"]
+        assert TURN_BUDGET_REASON in msgs[0]["content"]
+        assert "Full output could not be saved to sandbox." in msgs[0]["content"]
 
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]

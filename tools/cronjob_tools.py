@@ -503,4 +503,6 @@ registry.register(
     ))(),
     check_fn=check_cronjob_requirements,
     emoji="⏰",
+    mutates_agent_state=True,
+    risk_level="medium",
 )

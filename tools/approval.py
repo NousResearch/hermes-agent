@@ -12,6 +12,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import unicodedata
@@ -66,6 +67,21 @@ _SENSITIVE_WRITE_TARGET = (
     r'(?:/etc/|/dev/sd|'
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH})'
+)
+
+_SAFE_LOCAL_DEV_COMMAND_PATTERNS = [
+    r"^git\s+(status|log|diff|show|branch|rev-parse|remote)(\s|$)",
+    r"^(python|python3)\s+-m\s+pytest(\s|$)",
+    r"^pytest(\s|$)",
+    r"^lsof(\s|$)",
+    r"^pgrep(\s|$)",
+    r"^launchctl\s+list(\s|$)",
+]
+
+_COMMAND_WRAPPER_PREFIXES = (
+    "source ",
+    ". ",
+    "cd ",
 )
 
 # =========================================================================
@@ -178,12 +194,56 @@ def _normalize_command_for_detection(command: str) -> str:
     return command
 
 
+def _unwrap_shell_command(command: str) -> list[str]:
+    candidates: list[str] = []
+    queue = [_normalize_command_for_detection(command).strip()]
+    seen: set[str] = set()
+
+    while queue:
+        current = queue.pop(0).strip()
+        if not current or current in seen:
+            continue
+        seen.add(current)
+        candidates.append(current)
+
+        for separator in ("&&", ";"):
+            if separator in current:
+                parts = [part.strip() for part in current.split(separator) if part.strip()]
+                queue.extend(parts)
+                if parts:
+                    queue.append(parts[-1])
+
+        try:
+            tokens = shlex.split(current)
+        except ValueError:
+            tokens = []
+
+        if len(tokens) >= 3 and tokens[0] in {"bash", "sh", "zsh", "ksh"} and tokens[1] == "-lc":
+            queue.append(tokens[2])
+
+        if any(current.startswith(prefix) for prefix in _COMMAND_WRAPPER_PREFIXES):
+            queue.extend(part.strip() for part in re.split(r"&&|;", current) if part.strip())
+
+    return candidates
+
+
+def _is_safe_local_dev_command(command: str) -> bool:
+    for candidate in _unwrap_shell_command(command):
+        for pattern in _SAFE_LOCAL_DEV_COMMAND_PATTERNS:
+            if re.search(pattern, candidate):
+                return True
+    return False
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check if a command matches any dangerous patterns.
 
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
+    if _is_safe_local_dev_command(command):
+        return (False, None, None)
+
     command_lower = _normalize_command_for_detection(command).lower()
     for pattern, description in DANGEROUS_PATTERNS:
         if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):

@@ -530,6 +530,11 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+                if hook_name == "pre_tool_call":
+                    results.append({
+                        "action": "deny",
+                        "reason": f"Tool control hook failed: {exc}",
+                    })
         return results
 
     # -----------------------------------------------------------------------

@@ -66,6 +66,7 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
+from tools.registry import registry
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
@@ -233,6 +234,25 @@ _PARALLEL_SAFE_TOOLS = frozenset({
 # File tools can run concurrently when they target independent paths.
 _PATH_SCOPED_TOOLS = frozenset({"read_file", "write_file", "patch"})
 
+# Legacy registry entries still surface a fully-default metadata dict even
+# before parallel safety is explicitly annotated. Treat that exact shape as
+# "unknown" so the legacy allowlist remains the fallback during migration.
+_DEFAULT_TOOL_METADATA = {
+    "mutates_local_fs": False,
+    "mutates_agent_state": False,
+    "mutates_browser_session": False,
+    "mutates_external_world": False,
+    "requires_confirmation_default": False,
+    "allowed_in_plan_mode_default": False,
+    "parallel_safe_default": False,
+    "risk_level": "low",
+    "deferred": False,
+    "always_load": False,
+    "search_hint": "",
+}
+_METADATA_PARALLEL_OVERRIDE_KEYS = frozenset({"parallel_safe_default"})
+_REGISTRY_METADATA_KEYS = frozenset(_DEFAULT_TOOL_METADATA.keys())
+
 # Maximum number of concurrent worker threads for parallel tool execution.
 _MAX_TOOL_WORKERS = 8
 
@@ -302,10 +322,49 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             reserved_paths.append(scoped_path)
             continue
 
+        metadata_parallel_safe = _parallel_safe_candidate_from_metadata(tool_name)
+        if metadata_parallel_safe is False:
+            return False
+        if metadata_parallel_safe is True:
+            continue
         if tool_name not in _PARALLEL_SAFE_TOOLS:
             return False
 
     return True
+
+
+def _parallel_safe_candidate_from_metadata(tool_name: str) -> bool | None:
+    """Return True/False when metadata is authoritative, else None for legacy fallback."""
+    try:
+        metadata = registry.get_metadata(tool_name)
+    except Exception:
+        logging.debug(
+            "Could not read registry metadata for %s; falling back to legacy parallel allowlist",
+            tool_name,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(metadata, dict) or not metadata:
+        return None
+
+    parallel_safe = metadata.get("parallel_safe_default")
+    if parallel_safe is None:
+        return None
+
+    if parallel_safe is False and tool_name in _PARALLEL_SAFE_TOOLS:
+        metadata_keys = frozenset(metadata.keys())
+        # Migration shim: the registry still returns a full metadata payload
+        # for legacy allowlisted tools even before parallel_safe_default is
+        # explicitly set. Keep those tools on the legacy fallback path until
+        # they opt into an override. Tests can still force an explicit deny by
+        # patching a minimal metadata dict with only parallel_safe_default.
+        if metadata_keys == _METADATA_PARALLEL_OVERRIDE_KEYS:
+            return False
+        if _REGISTRY_METADATA_KEYS.issubset(metadata_keys):
+            return None
+
+    return bool(parallel_safe)
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
@@ -492,6 +551,39 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 
     _walk(payload)
     return found
+
+
+# Budget warning text patterns injected by historical _get_budget_warning().
+_BUDGET_WARNING_RE = re.compile(
+    r"\[BUDGET(?:\s+WARNING)?:\s+Iteration\s+\d+/\d+\..*?\]",
+    re.DOTALL,
+)
+
+
+def _strip_budget_warnings_from_history(messages: list) -> None:
+    """Remove stale budget warnings from replayed tool messages in-place."""
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        if "_budget_warning" not in content and "[BUDGET" not in content:
+            continue
+
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+
+        if isinstance(parsed, dict) and "_budget_warning" in parsed:
+            del parsed["_budget_warning"]
+            msg["content"] = json.dumps(parsed, ensure_ascii=False)
+            continue
+
+        cleaned = _BUDGET_WARNING_RE.sub("", content).strip()
+        if cleaned != content:
+            msg["content"] = cleaned
 
 
 
@@ -772,6 +864,7 @@ class AIAgent:
         # Store toolset filtering options
         self.enabled_toolsets = enabled_toolsets
         self.disabled_toolsets = disabled_toolsets
+        self._activated_deferred_tools: set[str] = set()
         
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
@@ -1016,27 +1109,9 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=self.quiet_mode,
-        )
-        
-        # Show tool configuration and store valid tool names for validation
+        self.tools = []
         self.valid_tool_names = set()
-        if self.tools:
-            self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
-            tool_names = sorted(self.valid_tool_names)
-            if not self.quiet_mode:
-                print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
-                
-                # Show filtering info if applied
-                if enabled_toolsets:
-                    print(f"   ✅ Enabled toolsets: {', '.join(enabled_toolsets)}")
-                if disabled_toolsets:
-                    print(f"   ❌ Disabled toolsets: {', '.join(disabled_toolsets)}")
-        elif not self.quiet_mode:
-            print("🛠️  No tools loaded (all tools filtered out or unavailable)")
+        self._refresh_tool_definitions(announce=not self.quiet_mode)
         
         # Check tool requirements
         if self.tools and not self.quiet_mode:
@@ -1224,7 +1299,7 @@ class AIAgent:
                 self._memory_manager = None
 
         # Inject memory provider tool schemas into the tool surface
-        if self._memory_manager and self.tools is not None:
+        if getattr(self, "_memory_manager", None) and self.tools is not None:
             for _schema in self._memory_manager.get_all_tool_schemas():
                 _wrapped = {"type": "function", "function": _schema}
                 self.tools.append(_wrapped)
@@ -3109,14 +3184,123 @@ class AIAgent:
         """Check if an interrupt has been requested."""
         return self._interrupt_requested
 
+    def _refresh_tool_definitions(self, announce: bool = False) -> None:
+        """Rebuild the tool schema for the current session state."""
+        self.tools = get_tool_definitions(
+            enabled_toolsets=self.enabled_toolsets,
+            disabled_toolsets=self.disabled_toolsets,
+            quiet_mode=self.quiet_mode,
+            activated_tools=sorted(self._activated_deferred_tools),
+        )
 
+        self.valid_tool_names = {
+            tool["function"]["name"]
+            for tool in (self.tools or [])
+            if isinstance(tool, dict) and isinstance(tool.get("function"), dict)
+        }
 
+        if getattr(self, "_memory_manager", None) and self.tools is not None:
+            for _schema in self._memory_manager.get_all_tool_schemas():
+                _wrapped = {"type": "function", "function": _schema}
+                self.tools.append(_wrapped)
+                _tname = _schema.get("name", "")
+                if _tname:
+                    self.valid_tool_names.add(_tname)
 
+        if announce:
+            if self.tools:
+                tool_names = sorted(self.valid_tool_names)
+                print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
+                if self.enabled_toolsets:
+                    print(f"   ✅ Enabled toolsets: {', '.join(self.enabled_toolsets)}")
+                if self.disabled_toolsets:
+                    print(f"   ❌ Disabled toolsets: {', '.join(self.disabled_toolsets)}")
+            else:
+                print("🛠️  No tools loaded (all tools filtered out or unavailable)")
 
+    def _extract_deferred_tool_names_from_search_result(self, function_result: Any) -> set[str]:
+        """Return valid deferred tool names from a tool_search result payload."""
+        payload = function_result
+        if isinstance(function_result, str):
+            try:
+                payload = json.loads(function_result)
+            except (json.JSONDecodeError, TypeError):
+                return set()
 
+        if isinstance(payload, dict):
+            results = payload.get("results")
+        elif isinstance(payload, list):
+            results = payload
+        else:
+            return set()
 
+        if not isinstance(results, list):
+            return set()
 
+        activated = set()
+        for item in results:
+            if not isinstance(item, dict) or item.get("deferred") is not True:
+                continue
+            name = item.get("name")
+            if not isinstance(name, str):
+                continue
+            normalized_name = name.strip()
+            if not normalized_name:
+                continue
+            meta = registry.get_metadata(normalized_name)
+            if meta.get("deferred"):
+                activated.add(normalized_name)
+        return activated
 
+    def _activate_deferred_tools_from_search_result(self, function_result: str) -> set[str]:
+        """Activate deferred tools discovered by tool_search for future turns."""
+        activated = self._extract_deferred_tool_names_from_search_result(function_result)
+        new_tools = activated.difference(self._activated_deferred_tools)
+        if not new_tools:
+            return set()
+
+        self._activated_deferred_tools.update(new_tools)
+        self._refresh_tool_definitions()
+        logger.info(
+            "Activated deferred tools for session %s: %s",
+            self.session_id or "none",
+            ", ".join(sorted(new_tools)),
+        )
+        return new_tools
+
+    def _hydrate_activated_deferred_tools_from_history(
+        self, history: Optional[List[Dict[str, Any]]]
+    ) -> None:
+        """Recover deferred tool activations from prior tool_search results."""
+        if not history:
+            return
+
+        tool_search_call_ids = set()
+        for msg in history:
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                continue
+            for tool_call in msg.get("tool_calls") or []:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function") or {}
+                if not isinstance(function, dict) or function.get("name") != "tool_search":
+                    continue
+                call_id = tool_call.get("call_id") or tool_call.get("id")
+                if isinstance(call_id, str) and call_id.strip():
+                    tool_search_call_ids.add(call_id.strip())
+
+        if not tool_search_call_ids:
+            return
+
+        for msg in history:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tool_call_id = msg.get("tool_call_id")
+            if tool_call_id not in tool_search_call_ids:
+                continue
+            activated = self._extract_deferred_tool_names_from_search_result(msg.get("content", ""))
+            if activated:
+                self._activated_deferred_tools.update(activated)
 
     def _build_system_prompt(self, system_message: str = None) -> str:
         """
@@ -6733,6 +6917,7 @@ class AIAgent:
                             target=flush_target,
                             content=args.get("content"),
                             old_text=args.get("old_text"),
+                            memory_type=args.get("type"),
                             store=self._memory_store,
                         )
                         if not self.quiet_mode:
@@ -6888,6 +7073,48 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    # ── Tool control helpers (Phase A4) ─────────────────────────────────
+    def _evaluate_tool_control(self, tool_name: str, args: dict) -> dict:
+        """Run pre_tool_call hooks and resolve into a control decision."""
+        hook_results = []
+        try:
+            from hermes_cli.plugins import invoke_hook
+            hook_results = invoke_hook(
+                "pre_tool_call", tool_name=tool_name, args=args,
+                task_id="", session_id=self.session_id or "", tool_call_id="",
+            ) or []
+        except Exception as exc:
+            hook_results = [{
+                "action": "deny",
+                "reason": f"Tool control unavailable: {exc}",
+            }]
+
+        try:
+            from agent.tool_control import resolve_pre_tool_control
+            return resolve_pre_tool_control(hook_results, args)
+        except Exception as exc:
+            return {"action": "deny", "reason": f"Tool control failed: {exc}"}
+
+    def _tool_control_targets_agent_loop(self, function_name: str) -> bool:
+        return function_name in {"todo", "session_search", "memory", "clarify", "delegate_task"}
+
+    def _tool_control_targets_memory_provider(self, function_name: str) -> bool:
+        return bool(self._memory_manager and self._memory_manager.has_tool(function_name))
+
+    def _finalize_tool_result(self, tool_name: str, args: dict, result: str) -> str:
+        """Run post_tool_call hooks and resolve modify_result chain."""
+        try:
+            from hermes_cli.plugins import invoke_hook
+            from agent.tool_control import resolve_post_tool_control
+            post_results = invoke_hook(
+                "post_tool_call", tool_name=tool_name, args=args,
+                result=result, task_id="", session_id=self.session_id or "",
+                tool_call_id="",
+            ) or []
+            return resolve_post_tool_control(post_results, result)
+        except Exception:
+            return result
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
@@ -6907,10 +7134,27 @@ class AIAgent:
             pass
         if block_message is not None:
             return json.dumps({"error": block_message}, ensure_ascii=False)
+        _agent_loop_result = None
+        control_managed_tool = (
+            self._tool_control_targets_agent_loop(function_name)
+            or self._tool_control_targets_memory_provider(function_name)
+        )
+        if control_managed_tool:
+            control = self._evaluate_tool_control(function_name, function_args)
+            action = control.get("action", "allow")
+            if action == "deny":
+                return json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "short_circuit":
+                return control.get("result", "")
+            if action == "ask":
+                return json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+            if action == "modify" and "args" in control:
+                function_args = control["args"]
 
+        _agent_loop_result = None
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
-            return _todo_tool(
+            _agent_loop_result = _todo_tool(
                 todos=function_args.get("todos"),
                 merge=function_args.get("merge", False),
                 store=self._todo_store,
@@ -6919,7 +7163,7 @@ class AIAgent:
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
             from tools.session_search_tool import session_search as _session_search
-            return _session_search(
+            _agent_loop_result = _session_search(
                 query=function_args.get("query", ""),
                 role_filter=function_args.get("role_filter"),
                 limit=function_args.get("limit", 3),
@@ -6929,11 +7173,12 @@ class AIAgent:
         elif function_name == "memory":
             target = function_args.get("target", "memory")
             from tools.memory_tool import memory_tool as _memory_tool
-            result = _memory_tool(
+            _agent_loop_result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
+                memory_type=function_args.get("type"),
                 store=self._memory_store,
             )
             # Bridge: notify external memory provider of built-in memory writes
@@ -6946,19 +7191,18 @@ class AIAgent:
                     )
                 except Exception:
                     pass
-            return result
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
-            return self._memory_manager.handle_tool_call(function_name, function_args)
+            _agent_loop_result = self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
             from tools.clarify_tool import clarify_tool as _clarify_tool
-            return _clarify_tool(
+            _agent_loop_result = _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
+            _agent_loop_result = _delegate_task(
                 goal=function_args.get("goal"),
                 context=function_args.get("context"),
                 toolsets=function_args.get("toolsets"),
@@ -6966,6 +7210,10 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+
+        # --- Post-tool control for agent-loop tools (Phase A4) ---
+        if _agent_loop_result is not None:
+            return self._finalize_tool_result(function_name, function_args, _agent_loop_result)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -7157,6 +7405,9 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            if name == "tool_search":
+                self._activate_deferred_tools_from_search_result(function_result)
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=name,
@@ -7294,10 +7545,38 @@ class AIAgent:
 
             tool_start_time = time.time()
 
+            control_managed_tool = False
+            control_action = None
             if _block_msg is not None:
                 # Tool blocked by plugin policy — return error without executing.
                 function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
                 tool_duration = 0.0
+            else:
+                control_managed_tool = (
+                    self._tool_control_targets_agent_loop(function_name)
+                    or self._tool_control_targets_memory_provider(function_name)
+                )
+            if control_managed_tool:
+                control = self._evaluate_tool_control(function_name, function_args)
+                control_action = control.get("action", "allow")
+                if control_action == "deny":
+                    function_result = json.dumps({"error": f"操作被拒绝: {control.get('reason', '')}"}, ensure_ascii=False)
+                    tool_duration = time.time() - tool_start_time
+                elif control_action == "short_circuit":
+                    function_result = control.get("result", "")
+                    tool_duration = time.time() - tool_start_time
+                elif control_action == "ask":
+                    function_result = json.dumps({"error": f"需要用户确认: {control.get('reason', '')}"}, ensure_ascii=False)
+                    tool_duration = time.time() - tool_start_time
+                else:
+                    if control_action == "modify" and "args" in control:
+                        function_args = control["args"]
+                    control_action = None
+
+            if control_action is not None:
+                emit_quiet_tool_messages = getattr(self, "_should_emit_quiet_tool_messages", lambda: False)
+                if emit_quiet_tool_messages():
+                    self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
             elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
@@ -7331,6 +7610,7 @@ class AIAgent:
                     target=target,
                     content=function_args.get("content"),
                     old_text=function_args.get("old_text"),
+                    memory_type=function_args.get("type"),
                     store=self._memory_store,
                 )
                 tool_duration = time.time() - tool_start_time
@@ -7468,6 +7748,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
+            if control_managed_tool and control_action is None:
+                function_result = self._finalize_tool_result(function_name, function_args, function_result)
+
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )
@@ -7501,6 +7784,9 @@ class AIAgent:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
+
+            if function_name == "tool_search":
+                self._activate_deferred_tools_from_search_result(function_result)
 
             function_result = maybe_persist_tool_result(
                 content=function_result,
@@ -7848,6 +8134,15 @@ class AIAgent:
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
+        # Strip budget pressure warnings from previous turns.  These are
+        # turn-scoped signals injected by _get_budget_warning() into tool
+        # result content.  If left in the replayed history, models (especially
+        # GPT-family) interpret them as still-active instructions and avoid
+        # making tool calls in ALL subsequent turns.
+        if messages:
+            _strip_budget_warnings_from_history(messages)
+            self._hydrate_activated_deferred_tools_from_history(messages)
+        self._refresh_tool_definitions()
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to
         # recover the todo state from the most recent todo tool response in history)

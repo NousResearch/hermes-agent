@@ -138,4 +138,5 @@ registry.register(
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",
+    allowed_in_plan_mode_default=True,
 )

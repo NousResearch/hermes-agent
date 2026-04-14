@@ -1255,6 +1255,7 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+    allowed_in_plan_mode_default=True,
 )
 registry.register(
     name="skill_view",
@@ -1265,4 +1266,5 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+    allowed_in_plan_mode_default=True,
 )

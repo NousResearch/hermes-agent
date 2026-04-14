@@ -1746,4 +1746,11 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # Terminal is command-dependent: real approval happens inside tools.approval
+    # and command-specific plugin rules, so tool-level metadata must not force
+    # an unconditional confirmation gate for every shell command.
+    risk_level="medium",
+    mutates_local_fs=True,
+    mutates_external_world=False,
+    requires_confirmation_default=False,
 )

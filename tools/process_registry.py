@@ -1169,4 +1169,5 @@ registry.register(
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    allowed_in_plan_mode_default=True,
 )

@@ -4,6 +4,7 @@ import ast
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
+import pytest
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
@@ -105,6 +106,22 @@ class TestSafeCommand:
 
     def test_git_is_safe(self):
         is_dangerous, key, desc = detect_dangerous_command("git status")
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "source venv/bin/activate && git status --short --branch",
+            "cd /tmp/project && git log --oneline -5",
+            "bash -lc 'git diff --stat'",
+            "zsh -lc 'python -m pytest -q tests/plugins/test_permission_engine.py'",
+            "launchctl list | head",
+        ],
+    )
+    def test_wrapped_safe_local_dev_commands_are_safe(self, command):
+        is_dangerous, key, desc = detect_dangerous_command(command)
         assert is_dangerous is False
         assert key is None
         assert desc is None

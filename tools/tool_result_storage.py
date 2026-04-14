@@ -28,7 +28,6 @@ import shlex
 import uuid
 
 from tools.budget_config import (
-    DEFAULT_PREVIEW_SIZE_CHARS,
     BudgetConfig,
     DEFAULT_BUDGET,
 )
@@ -36,9 +35,18 @@ from tools.budget_config import (
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
+INLINE_TRUNCATED_OUTPUT_TAG = "<inline-truncated-output>"
+INLINE_TRUNCATED_OUTPUT_CLOSING_TAG = "</inline-truncated-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+DEFAULT_RESULT_THRESHOLD_CHARS = DEFAULT_BUDGET.default_result_size
+DEFAULT_TURN_BUDGET_CHARS = DEFAULT_BUDGET.turn_budget
+DEFAULT_PREVIEW_CHARS = DEFAULT_BUDGET.preview_size
+TURN_BUDGET_PERSIST_THRESHOLD_CHARS = 0
+SINGLE_RESULT_REASON = "per-result threshold exceeded"
+TURN_BUDGET_REASON = "turn-level cumulative budget exceeded"
+_LEGACY_INLINE_TRUNCATION_TEXT = "Full output could not be saved to sandbox.]"
 
 
 def _resolve_storage_dir(env) -> str:
@@ -57,7 +65,7 @@ def _resolve_storage_dir(env) -> str:
     return STORAGE_DIR
 
 
-def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_CHARS) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
     if len(content) <= max_chars:
         return content, False
@@ -93,6 +101,7 @@ def _build_persisted_message(
     has_more: bool,
     original_size: int,
     file_path: str,
+    reason: str = SINGLE_RESULT_REASON,
 ) -> str:
     """Build the <persisted-output> replacement block."""
     size_kb = original_size / 1024
@@ -102,7 +111,14 @@ def _build_persisted_message(
         size_str = f"{size_kb:.1f} KB"
 
     msg = f"{PERSISTED_OUTPUT_TAG}\n"
-    msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
+    msg += f"Reason: {reason}.\n"
+    if reason == TURN_BUDGET_REASON:
+        msg += (
+            "This tool result was moved out of the conversation because the turn's "
+            f"cumulative tool budget was exceeded ({original_size:,} characters, {size_str}).\n"
+        )
+    else:
+        msg += f"This tool result was too large ({original_size:,} characters, {size_str}).\n"
     msg += f"Full output saved to: {file_path}\n"
     msg += "Use the read_file tool with offset and limit to access specific sections of this output.\n\n"
     msg += f"Preview (first {len(preview)} chars):\n"
@@ -111,6 +127,93 @@ def _build_persisted_message(
         msg += "\n..."
     msg += f"\n{PERSISTED_OUTPUT_CLOSING_TAG}"
     return msg
+
+
+def _build_inline_truncation_message(
+    preview: str,
+    has_more: bool,
+    original_size: int,
+    reason: str,
+) -> str:
+    """Build the inline fallback block used when sandbox persistence is unavailable."""
+    msg = f"{INLINE_TRUNCATED_OUTPUT_TAG}\n"
+    msg += f"Reason: {reason}.\n"
+    msg += f"Preview (first {len(preview)} chars):\n"
+    msg += preview
+    if has_more:
+        msg += "\n..."
+    msg += (
+        f"\n\n[Truncated: tool response was {original_size:,} chars. "
+        "Full output could not be saved to sandbox.]"
+    )
+    msg += f"\n{INLINE_TRUNCATED_OUTPUT_CLOSING_TAG}"
+    return msg
+
+
+def _is_inline_truncated_content(content: str) -> bool:
+    return (
+        INLINE_TRUNCATED_OUTPUT_TAG in content
+        or _LEGACY_INLINE_TRUNCATION_TEXT in content
+    )
+
+
+def _is_already_processed(content: str) -> bool:
+    return (
+        PERSISTED_OUTPUT_TAG in content
+        or _is_inline_truncated_content(content)
+    )
+
+
+def _process_tool_result(
+    content: str,
+    tool_name: str,
+    tool_use_id: str,
+    env,
+    config: BudgetConfig,
+    threshold: int | float,
+    reason: str,
+    remote_path: str | None = None,
+) -> str:
+    """Persist or inline-truncate a tool result for a specific budget reason."""
+    if _is_already_processed(content):
+        return content
+
+    if threshold == float("inf"):
+        return content
+
+    if len(content) <= threshold:
+        return content
+
+    remote_path = remote_path or f"{_resolve_storage_dir(env)}/{tool_use_id}.txt"
+    preview, has_more = generate_preview(content, max_chars=config.preview_size)
+
+    if env is not None:
+        try:
+            if _write_to_sandbox(content, remote_path, env):
+                logger.info(
+                    "Persisted tool result: %s (%s, %d chars -> %s, reason=%s)",
+                    tool_name, tool_use_id, len(content), remote_path, reason,
+                )
+                return _build_persisted_message(
+                    preview=preview,
+                    has_more=has_more,
+                    original_size=len(content),
+                    file_path=remote_path,
+                    reason=reason,
+                )
+        except Exception as exc:
+            logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
+
+    logger.info(
+        "Inline-truncating tool result: %s (%d chars, reason=%s, no sandbox write)",
+        tool_name, len(content), reason,
+    )
+    return _build_inline_truncation_message(
+        preview=preview,
+        has_more=has_more,
+        original_size=len(content),
+        reason=reason,
+    )
 
 
 def maybe_persist_tool_result(
@@ -136,39 +239,19 @@ def maybe_persist_tool_result(
         threshold: Explicit override; takes precedence over config resolution.
 
     Returns:
-        Original content if small, or <persisted-output> replacement.
+        Original content if small, or a persisted/inline-truncated replacement.
     """
     effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
-
-    if effective_threshold == float("inf"):
-        return content
-
-    if len(content) <= effective_threshold:
-        return content
-
     storage_dir = _resolve_storage_dir(env)
-    remote_path = f"{storage_dir}/{tool_use_id}.txt"
-    preview, has_more = generate_preview(content, max_chars=config.preview_size)
-
-    if env is not None:
-        try:
-            if _write_to_sandbox(content, remote_path, env):
-                logger.info(
-                    "Persisted large tool result: %s (%s, %d chars -> %s)",
-                    tool_name, tool_use_id, len(content), remote_path,
-                )
-                return _build_persisted_message(preview, has_more, len(content), remote_path)
-        except Exception as exc:
-            logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
-
-    logger.info(
-        "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
-        tool_name, len(content),
-    )
-    return (
-        f"{preview}\n\n"
-        f"[Truncated: tool response was {len(content):,} chars. "
-        f"Full output could not be saved to sandbox.]"
+    return _process_tool_result(
+        content=content,
+        tool_name=tool_name,
+        tool_use_id=tool_use_id,
+        env=env,
+        config=config,
+        threshold=effective_threshold,
+        reason=SINGLE_RESULT_REASON,
+        remote_path=f"{storage_dir}/{tool_use_id}.txt",
     )
 
 
@@ -179,9 +262,9 @@ def enforce_turn_budget(
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
-    If total chars exceed budget, persist the largest non-persisted results
-    first (via sandbox write) until under budget. Already-persisted results
-    are skipped.
+    If total chars exceed budget, handle the largest raw results first until
+    under budget. Results already transformed by per-result persistence or
+    inline truncation are skipped to avoid double-processing.
 
     Mutates the list in-place and returns it.
     """
@@ -191,7 +274,7 @@ def enforce_turn_budget(
         content = msg.get("content", "")
         size = len(content)
         total_size += size
-        if PERSISTED_OUTPUT_TAG not in content:
+        if not _is_already_processed(content):
             candidates.append((i, size))
 
     if total_size <= config.turn_budget:
@@ -206,13 +289,14 @@ def enforce_turn_budget(
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
-        replacement = maybe_persist_tool_result(
+        replacement = _process_tool_result(
             content=content,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
             config=config,
-            threshold=0,
+            threshold=TURN_BUDGET_PERSIST_THRESHOLD_CHARS,
+            reason=TURN_BUDGET_REASON,
         )
         if replacement != content:
             total_size -= size

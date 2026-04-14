@@ -8716,12 +8716,18 @@ class AIAgent:
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
                             if assistant_message.tool_calls:
-                                if truncated_tool_call_retries < 1:
+                                if truncated_tool_call_retries < 3:
                                     truncated_tool_call_retries += 1
                                     self._vprint(
-                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
+                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call "
+                                        f"({truncated_tool_call_retries}/3)...",
                                         force=True,
                                     )
+                                    # Boost max_tokens on each retry so the model
+                                    # has more room to complete the tool call JSON.
+                                    _tc_boost_base = self.max_tokens if self.max_tokens else 4096
+                                    _tc_boost = min(_tc_boost_base * (truncated_tool_call_retries + 1), 32768)
+                                    self._ephemeral_max_output_tokens = _tc_boost
                                     # Don't append the broken response to messages;
                                     # just re-run the same API call from the current
                                     # message state, giving the model another chance.

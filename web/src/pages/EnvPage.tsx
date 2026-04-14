@@ -1,4 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Eye,
   EyeOff,
@@ -72,11 +73,11 @@ interface ProviderGroup {
   hasAnySet: boolean;
 }
 
-const CATEGORY_META: Record<string, { label: string; icon: typeof KeyRound }> = {
-  provider: { label: "LLM Providers", icon: Zap },
-  tool: { label: "Tool API Keys", icon: KeyRound },
-  messaging: { label: "Messaging Platforms", icon: MessageSquare },
-  setting: { label: "Agent Settings", icon: Settings },
+const CATEGORY_META: Record<string, { labelKey: string; icon: typeof KeyRound }> = {
+  provider: { labelKey: "env.llmProviders", icon: Zap },
+  tool: { labelKey: "env.toolApiKeys", icon: KeyRound },
+  messaging: { labelKey: "env.messagingPlatforms", icon: MessageSquare },
+  setting: { labelKey: "env.agentSettings", icon: Settings },
 };
 
 /* ------------------------------------------------------------------ */
@@ -108,6 +109,7 @@ function EnvVarRow({
   onCancelEdit: (key: string) => void;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const isEditing = edits[varKey] !== undefined;
   const isRevealed = !!revealed[varKey];
   const displayValue = isRevealed ? revealed[varKey] : (info.redacted_value ?? "---");
@@ -124,13 +126,13 @@ function EnvVarRow({
           {info.url && (
             <a href={info.url} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              {t("env.getKey")} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <Button size="sm" variant="outline" className="h-6 text-[0.6rem] px-2"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-2.5 w-2.5" />
-            Set
+            {t("common.set")}
           </Button>
         </div>
       </div>
@@ -149,13 +151,13 @@ function EnvVarRow({
           {info.url && (
             <a href={info.url} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              {t("env.getKey")} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <Button size="sm" variant="outline" className="h-7 text-[0.6rem]"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-3 w-3" />
-            Set
+            {t("common.set")}
           </Button>
         </div>
       </div>
@@ -169,13 +171,13 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
           <Badge variant={info.is_set ? "success" : "outline"}>
-            {info.is_set ? "Set" : "Not set"}
+            {info.is_set ? t("common.set") : t("common.notSet")}
           </Badge>
         </div>
         {info.url && (
           <a href={info.url} target="_blank" rel="noreferrer"
             className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline">
-            Get key <ExternalLink className="h-2.5 w-2.5" />
+            {t("env.getKey")} <ExternalLink className="h-2.5 w-2.5" />
           </a>
         )}
       </div>
@@ -211,7 +213,7 @@ function EnvVarRow({
           <Button size="sm" variant="outline"
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}>
             <Pencil className="h-3 w-3" />
-            {info.is_set ? "Replace" : "Set"}
+            {info.is_set ? t("common.replace") : t("common.set")}
           </Button>
 
           {info.is_set && (
@@ -219,7 +221,7 @@ function EnvVarRow({
               className="text-destructive hover:text-destructive hover:bg-destructive/10"
               onClick={() => onClear(varKey)} disabled={saving === varKey}>
               <Trash2 className="h-3 w-3" />
-              {saving === varKey ? "..." : "Clear"}
+              {saving === varKey ? "..." : t("common.clear")}
             </Button>
           )}
         </div>
@@ -229,15 +231,15 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <Input autoFocus type="text" value={edits[varKey]}
             onChange={(e) => setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))}
-            placeholder={info.is_set ? `Replace current value (${info.redacted_value ?? "---"})` : "Enter value..."}
+            placeholder={info.is_set ? t("env.replaceCurrent", { value: info.redacted_value ?? "---" }) : t("env.enterValue")}
             className="flex-1 font-mono-ui text-xs" />
           <Button size="sm" onClick={() => onSave(varKey)}
             disabled={saving === varKey || !edits[varKey]}>
             <Save className="h-3 w-3" />
-            {saving === varKey ? "..." : "Save"}
+            {saving === varKey ? "..." : t("common.save")}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => onCancelEdit(varKey)}>
-            <X className="h-3 w-3" /> Cancel
+            <X className="h-3 w-3" /> {t("common.cancel")}
           </Button>
         </div>
       )}
@@ -270,6 +272,7 @@ function ProviderGroupCard({
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
 
   // Separate API keys from base URLs and other settings
@@ -295,7 +298,7 @@ function ProviderGroupCard({
           <span className="font-semibold text-sm tracking-wide">{group.name}</span>
           {hasAnyConfigured && (
             <Badge variant="success" className="text-[0.6rem]">
-              {configuredCount} set
+              {t("env.countSet", { count: configuredCount })}
             </Badge>
           )}
         </div>
@@ -304,11 +307,11 @@ function ProviderGroupCard({
             <a href={keyUrl} target="_blank" rel="noreferrer"
               className="inline-flex items-center gap-1 text-[0.65rem] text-primary hover:underline"
               onClick={(e) => e.stopPropagation()}>
-              Get key <ExternalLink className="h-2.5 w-2.5" />
+              {t("env.getKey")} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <span className="text-[0.65rem] text-muted-foreground/60">
-            {group.entries.length} key{group.entries.length !== 1 ? "s" : ""}
+            {t("env.key", { count: group.entries.length })}
           </span>
         </div>
       </button>
@@ -351,6 +354,7 @@ function ProviderGroupCard({
 /* ------------------------------------------------------------------ */
 
 export default function EnvPage() {
+  const { t } = useTranslation();
   const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
@@ -378,9 +382,9 @@ export default function EnvPage() {
       );
       setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
       setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      showToast(`${key} saved`, "success");
+      showToast(t("env.toastSaved", { key }), "success");
     } catch (e) {
-      showToast(`Failed to save ${key}: ${e}`, "error");
+      showToast(t("env.toastSaveFailed", { key, error: String(e) }), "error");
     } finally {
       setSaving(null);
     }
@@ -397,9 +401,9 @@ export default function EnvPage() {
       );
       setEdits((prev) => { const n = { ...prev }; delete n[key]; return n; });
       setRevealed((prev) => { const n = { ...prev }; delete n[key]; return n; });
-      showToast(`${key} removed`, "success");
+      showToast(t("env.toastRemoved", { key }), "success");
     } catch (e) {
-      showToast(`Failed to remove ${key}: ${e}`, "error");
+      showToast(t("env.toastRemoveFailed", { key, error: String(e) }), "error");
     } finally {
       setSaving(null);
     }
@@ -414,7 +418,7 @@ export default function EnvPage() {
       const resp = await api.revealEnvVar(key);
       setRevealed((prev) => ({ ...prev, [key]: resp.value }));
     } catch {
-      showToast(`Failed to reveal ${key}`, "error");
+      showToast(t("env.toastRevealFailed", { key }), "error");
     }
   };
 
@@ -484,15 +488,14 @@ export default function EnvPage() {
 
       <div className="flex items-center justify-between">
         <div className="flex flex-col gap-1">
-          <p className="text-sm text-muted-foreground">
-            Manage API keys and secrets stored in <code>~/.hermes/.env</code>
-          </p>
+          <p className="text-sm text-muted-foreground"
+            dangerouslySetInnerHTML={{ __html: t("env.description") }} />
           <p className="text-[0.7rem] text-muted-foreground/70">
-            Changes are saved to disk immediately. Active sessions pick up new keys automatically.
+            {t("env.hint")}
           </p>
         </div>
         <Button variant="ghost" size="sm" onClick={() => setShowAdvanced(!showAdvanced)}>
-          {showAdvanced ? "Hide Advanced" : "Show Advanced"}
+          {showAdvanced ? t("env.hideAdvanced") : t("env.showAdvanced")}
         </Button>
       </div>
 
@@ -507,10 +510,10 @@ export default function EnvPage() {
         <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">LLM Providers</CardTitle>
+            <CardTitle className="text-base">{t("env.llmProviders")}</CardTitle>
           </div>
           <CardDescription>
-            {configuredProviders} of {totalProviders} providers configured
+            {t("env.providersConfigured", { configured: configuredProviders, total: totalProviders })}
           </CardDescription>
         </CardHeader>
 
@@ -527,7 +530,7 @@ export default function EnvPage() {
       </Card>
 
       {/* ═══════════════ Other categories (flat) ═══════════════ */}
-      {nonProviderGrouped.map(({ label, icon: Icon, setEntries, unsetEntries, totalEntries, category }) => {
+      {nonProviderGrouped.map(({ labelKey, icon: Icon, setEntries, unsetEntries, totalEntries, category }) => {
         if (totalEntries === 0) return null;
 
         return (
@@ -535,10 +538,10 @@ export default function EnvPage() {
             <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
               <div className="flex items-center gap-2">
                 <Icon className="h-5 w-5 text-muted-foreground" />
-                <CardTitle className="text-base">{label}</CardTitle>
+                <CardTitle className="text-base">{t(labelKey)}</CardTitle>
               </div>
               <CardDescription>
-                {setEntries.length} of {totalEntries} configured
+                {t("env.configuredOf", { set: setEntries.length, total: totalEntries })}
               </CardDescription>
             </CardHeader>
 
@@ -594,6 +597,7 @@ function CollapsibleUnset({
   onReveal: (key: string) => void;
   onCancelEdit: (key: string) => void;
 }) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(true);
 
   return (
@@ -606,7 +610,7 @@ function CollapsibleUnset({
         {collapsed
           ? <ChevronRight className="h-3 w-3" />
           : <ChevronDown className="h-3 w-3" />}
-        <span>{unsetEntries.length} not configured</span>
+        <span>{t("env.notConfigured", { count: unsetEntries.length })}</span>
       </button>
 
       {!collapsed && unsetEntries.map(([key, info]) => (

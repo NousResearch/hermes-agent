@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import {
   Code,
   Download,
@@ -44,9 +45,9 @@ const CATEGORY_ICONS: Record<string, string> = {
   auxiliary: "🔧",
 };
 
-function prettyCategoryName(cat: string): string {
-  if (cat === "tts") return "Text-to-Speech";
-  if (cat === "stt") return "Speech-to-Text";
+function prettyCategoryName(cat: string, t?: (key: string) => string): string {
+  if (cat === "tts") return t ? t("config.tts") : "Text-to-Speech";
+  if (cat === "stt") return t ? t("config.stt") : "Speech-to-Text";
   return cat.charAt(0).toUpperCase() + cat.slice(1);
 }
 
@@ -55,6 +56,7 @@ function prettyCategoryName(cat: string): string {
 /* ------------------------------------------------------------------ */
 
 export default function ConfigPage() {
+  const { t } = useTranslation();
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<string, Record<string, unknown>> | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
@@ -95,7 +97,7 @@ export default function ConfigPage() {
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast("Failed to load raw config", "error"))
+        .catch(() => showToast(t("config.toastYamlLoadFailed"), "error"))
         .finally(() => setYamlLoading(false));
     }
   }, [yamlMode]);
@@ -152,9 +154,9 @@ export default function ConfigPage() {
     setSaving(true);
     try {
       await api.saveConfig(config);
-      showToast("Configuration saved", "success");
+      showToast(t("config.toastSaved"), "success");
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(t("config.toastSaveFailed", { error: String(e) }), "error");
     } finally {
       setSaving(false);
     }
@@ -164,10 +166,10 @@ export default function ConfigPage() {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText);
-      showToast("YAML config saved", "success");
+      showToast(t("config.toastYamlSaved"), "success");
       api.getConfig().then(setConfig).catch(() => {});
     } catch (e) {
-      showToast(`Failed to save YAML: ${e}`, "error");
+      showToast(t("config.toastYamlSaveFailed", { error: String(e) }), "error");
     } finally {
       setYamlSaving(false);
     }
@@ -196,9 +198,9 @@ export default function ConfigPage() {
       try {
         const imported = JSON.parse(reader.result as string);
         setConfig(imported);
-        showToast("Config imported — review and save", "success");
+        showToast(t("config.toastImported"), "success");
       } catch {
-        showToast("Invalid JSON file", "error");
+        showToast(t("config.toastInvalidJson"), "error");
       }
     };
     reader.readAsText(file);
@@ -232,7 +234,7 @@ export default function ConfigPage() {
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="text-base">{CATEGORY_ICONS[cat] || "📄"}</span>
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {prettyCategoryName(cat)}
+                {prettyCategoryName(cat, t)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
@@ -271,14 +273,14 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title="Export config as JSON" aria-label="Export config">
+          <Button variant="ghost" size="sm" onClick={handleExport} title={t("config.exportConfig")} aria-label={t("config.exportConfig")}>
             <Download className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title="Import config from JSON" aria-label="Import config">
+          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t("config.importConfig")} aria-label={t("config.importConfig")}>
             <Upload className="h-3.5 w-3.5" />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          <Button variant="ghost" size="sm" onClick={handleReset} title="Reset to defaults" aria-label="Reset to defaults">
+          <Button variant="ghost" size="sm" onClick={handleReset} title={t("config.resetDefaults")} aria-label={t("config.resetDefaults")}>
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
 
@@ -293,7 +295,7 @@ export default function ConfigPage() {
             {yamlMode ? (
               <>
                 <FormInput className="h-3.5 w-3.5" />
-                Form
+                {t("common.form")}
               </>
             ) : (
               <>
@@ -306,12 +308,12 @@ export default function ConfigPage() {
           {yamlMode ? (
             <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {yamlSaving ? "Saving..." : "Save"}
+              {yamlSaving ? t("common.saving") : t("common.save")}
             </Button>
           ) : (
             <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {saving ? "Saving..." : "Save"}
+              {saving ? t("common.saving") : t("common.save")}
             </Button>
           )}
         </div>
@@ -323,7 +325,7 @@ export default function ConfigPage() {
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Raw YAML Configuration
+              {t("config.rawYaml")}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -352,7 +354,7 @@ export default function ConfigPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   className="pl-8 h-8 text-xs"
-                  placeholder="Search..."
+                  placeholder={t("common.search")}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -386,7 +388,7 @@ export default function ConfigPage() {
                     }`}
                   >
                     <span className="text-sm leading-none">{CATEGORY_ICONS[cat] || "📄"}</span>
-                    <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
+                    <span className="flex-1 truncate">{prettyCategoryName(cat, t)}</span>
                     <span className={`text-[10px] tabular-nums ${isActive ? "text-primary/60" : "text-muted-foreground/50"}`}>
                       {categoryCounts[cat] || 0}
                     </span>
@@ -409,17 +411,17 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Search className="h-4 w-4" />
-                      Search Results
+                      {t("config.searchResults")}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} field{searchMatchedFields.length !== 1 ? "s" : ""}
+                      {t("config.field", { count: searchMatchedFields.length })}
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {searchMatchedFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">
-                      No fields match "<span className="text-foreground">{searchQuery}</span>"
+                      {t("config.noMatch", { query: searchQuery })}
                     </p>
                   ) : (
                     renderFields(searchMatchedFields, true)
@@ -433,10 +435,10 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <span className="text-base">{CATEGORY_ICONS[activeCategory] || "📄"}</span>
-                      {prettyCategoryName(activeCategory)}
+                      {prettyCategoryName(activeCategory, t)}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} field{activeFields.length !== 1 ? "s" : ""}
+                      {t("config.field", { count: activeFields.length })}
                     </Badge>
                   </div>
                 </CardHeader>

@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
+import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
@@ -10,14 +12,14 @@ import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 
 const NAV_ITEMS = [
-  { id: "status", label: "Status", icon: Activity },
-  { id: "sessions", label: "Sessions", icon: MessageSquare },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "logs", label: "Logs", icon: FileText },
-  { id: "cron", label: "Cron", icon: Clock },
-  { id: "skills", label: "Skills", icon: Package },
-  { id: "config", label: "Config", icon: Settings },
-  { id: "env", label: "Keys", icon: KeyRound },
+  { id: "status", labelKey: "nav.status", icon: Activity },
+  { id: "sessions", labelKey: "nav.sessions", icon: MessageSquare },
+  { id: "analytics", labelKey: "nav.analytics", icon: BarChart3 },
+  { id: "logs", labelKey: "nav.logs", icon: FileText },
+  { id: "cron", labelKey: "nav.cron", icon: Clock },
+  { id: "skills", labelKey: "nav.skills", icon: Package },
+  { id: "config", labelKey: "nav.config", icon: Settings },
+  { id: "env", labelKey: "nav.keys", icon: KeyRound },
 ] as const;
 
 type PageId = (typeof NAV_ITEMS)[number]["id"];
@@ -34,6 +36,7 @@ const PAGE_COMPONENTS: Record<PageId, React.FC> = {
 };
 
 export default function App() {
+  const { t } = useTranslation();
   const [page, setPage] = useState<PageId>("status");
   const [animKey, setAnimKey] = useState(0);
   const initialRef = useRef(true);
@@ -68,7 +71,7 @@ export default function App() {
 
           {/* Nav — icons only on mobile, icon+label on sm+ */}
           <nav className="flex items-stretch overflow-x-auto scrollbar-none">
-            {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+            {NAV_ITEMS.map(({ id, labelKey, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -80,7 +83,7 @@ export default function App() {
                 }`}
               >
                 <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5 shrink-0" />
-                <span className="hidden sm:inline">{label}</span>
+                <span className="hidden sm:inline">{t(labelKey)}</span>
                 {/* Hover highlight */}
                 <span className="absolute inset-0 bg-foreground pointer-events-none transition-opacity duration-150 group-hover:opacity-5 opacity-0" />
                 {/* Active indicator */}
@@ -91,8 +94,9 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Version badge — hidden on mobile */}
-          <div className="ml-auto hidden sm:flex items-center px-4 text-muted-foreground">
+          {/* Language switcher + Version badge — hidden on mobile */}
+          <div className="ml-auto hidden sm:flex items-center px-4 text-muted-foreground gap-2">
+            <LanguageSwitcher />
             <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
               Web UI
             </span>

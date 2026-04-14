@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useTranslation } from "react-i18next";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,6 +60,7 @@ function FilterBar<T extends string>({
 }
 
 export default function LogsPage() {
+  const { t } = useTranslation();
   const [file, setFile] = useState<(typeof FILES)[number]>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] = useState<(typeof COMPONENTS)[number]>("all");
@@ -106,7 +108,7 @@ export default function LogsPage() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <FileText className="h-5 w-5 text-muted-foreground" />
-              <CardTitle className="text-base">Logs</CardTitle>
+              <CardTitle className="text-base">{t("logs.title")}</CardTitle>
               {loading && (
                 <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               )}
@@ -117,17 +119,17 @@ export default function LogsPage() {
                   checked={autoRefresh}
                   onCheckedChange={setAutoRefresh}
                 />
-                <Label className="text-xs">Auto-refresh</Label>
+                <Label className="text-xs">{t("logs.autoRefresh")}</Label>
                 {autoRefresh && (
                   <Badge variant="success" className="text-[10px]">
                     <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                    Live
+                    {t("common.live")}
                   </Badge>
                 )}
               </div>
               <Button variant="outline" size="sm" onClick={fetchLogs} className="text-xs h-7">
                 <RefreshCw className="h-3 w-3 mr-1" />
-                Refresh
+                {t("common.refresh")}
               </Button>
             </div>
           </div>
@@ -135,11 +137,11 @@ export default function LogsPage() {
 
         <CardContent>
           <div className="flex flex-col gap-3 mb-4">
-            <FilterBar label="File" options={FILES} value={file} onChange={setFile} />
-            <FilterBar label="Level" options={LEVELS} value={level} onChange={setLevel} />
-            <FilterBar label="Component" options={COMPONENTS} value={component} onChange={setComponent} />
+            <FilterBar label={t("logs.file")} options={FILES} value={file} onChange={setFile} />
+            <FilterBar label={t("logs.level")} options={LEVELS} value={level} onChange={setLevel} />
+            <FilterBar label={t("logs.component")} options={COMPONENTS} value={component} onChange={setComponent} />
             <FilterBar
-              label="Lines"
+              label={t("logs.lines")}
               options={LINE_COUNTS.map(String) as unknown as readonly string[]}
               value={String(lineCount)}
               onChange={(v) => setLineCount(Number(v) as (typeof LINE_COUNTS)[number])}
@@ -157,7 +159,7 @@ export default function LogsPage() {
             className="border border-border bg-background p-4 font-mono-ui text-xs leading-5 overflow-auto max-h-[600px] min-h-[200px]"
           >
             {lines.length === 0 && !loading && (
-              <p className="text-muted-foreground text-center py-8">No log lines found</p>
+              <p className="text-muted-foreground text-center py-8">{t("logs.noLines")}</p>
             )}
             {lines.map((line, i) => {
               const cls = classifyLine(line);

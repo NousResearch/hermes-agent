@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/mutation_attestation.schema.json",
+  "title": "Mutation Attestation Artifact",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "attestation_name",
+    "status",
+    "issued_at",
+    "evidence_ref",
+    "integrity_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "lane.mutation_attestation.v1"
+    },
+    "attestation_name": {
+      "type": "string",
+      "enum": [
+        "verify_before_resume_pass",
+        "schema_contract_pass",
+        "replay_evidence_pass",
+        "successor_safe_proof_pass"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail"
+      ]
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "operation_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z0-9][a-z0-9:_\\.-]*$"
+    },
+    "evidence_ref": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 400
+    },
+    "issued_by": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "issuer_lane_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^lane\\.column_[abc]\\.[a-z0-9][a-z0-9_.-]*$"
+    },
+    "integrity_hash": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+:[A-Za-z0-9._-]+$"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 300
+    }
+  }
+}

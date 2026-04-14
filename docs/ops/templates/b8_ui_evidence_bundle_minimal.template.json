@@ -1,0 +1,130 @@
+{
+  "schema_version": "clawd.b8_ui_evidence_bundle.v1",
+  "bundle_id": "b8ev_xu_healthpanel_20260401t091000z",
+  "surface": {
+    "surface_id": "surf_xu_health_panel",
+    "surface_kind": "dashboard",
+    "viewport": {
+      "width_px": 1366,
+      "height_px": 768
+    }
+  },
+  "capture": {
+    "captured_at": "2026-04-01T09:10:00Z",
+    "capture_session_id": "cap_b8_xu_health_001",
+    "environment": "production"
+  },
+  "evidence": {
+    "screenshot": {
+      "screenshot_ref_id": "shot_xu_health_001",
+      "artifact_ref": {
+        "ref_uri": "reports/artifacts/xu_health_001.png"
+      },
+      "mime_type": "image/png",
+      "width_px": 1366,
+      "height_px": 768,
+      "captured_at": "2026-04-01T09:10:00Z",
+      "regions": [
+        {
+          "region_id": "reg_health_stale_badge",
+          "label": "Stale data badge",
+          "bbox": {
+            "coordinate_space": "normalized",
+            "x": 0.74,
+            "y": 0.08,
+            "width": 0.2,
+            "height": 0.1
+          }
+        }
+      ]
+    },
+    "dom_component_unavailable_reason": "Snapshot captured from offline image packet; DOM dump unavailable.",
+    "state_snapshot": {
+      "state_ref_id": "state_xu_health_001",
+      "artifact_ref": {
+        "ref_uri": "reports/artifacts/xu_health_001_state.json"
+      },
+      "format": "json",
+      "captured_at": "2026-04-01T09:10:01Z",
+      "state_fact_refs": [
+        {
+          "fact_id": "fact_last_refresh_age_seconds",
+          "path": "$.health.last_refresh_age_seconds",
+          "value_excerpt": "780"
+        }
+      ]
+    }
+  },
+  "findings": [
+    {
+      "finding_id": "fnd_healthpanel_stale_visibility",
+      "title": "Stale-state badge does not include age or next action",
+      "category": "freshness",
+      "severity": "minor",
+      "confidence": 0.81,
+      "rationale": "Badge indicates stale state but omits age and remediation hint, reducing operator confidence in whether intervention is required.",
+      "evidence_links": {
+        "screenshot_region_refs": [
+          "reg_health_stale_badge"
+        ],
+        "state_fact_refs": [
+          "fact_last_refresh_age_seconds"
+        ]
+      },
+      "recommendations": [
+        {
+          "recommendation_id": "rec_stale_badge_age_text",
+          "action": "Show stale age and inline refresh action in the badge tooltip.",
+          "expected_outcome": "Operators can assess freshness risk without opening detail drawer.",
+          "effort": "low"
+        }
+      ],
+      "provenance": {
+        "heuristic_refs": [
+          "rule_B8_FRESHNESS_002"
+        ],
+        "evaluator": "b8.heuristic_pack.v1",
+        "evaluated_at": "2026-04-01T09:12:00Z"
+      }
+    }
+  ],
+  "recommendation_set": [
+    {
+      "recommendation_id": "rec_stale_badge_age_text",
+      "finding_ids": [
+        "fnd_healthpanel_stale_visibility"
+      ],
+      "priority": "p2",
+      "action": "Add age text and refresh hint for stale badge.",
+      "rationale": "Improves freshness explainability with low implementation effort.",
+      "verification_steps": [
+        "Capture updated screenshot to verify stale age visibility.",
+        "Confirm action hint remains hidden when panel is fresh."
+      ]
+    }
+  ],
+  "provenance": {
+    "generated_at": "2026-04-01T09:12:30Z",
+    "generator": {
+      "layer": "B8",
+      "run_id": "b8run_wave_i1_002",
+      "contract_version": "clawd.b8_ui_evidence_bundle.v1"
+    },
+    "source_records": [
+      {
+        "source_id": "src_xu_shot_001",
+        "source_kind": "screenshot",
+        "ref_uri": "reports/artifacts/xu_health_001.png",
+        "captured_at": "2026-04-01T09:10:00Z",
+        "collector": "manual.capture"
+      },
+      {
+        "source_id": "src_xu_state_001",
+        "source_kind": "state_snapshot",
+        "ref_uri": "reports/artifacts/xu_health_001_state.json",
+        "captured_at": "2026-04-01T09:10:01Z",
+        "collector": "xu.state.exporter"
+      }
+    ]
+  }
+}

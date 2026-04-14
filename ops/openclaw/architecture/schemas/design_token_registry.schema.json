@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.design_token_registry.v1",
+  "title": "DesignTokenRegistry",
+  "type": "object",
+  "required": [
+    "schema",
+    "id",
+    "status",
+    "lane",
+    "updated_at",
+    "source_refs",
+    "token_sets",
+    "policy"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "openclaw.design_token_registry.foundation.v1"
+    },
+    "id": { "type": "string", "minLength": 3 },
+    "status": { "type": "string", "enum": ["active", "proposed", "superseded"] },
+    "lane": { "type": "string", "const": "XD" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 3 }
+    },
+    "token_sets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["set_id", "mode", "tokens"],
+        "properties": {
+          "set_id": { "type": "string", "minLength": 1 },
+          "mode": { "type": "string", "minLength": 1 },
+          "tokens": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "category", "mode", "value", "semantic_role"],
+              "properties": {
+                "id": { "type": "string", "minLength": 3 },
+                "category": { "type": "string", "minLength": 1 },
+                "mode": { "type": "string", "minLength": 1 },
+                "value": {
+                  "oneOf": [
+                    { "type": "number" },
+                    { "type": "string", "minLength": 1 },
+                    { "type": "boolean" }
+                  ]
+                },
+                "semantic_role": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["mutation_mode", "raw_hex_in_component_code", "undeclared_token_usage"],
+      "properties": {
+        "mutation_mode": { "type": "string", "enum": ["append_only_versioned"] },
+        "raw_hex_in_component_code": { "type": "string", "enum": ["forbidden"] },
+        "undeclared_token_usage": { "type": "string", "enum": ["fail_close"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

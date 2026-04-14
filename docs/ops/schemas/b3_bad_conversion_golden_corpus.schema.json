@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/b3_bad_conversion_golden_corpus.schema.json",
+  "title": "B3 Bad-Conversion Golden Corpus Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "corpus_id",
+    "cases"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.b3.bad_conversion_golden_corpus.v1"
+    },
+    "corpus_id": {
+      "type": "string",
+      "pattern": "^b3_bad_conversion_[a-z0-9._-]+$"
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "markdown_text",
+          "source_text",
+          "expected_block_gate",
+          "expected_block_reason"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9._-]+$"
+          },
+          "description": {
+            "type": "string"
+          },
+          "source_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "markdown_text": {
+            "type": "string",
+            "minLength": 1
+          },
+          "quality_policy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "min_markdown_bytes": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "min_nonempty_lines": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "min_heading_count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "require_fence_balance": {
+                "type": "boolean"
+              },
+              "max_control_char_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "max_repeated_line_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "min_alpha_char_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "min_word_coverage_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "min_reference_words": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "expected_block_gate": {
+            "type": "string",
+            "enum": [
+              "markdown_structure",
+              "markdown_noise",
+              "reference_coverage"
+            ]
+          },
+          "expected_block_reason": {
+            "type": "string",
+            "enum": [
+              "markdown_structure_failed",
+              "markdown_noise_failed",
+              "reference_coverage_failed",
+              "reference_coverage_missing"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

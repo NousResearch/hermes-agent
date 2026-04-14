@@ -1,0 +1,70 @@
+{
+  "schema": "clawd.b7_candidate_opportunity_surface.v1",
+  "generated_at": "2026-04-04T12:10:00Z",
+  "status": "ready",
+  "policy": {
+    "max_total_candidates": 6,
+    "max_now_candidates": 3,
+    "max_later_candidates": 3,
+    "reject_low_signal_candidates": true,
+    "reject_unmapped_rules": true,
+    "deduplicate_by_rule_and_text": true
+  },
+  "summary": {
+    "input_finding_count": 5,
+    "considered_finding_count": 4,
+    "candidate_count": 3,
+    "now_count": 1,
+    "later_count": 1,
+    "reject_count": 1,
+    "duplicate_input_count": 1,
+    "bounded_drop_count": 0,
+    "low_signal_reject_count": 1
+  },
+  "context": {
+    "critique_status": "generated",
+    "visibility_state": "critical",
+    "task_suppressed": false,
+    "task_noise_signal_tags": [
+      "show_stale"
+    ]
+  },
+  "candidates": [
+    {
+      "candidate_id": "sys01_cf_count_mismatch_001",
+      "source_finding_id": "cf_count_mismatch_001",
+      "audit_rule_id": "count_mismatch",
+      "title": "Operator card count does not match execution snapshot active task count.",
+      "severity": "high",
+      "canonical_lane": "CPL-04",
+      "verdict": "now",
+      "verdict_reason": "promoted_or_high_severity",
+      "confidence": 0.9,
+      "review_state": "review_required"
+    },
+    {
+      "candidate_id": "sys01_cf_state_discrepancy_002",
+      "source_finding_id": "cf_state_discrepancy_002",
+      "audit_rule_id": "state_discrepancy",
+      "title": "Foreground task card marks blocked_candidate while task detail reports ready_candidate.",
+      "severity": "medium",
+      "canonical_lane": "EX-11",
+      "verdict": "later",
+      "verdict_reason": "medium_severity_follow_on",
+      "confidence": 0.7,
+      "review_state": "review_required"
+    },
+    {
+      "candidate_id": "sys01_cf_unknown_rule_003",
+      "source_finding_id": "cf_unknown_rule_003",
+      "audit_rule_id": "unknown_rule",
+      "title": "Unmapped informational finding should be rejected to prevent idea spam.",
+      "severity": "low",
+      "canonical_lane": null,
+      "verdict": "reject",
+      "verdict_reason": "unmapped_rule",
+      "confidence": 0.84,
+      "review_state": "rejected"
+    }
+  ]
+}

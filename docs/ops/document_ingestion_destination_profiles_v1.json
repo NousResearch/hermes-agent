@@ -1,0 +1,49 @@
+{
+  "schema_version": "clawd.document_ingestion.destination_profiles.v1",
+  "default_profile": "general",
+  "profiles": {
+    "general": {
+      "root": "memory/knowledge_ingestion/production",
+      "allowed_classes": [
+        "architecture_spec",
+        "runbook",
+        "policy_doctrine",
+        "research_report",
+        "source_document"
+      ],
+      "owner_role": "knowledge_ingestion_primary",
+      "sla_tier": "standard",
+      "notes": "Default lane for operationally approved production knowledge artifacts."
+    },
+    "research_reports": {
+      "root": "memory/knowledge_ingestion/production/research",
+      "allowed_classes": [
+        "research_report",
+        "source_document",
+        "policy_doctrine"
+      ],
+      "owner_role": "knowledge_ingestion_primary",
+      "sla_tier": "standard"
+    },
+    "runbooks": {
+      "root": "memory/knowledge_ingestion/production/runbooks",
+      "allowed_classes": [
+        "runbook",
+        "policy_doctrine",
+        "runtime_evidence"
+      ],
+      "owner_role": "operations_release_owner",
+      "sla_tier": "critical"
+    },
+    "architecture": {
+      "root": "memory/knowledge_ingestion/production/architecture",
+      "allowed_classes": [
+        "architecture_spec",
+        "policy_doctrine",
+        "research_report"
+      ],
+      "owner_role": "architecture_lane_owner",
+      "sla_tier": "standard"
+    }
+  }
+}

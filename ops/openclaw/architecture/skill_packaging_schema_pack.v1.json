@@ -1,0 +1,21 @@
+{
+  "schema": "openclaw.skill_packaging_schema_pack.v1",
+  "slice_id": "SYS-04",
+  "generated_at": "2026-04-02T21:30:00+07:00",
+  "pack": {
+    "manifest_schema": "docs/ops/schemas/skill_package_manifest.schema.json",
+    "manifest_template": "docs/ops/templates/skill_package_manifest.template.json",
+    "fixture_packages": [
+      "tests/fixtures/sys/skill_packages/document_structure_skill/skill.package.json",
+      "memory/skills/twitter_digest_playbooks/skill.package.json"
+    ],
+    "frontmatter_required_fields": [
+      "skill_id",
+      "version",
+      "display_name",
+      "risk_class",
+      "execution_mode",
+      "manifest_path"
+    ]
+  }
+}

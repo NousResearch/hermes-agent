@@ -1,0 +1,88 @@
+{
+  "session_kind": "worker_slice",
+  "task_class": "research",
+  "risk_tier": "medium",
+  "scope_shape": "single_surface",
+  "verification_class": "validator_required",
+  "worker_topology": "single",
+  "fold_in_target": "queue_continuity",
+  "worker_lane": "subagent_default",
+  "delegation_basis": "Non-trivial worker slice defaults to subagent lane for cockpit-only Telegram DM operation.",
+  "support_only": false,
+  "invocation_prompt": "Summarize the latest continuity regressions and provide bounded next actions.",
+  "context_slices": [
+    {
+      "slice_id": "directive",
+      "content": "Keep responses bounded to the active slice and preserve acceptance criteria anchors."
+    },
+    {
+      "slice_id": "acceptance",
+      "content": "Acceptance criteria anchors: preserve directives, unresolved blockers, and deterministic evidence references in every compaction pass."
+    },
+    {
+      "slice_id": "state",
+      "content": "Current active slice: XE-202 anchor-preserving summary compaction engine v1 with fail-closed semantic-loss checks."
+    }
+  ],
+  "immutable_anchor_slice_ids": [
+    "directive",
+    "acceptance"
+  ],
+  "prompt_guardrails": {
+    "requested_output_tokens": 300,
+    "max_prompt_tokens": 800,
+    "max_total_tokens": 1400
+  },
+  "knowledge_retrieval": {
+    "enabled": true,
+    "required": true,
+    "query": "session topology contract hybrid retrieval selective recall abstain-safe thresholds",
+    "doc_intent": "policy",
+    "live_search": true,
+    "max_results": 12,
+    "rerank_top_n": 12,
+    "top_k": 4,
+    "high_confidence_top_k": 2,
+    "min_top_score": 0.7,
+    "min_margin": 0.02,
+    "high_confidence_top_score": 0.85,
+    "high_confidence_margin": 0.08
+  },
+  "event_backbone": {
+    "correlation_id": "telegram|direct|5936691533|main:xe301-demo",
+    "idempotency_key": "xe301-demo-turn-0001",
+    "sequence": 1,
+    "parent_event_id": null
+  },
+  "workflow_state_machine": {
+    "workflow_id": "telegram|direct|5936691533|main:xe302-demo",
+    "expected_current_state": "INIT"
+  },
+  "workflow_dag": {
+    "nodes": [
+      "ingest",
+      "analyze",
+      "summarize",
+      "notify"
+    ],
+    "edges": [
+      {"from": "ingest", "to": "analyze"},
+      {"from": "analyze", "to": "summarize"},
+      {"from": "summarize", "to": "notify"}
+    ]
+  },
+  "escalation_evidence": {
+    "quality_gate_failed": false,
+    "unresolved_blocker": false,
+    "explicit_criticality": false,
+    "previous_tier_failed": false,
+    "artifact_refs": []
+  },
+  "transport_route": {
+    "transport_key": "telegram|direct|5936691533|main",
+    "lane_name": "codex-worker-plus-7",
+    "agent_id": "codex-worker-plus-7",
+    "session_key": "agent:codex-worker-plus-7:telegram:direct:5936691533",
+    "message_thread_id": null
+  }
+}

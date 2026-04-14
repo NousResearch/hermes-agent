@@ -1,0 +1,351 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/skill_package_manifest.schema.json",
+  "title": "OpenClaw Skill Package Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "skill_id",
+    "version",
+    "display_name",
+    "summary",
+    "owner",
+    "updated_at",
+    "package",
+    "activation",
+    "runtime",
+    "interoperability",
+    "quality",
+    "governance",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "openclaw.skill_package_manifest.v1"
+    },
+    "skill_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_\\-]{2,62}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 120
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 12,
+      "maxLength": 500
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 120
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root_dir",
+        "skill_doc",
+        "scripts_dir",
+        "references_dir",
+        "assets"
+      ],
+      "properties": {
+        "root_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill_doc": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scripts_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "references_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intents",
+        "keywords",
+        "requires_explicit_invocation",
+        "default_priority"
+      ],
+      "properties": {
+        "intents": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        },
+        "keywords": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "uniqueItems": true
+        },
+        "requires_explicit_invocation": {
+          "type": "boolean"
+        },
+        "default_priority": {
+          "type": "string",
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution_mode",
+        "offload_policy",
+        "max_runtime_seconds",
+        "preflight"
+      ],
+      "properties": {
+        "execution_mode": {
+          "type": "string",
+          "enum": [
+            "inline",
+            "worker_offload_preferred",
+            "worker_offload_required"
+          ]
+        },
+        "offload_policy": {
+          "type": "string",
+          "enum": [
+            "never_offload",
+            "prefer_worker_for_large_batches",
+            "always_offload"
+          ]
+        },
+        "max_runtime_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "preflight": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min_ram_gb",
+            "min_disk_gb",
+            "requires_gpu"
+          ],
+          "properties": {
+            "min_ram_gb": {
+              "type": "number",
+              "minimum": 0
+            },
+            "min_disk_gb": {
+              "type": "number",
+              "minimum": 0
+            },
+            "requires_gpu": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "interoperability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "import_formats",
+        "export_formats"
+      ],
+      "properties": {
+        "import_formats": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "openclaw-native",
+              "claude-skills",
+              "everything-claude-code",
+              "custom"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "export_formats": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "openclaw-native",
+              "claude-skills",
+              "custom"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "benchmark_suite",
+        "contract_tests"
+      ],
+      "properties": {
+        "benchmark_suite": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_tests": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_class",
+        "advisory_only",
+        "approval_policy",
+        "allowed_tools",
+        "requires_human_approval_for"
+      ],
+      "properties": {
+        "risk_class": {
+          "type": "string",
+          "enum": [
+            "RG0_LOW",
+            "RG1_MODERATE",
+            "RG2_HIGH",
+            "RG3_CRITICAL"
+          ]
+        },
+        "advisory_only": {
+          "type": "boolean"
+        },
+        "approval_policy": {
+          "type": "string",
+          "enum": [
+            "never",
+            "risk_based",
+            "always"
+          ]
+        },
+        "allowed_tools": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "uniqueItems": true
+        },
+        "requires_human_approval_for": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "file_write",
+              "shell_exec",
+              "network_access",
+              "external_publish"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_refs"
+      ],
+      "properties": {
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref_id",
+              "kind",
+              "location",
+              "confidence"
+            ],
+            "properties": {
+              "ref_id": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_\\-]{1,31}$"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "report",
+                  "spec",
+                  "repo",
+                  "paper"
+                ]
+              },
+              "location": {
+                "type": "string",
+                "minLength": 1
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

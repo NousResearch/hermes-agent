@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.dev/schemas/web_capture_login_wall_contract.schema.json",
+  "title": "OpenClaw Web Capture Login-Wall Assist Contract",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "domain",
+    "domain_slug",
+    "macro_slug",
+    "target_url",
+    "opened_at",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "openclaw.web_capture.login_wall_contract.v1"
+    },
+    "domain": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain_slug": {
+      "type": "string",
+      "minLength": 1
+    },
+    "macro_slug": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "opened_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "open",
+        "resolved"
+      ]
+    },
+    "last_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "gate_class": {
+      "type": "string"
+    },
+    "signals": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "state_path": {
+      "type": "string"
+    },
+    "evidence_ref": {
+      "type": "string"
+    },
+    "operator_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "resume_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "incident_actionability": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "incident_id",
+        "reason",
+        "severity",
+        "status",
+        "action_required",
+        "recommended_commands",
+        "evidence"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "openclaw.web_capture.login_wall_incident_actionability.v1"
+        },
+        "incident_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "resolved"
+          ]
+        },
+        "action_required": {
+          "type": "boolean"
+        },
+        "recommended_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recommended_steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "step_id",
+              "command"
+            ],
+            "properties": {
+              "step_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1
+              },
+              "command": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "resolved_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "open"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "updated_at",
+          "resume_command",
+          "incident_actionability"
+        ],
+        "properties": {
+          "incident_actionability": {
+            "properties": {
+              "status": {
+                "const": "open"
+              },
+              "action_required": {
+                "const": true
+              },
+              "recommended_commands": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "status",
+              "action_required",
+              "recommended_commands"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "resolved"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "required": [
+          "resolved_at"
+        ],
+        "properties": {
+          "incident_actionability": {
+            "properties": {
+              "status": {
+                "const": "resolved"
+              },
+              "action_required": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}
+

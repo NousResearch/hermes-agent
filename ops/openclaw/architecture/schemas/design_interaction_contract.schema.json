@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.design_interaction_contract.v1",
+  "title": "DesignInteractionContract",
+  "type": "object",
+  "required": [
+    "version",
+    "id",
+    "status",
+    "component",
+    "trigger",
+    "selector",
+    "expected_state",
+    "a11y_focus_behavior",
+    "failure_assertions"
+  ],
+  "properties": {
+    "version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "minLength": 3 },
+    "status": { "type": "string", "enum": ["active", "proposed", "superseded"] },
+    "component": { "type": "string", "minLength": 1 },
+    "trigger": {
+      "type": "object",
+      "required": ["event", "input"],
+      "properties": {
+        "event": { "type": "string", "minLength": 1 },
+        "input": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "selector": {
+      "type": "object",
+      "required": ["scope", "target"],
+      "properties": {
+        "scope": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "expected_state": {
+      "type": "object",
+      "required": ["ui_state", "data_state"],
+      "properties": {
+        "ui_state": { "type": "string", "minLength": 1 },
+        "data_state": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "a11y_focus_behavior": {
+      "type": "object",
+      "required": ["focus_target", "focus_visible", "keyboard_path"],
+      "properties": {
+        "focus_target": { "type": "string", "minLength": 1 },
+        "focus_visible": { "type": "boolean" },
+        "keyboard_path": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "failure_assertions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "condition", "severity"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "condition": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["low", "medium", "high", "critical"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

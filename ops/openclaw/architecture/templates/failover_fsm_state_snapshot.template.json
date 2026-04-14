@@ -1,0 +1,14 @@
+{
+  "object_type": "clawd.failover_fsm.state_snapshot.v1",
+  "state": "HEALTHY",
+  "state_version": 1,
+  "entered_at": "2026-03-20T10:00:00Z",
+  "last_transition_trigger": null,
+  "reset_required": false,
+  "reset_allowed": false,
+  "active_blockers": [],
+  "coherence_tuple_ref": {
+    "world_anchor_id": "wa_20260320_001",
+    "policy_epoch_id": "policy_epoch_42"
+  }
+}

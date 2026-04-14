@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/proposal_packet.v1.schema.json",
+  "title": "OpenClaw Proposal Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "task_id",
+    "task_class",
+    "title",
+    "description",
+    "risk_assessment"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "proposal_packet.v1"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_class": {
+      "type": "string",
+      "enum": [
+        "code:generate",
+        "code:edit",
+        "code:review",
+        "code:test",
+        "code:docs"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_assessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "initial_tier",
+        "justification"
+      ],
+      "properties": {
+        "initial_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "affected_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

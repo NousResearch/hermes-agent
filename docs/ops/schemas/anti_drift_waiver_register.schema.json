@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/anti_drift_waiver_register.schema.json",
+  "title": "Anti-Drift Waiver Register",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "checker",
+    "generated_at",
+    "max_active_waivers",
+    "waivers"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.anti_drift_waiver_register.v1"
+    },
+    "checker": {
+      "type": "string",
+      "const": "source_of_truth_map_guard"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "max_active_waivers": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "waivers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/waiver"
+      }
+    }
+  },
+  "$defs": {
+    "waiver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "waiver_id",
+        "checker",
+        "scope",
+        "justification",
+        "owner",
+        "approved_by",
+        "issued_at",
+        "expires_at",
+        "status",
+        "evidence_refs"
+      ],
+      "properties": {
+        "waiver_id": {
+          "type": "string",
+          "pattern": "^adw_[a-z0-9._-]+$"
+        },
+        "checker": {
+          "type": "string",
+          "const": "source_of_truth_map_guard"
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "justification": {
+          "type": "string",
+          "minLength": 8
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "revoked",
+            "expired"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "reason_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9._-]+$"
+          }
+        },
+        "check_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9._-]+$"
+          }
+        },
+        "path_allowlist": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "reason_ids"
+          ]
+        },
+        {
+          "required": [
+            "check_ids"
+          ]
+        }
+      ]
+    }
+  }
+}

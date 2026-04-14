@@ -1,0 +1,31 @@
+{
+  "schema_version": "clawd.orchestrator.snapshot_resolve.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "request_id": "req:orchestrator:snapshot_resolve:2026-03-30T18-40-00Z",
+  "generated_at": "2026-03-30T18:40:00+07:00",
+  "request": {
+    "mode": "as_known",
+    "asof_time": "2026-03-30T10:59:59Z",
+    "asof_seq": 1280042,
+    "feature_flags": [
+      "why_pack_v3",
+      "outcomes_v2"
+    ],
+    "policy_version": "policy.orchestrator.v1.0.0"
+  },
+  "response": {
+    "snapshot_id": "snapshot:yq_terminal:2026-03-30T10:59:59Z:1280042",
+    "manifest_id": "manifest:yq_terminal:2026-03-30:daily_brief:001",
+    "effective_mode": "as_known",
+    "effective_asof_time": "2026-03-30T10:59:59Z",
+    "effective_asof_seq": 1280042,
+    "evidence_refs": [
+      "evidence:fill_events:window:2026-03-30T09:00:00Z..2026-03-30T10:59:59Z",
+      "evidence:position_events:head:1280042"
+    ],
+    "readiness": {
+      "status": "ready",
+      "reasons": []
+    }
+  }
+}

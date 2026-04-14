@@ -1,0 +1,15 @@
+{
+  "schema_version": "delta_spec.v1",
+  "task_id": "cod05-proposal-001",
+  "instructions": "Implement proposal-first delta-spec gate in session topology router: validate proposal packet, enforce approval hooks, emit archive contract artifacts.",
+  "affected_files": [
+    "scripts/session_topology_router.py",
+    "tests/test_session_topology_router.py",
+    "docs/ops/session_topology_contract_v1.md"
+  ],
+  "validation_requirements": [
+    "Router passes proposal-first gate for coding tasks",
+    "High/critical risk tiers require approval hooks",
+    "Archive contract includes required artifacts"
+  ]
+}

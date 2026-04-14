@@ -1,0 +1,510 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/core_roadmap_queue_layer.schema.json",
+  "title": "Core Roadmap Queue Layer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generated_at",
+    "queue_source",
+    "contract_status",
+    "authoritative",
+    "issues",
+    "source_present",
+    "source_paths",
+    "selected_source_path",
+    "selected_source_generated_at",
+    "source_details",
+    "selection_policy",
+    "dependency_model_available",
+    "status_taxonomy",
+    "contract_fingerprint",
+    "summary",
+    "ready_candidates",
+    "running_candidates",
+    "dependency_blocked_candidates",
+    "next_candidates",
+    "next_candidate"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.core_roadmap_queue_layer.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "queue_source": {
+      "const": "core_roadmap_slice_queue"
+    },
+    "contract_status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "degraded",
+        "missing"
+      ]
+    },
+    "authoritative": {
+      "type": "boolean"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "source_present": {
+      "type": "boolean"
+    },
+    "source_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "selected_source_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selected_source_generated_at": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_details": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sourceDetail"
+      },
+      "minItems": 1
+    },
+    "selection_policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "dependency_model_available": {
+      "type": "boolean"
+    },
+    "status_taxonomy": {
+      "$ref": "#/$defs/statusTaxonomy"
+    },
+    "contract_fingerprint": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "summary": {
+      "$ref": "#/$defs/summary"
+    },
+    "ready_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/readyCandidate"
+      }
+    },
+    "running_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/runningCandidate"
+      }
+    },
+    "dependency_blocked_candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/dependencyBlockedCandidate"
+      }
+    },
+    "next_candidates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "next_candidate": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "$defs": {
+    "sourceDetail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "exists",
+        "sha256",
+        "schema",
+        "generated_at",
+        "parse_error",
+        "priority"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parse_error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "statusTaxonomy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "categories",
+        "dependency_blocked_source_states"
+      ],
+      "properties": {
+        "schema": {
+          "const": "clawd.core_roadmap_queue_status_taxonomy.v1"
+        },
+        "categories": {
+          "type": "array",
+          "uniqueItems": true,
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "string",
+            "enum": [
+              "done",
+              "ready",
+              "running",
+              "dependency_blocked",
+              "queued"
+            ]
+          }
+        },
+        "dependency_blocked_source_states": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_slices",
+        "done_count",
+        "ready_count",
+        "running_count",
+        "dependency_blocked_count",
+        "queued_count",
+        "open_count",
+        "queue_empty",
+        "state_counts",
+        "source_state_counts"
+      ],
+      "properties": {
+        "total_slices": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "done_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ready_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "running_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dependency_blocked_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queued_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "queue_empty": {
+          "type": "boolean"
+        },
+        "state_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "done",
+            "ready",
+            "running",
+            "dependency_blocked",
+            "queued"
+          ],
+          "properties": {
+            "done": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "ready": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "running": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "dependency_blocked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "queued": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "source_state_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "candidateBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "slice_id",
+        "title",
+        "tier",
+        "lane",
+        "role_required",
+        "wave",
+        "state",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slice_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lane": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "role_required": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wave": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "running",
+            "dependency_blocked"
+          ]
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "readyCandidate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/candidateBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "ready"
+            }
+          }
+        }
+      ]
+    },
+    "runningCandidate": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/candidateBase"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "state": {
+              "const": "running"
+            }
+          }
+        }
+      ]
+    },
+    "dependencyBlockedCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "slice_id",
+        "title",
+        "tier",
+        "lane",
+        "role_required",
+        "wave",
+        "state",
+        "blocked_by",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "slice_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lane": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "role_required": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "wave": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "state": {
+          "const": "dependency_blocked"
+        },
+        "blocked_by": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "created_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

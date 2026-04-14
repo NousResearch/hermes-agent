@@ -1,0 +1,475 @@
+{
+  "object_type": "clawd.a3_failover_stress_soak_evidence.v1",
+  "run_id": "a3stress_aaaaaaaaaaaaaaaa",
+  "generated_at": "2026-03-26T12:00:00Z",
+  "source_lane": "A3",
+  "harness": {
+    "component": "continuity.failover_stress_soak",
+    "version": "v1",
+    "synthetic_load_model": "deterministic_mvp"
+  },
+  "config": {
+    "cycles_per_profile": 3,
+    "profile_count": 5,
+    "freshness_ttl_sec": 21600
+  },
+  "summary": {
+    "overall_verdict": "PASS",
+    "profile_count": 5,
+    "total_cycles": 15,
+    "total_ticks": 108,
+    "convergence_pass_count": 15,
+    "convergence_fail_count": 0,
+    "blocked_cycle_count": 3,
+    "synthetic_load_units_total": 1820,
+    "max_transition_tick_latency": 9,
+    "stress_drift_detected": false
+  },
+  "profiles": [
+    {
+      "profile_id": "steady_recovery_under_load",
+      "description": "Critical synthetic load converges through reset-ready and successor validation back to HEALTHY.",
+      "cycles": 3,
+      "pass_count": 3,
+      "fail_count": 0,
+      "blocked_cycle_count": 0,
+      "expected_terminal_state": "HEALTHY",
+      "terminal_state_counts": {
+        "HEALTHY": 3
+      },
+      "max_transition_tick_latency": 6,
+      "synthetic_load_units_total": 351,
+      "representative_signature": "1111111111111111111111111111111111111111111111111111111111111111",
+      "deterministic_signature_count": 1,
+      "drift_detected": false
+    },
+    {
+      "profile_id": "expired_proof_fail_closed_under_load",
+      "description": "Sustained load with expired proof must converge to BLOCKED_RESET and stay fail-closed.",
+      "cycles": 3,
+      "pass_count": 3,
+      "fail_count": 0,
+      "blocked_cycle_count": 3,
+      "expected_terminal_state": "BLOCKED_RESET",
+      "terminal_state_counts": {
+        "BLOCKED_RESET": 3
+      },
+      "max_transition_tick_latency": 2,
+      "synthetic_load_units_total": 432,
+      "representative_signature": "2222222222222222222222222222222222222222222222222222222222222222",
+      "deterministic_signature_count": 1,
+      "drift_detected": false
+    },
+    {
+      "profile_id": "blocker_clear_recovery_under_load",
+      "description": "Blocked reset under load recovers deterministically once blockers clear and successor validation passes.",
+      "cycles": 3,
+      "pass_count": 3,
+      "fail_count": 0,
+      "blocked_cycle_count": 0,
+      "expected_terminal_state": "HEALTHY",
+      "terminal_state_counts": {
+        "HEALTHY": 3
+      },
+      "max_transition_tick_latency": 9,
+      "synthetic_load_units_total": 462,
+      "representative_signature": "3333333333333333333333333333333333333333333333333333333333333333",
+      "deterministic_signature_count": 1,
+      "drift_detected": false
+    },
+    {
+      "profile_id": "successor_generation_race_recovery_under_load",
+      "description": "Successor generation mismatch under load must fail closed, then converge once the proof is reminted against the active generation.",
+      "cycles": 3,
+      "pass_count": 3,
+      "fail_count": 0,
+      "blocked_cycle_count": 0,
+      "expected_terminal_state": "HEALTHY",
+      "terminal_state_counts": {
+        "HEALTHY": 3
+      },
+      "max_transition_tick_latency": 8,
+      "synthetic_load_units_total": 414,
+      "representative_signature": "5555555555555555555555555555555555555555555555555555555555555555",
+      "deterministic_signature_count": 1,
+      "drift_detected": false
+    },
+    {
+      "profile_id": "successor_pointer_drift_recovery_under_load",
+      "description": "Successor pointer drift under load must fail closed, then converge once pointer parity is restored and validation reruns.",
+      "cycles": 3,
+      "pass_count": 3,
+      "fail_count": 0,
+      "blocked_cycle_count": 0,
+      "expected_terminal_state": "HEALTHY",
+      "terminal_state_counts": {
+        "HEALTHY": 3
+      },
+      "max_transition_tick_latency": 8,
+      "synthetic_load_units_total": 426,
+      "representative_signature": "6666666666666666666666666666666666666666666666666666666666666666",
+      "deterministic_signature_count": 1,
+      "drift_detected": false
+    }
+  ],
+  "determinism": {
+    "workload_signature": "7777777777777777777777777777777777777777777777777777777777777777",
+    "drift_detected": false,
+    "profile_signatures": [
+      {
+        "profile_id": "steady_recovery_under_load",
+        "signature_count": 1,
+        "representative_signature": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "profile_id": "expired_proof_fail_closed_under_load",
+        "signature_count": 1,
+        "representative_signature": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "profile_id": "blocker_clear_recovery_under_load",
+        "signature_count": 1,
+        "representative_signature": "3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      {
+        "profile_id": "successor_generation_race_recovery_under_load",
+        "signature_count": 1,
+        "representative_signature": "5555555555555555555555555555555555555555555555555555555555555555"
+      },
+      {
+        "profile_id": "successor_pointer_drift_recovery_under_load",
+        "signature_count": 1,
+        "representative_signature": "6666666666666666666666666666666666666666666666666666666666666666"
+      }
+    ]
+  },
+  "artifacts": {
+    "run_dir": "state/continuity/a3_failover_stress_soak/runs/a3stress_aaaaaaaaaaaaaaaa",
+    "evidence_ref": "state/continuity/a3_failover_stress_soak/runs/a3stress_aaaaaaaaaaaaaaaa/evidence.json",
+    "cycle_log_ref": "state/continuity/a3_failover_stress_soak/runs/a3stress_aaaaaaaaaaaaaaaa/cycle_log.json",
+    "decision_log_ref": "state/continuity/a3_failover_stress_soak/decisions.jsonl",
+    "latest_ref": "state/continuity/latest/failover_stress_soak_evidence.json"
+  },
+  "source_refs": [
+    {
+      "path": "ops/openclaw/continuity/failover_fsm.py",
+      "sha256": "d34db33f"
+    },
+    {
+      "path": "ops/openclaw/continuity/successor_safe_handover_proof.py",
+      "sha256": "f00dcafe"
+    },
+    {
+      "path": "ops/openclaw/continuity/failover_stress_soak.py",
+      "sha256": "c0ffee00"
+    }
+  ],
+  "live_surface_linkage": {
+    "schema": "clawd.a3_failover_stress_soak.live_surface_linkage.v1",
+    "focus": "blocked_reset_successor_failures",
+    "surface_refs": {
+      "continuity_current": "state/continuity/current.json",
+      "reset_ready_refresh_latest": "state/continuity/latest/reset_ready_refresh_latest.json",
+      "handover_latest": "state/handover/latest.json",
+      "proof_status_latest": "state/continuity/latest/successor_safe_handover_proof_status.json"
+    },
+    "blocked_reset_successor_failures": [
+      {
+        "failure_class": "generation_mismatch",
+        "trigger": "TR_SUCCESSOR_VALIDATION_FAIL",
+        "top_blocker": "BLK_PROOF_GENERATION_MISMATCH",
+        "count": 3,
+        "profiles": [
+          "successor_generation_race_recovery_under_load"
+        ],
+        "step_labels": [
+          "successor_validation_generation_mismatch"
+        ],
+        "proof_states": [
+          "PROOF_VALID_BLOCKED"
+        ],
+        "sample_refs": [
+          {
+            "profile_id": "successor_generation_race_recovery_under_load",
+            "cycle_index": 1,
+            "step_label": "successor_validation_generation_mismatch"
+          },
+          {
+            "profile_id": "successor_generation_race_recovery_under_load",
+            "cycle_index": 2,
+            "step_label": "successor_validation_generation_mismatch"
+          },
+          {
+            "profile_id": "successor_generation_race_recovery_under_load",
+            "cycle_index": 3,
+            "step_label": "successor_validation_generation_mismatch"
+          }
+        ],
+        "projected_live_assertions": [
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "proof_status.top_blocker",
+            "expected": "BLK_PROOF_GENERATION_MISMATCH"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.proof_top_blocker",
+            "expected": "BLK_PROOF_GENERATION_MISMATCH"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_proof_status.top_blocker",
+            "expected": "BLK_PROOF_GENERATION_MISMATCH"
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/current.json",
+            "field_path": "reset_ready_refresh.path",
+            "expected": "state/continuity/latest/reset_ready_refresh_latest.json"
+          }
+        ]
+      },
+      {
+        "failure_class": "proof_invalidated",
+        "trigger": "TR_SUCCESSOR_VALIDATION_FAIL",
+        "top_blocker": "BLK_PROOF_INVALIDATED",
+        "count": 3,
+        "profiles": [
+          "blocker_clear_recovery_under_load"
+        ],
+        "step_labels": [
+          "successor_validation_fail"
+        ],
+        "proof_states": [
+          "PROOF_INVALID"
+        ],
+        "sample_refs": [
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 1,
+            "step_label": "successor_validation_fail"
+          },
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 2,
+            "step_label": "successor_validation_fail"
+          },
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 3,
+            "step_label": "successor_validation_fail"
+          }
+        ],
+        "projected_live_assertions": [
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "proof_status.top_blocker",
+            "expected": "BLK_PROOF_INVALIDATED"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.proof_top_blocker",
+            "expected": "BLK_PROOF_INVALIDATED"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_proof_status.top_blocker",
+            "expected": "BLK_PROOF_INVALIDATED"
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/current.json",
+            "field_path": "reset_ready_refresh.path",
+            "expected": "state/continuity/latest/reset_ready_refresh_latest.json"
+          }
+        ]
+      },
+      {
+        "failure_class": "verify_gate_not_pass",
+        "trigger": "TR_SUCCESSOR_VALIDATION_FAIL",
+        "top_blocker": "BLK_PROOF_VERIFY_GATE_NOT_PASS",
+        "count": 3,
+        "profiles": [
+          "blocker_clear_recovery_under_load"
+        ],
+        "step_labels": [
+          "successor_validation_verify_gate_not_pass"
+        ],
+        "proof_states": [
+          "PROOF_VALID_BLOCKED"
+        ],
+        "sample_refs": [
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 1,
+            "step_label": "successor_validation_verify_gate_not_pass"
+          },
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 2,
+            "step_label": "successor_validation_verify_gate_not_pass"
+          },
+          {
+            "profile_id": "blocker_clear_recovery_under_load",
+            "cycle_index": 3,
+            "step_label": "successor_validation_verify_gate_not_pass"
+          }
+        ],
+        "projected_live_assertions": [
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "proof_status.top_blocker",
+            "expected": "BLK_PROOF_VERIFY_GATE_NOT_PASS"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.proof_top_blocker",
+            "expected": "BLK_PROOF_VERIFY_GATE_NOT_PASS"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_proof_status.top_blocker",
+            "expected": "BLK_PROOF_VERIFY_GATE_NOT_PASS"
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/current.json",
+            "field_path": "reset_ready_refresh.path",
+            "expected": "state/continuity/latest/reset_ready_refresh_latest.json"
+          }
+        ]
+      },
+      {
+        "failure_class": "read_pointer_mismatch",
+        "trigger": "TR_SUCCESSOR_VALIDATION_FAIL",
+        "top_blocker": "BLK_PROOF_READ_POINTER_MISMATCH",
+        "count": 3,
+        "profiles": [
+          "successor_pointer_drift_recovery_under_load"
+        ],
+        "step_labels": [
+          "successor_validation_pointer_drift_mismatch"
+        ],
+        "proof_states": [
+          "PROOF_VALID_BLOCKED"
+        ],
+        "sample_refs": [
+          {
+            "profile_id": "successor_pointer_drift_recovery_under_load",
+            "cycle_index": 1,
+            "step_label": "successor_validation_pointer_drift_mismatch"
+          },
+          {
+            "profile_id": "successor_pointer_drift_recovery_under_load",
+            "cycle_index": 2,
+            "step_label": "successor_validation_pointer_drift_mismatch"
+          },
+          {
+            "profile_id": "successor_pointer_drift_recovery_under_load",
+            "cycle_index": 3,
+            "step_label": "successor_validation_pointer_drift_mismatch"
+          }
+        ],
+        "projected_live_assertions": [
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "proof_status.top_blocker",
+            "expected": "BLK_PROOF_READ_POINTER_MISMATCH"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.proof_top_blocker",
+            "expected": "BLK_PROOF_READ_POINTER_MISMATCH"
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/handover/latest.json",
+            "field_path": "safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_proof_status.top_blocker",
+            "expected": "BLK_PROOF_READ_POINTER_MISMATCH"
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_resume",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/latest/reset_ready_refresh_latest.json",
+            "field_path": "handover_safe_signals.safe_to_reset",
+            "expected": false
+          },
+          {
+            "surface_path": "state/continuity/current.json",
+            "field_path": "reset_ready_refresh.path",
+            "expected": "state/continuity/latest/reset_ready_refresh_latest.json"
+          }
+        ]
+      }
+    ]
+  }
+}

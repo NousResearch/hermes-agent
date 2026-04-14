@@ -1,0 +1,44 @@
+{
+  "schema": "openclaw.personal_context_graph_schema_pack.v1",
+  "slice_id": "XP-302",
+  "status": "active",
+  "lane": "XP",
+  "updated_at": "2026-03-29T00:29:00+07:00",
+  "promotion_policy": {
+    "versioning": "append_only",
+    "breaking_changes": "require_new_pack_version",
+    "compatibility_boundary": "xp_303_runtime_must_consume_v1_or_explicitly_migrate"
+  },
+  "provenance_compatibility": {
+    "xb_401_domain_event_envelope_aligned": true,
+    "required_fields": [
+      "event_id",
+      "event_type",
+      "occurred_at",
+      "source_connector_id",
+      "producer_id",
+      "risk_class",
+      "route_class",
+      "auth_tier",
+      "payload_sha256"
+    ],
+    "route_class": "advisory"
+  },
+  "pack": {
+    "graph_object_schema": "docs/ops/schemas/personal_context_graph_object.schema.json",
+    "templates": {
+      "goal": "docs/ops/templates/personal_context_goal.template.json",
+      "routine": "docs/ops/templates/personal_context_routine.template.json",
+      "constraint": "docs/ops/templates/personal_context_constraint.template.json",
+      "event": "docs/ops/templates/personal_context_event.template.json",
+      "commitment": "docs/ops/templates/personal_context_commitment.template.json",
+      "decision_record": "docs/ops/templates/personal_context_decision_record.template.json",
+      "after_action_review": "docs/ops/templates/personal_context_after_action_review.template.json",
+      "lesson_card": "docs/ops/templates/personal_context_lesson_card.template.json",
+      "pattern_card": "docs/ops/templates/personal_context_pattern_card.template.json"
+    },
+    "fixtures": [
+      "tests/fixtures/xp/personal_context_graph_objects_fixture_v1.json"
+    ]
+  }
+}

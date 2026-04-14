@@ -1,0 +1,328 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/noise_signal_heuristic_pack.v1.schema.json",
+  "title": "Noise-vs-Signal Heuristic Pack v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "pack_id",
+    "generated_at",
+    "status",
+    "heuristics",
+    "scoring_rubric",
+    "suppression_policy",
+    "integration_targets",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.noise_signal_heuristic_pack.v1"
+    },
+    "pack_id": {
+      "type": "string",
+      "pattern": "^lt01_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "active",
+        "retired"
+      ]
+    },
+    "heuristics": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50,
+      "items": {
+        "$ref": "#/$defs/heuristic"
+      }
+    },
+    "scoring_rubric": {
+      "$ref": "#/$defs/scoring_rubric"
+    },
+    "suppression_policy": {
+      "$ref": "#/$defs/suppression_policy"
+    },
+    "integration_targets": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "$ref": "#/$defs/integration_target"
+      }
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    }
+  },
+  "$defs": {
+    "heuristic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "heuristic_id",
+        "title",
+        "classifier",
+        "signal_indicator",
+        "noise_indicator",
+        "evidence_source",
+        "suppression",
+        "tags"
+      ],
+      "properties": {
+        "heuristic_id": {
+          "type": "string",
+          "pattern": "^H[0-9]{1,2}$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signal_indicator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "noise_indicator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_id",
+            "source_kind",
+            "source_path"
+          ],
+          "properties": {
+            "source_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_kind": {
+              "type": "string",
+              "enum": [
+                "contract",
+                "report",
+                "schema",
+                "runtime"
+              ]
+            },
+            "source_path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "suppression": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary_stream_action",
+            "forensic_annotation_fields",
+            "suppression_counter"
+          ],
+          "properties": {
+            "primary_stream_action": {
+              "type": "string",
+              "enum": [
+                "suppress",
+                "downgrade",
+                "elevate"
+              ]
+            },
+            "forensic_annotation_fields": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 20,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "uniqueItems": true
+            },
+            "suppression_counter": {
+              "type": "string",
+              "pattern": "^[a-z0-9_]+_suppressed$"
+            }
+          }
+        },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9_:-]+$"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "scoring_rubric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score_scale",
+        "bands"
+      ],
+      "properties": {
+        "score_scale": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min",
+            "max"
+          ],
+          "properties": {
+            "min": {
+              "type": "integer",
+              "const": 0
+            },
+            "max": {
+              "type": "integer",
+              "const": 4
+            }
+          }
+        },
+        "bands": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "score",
+              "label",
+              "definition"
+            ],
+            "properties": {
+              "score": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4
+              },
+              "label": {
+                "type": "string",
+                "enum": [
+                  "critical",
+                  "weak",
+                  "mixed",
+                  "good",
+                  "excellent"
+                ]
+              },
+              "definition": {
+                "type": "string",
+                "minLength": 8
+              }
+            }
+          }
+        }
+      }
+    },
+    "suppression_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_alert_stream",
+        "forensic_stream",
+        "default_counter_suffix"
+      ],
+      "properties": {
+        "primary_alert_stream": {
+          "type": "string",
+          "minLength": 1
+        },
+        "forensic_stream": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default_counter_suffix": {
+          "type": "string",
+          "const": "_suppressed"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "integration_target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_id",
+        "target_surface",
+        "heuristic_ids"
+      ],
+      "properties": {
+        "target_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9._:-]+$"
+        },
+        "target_surface": {
+          "type": "string",
+          "minLength": 1
+        },
+        "heuristic_ids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 50,
+          "items": {
+            "type": "string",
+            "pattern": "^H[0-9]{1,2}$"
+          },
+          "uniqueItems": true
+        },
+        "integration_mode": {
+          "type": "string",
+          "enum": [
+            "runtime",
+            "validator",
+            "packet",
+            "reporting"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generated_by",
+        "source_report_paths"
+      ],
+      "properties": {
+        "generated_by": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_report_paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

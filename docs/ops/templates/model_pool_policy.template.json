@@ -1,0 +1,97 @@
+{
+  "schema_version": "clawd.model_pool_policy.v1",
+  "policy_id": "poolpol_20260321_wave5_unified_v1",
+  "generated_at": "2026-03-21T09:20:00Z",
+  "route_classes": {
+    "NO_LLM": {
+      "owner_lane_id": "lane.column_a.no_nudge_autonomy",
+      "allowed_models": [],
+      "default_required_rollout_stage": "canary"
+    },
+    "SPARK": {
+      "owner_lane_id": "lane.column_b.swarm_orchestration",
+      "allowed_models": [
+        "openai-codex/gpt-5.3-codex-spark"
+      ],
+      "default_required_rollout_stage": "canary"
+    },
+    "HEAVY": {
+      "owner_lane_id": "lane.column_a.no_nudge_autonomy",
+      "allowed_models": [
+        "openai-codex/gpt-5.3-codex"
+      ],
+      "default_required_rollout_stage": "active"
+    }
+  },
+  "lane_authority": {
+    "lane.column_c.upgrade_substrate": {
+      "promote_max_state": "SHADOW",
+      "can_rollback": true,
+      "can_kill": false
+    },
+    "lane.column_b.swarm_orchestration": {
+      "promote_max_state": "RING_1",
+      "can_rollback": true,
+      "can_kill": false
+    },
+    "lane.column_a.no_nudge_autonomy": {
+      "promote_max_state": "FULL",
+      "can_rollback": true,
+      "can_kill": true
+    }
+  },
+  "action_role_allowlist": {
+    "promote": ["VALIDATOR", "LIBRARIAN", "SRE", "EXECUTOR"],
+    "rollback": ["VALIDATOR", "LIBRARIAN", "SRE"],
+    "kill": ["VALIDATOR", "LIBRARIAN", "SRE"]
+  },
+  "qualification_policy": {
+    "required_checklist_ids": [
+      "schema_contract_valid",
+      "tool_compatibility_validated",
+      "evidence_pointer_resolution",
+      "abstention_behavior_validated",
+      "fallback_route_defined",
+      "cost_budget_guard_defined",
+      "failure_mode_reviewed",
+      "rollback_playbook_linked"
+    ],
+    "benchmark_thresholds": {
+      "json_valid_rate": 0.995,
+      "evidence_pointer_resolution_rate": 1.0,
+      "abstain_f1": 0.95,
+      "non_abstain_recall": 0.95
+    },
+    "min_eval_sample_size": 30
+  },
+  "rollout_policy": {
+    "canary_exposure_max": 0.2,
+    "ring_exposure_max": {
+      "1": 0.35,
+      "2": 0.75
+    },
+    "max_rollback_minutes": 30,
+    "dwell_seconds": {
+      "CANARY": 3600,
+      "RING_1": 7200,
+      "RING_2": 14400
+    },
+    "health_max_age_seconds": 3600
+  },
+  "state_stage_map": {
+    "canary_states": ["CANARY"],
+    "active_states": ["RING_1", "RING_2", "FULL"]
+  },
+  "cost_governance": {
+    "window_hours": 24,
+    "route_class_daily_budget_usd": {
+      "NO_LLM": 0,
+      "SPARK": 35,
+      "HEAVY": 120
+    },
+    "model_unit_cost_usd": {
+      "openai-codex/gpt-5.3-codex-spark": 0.35,
+      "openai-codex/gpt-5.3-codex": 2.5
+    }
+  }
+}

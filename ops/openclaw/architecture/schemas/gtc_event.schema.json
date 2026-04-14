@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/gtc_event.schema.json",
+  "title": "GTC Event Projection v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "routes",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "gtc.event.v2"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "route_key",
+          "source",
+          "event_key",
+          "status",
+          "severity",
+          "last_seen_at",
+          "latest_event_id",
+          "counters"
+        ],
+        "properties": {
+          "route_key": { "type": "string" },
+          "source": { "type": "string" },
+          "event_key": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "closed"] },
+          "severity": { "type": "string" },
+          "first_seen_at": { "type": ["string", "null"] },
+          "last_seen_at": { "type": ["string", "null"] },
+          "open_since": { "type": ["string", "null"] },
+          "open_age_sec": { "type": ["integer", "null"] },
+          "last_emitted_at": { "type": ["string", "null"] },
+          "last_changed_at": { "type": ["string", "null"] },
+          "last_closed_at": { "type": ["string", "null"] },
+          "latest_event_id": { "type": "string" },
+          "latest_gtc_evidence_id": { "type": ["string", "null"] },
+          "latest_summary": { "type": ["string", "null"] },
+          "latest_evidence_ref": { "type": ["string", "null"] },
+          "recent_event_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "related_task_ids": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "counters": {
+            "type": "object",
+            "required": ["emitted", "suppressed", "changed", "cooldown_suppressed"],
+            "properties": {
+              "emitted": { "type": "integer", "minimum": 0 },
+              "suppressed": { "type": "integer", "minimum": 0 },
+              "changed": { "type": "integer", "minimum": 0 },
+              "cooldown_suppressed": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "route_count",
+        "open_incident_count",
+        "critical_open_count",
+        "warn_open_count"
+      ],
+      "properties": {
+        "route_count": { "type": "integer", "minimum": 0 },
+        "open_incident_count": { "type": "integer", "minimum": 0 },
+        "critical_open_count": { "type": "integer", "minimum": 0 },
+        "warn_open_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_pool_policy.schema.json",
+  "title": "Model Pool Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "policy_id",
+    "generated_at",
+    "route_classes",
+    "lane_authority",
+    "action_role_allowlist",
+    "qualification_policy",
+    "rollout_policy",
+    "state_stage_map",
+    "cost_governance"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.model_pool_policy.v1"
+    },
+    "policy_id": {
+      "type": "string",
+      "pattern": "^poolpol_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "route_classes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "NO_LLM",
+        "SPARK",
+        "HEAVY"
+      ],
+      "properties": {
+        "NO_LLM": { "$ref": "#/$defs/routeClass" },
+        "SPARK": { "$ref": "#/$defs/routeClass" },
+        "HEAVY": { "$ref": "#/$defs/routeClass" }
+      }
+    },
+    "lane_authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane.column_a.no_nudge_autonomy",
+        "lane.column_b.swarm_orchestration",
+        "lane.column_c.upgrade_substrate"
+      ],
+      "properties": {
+        "lane.column_a.no_nudge_autonomy": { "$ref": "#/$defs/laneAuthority" },
+        "lane.column_b.swarm_orchestration": { "$ref": "#/$defs/laneAuthority" },
+        "lane.column_c.upgrade_substrate": { "$ref": "#/$defs/laneAuthority" }
+      }
+    },
+    "action_role_allowlist": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promote", "rollback", "kill"],
+      "properties": {
+        "promote": { "$ref": "#/$defs/roleSet" },
+        "rollback": { "$ref": "#/$defs/roleSet" },
+        "kill": { "$ref": "#/$defs/roleSet" }
+      }
+    },
+    "qualification_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_checklist_ids", "benchmark_thresholds", "min_eval_sample_size"],
+      "properties": {
+        "required_checklist_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "benchmark_thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "json_valid_rate",
+            "evidence_pointer_resolution_rate",
+            "abstain_f1",
+            "non_abstain_recall"
+          ],
+          "properties": {
+            "json_valid_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "evidence_pointer_resolution_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+            "abstain_f1": { "type": "number", "minimum": 0, "maximum": 1 },
+            "non_abstain_recall": { "type": "number", "minimum": 0, "maximum": 1 }
+          }
+        },
+        "min_eval_sample_size": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "rollout_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canary_exposure_max", "ring_exposure_max", "max_rollback_minutes"],
+      "properties": {
+        "canary_exposure_max": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "ring_exposure_max": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["1", "2"],
+          "properties": {
+            "1": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+            "2": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+          }
+        },
+        "max_rollback_minutes": { "type": "integer", "minimum": 1 },
+        "dwell_seconds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "CANARY": { "type": "integer", "minimum": 1 },
+            "RING_1": { "type": "integer", "minimum": 1 },
+            "RING_2": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "health_max_age_seconds": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "state_stage_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canary_states", "active_states"],
+      "properties": {
+        "canary_states": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "active_states": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "cost_governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["window_hours", "route_class_daily_budget_usd", "model_unit_cost_usd"],
+      "properties": {
+        "window_hours": { "type": "integer", "minimum": 1 },
+        "route_class_daily_budget_usd": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["NO_LLM", "SPARK", "HEAVY"],
+          "properties": {
+            "NO_LLM": { "type": "number", "minimum": 0 },
+            "SPARK": { "type": "number", "minimum": 0 },
+            "HEAVY": { "type": "number", "minimum": 0 }
+          }
+        },
+        "model_unit_cost_usd": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "routeClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner_lane_id", "allowed_models", "default_required_rollout_stage"],
+      "properties": {
+        "owner_lane_id": {
+          "type": "string",
+          "enum": [
+            "lane.column_a.no_nudge_autonomy",
+            "lane.column_b.swarm_orchestration",
+            "lane.column_c.upgrade_substrate"
+          ]
+        },
+        "allowed_models": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 3 },
+          "uniqueItems": true
+        },
+        "default_required_rollout_stage": {
+          "type": "string",
+          "enum": ["canary", "active"]
+        }
+      }
+    },
+    "laneAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["promote_max_state", "can_rollback", "can_kill"],
+      "properties": {
+        "promote_max_state": {
+          "type": "string",
+          "enum": ["SHADOW", "RING_1", "FULL"]
+        },
+        "can_rollback": { "type": "boolean" },
+        "can_kill": { "type": "boolean" }
+      }
+    },
+    "roleSet": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["PLANNER", "EXECUTOR", "VALIDATOR", "RESEARCHER", "SRE", "LIBRARIAN"]
+      },
+      "uniqueItems": true
+    }
+  }
+}

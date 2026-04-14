@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/shared_memory_object.schema.json",
+  "title": "Shared Memory Object",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "object_id",
+    "created_at",
+    "updated_at",
+    "promotion",
+    "memory",
+    "freshness_policy",
+    "conflicts",
+    "demotions",
+    "traceability"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.shared_memory_object.v1"
+    },
+    "object_id": {
+      "type": "string",
+      "pattern": "^smo_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promotion_id",
+        "queue_entry_id",
+        "candidate_path",
+        "candidate_sha256",
+        "workflow_decision_path",
+        "workflow_decision_sha256"
+      ],
+      "properties": {
+        "promotion_id": {
+          "type": "string",
+          "pattern": "^prom_[a-z0-9._-]+$"
+        },
+        "queue_entry_id": {
+          "type": "string",
+          "pattern": "^kpq_[a-z0-9._-]+$"
+        },
+        "candidate_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "workflow_decision_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workflow_decision_sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_type",
+        "title",
+        "statement",
+        "canonical_state",
+        "target_path",
+        "source_lane_id"
+      ],
+      "properties": {
+        "object_type": {
+          "type": "string",
+          "enum": [
+            "fact",
+            "rule",
+            "procedure",
+            "heuristic",
+            "decision"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 3
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonical_state": {
+          "type": "string",
+          "enum": [
+            "PROMOTED_CANONICAL",
+            "CONFLICTED",
+            "DEMOTED_STALE",
+            "DEMOTED_SUPERSEDED",
+            "DEMOTED_INVALIDATED",
+            "ARCHIVED"
+          ]
+        },
+        "target_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_lane_id": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "freshness_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stale_after_days",
+        "demote_after_days",
+        "owner_role",
+        "owner_id",
+        "last_verified_at",
+        "staleness_state"
+      ],
+      "properties": {
+        "stale_after_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "demote_after_days": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "owner_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "owner_id": {
+          "type": "string",
+          "minLength": 2
+        },
+        "last_verified_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "staleness_state": {
+          "type": "string",
+          "enum": [
+            "current",
+            "stale",
+            "demoted"
+          ]
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^smc_[a-z0-9._-]+$"
+      },
+      "uniqueItems": true
+    },
+    "demotions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^smd_[a-z0-9._-]+$"
+      },
+      "uniqueItems": true
+    },
+    "traceability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_refs",
+        "decision_refs",
+        "implementation_refs"
+      ],
+      "properties": {
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref_id",
+              "path",
+              "content_hash"
+            ],
+            "properties": {
+              "ref_id": {
+                "type": "string",
+                "pattern": "^src_[a-zA-Z0-9._-]+$"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "locator": {
+                "type": "string"
+              },
+              "content_hash": {
+                "type": "string",
+                "pattern": "^(sha256:)?[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "decision_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        },
+        "implementation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      }
+    }
+  }
+}

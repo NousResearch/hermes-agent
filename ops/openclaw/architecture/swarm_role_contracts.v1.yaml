@@ -1,0 +1,116 @@
+version: "1.0"
+id: "openclaw.swarm.role_contracts.v1"
+status: "active"
+updated_at: "2026-03-08T22:30:00+07:00"
+
+roles:
+  planner:
+    mandate: "Decompose objective into deterministic DAG, acceptance criteria, and allowed mutation scope."
+    must_not:
+      - "directly mutate product code or operational state"
+      - "bypass validator gates"
+    allowed_writes:
+      - "autopilot_artifacts/fix_plan.md"
+      - "autopilot_artifacts/fix_plan.json"
+      - "state/continuity/work queue planning metadata"
+    required_inputs:
+      - "spec_backlog_summary"
+      - "latest continuity checkpoint"
+      - "competitive teardown scorecards"
+    required_outputs:
+      - "task list with dependency edges"
+      - "file target declarations per task"
+      - "gate-level acceptance tests"
+
+  executor:
+    mandate: "Implement exactly the approved plan delta and emit reproducible artifacts."
+    must_not:
+      - "invent new tokens/components/contracts outside plan"
+      - "skip lock acquisition for declared target files"
+    allowed_writes:
+      - "approved target files in plan"
+      - "autopilot_artifacts/apply_fixes.md"
+      - "autopilot_artifacts/p0_progress.md"
+      - "autopilot_artifacts/p0_progress.json"
+    required_inputs:
+      - "planner brief"
+      - "declared file targets"
+      - "existing design token/component contracts"
+    required_outputs:
+      - "mutation diff"
+      - "artifact refs for validation"
+      - "explicit failure payload on block"
+
+  validator:
+    mandate: "Run deterministic quality gates and return binary approve/block with machine-readable evidence."
+    must_not:
+      - "perform speculative code mutation"
+      - "downgrade mandatory acceptance gates"
+    allowed_writes:
+      - "autopilot_artifacts/quality_gate.md"
+      - "autopilot_artifacts/quality_gate.json"
+      - "continuity task_transitions"
+    required_inputs:
+      - "executor artifacts"
+      - "gate matrix contract"
+      - "previous golden outputs"
+    required_outputs:
+      - "APPROVE|BLOCK"
+      - "failed gate IDs + evidence"
+      - "retry guidance with concrete assertions"
+
+  sre_watchdog:
+    mandate: "Protect system reliability/SLO posture and route only blocker-grade signals."
+    must_not:
+      - "emit high-noise routine telemetry"
+      - "change plan scope"
+    allowed_writes:
+      - "continuity_events"
+      - "watchdog state signatures"
+      - "rollback_events"
+    required_inputs:
+      - "runtime metrics"
+      - "continuity integrity reports"
+    required_outputs:
+      - "deduped blocker events"
+      - "safe-mode / rollback triggers"
+
+  librarian:
+    mandate: "Curate durable knowledge artifacts and prune noisy run-history into retrieval-safe references."
+    must_not:
+      - "promote unverifiable claims into canonical specs"
+      - "write into product code paths"
+    allowed_writes:
+      - "obsvault_yq_terminal/10_Projects/Shared/Research"
+      - "reports/* synthesis artifacts"
+      - "memory/* ledger notes"
+    required_inputs:
+      - "run artifacts"
+      - "validator outcomes"
+      - "competitive teardowns"
+    required_outputs:
+      - "canonical summaries"
+      - "index updates"
+      - "traceable source links"
+
+handoff_packet:
+  required_fields:
+    - task_id
+    - parent_task_id
+    - from_role
+    - to_role
+    - created_at
+    - budget_tokens_used
+    - model_tier
+    - evidence_refs
+    - next_gate
+  optional_fields:
+    - retry_count
+    - failure_signature
+    - lock_refs
+
+gating_policy:
+  no_merge_without_validator: true
+  max_gate_failures_per_task: 3
+  require_evidence_refs_on_block: true
+  lock_release_on_done_or_rollback: true

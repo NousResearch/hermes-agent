@@ -1,0 +1,11 @@
+{
+  "object_type": "clawd.load_shedding.watchdog_probe.v1",
+  "probed_at": "2026-03-20T10:21:00Z",
+  "lane_heartbeat_age_sec": 52,
+  "tier_assessment": "CRITICAL",
+  "escalation": {
+    "critical_forced": true,
+    "launch_continuity_worker": true
+  },
+  "reason_codes": ["HB_STALE", "COMP_TIMEOUT_CLUSTER"]
+}

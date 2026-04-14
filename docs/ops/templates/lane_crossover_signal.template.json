@@ -1,0 +1,33 @@
+{
+  "schema_version": "lane.crossover_packet.v1",
+  "packet_id": "lxp_20260320_wave4_slice1_signal",
+  "packet_type": "signal",
+  "from_lane_id": "lane.column_b.swarm_orchestration",
+  "from_lane_epoch": "epoch_20260320_b1",
+  "to_lane_id": "lane.column_a.no_nudge_autonomy",
+  "to_lane_epoch": "epoch_20260320_a1",
+  "created_at": "2026-03-20T10:35:00+07:00",
+  "priority": "normal",
+  "work_item_id": "wi_wave4_slice1_lane_boundary",
+  "summary": "Queue-stale-wave signal observed; no immediate cross-lane write requested.",
+  "evidence_refs": [
+    "state/continuity/latest/continuity_now.json"
+  ],
+  "payload": {
+    "signal_id": "sig_queue_stale_wave_active",
+    "signal_code": "queue_stale_wave_active",
+    "severity": "warn",
+    "status": "ongoing",
+    "observed_at": "2026-03-20T10:34:45+07:00",
+    "suggested_action": "inspect queue handoffs before new claims"
+  },
+  "contamination_guard": {
+    "source_memory_scope": "shared_contract_only",
+    "contains_unverified_content": false,
+    "cross_lane_write_requested": false,
+    "promotion_gate": "none",
+    "max_inline_context_bytes": 512,
+    "redaction_applied": false
+  },
+  "ack_required": false
+}

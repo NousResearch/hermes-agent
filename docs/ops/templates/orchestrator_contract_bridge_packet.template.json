@@ -1,0 +1,170 @@
+{
+  "schema_version": "clawd.orchestrator.contract_bridge_packet.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "generated_at": "2026-04-03T07:00:00Z",
+  "slice_id": "EX-06",
+  "integration_runner": "ops/openclaw/continuity/orchestrator_contract_bridge_packet_v1.py",
+  "bridge_rules": {
+    "idempotency_key_family": "shared_retry_key",
+    "run_conflict_detector": "canonical_request_hash",
+    "event_ordering_semantics": "strict_event_seq",
+    "replay_retention_cliff_action": "snapshot_reseed_required"
+  },
+  "orchestrator_plan_packet": {
+    "schema_version": "clawd.orchestrator.plan.v1",
+    "contract_version": "orchestrator_api_contract_v1",
+    "request_id": "req:orchestrator:plan:ex06:bridge:template",
+    "generated_at": "2026-04-03T07:00:00Z",
+    "snapshot_ref": {
+      "snapshot_id": "snapshot:ex06:bridge:template",
+      "manifest_id": "manifest:ex06:bridge:template"
+    },
+    "artifacts": [
+      {
+        "artifact_kind": "execution_state",
+        "artifact_version": "v1",
+        "parameters": {
+          "lane": "core_execution"
+        }
+      }
+    ],
+    "determinism": {
+      "canonical_json": true,
+      "hash_algorithm": "sha256"
+    },
+    "admission": {
+      "mode": "normal",
+      "decision": "accepted",
+      "reason_codes": []
+    },
+    "response": {
+      "plan_id": "plan:ex06:bridge:template",
+      "declared_inputs_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "expected_outputs": [
+        {
+          "artifact_kind": "execution_state",
+          "artifact_version": "v1",
+          "output_slot": "execution_state.1"
+        }
+      ],
+      "plan_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "expires_in_sec": 1800
+    }
+  },
+  "orchestrator_run_packet": {
+    "schema_version": "clawd.orchestrator.run.v1",
+    "contract_version": "orchestrator_api_contract_v1",
+    "request_id": "req:orchestrator:run:ex06:bridge:template",
+    "generated_at": "2026-04-03T07:00:00Z",
+    "plan_id": "plan:ex06:bridge:template",
+    "idempotency_key": "idem:ex06:bridge:template:run:1",
+    "canonical_request_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "dry_run": true,
+    "dispatch": {
+      "enabled": false,
+      "target_profile": null
+    },
+    "evaluation_gate": {
+      "required": true,
+      "gate_policy_ref": "docs/ops/evaluation_gated_promotion_loop_v1.md#pre_run_gate",
+      "canary_mode": "shadow",
+      "attestation_refs": [
+        "state/continuity/latest/mutation_attestation_latest.json"
+      ]
+    },
+    "admission": {
+      "mode": "normal",
+      "decision": "accepted",
+      "reason_codes": []
+    },
+    "response": {
+      "run_id": "run:ex06:bridge:template",
+      "status": "accepted",
+      "duplicate_suppressed": false,
+      "duplicate_of_run_id": null,
+      "outputs": [
+        {
+          "artifact_kind": "execution_state",
+          "output_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "snapshot_id": "snapshot:ex06:bridge:template",
+          "manifest_id": "manifest:ex06:bridge:template"
+        }
+      ]
+    }
+  },
+  "orchestrator_event_stream_packet": {
+    "schema_version": "clawd.orchestrator.event_stream.v1",
+    "contract_version": "orchestrator_api_contract_v1",
+    "stream_id": "stream:ex06:contract_bridge",
+    "emitted_at": "2026-04-03T07:00:01Z",
+    "event": {
+      "event_id": "event:ex06:contract_bridge:template",
+      "event_seq": 1,
+      "available_at": "2026-04-03T07:00:01Z",
+      "available_seq": 1,
+      "type": "artifacts.run.accepted",
+      "severity": "info",
+      "entity_ref": "run:ex06:bridge:template",
+      "payload_ref": "state/continuity/latest/evidence/ex_06_orchestrator_contract_bridge_packet_2026-04-03.json#orchestrator_run_packet",
+      "correlation_id": "flow://ex06/bridge/template",
+      "idempotency_key": "idem:ex06:bridge:template:run:1",
+      "parent_event_id": null,
+      "dedupe_key": "dedupe:ex06:contract_bridge:template"
+    },
+    "cursor": {
+      "since_seq": 0,
+      "next_after_seq": 1,
+      "retention": {
+        "min_seq": 1,
+        "max_seq": 1
+      },
+      "gap_detected": false,
+      "resync_hint": null
+    }
+  },
+  "orchestrator_replay_resync_packet": {
+    "schema_version": "clawd.orchestrator.replay_resync.v1",
+    "contract_version": "orchestrator_api_contract_v1",
+    "request_id": "req:orchestrator:replay:ex06:bridge:template",
+    "generated_at": "2026-04-03T07:00:02Z",
+    "request": {
+      "reason": "cursor_gap",
+      "from_event_seq": 0,
+      "to_event_seq": 1,
+      "last_known_snapshot_id": "snapshot:ex06:bridge:template",
+      "last_applied_event_seq": 0,
+      "max_events": 10
+    },
+    "admission": {
+      "mode": "normal",
+      "decision": "accepted",
+      "reason_codes": []
+    },
+    "response": {
+      "status": "snapshot_reseed_required",
+      "replay_window": {
+        "start_seq": 1,
+        "end_seq": 1,
+        "available_count": 1
+      },
+      "resume_cursor": {
+        "next_since_seq": 1,
+        "resync_token": "resync_template_20260403",
+        "expires_at": "2026-04-03T07:30:02Z"
+      },
+      "actions": [
+        "resolve_snapshot",
+        "rebuild_plan",
+        "operator_review_required"
+      ],
+      "notes": "Retention cliff detected; snapshot reseed required."
+    }
+  },
+  "invariants": {
+    "run_event_idempotency_key_match": true,
+    "event_seq_matches_cursor": true,
+    "replay_retention_cliff_detected": true,
+    "replay_requires_snapshot_reseed": true,
+    "replay_actions_include_reseed": true
+  }
+}

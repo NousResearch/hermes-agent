@@ -1,0 +1,69 @@
+{
+  "timestamp": "2026-04-01T14:00:00Z",
+  "lane": "A1_CONTROL_PLANE",
+  "health_layer": "truthful",
+  "status": "pass",
+  "issues": [],
+  "lanes": [
+    {
+      "lane": "A1_CONTROL_PLANE",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    },
+    {
+      "lane": "A2_RUNTIME_CONTINUITY",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    },
+    {
+      "lane": "A3_MODEL_ROUTING",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    },
+    {
+      "lane": "A6_OPS_OBSERVABILITY",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    },
+    {
+      "lane": "C1_OPERATOR_SURFACE",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    },
+    {
+      "lane": "C2_RELEASE_SUBSTRATE",
+      "health_layer": "truthful",
+      "status": "pass",
+      "issues": []
+    }
+  ],
+  "summary": {
+    "target_lanes": [
+      "A1_CONTROL_PLANE",
+      "A2_RUNTIME_CONTINUITY",
+      "A3_MODEL_ROUTING",
+      "A6_OPS_OBSERVABILITY",
+      "C1_OPERATOR_SURFACE",
+      "C2_RELEASE_SUBSTRATE"
+    ],
+    "lane_count": 6,
+    "pass_count": 6,
+    "degraded_count": 0,
+    "failing_count": 0,
+    "degraded_lanes": [],
+    "failing_lanes": []
+  },
+  "metrics": {
+    "gate_rc": 0,
+    "slo_evaluator_rc": 0,
+    "continuity_now_rc": 0,
+    "failing_slo_count": 0,
+    "routing_failure_reason": null,
+    "internal_bypass_closeout_ready": true
+  }
+}

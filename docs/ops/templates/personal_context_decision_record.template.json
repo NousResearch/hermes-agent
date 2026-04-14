@@ -1,0 +1,62 @@
+{
+  "schema_version": "clawd.personal_context_graph_object.v1",
+  "object_id": "pcg_decision_weekplan_focus_001",
+  "object_type": "decision_record",
+  "title": "Decision: focus two deep-work blocks daily",
+  "status": "active",
+  "created_at": "2026-03-29T00:15:00Z",
+  "updated_at": "2026-03-29T00:15:00Z",
+  "revision": 1,
+  "supersedes_object_id": null,
+  "previous_object_hash": null,
+  "object_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "payload": {
+    "decision_question": "How should next week be structured to protect focus time?",
+    "chosen_option": "Reserve two 90-minute deep-work blocks every weekday morning.",
+    "alternatives_considered": [
+      "Single long deep-work block every other day",
+      "Flexible blocks chosen ad-hoc each day"
+    ],
+    "decision_rationale": "Predictable blocks reduce context switching and improve completion reliability.",
+    "expected_outcome": "At least four meaningful outputs shipped during the week.",
+    "review_due_at": "2026-04-05T13:00:00Z",
+    "decision_status": "chosen"
+  },
+  "provenance": {
+    "event_id": "evt_personal_decision_capture_001",
+    "event_type": "personal_decision_capture",
+    "occurred_at": "2026-03-29T00:14:55Z",
+    "source_connector_id": "conn_personal_os_manual",
+    "producer_id": "xp_lane_operator",
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "payload_sha256": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  },
+  "governance": {
+    "risk_tier": "PX1_ASSIST",
+    "approval_tier": "AP1_EXPLICIT_USER_CONFIRM",
+    "escalation_level": "E0_NONE",
+    "advisory_only": true
+  },
+  "links": {
+    "related_object_ids": [
+      "pcg_goal_q2_focus_systems_001",
+      "pcg_constraint_sleep_floor_001"
+    ],
+    "source_refs": [
+      "memory/2026-03-29.md"
+    ],
+    "evidence_refs": [
+      "docs/ops/personal_os_scope_boundary_contract_v1.md"
+    ]
+  },
+  "metadata": {
+    "created_by": "xp_lane_owner",
+    "source_system": "xp_manual_capture",
+    "tags": [
+      "decision",
+      "planning"
+    ]
+  }
+}

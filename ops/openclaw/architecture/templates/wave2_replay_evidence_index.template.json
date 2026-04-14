@@ -1,0 +1,49 @@
+{
+  "object_type": "clawd.wave2_replay.evidence_index.v1",
+  "run_id": "w2replay_aaaaaaaaaaaaaaaa",
+  "generated_at": "2026-03-20T12:00:00Z",
+  "source_lane": "A3",
+  "fixture_family": "A3_CRITICAL",
+  "runner": {
+    "component": "continuity.failover_replay_evidence",
+    "version": "v1"
+  },
+  "summary": {
+    "scenario_count": 4,
+    "pass_count": 4,
+    "fail_count": 0,
+    "overall_verdict": "PASS",
+    "first_blocking_gate": null,
+    "soak_runs_total": 3,
+    "soak_runs_fail": 0,
+    "soak_drift_detected": false,
+    "soak_deterministic_signature_count": 1
+  },
+  "artifacts": {
+    "run_dir": "state/continuity/wave3_a3_replay/runs/w2replay_aaaaaaaaaaaaaaaa",
+    "fixture_manifest_ref": "state/continuity/wave3_a3_replay/runs/w2replay_aaaaaaaaaaaaaaaa/fixture_manifest.json",
+    "run_request_ref": "state/continuity/wave3_a3_replay/runs/w2replay_aaaaaaaaaaaaaaaa/run_request.json",
+    "gate_trace_ref": "state/continuity/wave3_a3_replay/runs/w2replay_aaaaaaaaaaaaaaaa/gate_trace.json",
+    "decision_ref": "state/continuity/wave3_a3_replay/runs/w2replay_aaaaaaaaaaaaaaaa/decision.json"
+  },
+  "soak": {
+    "runs_total": 3,
+    "runs_pass": 3,
+    "runs_fail": 0,
+    "deterministic_signatures": [
+      "e3b0c44298fc1c149afbf4c8996fb924"
+    ],
+    "deterministic_signature_count": 1,
+    "drift_detected": false
+  },
+  "source_refs": [
+    {
+      "path": "ops/openclaw/continuity/failover_fsm.py",
+      "sha256": "d34db33f"
+    },
+    {
+      "path": "ops/openclaw/continuity/successor_safe_handover_proof.py",
+      "sha256": "f00dcafe"
+    }
+  ]
+}

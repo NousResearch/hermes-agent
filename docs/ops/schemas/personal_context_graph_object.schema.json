@@ -1,0 +1,760 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/personal_context_graph_object.schema.json",
+  "title": "Personal Context Graph Object",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "object_id",
+    "object_type",
+    "title",
+    "status",
+    "created_at",
+    "updated_at",
+    "revision",
+    "supersedes_object_id",
+    "previous_object_hash",
+    "object_hash",
+    "payload",
+    "provenance",
+    "governance",
+    "links",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.personal_context_graph_object.v1"
+    },
+    "object_id": {
+      "type": "string",
+      "pattern": "^pcg_[a-z0-9._-]+$"
+    },
+    "object_type": {
+      "type": "string",
+      "enum": [
+        "goal",
+        "routine",
+        "constraint",
+        "event",
+        "commitment",
+        "decision_record",
+        "after_action_review",
+        "lesson_card",
+        "pattern_card"
+      ]
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "completed",
+        "paused",
+        "superseded",
+        "archived",
+        "cancelled"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "supersedes_object_id": {
+      "type": ["string", "null"],
+      "pattern": "^pcg_[a-z0-9._-]+$"
+    },
+    "previous_object_hash": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "object_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "payload": {
+      "type": "object"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "source_connector_id",
+        "producer_id",
+        "risk_class",
+        "route_class",
+        "auth_tier",
+        "payload_sha256"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^evt_[a-z0-9._-]+$"
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_connector_id": {
+          "type": "string",
+          "pattern": "^conn_[a-z0-9._-]+$"
+        },
+        "producer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "risk_class": {
+          "type": "string",
+          "enum": ["RG0_LOW", "RG1_MODERATE", "RG2_HIGH", "RG3_CRITICAL"]
+        },
+        "route_class": {
+          "type": "string",
+          "const": "advisory"
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": ["ADMIN", "OBSERVABILITY", "INTERNAL", "PUBLIC"]
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_tier",
+        "approval_tier",
+        "escalation_level",
+        "advisory_only"
+      ],
+      "properties": {
+        "risk_tier": {
+          "type": "string",
+          "enum": ["PX0_INFO", "PX1_ASSIST", "PX2_HIGH_IMPACT", "PX3_SAFETY_CRITICAL"]
+        },
+        "approval_tier": {
+          "type": "string",
+          "enum": [
+            "AP0_NONE",
+            "AP1_EXPLICIT_USER_CONFIRM",
+            "AP2_DUAL_CONFIRM",
+            "AP3_PROHIBITED_UNTIL_GOVERNANCE"
+          ]
+        },
+        "escalation_level": {
+          "type": "string",
+          "enum": [
+            "E0_NONE",
+            "E1_BOUNDARY_REFUSAL",
+            "E2_APPROVAL_REQUIRED",
+            "E3_SAFETY_ESCALATION",
+            "E4_GOVERNANCE_BLOCK"
+          ]
+        },
+        "advisory_only": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "links": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["related_object_ids", "source_refs", "evidence_refs"],
+      "properties": {
+        "related_object_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^pcg_[a-z0-9._-]+$"
+          },
+          "uniqueItems": true
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["created_by", "source_system", "tags"],
+      "properties": {
+        "created_by": {
+          "type": "string",
+          "minLength": 2
+        },
+        "source_system": {
+          "type": "string",
+          "minLength": 2
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 2
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "revision": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_object_id": {
+            "type": "null"
+          },
+          "previous_object_hash": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "revision": {
+            "minimum": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_object_id": {
+            "type": "string",
+            "pattern": "^pcg_[a-z0-9._-]+$"
+          },
+          "previous_object_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "goal"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "horizon",
+              "target_date",
+              "success_criteria",
+              "priority",
+              "goal_status"
+            ],
+            "properties": {
+              "horizon": {
+                "type": "string",
+                "enum": ["daily", "weekly", "monthly", "quarterly", "yearly", "multi_year"]
+              },
+              "target_date": {
+                "type": ["string", "null"],
+                "format": "date"
+              },
+              "success_criteria": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "priority": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "goal_status": {
+                "type": "string",
+                "enum": ["on_track", "at_risk", "off_track", "done"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "routine"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "cadence",
+              "trigger",
+              "steps",
+              "adherence_target_pct"
+            ],
+            "properties": {
+              "cadence": {
+                "type": "string",
+                "enum": ["daily", "weekly", "monthly", "custom"]
+              },
+              "trigger": {
+                "type": "string",
+                "minLength": 3
+              },
+              "steps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "adherence_target_pct": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "constraint"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "constraint_type",
+              "statement",
+              "hard_limit",
+              "review_cadence"
+            ],
+            "properties": {
+              "constraint_type": {
+                "type": "string",
+                "enum": ["time", "energy", "budget", "safety", "health", "context"]
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 8
+              },
+              "hard_limit": {
+                "type": "boolean"
+              },
+              "review_cadence": {
+                "type": "string",
+                "enum": ["daily", "weekly", "monthly", "on_change"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "event"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["event_kind", "summary", "occurred_window", "impact_level"],
+            "properties": {
+              "event_kind": {
+                "type": "string",
+                "enum": ["calendar", "health", "family", "work", "travel", "finance", "other"]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 8
+              },
+              "occurred_window": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["start", "end"],
+                "properties": {
+                  "start": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "end": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              "impact_level": {
+                "type": "string",
+                "enum": ["low", "moderate", "high", "critical"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "commitment"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["counterparty", "promise", "due_at", "confidence", "commitment_status"],
+            "properties": {
+              "counterparty": {
+                "type": "string",
+                "minLength": 2
+              },
+              "promise": {
+                "type": "string",
+                "minLength": 8
+              },
+              "due_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "commitment_status": {
+                "type": "string",
+                "enum": ["pending", "in_progress", "kept", "deferred", "broken"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "decision_record"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "decision_question",
+              "chosen_option",
+              "alternatives_considered",
+              "decision_rationale",
+              "expected_outcome",
+              "review_due_at",
+              "decision_status"
+            ],
+            "properties": {
+              "decision_question": {
+                "type": "string",
+                "minLength": 8
+              },
+              "chosen_option": {
+                "type": "string",
+                "minLength": 3
+              },
+              "alternatives_considered": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "decision_rationale": {
+                "type": "string",
+                "minLength": 8
+              },
+              "expected_outcome": {
+                "type": "string",
+                "minLength": 8
+              },
+              "review_due_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "decision_status": {
+                "type": "string",
+                "enum": ["proposed", "chosen", "reversed"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "after_action_review"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "decision_record_object_id",
+              "what_was_expected",
+              "what_happened",
+              "gaps",
+              "corrective_actions",
+              "confidence_delta",
+              "review_status"
+            ],
+            "properties": {
+              "decision_record_object_id": {
+                "type": "string",
+                "pattern": "^pcg_[a-z0-9._-]+$"
+              },
+              "what_was_expected": {
+                "type": "string",
+                "minLength": 8
+              },
+              "what_happened": {
+                "type": "string",
+                "minLength": 8
+              },
+              "gaps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "corrective_actions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "confidence_delta": {
+                "type": "number",
+                "minimum": -1,
+                "maximum": 1
+              },
+              "review_status": {
+                "type": "string",
+                "enum": ["pending", "completed"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "lesson_card"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "lesson",
+              "trigger_signals",
+              "anti_patterns",
+              "recommended_playbook",
+              "derived_from_object_ids",
+              "stability"
+            ],
+            "properties": {
+              "lesson": {
+                "type": "string",
+                "minLength": 8
+              },
+              "trigger_signals": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "anti_patterns": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "recommended_playbook": {
+                "type": "string",
+                "minLength": 8
+              },
+              "derived_from_object_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^pcg_[a-z0-9._-]+$"
+                },
+                "uniqueItems": true
+              },
+              "stability": {
+                "type": "string",
+                "enum": ["candidate", "validated", "deprecated"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_type": {
+            "const": "pattern_card"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pattern_name",
+              "detection_heuristics",
+              "guardrails",
+              "linked_lesson_object_ids",
+              "exemplar_object_ids",
+              "confidence"
+            ],
+            "properties": {
+              "pattern_name": {
+                "type": "string",
+                "minLength": 3
+              },
+              "detection_heuristics": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "guardrails": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 3
+                }
+              },
+              "linked_lesson_object_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^pcg_[a-z0-9._-]+$"
+                },
+                "uniqueItems": true
+              },
+              "exemplar_object_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^pcg_[a-z0-9._-]+$"
+                },
+                "uniqueItems": true
+              },
+              "confidence": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

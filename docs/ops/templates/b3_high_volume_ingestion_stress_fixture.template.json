@@ -1,0 +1,15 @@
+{
+  "schema_version": "clawd.b3.high_volume_ingestion_stress_fixture.v1",
+  "fixture_id": "b3_stress_template",
+  "batch_size": 32,
+  "ingestion_id_prefix": "pki_b3_stress_template",
+  "destination_prefix": "memory/knowledge_ingestion/production/stress/template",
+  "assertions": {
+    "expected_decision": "PASS",
+    "max_failures": 0,
+    "require_apply_success": true,
+    "require_unique_ingestion_ids": true,
+    "require_ledger_rows_equal_batch": true
+  },
+  "notes": "Template contract for deterministic high-volume ingestion stress fixtures."
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_rollout_dashboard_snapshot.schema.json",
+  "title": "Model Rollout Dashboard Snapshot",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "generated_at", "status", "surfaces", "headline"],
+  "properties": {
+    "schema": {"const": "clawd.model_rollout_dashboard_snapshot.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "status": {"type": "string", "enum": ["ok", "soaking", "attention", "error"]},
+    "surfaces": {"type": "object"},
+    "headline": {"type": "object"}
+  }
+}

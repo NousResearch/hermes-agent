@@ -1,0 +1,22 @@
+{
+  "schema_version": "clawd.knowledge_promotion_queue.entry.v1",
+  "queue_entry_id": "kpq_prom_20260320_example_001",
+  "enqueued_at": "2026-03-20T11:30:00+07:00",
+  "updated_at": null,
+  "status": "QUEUED_REVIEW",
+  "promotion_id": "prom_20260320_example_lane_insight",
+  "candidate_path": "memory/research_cases/example/CANDIDATE/candidates/cand_v1/promotion_candidate.json",
+  "candidate_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "target_surface": "doctrine",
+  "review": {
+    "state": "pending",
+    "reviewer_role": null,
+    "reviewer_id": null,
+    "reviewed_at": null,
+    "rationale": "Awaiting review"
+  },
+  "workflow_decision_path": null,
+  "promotion_manifest_path": null,
+  "shared_memory_object_path": null,
+  "last_block_reason": null
+}

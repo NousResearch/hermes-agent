@@ -1,0 +1,167 @@
+{
+  "schema_version": "lane.topology_authority_contract.v1",
+  "lane_contract_version": "v1.0",
+  "updated_at": "2026-03-20T22:05:00+07:00",
+  "authority_model": {
+    "control_authority_lane_id": "lane.column_a.no_nudge_autonomy",
+    "workflow_lead_lane_id": "lane.column_b.swarm_orchestration",
+    "single_writer_topology_governance": true,
+    "ticketed_mutation_boundary": true
+  },
+  "lane_registry": [
+    {
+      "lane_id": "lane.column_a.no_nudge_autonomy",
+      "lane_class": "CAL",
+      "agent_id": "architect",
+      "lane_epoch_id": "epoch_20260320_a1",
+      "capabilities": [
+        "topology_governance",
+        "failover_takeover",
+        "ops_reliability"
+      ],
+      "can_issue_mutation_ticket": true,
+      "can_apply_high_risk_mutation": false,
+      "notes": "Control authority lane for global governance and lease issuance."
+    },
+    {
+      "lane_id": "lane.column_b.swarm_orchestration",
+      "lane_class": "WLL",
+      "agent_id": "architect",
+      "lane_epoch_id": "epoch_20260320_b1",
+      "capabilities": [
+        "workflow_orchestration",
+        "routing_policy"
+      ],
+      "can_issue_mutation_ticket": true,
+      "can_apply_high_risk_mutation": false,
+      "notes": "Workflow lead lane coordinating bounded execution."
+    },
+    {
+      "lane_id": "lane.column_c.upgrade_substrate",
+      "lane_class": "EXECUTION",
+      "agent_id": "architect",
+      "lane_epoch_id": "epoch_20260320_c1",
+      "capabilities": [
+        "mutation_execution",
+        "verification_attestation"
+      ],
+      "can_issue_mutation_ticket": false,
+      "can_apply_high_risk_mutation": true,
+      "notes": "Execution lane consuming approved tickets under fencing checks."
+    }
+  ],
+  "authority_leases": {
+    "control_lease": {
+      "lease_id": "lease_control_20260320_a1",
+      "holder_lane_id": "lane.column_a.no_nudge_autonomy",
+      "holder_epoch_id": "epoch_20260320_a1",
+      "fencing_term": 41,
+      "issued_at": "2026-03-20T21:30:00+07:00",
+      "expires_at": "2026-03-20T23:30:00+07:00",
+      "status": "active",
+      "jeopardy_reason": null
+    },
+    "workflow_lease": {
+      "lease_id": "lease_workflow_20260320_b1",
+      "holder_lane_id": "lane.column_b.swarm_orchestration",
+      "holder_epoch_id": "epoch_20260320_b1",
+      "fencing_term": 109,
+      "issued_at": "2026-03-20T21:30:00+07:00",
+      "expires_at": "2026-03-20T23:00:00+07:00",
+      "status": "active",
+      "jeopardy_reason": null
+    }
+  },
+  "mutation_gateway_policy": {
+    "mode": "enforce_high_risk",
+    "high_risk_posture": "ticket_required",
+    "ticket_policy": {
+      "required_for_risk_tiers": [
+        "high",
+        "critical"
+      ],
+      "ttl_seconds_max": 1800,
+      "required_ticket_fields": [
+        "operation_id",
+        "ticket_id",
+        "issued_at",
+        "expires_at",
+        "fencing_term",
+        "integrity_hash"
+      ],
+      "reject_stale_fencing_term": true
+    },
+    "required_attestations": [
+      "verify_before_resume_pass",
+      "schema_contract_pass",
+      "replay_evidence_pass"
+    ],
+    "attestation_object_policy": {
+      "schema_version": "lane.mutation_attestation.v1",
+      "required_fields": [
+        "attestation_name",
+        "status",
+        "issued_at",
+        "evidence_ref",
+        "integrity_hash",
+        "operation_id"
+      ],
+      "require_pass_status": true,
+      "require_operation_match": true,
+      "reject_expired": true
+    }
+  },
+  "override_governance": {
+    "mode": "normal",
+    "enforce_at_actuation_boundary": true,
+    "require_action_intent": true,
+    "intent_schema_version": "lane.action_intent.v1",
+    "allowed_mutation_classes_by_mode": {
+      "normal": [
+        "none",
+        "read_only",
+        "drain",
+        "mutating"
+      ],
+      "stop": [
+        "none"
+      ],
+      "read_only": [
+        "none",
+        "read_only"
+      ],
+      "drain": [
+        "none",
+        "read_only",
+        "drain"
+      ]
+    }
+  },
+  "jeopardy_policy": {
+    "fail_closed_on_lease_uncertainty": true,
+    "block_codes": [
+      "lease_state_unknown",
+      "fencing_term_stale",
+      "ticket_missing",
+      "attestation_missing",
+      "action_intent_missing",
+      "action_intent_invalid",
+      "action_intent_mismatch",
+      "override_stop_active",
+      "override_read_only_violation",
+      "override_drain_violation"
+    ]
+  },
+  "takeover_protocol": {
+    "required_steps": [
+      "freeze_mutation",
+      "revoke_stale_tickets",
+      "reconcile_by_replay",
+      "issue_new_leases",
+      "resume_with_new_tickets"
+    ],
+    "requires_replay_reconciliation": true,
+    "requires_new_ticket_epoch": true
+  },
+  "notes": "Wave 4 docs-first authority contract baseline for staged runtime enforcement."
+}

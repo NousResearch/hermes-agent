@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.design_component_spec_frontmatter.v1",
+  "title": "DesignComponentSpecFrontmatter",
+  "type": "object",
+  "required": [
+    "type",
+    "id",
+    "status",
+    "trust_level",
+    "created",
+    "updated",
+    "component",
+    "tokens",
+    "gate_requirements",
+    "a11y_requirements"
+  ],
+  "properties": {
+    "type": { "type": "string", "enum": ["component_spec", "draft_spec"] },
+    "id": { "type": "string", "minLength": 3 },
+    "status": { "type": "string", "enum": ["active", "proposed", "superseded", "rejected"] },
+    "trust_level": { "type": "string", "enum": ["canon", "reviewed", "draft", "generated", "quarantine", "deprecated"] },
+    "created": { "type": "string" },
+    "updated": { "type": "string" },
+    "component": { "type": "string", "minLength": 1 },
+    "tokens": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string" }
+    },
+    "gate_requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["G1_SCHEMA", "G2_STRUCTURE", "G3_A11Y", "G4_VISUAL", "G5_RUNTIME", "G6_ALIGNMENT"]
+      }
+    },
+    "a11y_requirements": {
+      "type": "object",
+      "required": ["required_roles", "required_aria_attributes", "keyboard_contract"],
+      "properties": {
+        "required_roles": { "type": "array", "items": { "type": "string" } },
+        "required_aria_attributes": { "type": "array", "items": { "type": "string" } },
+        "keyboard_contract": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": true
+}

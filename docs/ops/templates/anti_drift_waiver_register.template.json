@@ -1,0 +1,32 @@
+{
+  "schema_version": "clawd.anti_drift_waiver_register.v1",
+  "checker": "source_of_truth_map_guard",
+  "generated_at": "2026-04-01T00:00:00Z",
+  "max_active_waivers": 2,
+  "waivers": [
+    {
+      "waiver_id": "adw_example_lane_marker_migration",
+      "checker": "source_of_truth_map_guard",
+      "scope": {
+        "reason_ids": [
+          "lane_block_marker_drift"
+        ],
+        "check_ids": [
+          "lane_blocks_have_required_markers"
+        ],
+        "path_allowlist": [
+          "reports/openclaw_system_source_of_truth_map_2026-03-20.md"
+        ]
+      },
+      "justification": "Example only: bounded temporary waiver during controlled lane-marker migration.",
+      "owner": "architect",
+      "approved_by": "validator",
+      "issued_at": "2026-04-01T00:00:00Z",
+      "expires_at": "2026-04-02T00:00:00Z",
+      "status": "revoked",
+      "evidence_refs": [
+        "reports/ex_04_antidrift_checker_mvp_and_waiver_contract_slice_2026-04-01.md"
+      ]
+    }
+  ]
+}

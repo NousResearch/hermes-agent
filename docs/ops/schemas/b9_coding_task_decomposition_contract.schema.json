@@ -1,0 +1,436 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/b9_coding_task_decomposition_contract.schema.json",
+  "title": "B9 Coding Task Decomposition Contract",
+  "description": "Fail-closed contract for bounded coding packets in B9Q-002.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_version",
+    "packet_id",
+    "objective",
+    "scope_boundary",
+    "files_surfaces",
+    "expected_artifact",
+    "risk_class",
+    "validation_requirement",
+    "preferred_worker_type",
+    "handoff_conditions"
+  ],
+  "properties": {
+    "contract_version": {
+      "type": "string",
+      "pattern": "^v?[0-9]+\\.[0-9]+(\\.[0-9]+)?$",
+      "description": "Contract schema version used by this packet."
+    },
+    "packet_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{6,80}$",
+      "description": "Unique bounded coding packet identifier."
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "definition_of_done", "non_goals"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 12,
+          "maxLength": 280
+        },
+        "definition_of_done": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 240
+          }
+        },
+        "non_goals": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 220
+          }
+        }
+      }
+    },
+    "scope_boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "in_scope",
+        "out_of_scope",
+        "max_files_touched",
+        "max_loc_delta",
+        "forbidden_operations"
+      ],
+      "properties": {
+        "in_scope": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 200
+          }
+        },
+        "out_of_scope": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 200
+          }
+        },
+        "max_files_touched": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 40
+        },
+        "max_loc_delta": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1200
+        },
+        "forbidden_operations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "autonomous_merge",
+              "production_data_write",
+              "secret_material_access",
+              "schema_migration",
+              "infra_mutation",
+              "dependency_major_bump"
+            ]
+          }
+        }
+      }
+    },
+    "files_surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_paths", "non_code_surfaces", "interfaces_touched", "protected_paths"],
+      "properties": {
+        "code_paths": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 30,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 260
+          }
+        },
+        "non_code_surfaces": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 260
+          }
+        },
+        "interfaces_touched": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 180
+          }
+        },
+        "protected_paths": {
+          "type": "array",
+          "maxItems": 12,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 260
+          }
+        }
+      }
+    },
+    "expected_artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_type", "required_outputs", "acceptance_criteria"],
+      "properties": {
+        "artifact_type": {
+          "type": "string",
+          "enum": [
+            "patch",
+            "pull_request",
+            "review_packet",
+            "refactor_packet",
+            "test_gap_packet",
+            "change_impact_packet"
+          ]
+        },
+        "required_outputs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 12,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "unified_diff",
+              "implementation_notes",
+              "test_evidence",
+              "risk_notes",
+              "change_impact_notes",
+              "rollback_notes",
+              "open_questions",
+              "residual_risks"
+            ]
+          }
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 220
+          }
+        }
+      }
+    },
+    "risk_class": {
+      "type": "string",
+      "enum": ["R0", "R1", "R2", "R3"],
+      "description": "R0 low risk; R3 critical/security/reliability risk."
+    },
+    "validation_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tier", "required_checks", "evidence_required", "fail_close"],
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": ["light", "standard", "strict"]
+        },
+        "required_checks": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "format_lint",
+              "unit_tests",
+              "integration_tests",
+              "smoke_tests",
+              "static_analysis",
+              "security_checks",
+              "manual_review",
+              "replay_trace_review"
+            ]
+          }
+        },
+        "evidence_required": {
+          "type": "boolean"
+        },
+        "fail_close": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "preferred_worker_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["worker_lane", "model_class", "reason"],
+      "properties": {
+        "worker_lane": {
+          "type": "string",
+          "enum": [
+            "c2_fast_patch",
+            "c2_generalist",
+            "c2_refactor_specialist",
+            "c2_security_specialist",
+            "c2_test_specialist",
+            "human_pair"
+          ]
+        },
+        "model_class": {
+          "type": "string",
+          "enum": [
+            "small_fast",
+            "balanced",
+            "strong_reasoning",
+            "tool_heavy",
+            "dual_review"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 280
+        }
+      }
+    },
+    "handoff_conditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["done_when", "escalate_when", "stop_when", "handoff_target"],
+      "properties": {
+        "done_when": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 240
+          }
+        },
+        "escalate_when": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 240
+          }
+        },
+        "stop_when": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 240
+          }
+        },
+        "handoff_target": {
+          "type": "string",
+          "enum": [
+            "requester",
+            "peer_reviewer",
+            "security_reviewer",
+            "release_gate",
+            "followup_packet"
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "R0"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation_requirement": {
+            "properties": {
+              "tier": {
+                "const": "light"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "const": "R1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation_requirement": {
+            "properties": {
+              "tier": {
+                "const": "standard"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "risk_class": {
+            "enum": ["R2", "R3"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation_requirement": {
+            "properties": {
+              "tier": {
+                "const": "strict"
+              },
+              "evidence_required": {
+                "const": true
+              }
+            },
+            "required": ["required_checks"]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "expected_artifact": {
+            "properties": {
+              "artifact_type": {
+                "const": "pull_request"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "expected_artifact": {
+            "properties": {
+              "required_outputs": {
+                "allOf": [
+                  {
+                    "contains": {
+                      "const": "unified_diff"
+                    }
+                  },
+                  {
+                    "contains": {
+                      "const": "test_evidence"
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

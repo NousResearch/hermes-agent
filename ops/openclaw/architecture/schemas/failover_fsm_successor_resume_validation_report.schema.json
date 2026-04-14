@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.failover_fsm.successor_resume_validation_report.v1",
+  "title": "Failover FSM Successor Resume Validation Report",
+  "type": "object",
+  "required": [
+    "object_type",
+    "evaluated_at",
+    "verdict",
+    "checks",
+    "blockers"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.failover_fsm.successor_resume_validation_report.v1" },
+    "evaluated_at": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+    "checks": {
+      "type": "object",
+      "required": [
+        "generation_parity",
+        "resume_safety_proof",
+        "queue_reconcile",
+        "lease_transfer_or_reclaim",
+        "post_proof_invalidation_absent"
+      ],
+      "properties": {
+        "generation_parity": { "type": "string", "enum": ["pass", "fail"] },
+        "resume_safety_proof": { "type": "string", "enum": ["pass", "fail"] },
+        "queue_reconcile": { "type": "string", "enum": ["pass", "fail"] },
+        "lease_transfer_or_reclaim": { "type": "string", "enum": ["pass", "fail"] },
+        "post_proof_invalidation_absent": { "type": "string", "enum": ["pass", "fail"] }
+      },
+      "additionalProperties": true
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "proof": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,279 @@
+{
+  "schema_version": "clawd.b8_ui_evidence_bundle.v1",
+  "bundle_id": "b8ev_c1_taskstate_20260401t083000z",
+  "surface": {
+    "surface_id": "surf_c1_worker_queue_main",
+    "surface_kind": "task_state_board",
+    "route": "/c1/workers/queue",
+    "view_name": "Worker Queue Overview",
+    "viewport": {
+      "width_px": 1920,
+      "height_px": 1080,
+      "device_pixel_ratio": 1,
+      "theme": "dark",
+      "locale": "en-US"
+    }
+  },
+  "capture": {
+    "captured_at": "2026-04-01T08:30:00Z",
+    "capture_session_id": "cap_b8_c1_queue_001",
+    "environment": "staging",
+    "operator_id": "operator_xu"
+  },
+  "evidence": {
+    "screenshot": {
+      "screenshot_ref_id": "shot_c1_queue_001",
+      "artifact_ref": {
+        "ref_uri": "reports/artifacts/c1_queue_001.png",
+        "hash_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "mime_type": "image/png",
+      "width_px": 1920,
+      "height_px": 1080,
+      "captured_at": "2026-04-01T08:30:00Z",
+      "regions": [
+        {
+          "region_id": "reg_alert_cluster_top",
+          "label": "Alert cluster",
+          "bbox": {
+            "coordinate_space": "pixel",
+            "x": 1248,
+            "y": 120,
+            "width": 620,
+            "height": 280
+          },
+          "dom_ref_ids": [
+            "dom_alert_summary_card"
+          ]
+        },
+        {
+          "region_id": "reg_stale_worker_row_17",
+          "label": "Worker row with stale timestamp",
+          "bbox": {
+            "coordinate_space": "pixel",
+            "x": 220,
+            "y": 472,
+            "width": 1480,
+            "height": 56
+          },
+          "dom_ref_ids": [
+            "dom_worker_table_row_17"
+          ]
+        }
+      ]
+    },
+    "dom_component_refs": [
+      {
+        "dom_ref_id": "dom_alert_summary_card",
+        "source_type": "aria_ref",
+        "locator": "region[aria-label='Alert Summary']",
+        "component_name": "AlertSummaryCard",
+        "text_excerpt": "27 warnings | 4 critical",
+        "confidence": 0.99,
+        "captured_at": "2026-04-01T08:30:00Z"
+      },
+      {
+        "dom_ref_id": "dom_worker_table_row_17",
+        "source_type": "css_selector",
+        "locator": "table#workers tbody tr[data-row='17']",
+        "component_name": "WorkerQueueRow",
+        "text_excerpt": "worker-17 ... last update 18m ago",
+        "confidence": 0.98,
+        "captured_at": "2026-04-01T08:30:00Z"
+      }
+    ],
+    "state_snapshot": {
+      "state_ref_id": "state_c1_queue_001",
+      "artifact_ref": {
+        "ref_uri": "reports/artifacts/c1_queue_001_state.json",
+        "hash_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "format": "json",
+      "captured_at": "2026-04-01T08:30:00Z",
+      "freshness_seconds": 12,
+      "state_fact_refs": [
+        {
+          "fact_id": "fact_alerts_critical_count",
+          "path": "$.alerts.critical_count",
+          "value_excerpt": "4"
+        },
+        {
+          "fact_id": "fact_worker17_last_update_seconds",
+          "path": "$.workers[17].last_update_seconds",
+          "value_excerpt": "1080"
+        }
+      ]
+    },
+    "ui_state_metadata": {
+      "active_filters_count": 3,
+      "queue_partition": "default",
+      "autorefresh_enabled": true
+    }
+  },
+  "findings": [
+    {
+      "finding_id": "fnd_alert_hierarchy_collision",
+      "title": "Warning and critical states are visually merged in top alert card",
+      "category": "alert_distinguishability",
+      "severity": "critical",
+      "confidence": 0.92,
+      "rationale": "Critical and warning tallies are presented with similar salience, slowing triage under load and making highest-urgency action ambiguous.",
+      "evidence_links": {
+        "screenshot_region_refs": [
+          "reg_alert_cluster_top"
+        ],
+        "dom_component_ref_ids": [
+          "dom_alert_summary_card"
+        ],
+        "state_fact_refs": [
+          "fact_alerts_critical_count"
+        ]
+      },
+      "recommendations": [
+        {
+          "recommendation_id": "rec_alert_visual_separation",
+          "action": "Split critical and warning indicators into separate rows with distinct iconography and contrast tiers.",
+          "expected_outcome": "Operators can identify critical queue pressure in under 2 seconds without scanning warning noise.",
+          "effort": "medium",
+          "validation_hint": "Replay queue triage flow and compare first-fix selection accuracy for critical incidents.",
+          "guardrail": "Do not add additional animated badges."
+        }
+      ],
+      "status": "open",
+      "provenance": {
+        "heuristic_refs": [
+          "rule_B8_ALERT_HIERARCHY_001",
+          "rule_B8_SIGNAL_NOISE_004"
+        ],
+        "evaluator": "b8.heuristic_pack.v1",
+        "evaluated_at": "2026-04-01T08:32:00Z"
+      }
+    },
+    {
+      "finding_id": "fnd_worker_staleness_action_gap",
+      "title": "Stale worker row lacks immediate next-safe-action affordance",
+      "category": "actionability",
+      "severity": "moderate",
+      "confidence": 0.87,
+      "rationale": "The stale timestamp is visible, but no direct resume/restart action is colocated, forcing context switch to worker detail before remediation.",
+      "evidence_links": {
+        "screenshot_region_refs": [
+          "reg_stale_worker_row_17"
+        ],
+        "dom_component_ref_ids": [
+          "dom_worker_table_row_17"
+        ],
+        "state_fact_refs": [
+          "fact_worker17_last_update_seconds"
+        ]
+      },
+      "recommendations": [
+        {
+          "recommendation_id": "rec_stale_row_inline_action",
+          "action": "Add inline quick action for stale workers with confirmation modal and reason logging.",
+          "expected_outcome": "Reduce median time from stale detection to intervention by removing extra navigation step.",
+          "effort": "low",
+          "validation_hint": "Measure stale-worker remediation median time before/after with identical workload sample.",
+          "guardrail": "Keep destructive actions confirmation-gated."
+        }
+      ],
+      "status": "triaged",
+      "provenance": {
+        "heuristic_refs": [
+          "rule_B8_ACTIONABILITY_003"
+        ],
+        "evaluator": "b8.heuristic_pack.v1",
+        "evaluated_at": "2026-04-01T08:33:00Z"
+      }
+    }
+  ],
+  "recommendation_set": [
+    {
+      "recommendation_id": "rec_alert_visual_separation",
+      "finding_ids": [
+        "fnd_alert_hierarchy_collision"
+      ],
+      "priority": "p0",
+      "action": "Separate critical and warning visual channels in the alert summary card.",
+      "rationale": "Critical-state discoverability is currently blocked by shared visual treatment.",
+      "verification_steps": [
+        "Capture before/after screenshots under identical alert mix.",
+        "Replay triage task and verify first-click critical accuracy >= 95%.",
+        "Confirm no increase in false-critical acknowledgements."
+      ],
+      "owner": "xu.operator_surface",
+      "target_release": "wave_i1"
+    },
+    {
+      "recommendation_id": "rec_stale_row_inline_action",
+      "finding_ids": [
+        "fnd_worker_staleness_action_gap"
+      ],
+      "priority": "p1",
+      "action": "Expose inline stale-worker intervention action with confirmation gate.",
+      "rationale": "Current row design increases context-switch friction during incident response.",
+      "verification_steps": [
+        "Record stale-worker action path length before and after.",
+        "Validate confirmation modal captures operator reason.",
+        "Check action remains disabled when worker lock is held by another operator."
+      ],
+      "owner": "c1.queue_experience",
+      "target_release": "wave_i1"
+    }
+  ],
+  "review_summary": {
+    "severity_counts": {
+      "observation": 0,
+      "minor": 0,
+      "moderate": 1,
+      "critical": 1
+    },
+    "risk_statement": "Alert salience hierarchy is currently the highest-risk issue for operator triage speed."
+  },
+  "provenance": {
+    "generated_at": "2026-04-01T08:34:00Z",
+    "generator": {
+      "layer": "B8",
+      "run_id": "b8run_wave_i1_001",
+      "contract_version": "clawd.b8_ui_evidence_bundle.v1"
+    },
+    "source_records": [
+      {
+        "source_id": "src_shot_001",
+        "source_kind": "screenshot",
+        "ref_uri": "reports/artifacts/c1_queue_001.png",
+        "captured_at": "2026-04-01T08:30:00Z",
+        "collector": "browser.snapshot",
+        "hash_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "immutable": true
+      },
+      {
+        "source_id": "src_dom_001",
+        "source_kind": "dom_component_tree",
+        "ref_uri": "reports/artifacts/c1_queue_001_dom.json",
+        "captured_at": "2026-04-01T08:30:01Z",
+        "collector": "browser.snapshot",
+        "hash_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "immutable": true
+      },
+      {
+        "source_id": "src_state_001",
+        "source_kind": "state_snapshot",
+        "ref_uri": "reports/artifacts/c1_queue_001_state.json",
+        "captured_at": "2026-04-01T08:30:00Z",
+        "collector": "c1.state.exporter",
+        "hash_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "immutable": true
+      },
+      {
+        "source_id": "src_rules_001",
+        "source_kind": "rule_catalog",
+        "ref_uri": "docs/ops/b8_rule_catalog_v1.md",
+        "captured_at": "2026-04-01T08:29:00Z",
+        "collector": "b8.rule.loader",
+        "immutable": true,
+        "note": "Heuristic references resolved at bundle build time."
+      }
+    ]
+  }
+}

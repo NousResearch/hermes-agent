@@ -1,0 +1,115 @@
+{
+  "schema_version": "clawd.session_topology_contract.v1",
+  "topology_id": "top_20260320_column_a_session_routing",
+  "generated_at": "2026-03-20T11:15:00+07:00",
+  "default_route_class": "SPARK",
+  "default_required_rollout_stage": "canary",
+  "deterministic_key_fields": [
+    "session_kind",
+    "task_class",
+    "risk_tier"
+  ],
+  "rules": [
+    {
+      "rule_id": "rule_watchdog_no_llm",
+      "priority": 10,
+      "selector": {
+        "session_kind": "watchdog",
+        "task_class": "*",
+        "risk_tier": "*"
+      },
+      "route_class": "NO_LLM",
+      "required_rollout_stage": "canary",
+      "notes": "Deterministic-only watchdog/control loops."
+    },
+    {
+      "rule_id": "rule_worker_implementation_critical_heavy",
+      "priority": 20,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "implementation",
+        "risk_tier": "critical"
+      },
+      "route_class": "HEAVY",
+      "required_rollout_stage": "active",
+      "notes": "Critical mutation/canonical implementation work."
+    },
+    {
+      "rule_id": "rule_worker_implementation_high_heavy",
+      "priority": 21,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "implementation",
+        "risk_tier": "high"
+      },
+      "route_class": "HEAVY",
+      "required_rollout_stage": "active",
+      "notes": "High-risk mutation/canonical implementation work."
+    },
+    {
+      "rule_id": "rule_worker_research_spark",
+      "priority": 40,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "research",
+        "risk_tier": "*"
+      },
+      "route_class": "SPARK",
+      "required_rollout_stage": "canary"
+    },
+    {
+      "rule_id": "rule_worker_reading_spark",
+      "priority": 41,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "reading",
+        "risk_tier": "*"
+      },
+      "route_class": "SPARK",
+      "required_rollout_stage": "canary"
+    },
+    {
+      "rule_id": "rule_worker_triage_spark",
+      "priority": 42,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "triage",
+        "risk_tier": "*"
+      },
+      "route_class": "SPARK",
+      "required_rollout_stage": "canary"
+    },
+    {
+      "rule_id": "rule_worker_planning_spark",
+      "priority": 43,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "planning",
+        "risk_tier": "*"
+      },
+      "route_class": "SPARK",
+      "required_rollout_stage": "canary"
+    },
+    {
+      "rule_id": "rule_worker_comparison_spark",
+      "priority": 44,
+      "selector": {
+        "session_kind": "worker_slice",
+        "task_class": "comparison",
+        "risk_tier": "*"
+      },
+      "route_class": "SPARK",
+      "required_rollout_stage": "canary"
+    }
+  ],
+  "model_pools": {
+    "SPARK": [
+      "openai-codex/gpt-5.3-codex-spark",
+      "deepseek/deepseek-chat"
+    ],
+    "HEAVY": [
+      "openai-codex/gpt-5.3-codex",
+      "deepseek/deepseek-reasoner"
+    ]
+  }
+}

@@ -1,0 +1,12956 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="${OPENCLAW_ROOT:-/home/yeqiuqiu/clawd-architect}"
+REFRESH=0
+JSON_OUT=0
+ORIG_ARGS=("$@")
+
+usage() {
+  cat <<'EOF'
+Usage: continuity_current.sh [options]
+
+Compute successor-safe continuity/current.json from canonical continuity surfaces.
+
+Options:
+  --refresh     Recompute from disk and persist derived surfaces
+  --json        Print JSON result
+  -h, --help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --refresh)
+      REFRESH=1; shift ;;
+    --json)
+      JSON_OUT=1; shift ;;
+    -h|--help)
+      usage
+      exit 0 ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2 ;;
+  esac
+done
+
+LOCK_WAIT_SEC="${OPENCLAW_CONTINUITY_PUBLISH_LOCK_WAIT_SEC:-30}"
+LOCK_HOLD_WARN_SEC="${OPENCLAW_CONTINUITY_PUBLISH_LOCK_HOLD_WARN_SEC:-$LOCK_WAIT_SEC}"
+LOCK_PATH="$ROOT/state/continuity/latest/current_publish.lock"
+LOCK_OWNER_PATH="$LOCK_PATH.owner.json"
+LOCK_OWNER_TOKEN="curpub_${BASHPID}_$(date +%s)_$RANDOM"
+LOCK_OWNER_PID="$BASHPID"
+LOCK_OWNER_PPID="$PPID"
+LOCK_OWNER_UID="$(id -u 2>/dev/null || echo '')"
+LOCK_OWNER_HOST="${HOSTNAME:-$(hostname 2>/dev/null || true)}"
+LOCK_ACQUIRED_AT_EPOCH=""
+SKIP_PUBLISH_LOCK=0
+case "${OPENCLAW_CONTINUITY_SKIP_PUBLISH_LOCK:-0}" in
+  1|true|TRUE|yes|YES|on|ON)
+    SKIP_PUBLISH_LOCK=1
+    ;;
+esac
+
+publish_lock_owner_hint() {
+  python3 - "$LOCK_OWNER_PATH" <<'PY'
+import datetime as dt
+import json
+import math
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.exists():
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+pid_raw = payload.get("owner_pid")
+pid = None
+try:
+    pid = int(pid_raw)
+except Exception:
+    pid = None
+
+owner_alive = None
+if pid is not None and pid > 0:
+    try:
+        os.kill(pid, 0)
+        owner_alive = True
+    except ProcessLookupError:
+        owner_alive = False
+    except PermissionError:
+        owner_alive = True
+    except Exception:
+        owner_alive = None
+
+def parse_iso(raw: object) -> dt.datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    iso = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = dt.datetime.fromisoformat(iso)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+owner_started_at = str(payload.get("owner_started_at") or "").strip()
+updated_at = str(payload.get("updated_at") or "").strip()
+age_dt = parse_iso(owner_started_at) or parse_iso(updated_at)
+age_sec = None
+if age_dt is not None:
+    age_sec = max(0, int((dt.datetime.now(dt.timezone.utc) - age_dt).total_seconds()))
+
+lock_hold_warn_sec = None
+lock_hold_warn_raw = payload.get("lock_hold_warn_sec")
+try:
+    lock_hold_warn_sec = float(lock_hold_warn_raw)
+except Exception:
+    lock_hold_warn_sec = None
+if lock_hold_warn_sec is not None and (not math.isfinite(lock_hold_warn_sec) or lock_hold_warn_sec < 0):
+    lock_hold_warn_sec = None
+
+owner_exceeds_lock_hold_warn = None
+if lock_hold_warn_sec is not None and age_sec is not None:
+    owner_exceeds_lock_hold_warn = bool(age_sec >= lock_hold_warn_sec)
+
+summary = {
+    "owner_pid": pid,
+    "owner_alive": owner_alive,
+    "owner_token": str(payload.get("owner_token") or "").strip() or None,
+    "owner_started_at": owner_started_at or None,
+    "owner_command": str(payload.get("owner_command") or "").strip()[:240] or None,
+    "owner_host": str(payload.get("owner_host") or "").strip() or None,
+    "owner_age_sec": age_sec,
+    "lock_wait_sec": str(payload.get("lock_wait_sec") or "").strip() or None,
+    "lock_hold_warn_sec": lock_hold_warn_sec,
+    "owner_exceeds_lock_hold_warn": owner_exceeds_lock_hold_warn,
+}
+print("owner_hint=" + json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+write_publish_lock_owner() {
+  python3 - "$LOCK_OWNER_PATH" "$LOCK_OWNER_TOKEN" "$LOCK_PATH" "$LOCK_WAIT_SEC" "$LOCK_HOLD_WARN_SEC" "$LOCK_ACQUIRED_AT_EPOCH" "$LOCK_OWNER_PID" "$LOCK_OWNER_PPID" "$LOCK_OWNER_UID" "$LOCK_OWNER_HOST" "$0" "${ORIG_ARGS[@]}" <<'PY'
+import datetime as dt
+import json
+import math
+import os
+import pathlib
+import shlex
+import socket
+import sys
+import tempfile
+
+owner_path = pathlib.Path(sys.argv[1])
+owner_token = str(sys.argv[2])
+lock_path = str(sys.argv[3])
+lock_wait_sec = str(sys.argv[4])
+lock_hold_warn_sec_raw = str(sys.argv[5] or "").strip()
+lock_acquired_at_epoch_raw = str(sys.argv[6] or "").strip()
+owner_pid_raw = str(sys.argv[7] or "").strip()
+owner_ppid_raw = str(sys.argv[8] or "").strip()
+owner_uid_raw = str(sys.argv[9] or "").strip()
+owner_host = str(sys.argv[10] or "").strip()
+cmd_parts = [str(part) for part in sys.argv[11:] if str(part)]
+
+try:
+    owner_pid = int(owner_pid_raw)
+except Exception:
+    owner_pid = None
+
+try:
+    owner_ppid = int(owner_ppid_raw)
+except Exception:
+    owner_ppid = None
+
+try:
+    owner_uid = int(owner_uid_raw)
+except Exception:
+    owner_uid = None
+
+lock_hold_warn_sec = None
+if lock_hold_warn_sec_raw:
+    try:
+        parsed_hold_warn_sec = float(lock_hold_warn_sec_raw)
+        if math.isfinite(parsed_hold_warn_sec) and parsed_hold_warn_sec >= 0:
+            lock_hold_warn_sec = parsed_hold_warn_sec
+    except Exception:
+        lock_hold_warn_sec = None
+
+owner_started_dt = dt.datetime.now(dt.timezone.utc)
+if lock_acquired_at_epoch_raw:
+    try:
+        started_epoch = float(lock_acquired_at_epoch_raw)
+        if math.isfinite(started_epoch):
+            owner_started_dt = dt.datetime.fromtimestamp(started_epoch, tz=dt.timezone.utc)
+    except Exception:
+        owner_started_dt = dt.datetime.now(dt.timezone.utc)
+
+if cmd_parts:
+    owner_command = shlex.join(cmd_parts)
+else:
+    owner_command = "continuity_current.sh"
+
+payload = {
+    "schema": "clawd.continuity.current_publish_lock_owner.v1",
+    "updated_at": dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "owner_started_at": owner_started_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    "owner_token": owner_token,
+    "owner_pid": owner_pid,
+    "owner_ppid": owner_ppid,
+    "owner_uid": owner_uid,
+    "owner_host": owner_host or socket.gethostname(),
+    "owner_command": owner_command,
+    "lock_path": lock_path,
+    "lock_wait_sec": lock_wait_sec,
+    "lock_hold_warn_sec": lock_hold_warn_sec,
+}
+
+owner_path.parent.mkdir(parents=True, exist_ok=True)
+tmp_path = None
+try:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        encoding="utf-8",
+        dir=str(owner_path.parent),
+        prefix=f".{owner_path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2, sort_keys=True)
+        fh.write("\n")
+        tmp_path = pathlib.Path(fh.name)
+    os.replace(tmp_path, owner_path)
+finally:
+    if tmp_path is not None and tmp_path.exists():
+        try:
+            tmp_path.unlink()
+        except Exception:
+            pass
+PY
+}
+
+clear_publish_lock_owner() {
+  python3 - "$LOCK_OWNER_PATH" "$LOCK_OWNER_TOKEN" <<'PY'
+import json
+import pathlib
+import sys
+
+owner_path = pathlib.Path(sys.argv[1])
+owner_token = str(sys.argv[2])
+if not owner_path.exists():
+    raise SystemExit(0)
+
+try:
+    payload = json.loads(owner_path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+
+if not isinstance(payload, dict):
+    raise SystemExit(0)
+
+if str(payload.get("owner_token") or "").strip() != owner_token:
+    raise SystemExit(0)
+
+try:
+    owner_path.unlink()
+except FileNotFoundError:
+    pass
+PY
+}
+
+emit_publish_lock_hold_warning() {
+  python3 - "$LOCK_ACQUIRED_AT_EPOCH" "$LOCK_HOLD_WARN_SEC" "$LOCK_PATH" "$LOCK_OWNER_PID" "$LOCK_OWNER_TOKEN" <<'PY'
+import math
+import sys
+import time
+
+started_at_raw = str(sys.argv[1] or "").strip()
+warn_sec_raw = str(sys.argv[2] or "").strip()
+lock_path = str(sys.argv[3] or "").strip()
+owner_pid = str(sys.argv[4] or "").strip()
+owner_token = str(sys.argv[5] or "").strip()
+
+try:
+    started_at = float(started_at_raw)
+except Exception:
+    raise SystemExit(0)
+if not math.isfinite(started_at):
+    raise SystemExit(0)
+
+try:
+    warn_sec = float(warn_sec_raw)
+except Exception:
+    raise SystemExit(0)
+
+if not math.isfinite(warn_sec) or warn_sec <= 0:
+    raise SystemExit(0)
+
+hold_sec = max(0.0, time.time() - started_at)
+if hold_sec + 1e-9 < warn_sec:
+    raise SystemExit(0)
+
+print(
+    "continuity_current publish lock hold warning: "
+    f"path={lock_path} hold_sec={hold_sec:.3f} warn_sec={warn_sec:.3f} "
+    f"owner_pid={owner_pid or 'unknown'} owner_token={owner_token or 'unknown'}"
+)
+PY
+}
+
+cleanup_publish_lock_owner() {
+  emit_publish_lock_hold_warning >&2 || true
+  clear_publish_lock_owner || true
+}
+
+if [[ "$SKIP_PUBLISH_LOCK" -ne 1 ]]; then
+  mkdir -p "$(dirname "$LOCK_PATH")"
+  exec 9>>"$LOCK_PATH"
+  if ! flock -w "$LOCK_WAIT_SEC" 9; then
+    lock_owner_hint="$(publish_lock_owner_hint || true)"
+    if [[ -n "$lock_owner_hint" ]]; then
+      echo "continuity_current publish lock timeout: path=$LOCK_PATH wait_sec=$LOCK_WAIT_SEC $lock_owner_hint" >&2
+    else
+      echo "continuity_current publish lock timeout: path=$LOCK_PATH wait_sec=$LOCK_WAIT_SEC" >&2
+    fi
+    exit 1
+  fi
+
+  LOCK_ACQUIRED_AT_EPOCH="$(python3 - <<'PY'
+import time
+print(f"{time.time():.6f}")
+PY
+)"
+
+  write_publish_lock_owner || true
+  trap cleanup_publish_lock_owner EXIT
+fi
+
+python3 - "$ROOT" "$REFRESH" "$JSON_OUT" <<'PY'
+import collections
+import datetime as dt
+import hashlib
+import json
+import os
+import pathlib
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
+
+try:  # pragma: no cover - dependency availability is validated in integration tests
+    from jsonschema import Draft202012Validator, FormatChecker
+except Exception:  # pragma: no cover
+    Draft202012Validator = None
+    FormatChecker = None
+
+root = pathlib.Path(sys.argv[1]).resolve()
+refresh = bool(int(sys.argv[2]))
+json_out = bool(int(sys.argv[3]))
+
+sys.path.insert(0, str((root / "ops" / "openclaw" / "continuity").resolve()))
+try:
+    from coherence_tuple import build_coherence_tuple
+except Exception:  # pragma: no cover
+    build_coherence_tuple = None
+
+try:
+    from fixed_now import now_iso_utc as _helper_now_iso_utc, now_ts as _helper_now_ts
+except Exception:  # pragma: no cover
+    _helper_now_iso_utc = None
+    _helper_now_ts = None
+
+try:
+    from continuity_policy import (
+        AUTO_RECONCILE_DRIFT_REASON_SET as _AUTO_RECONCILE_DRIFT_REASON_SET,
+        DEFAULT_CHECKPOINT_FRESHNESS_MAX_AGE_SEC as _DEFAULT_CHECKPOINT_FRESHNESS_MAX_AGE_SEC,
+        DEFAULT_RESET_READY_REFRESH_FRESHNESS_MAX_AGE_SEC as _DEFAULT_RESET_READY_REFRESH_FRESHNESS_MAX_AGE_SEC,
+        project_reset_ready_refresh_escalation_reason as _project_reset_ready_refresh_escalation_reason,
+        project_reset_ready_refresh_posture as _project_reset_ready_refresh_posture,
+        read_nonnegative_int_env as _read_nonnegative_int_env,
+    )
+except Exception:  # pragma: no cover - sidecar fixtures may omit helper module
+    _AUTO_RECONCILE_DRIFT_REASON_SET = {
+        "ground_truth_capture_drift",
+        "connector_freshness_drift",
+        "policy_freshness_drift",
+    }
+    _DEFAULT_CHECKPOINT_FRESHNESS_MAX_AGE_SEC = 1800
+    _DEFAULT_RESET_READY_REFRESH_FRESHNESS_MAX_AGE_SEC = 21600
+
+    def _read_nonnegative_int_env(name: str, *, default: int) -> int:
+        try:
+            return max(0, int(os.environ.get(name, str(int(default)))))
+        except Exception:
+            return int(default)
+
+    def _project_reset_ready_refresh_posture(
+        *,
+        surface: Any = None,
+        latest_payload: Any = None,
+        path: Any = None,
+        sha256: Any = None,
+        present: Any = None,
+        now_ts: Any = None,
+        freshness_max_age_sec: Any = None,
+    ) -> Dict[str, Any]:
+        surface_map = surface if isinstance(surface, dict) else {}
+        latest_map = latest_payload if isinstance(latest_payload, dict) else {}
+
+        path_text = str(path or surface_map.get("path") or "").strip()
+        sha_text = str(sha256 or surface_map.get("sha256") or "").strip() or None
+
+        if isinstance(present, bool):
+            present_value = present
+        else:
+            present_value = bool(surface_map.get("present") is True or bool(latest_map))
+
+        ok = surface_map.get("ok") if isinstance(surface_map.get("ok"), bool) else None
+        if ok is None and isinstance(latest_map.get("ok"), bool):
+            ok = latest_map.get("ok")
+
+        phase = str(surface_map.get("phase") or latest_map.get("phase") or "").strip() or None
+        if phase is None and ok is True:
+            phase = "complete"
+
+        partial_refresh = surface_map.get("partial_refresh") if isinstance(surface_map.get("partial_refresh"), dict) else {}
+        if not partial_refresh and isinstance(latest_map.get("partial_refresh"), dict):
+            partial_refresh = latest_map.get("partial_refresh")
+
+        def _partial_flag(name: str) -> Optional[bool]:
+            raw_value = partial_refresh.get(name)
+            return raw_value if isinstance(raw_value, bool) else None
+
+        partial_current = _partial_flag("current_refreshed")
+        partial_proof = _partial_flag("proof_refreshed")
+        partial_handover = _partial_flag("handover_refreshed")
+
+        explicit_partial_failure = surface_map.get("partial_failure")
+        if isinstance(explicit_partial_failure, bool):
+            partial_failure = explicit_partial_failure
+        else:
+            partial_failure = bool(
+                present_value
+                and any(value is False for value in [partial_current, partial_proof, partial_handover])
+            )
+
+        error_code = str(
+            surface_map.get("error_code")
+            or (((latest_map.get("error") or {}).get("code")) if isinstance(latest_map.get("error"), dict) else "")
+            or ""
+        ).strip() or None
+
+        explicit_degraded = surface_map.get("degraded")
+        if isinstance(explicit_degraded, bool):
+            degraded = explicit_degraded
+        else:
+            degraded = bool(present_value and (ok is False or partial_failure))
+
+        generated_at = str(surface_map.get("generated_at") or latest_map.get("generated_at") or "").strip() or None
+
+        def _coerce_nonnegative_int(raw: Any) -> Optional[int]:
+            if isinstance(raw, bool):
+                return None
+            try:
+                return max(0, int(raw))
+            except Exception:
+                return None
+
+        freshness_limit_sec = _coerce_nonnegative_int(surface_map.get("freshness_limit_sec"))
+        if freshness_limit_sec is None:
+            freshness_limit_sec = _coerce_nonnegative_int(freshness_max_age_sec)
+        if freshness_limit_sec is None:
+            freshness_limit_sec = int(_DEFAULT_RESET_READY_REFRESH_FRESHNESS_MAX_AGE_SEC)
+
+        age_sec = _coerce_nonnegative_int(surface_map.get("age_sec"))
+        fresh = surface_map.get("fresh") if isinstance(surface_map.get("fresh"), bool) else None
+        stale = surface_map.get("stale") if isinstance(surface_map.get("stale"), bool) else None
+
+        if fresh is None and isinstance(stale, bool):
+            fresh = not stale
+        if stale is None and isinstance(fresh, bool):
+            stale = not fresh
+
+        if freshness_limit_sec > 0 and (age_sec is None or fresh is None):
+            generated_dt = None
+            if generated_at:
+                generated_txt = generated_at[:-1] + "+00:00" if generated_at.endswith("Z") else generated_at
+                try:
+                    generated_dt = dt.datetime.fromisoformat(generated_txt)
+                    if generated_dt.tzinfo is None:
+                        generated_dt = generated_dt.replace(tzinfo=dt.timezone.utc)
+                except Exception:
+                    generated_dt = None
+            now_ts_int = _coerce_nonnegative_int(now_ts)
+            if generated_dt is not None and now_ts_int is not None:
+                derived_age_sec = max(0, int(now_ts_int - int(generated_dt.timestamp())))
+                age_sec = derived_age_sec
+                fresh = derived_age_sec <= freshness_limit_sec
+                stale = not fresh
+
+        if stale is None:
+            stale = fresh is False
+
+        status = "missing"
+        if present_value:
+            if degraded:
+                status = "degraded"
+            elif ok is True:
+                status = "ok"
+            else:
+                status = "present"
+
+        recommended_action = None
+        if degraded or stale:
+            recommended_action = "rerun_reset_ready_refresh"
+        elif present_value:
+            recommended_action = "inspect_reset_ready_refresh_result"
+
+        return {
+            "path": path_text,
+            "sha256": sha_text,
+            "generated_at": generated_at,
+            "present": present_value,
+            "status": status,
+            "ok": ok,
+            "phase": phase,
+            "error_code": error_code,
+            "freshness_limit_sec": freshness_limit_sec,
+            "age_sec": age_sec,
+            "fresh": fresh,
+            "stale": stale,
+            "partial_refresh": {
+                "current_refreshed": partial_current,
+                "proof_refreshed": partial_proof,
+                "handover_refreshed": partial_handover,
+            },
+            "degraded": degraded,
+            "partial_failure": partial_failure,
+            "action_required": bool(degraded or stale),
+            "recommended_action": recommended_action,
+        }
+
+    def _project_reset_ready_refresh_escalation_reason(
+        *,
+        posture: Any = None,
+        degraded: Any = None,
+        phase: Any = None,
+        error_code: Any = None,
+    ) -> Optional[str]:
+        posture_map = posture if isinstance(posture, dict) else {}
+
+        if isinstance(degraded, bool):
+            degraded_value = degraded
+        else:
+            degraded_value = posture_map.get("degraded") is True
+
+        if not degraded_value:
+            return None
+
+        phase_value = str(phase if phase is not None else posture_map.get("phase") or "").strip()
+        error_code_value = str(
+            error_code if error_code is not None else posture_map.get("error_code") or ""
+        ).strip()
+
+        if phase_value == "alignment_check" and error_code_value == "proof_alignment_mismatch":
+            return "reset_ready_refresh_alignment_mismatch"
+        return None
+
+
+def clock_now_ts() -> int:
+    if _helper_now_ts is not None:
+        try:
+            return int(_helper_now_ts())
+        except Exception:
+            pass
+    return int(dt.datetime.now(dt.timezone.utc).timestamp())
+
+
+def clock_now_dt() -> dt.datetime:
+    return dt.datetime.fromtimestamp(clock_now_ts(), tz=dt.timezone.utc)
+
+
+def clock_now_iso() -> str:
+    if _helper_now_iso_utc is not None:
+        try:
+            return str(_helper_now_iso_utc())
+        except Exception:
+            pass
+    return dt.datetime.fromtimestamp(clock_now_ts(), tz=dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+current_path = root / "state" / "continuity" / "current.json"
+latest_current_path = root / "state" / "continuity" / "latest" / "current.json"
+pointer_out_path = root / "state" / "continuity" / "pointers" / "latest.json"
+canonical_pointer_out_path = root / "state" / "continuity" / "latest" / "continuity_read_pointer.json"
+legacy_pointer_path = root / "state" / "continuity" / "latest" / "latest_pointer.json"
+continuity_now_latest_path = root / "state" / "continuity" / "latest" / "continuity_now_latest.json"
+coherence_stamp_path = root / "state" / "continuity" / "latest" / "coherence_stamp.json"
+coherence_bundle_path = root / "state" / "continuity" / "latest" / "coherence_bundle_latest.json"
+verify_last_path = root / "state" / "continuity" / "latest" / "verify_last.json"
+gtc_gateboard_path = root / "state" / "gtc-v2" / "latest" / "gateboard.json"
+gt_latest_path = root / "state" / "ground_truth" / "latest.json"
+orphaned_auto_remediation_state_path = root / "state" / "continuity" / "latest" / "orphaned_running_auto_remediation_now_latest.json"
+stale_wave_auto_remediation_state_path = root / "state" / "continuity" / "latest" / "queue_stale_wave_auto_remediation_now_latest.json"
+RESET_READY_REFRESH_LATEST_REL = "state/continuity/latest/reset_ready_refresh_latest.json"
+reset_ready_refresh_latest_path = (root / RESET_READY_REFRESH_LATEST_REL).resolve()
+DOCTRINE_DRIFT_REGISTRY_REL_DEFAULT = "state/continuity/latest/doctrine_drift_registry.json"
+doctrine_drift_registry_rel = str(
+    os.environ.get("OPENCLAW_CONTINUITY_DOCTRINE_DRIFT_REGISTRY_REL", DOCTRINE_DRIFT_REGISTRY_REL_DEFAULT)
+).strip() or DOCTRINE_DRIFT_REGISTRY_REL_DEFAULT
+doctrine_drift_registry_path = pathlib.Path(doctrine_drift_registry_rel)
+if not doctrine_drift_registry_path.is_absolute():
+    doctrine_drift_registry_path = (root / doctrine_drift_registry_path).resolve()
+else:
+    doctrine_drift_registry_path = doctrine_drift_registry_path.resolve()
+STALL_TRIGGER_INCIDENT_RULES: List[Dict[str, Any]] = [
+    {
+        "reason": "execution_frontier_post_completion_stalled_loop",
+        "severity": "blocker",
+        "detail": "Post-completion enforcement loop entered STALLED_LOOP; dispatch progress requires explicit closeout.",
+        "evidence": [
+            "state/continuity/latest/execution_frontier_post_completion_enforcement_latch.json",
+            "state/continuity/latest/autonomous_execution_intent_latest.json",
+            "state/continuity/latest/continuity_now_latest.json",
+            "state/continuity/latest/execution_meaningful_event_reporting_latest.json",
+            "state/continuity/latest/execution_meaningful_event_reporting_status_latest.json",
+        ],
+    },
+    {
+        "reason": "execution_frontier_post_completion_enforcement_stalled",
+        "severity": "warn",
+        "detail": "Post-completion enforcement remains stalled and requires deterministic unblock/closeout action.",
+        "evidence": [
+            "state/continuity/latest/execution_frontier_post_completion_enforcement_latch.json",
+            "state/continuity/latest/continuity_now_latest.json",
+            "state/continuity/latest/execution_meaningful_event_reporting_status_latest.json",
+        ],
+    },
+]
+load_shedding_decision_path = root / "state" / "continuity" / "latest" / "load_shedding_decision.json"
+load_shedding_signal_snapshot_path = root / "state" / "continuity" / "latest" / "load_shedding_signal_snapshot.json"
+execution_program_status_path = root / "state" / "continuity" / "latest" / "execution_program_status.json"
+execution_frontier_ledger_path = root / "state" / "continuity" / "latest" / "execution_frontier_ledger.json"
+execution_frontier_transition_attempt_history_path = (
+    root / "state" / "continuity" / "history" / "execution_frontier_transition_attempts.jsonl"
+)
+execution_supervisor_task_ledger_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_task_ledger_latest.json"
+)
+execution_supervisor_task_ledger_history_path = (
+    root / "state" / "continuity" / "history" / "execution_supervisor_task_ledger_history.jsonl"
+)
+execution_supervisor_dispatch_intent_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_dispatch_intent_latest.json"
+)
+execution_supervisor_dispatch_intent_history_path = (
+    root / "state" / "continuity" / "history" / "execution_supervisor_dispatch_intent_history.jsonl"
+)
+execution_supervisor_dispatch_qualification_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_dispatch_qualification_latest.json"
+)
+execution_supervisor_dispatch_qualification_history_path = (
+    root / "state" / "continuity" / "history" / "execution_supervisor_dispatch_qualification_history.jsonl"
+)
+execution_supervisor_worker_health_canary_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_worker_health_canary_latest.json"
+)
+execution_supervisor_canary_probe_schedule_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_canary_probe_schedule_latest.json"
+)
+execution_supervisor_canary_probe_schedule_history_path = (
+    root / "state" / "continuity" / "history" / "execution_supervisor_canary_probe_schedule_history.jsonl"
+)
+execution_supervisor_probe_execution_plan_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_probe_execution_plan_latest.json"
+)
+execution_supervisor_probe_execution_plan_history_path = (
+    root / "state" / "continuity" / "history" / "execution_supervisor_probe_execution_plan_history.jsonl"
+)
+execution_supervisor_terminal_error_dispositions_latest_path = (
+    root / "state" / "continuity" / "latest" / "execution_supervisor_terminal_error_dispositions_latest.json"
+)
+execution_meaningful_event_reporting_path = root / "state" / "continuity" / "latest" / "execution_meaningful_event_reporting_latest.json"
+execution_meaningful_event_reporting_status_path = (
+    root / "state" / "continuity" / "latest" / "execution_meaningful_event_reporting_status_latest.json"
+)
+execution_frontier_enforcement_latch_path = root / "state" / "continuity" / "latest" / "execution_frontier_post_completion_enforcement_latch.json"
+autonomous_execution_intent_path = root / "state" / "continuity" / "latest" / "autonomous_execution_intent_latest.json"
+core_roadmap_execution_queue_primary_path = root / "state" / "continuity" / "latest" / "core_roadmap_execution_queue.json"
+core_roadmap_execution_queue_mirror_path = root / "state" / "continuity" / "latest" / "core_roadmap_slice_queue_2026-03-28.json"
+session_topology_contract_template_path = root / "docs" / "ops" / "templates" / "session_topology_contract.template.json"
+core_roadmap_queue_layer_path = root / "state" / "continuity" / "latest" / "core_roadmap_queue_layer.json"
+core_roadmap_queue_transaction_runtime_path = (
+    root / "state" / "continuity" / "latest" / "core_roadmap_queue_transaction_runtime.json"
+)
+core_roadmap_queue_transaction_runtime_lock_path = (
+    root / "state" / "continuity" / "locks" / "core_roadmap_queue_transaction_runtime.lock"
+)
+core_roadmap_queue_txn_handoff_soak_path = (
+    root / "state" / "continuity" / "latest" / "core_roadmap_queue_transaction_handoff_soak.json"
+)
+core_roadmap_queue_source_schema = "clawd.core_roadmap_slice_queue.v1"
+core_roadmap_queue_layer_schema = "clawd.core_roadmap_queue_layer.v1"
+core_roadmap_queue_transaction_runtime_schema = "clawd.core_roadmap_queue_transaction_runtime.v1"
+core_roadmap_queue_transaction_runtime_projection_schema = (
+    "clawd.core_roadmap_queue_transaction_runtime_projection.v1"
+)
+core_roadmap_queue_txn_handoff_soak_schema = "clawd.core_roadmap_queue_txn_handoff_soak.v1"
+core_roadmap_queue_txn_handoff_soak_projection_schema = (
+    "clawd.core_roadmap_queue_txn_handoff_soak_projection.v1"
+)
+core_roadmap_queue_layer_schema_path = (
+    root / "ops" / "openclaw" / "architecture" / "schemas" / "core_roadmap_queue_layer.schema.json"
+)
+core_roadmap_queue_state_categories = ["done", "ready", "running", "dependency_blocked", "queued"]
+blocker_registry_script_path = root / "ops" / "openclaw" / "continuity" / "blocker_registry.sh"
+
+try:
+    current_cache_ttl_sec = max(0, int(os.environ.get("OPENCLAW_CONTINUITY_CURRENT_CACHE_TTL_SEC", "300")))
+except Exception:
+    current_cache_ttl_sec = 300
+
+try:
+    execution_program_stalled_after_sec = max(
+        60,
+        int(os.environ.get("OPENCLAW_EXECUTION_PROGRAM_STALLED_AFTER_SEC", "1800")),
+    )
+except Exception:
+    execution_program_stalled_after_sec = 1800
+
+checkpoint_freshness_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_CONTINUITY_CHECKPOINT_FRESHNESS_MAX_AGE_SEC",
+    default=_DEFAULT_CHECKPOINT_FRESHNESS_MAX_AGE_SEC,
+)
+reset_ready_refresh_freshness_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_CONTINUITY_RESET_READY_REFRESH_MAX_AGE_SEC",
+    default=_DEFAULT_RESET_READY_REFRESH_FRESHNESS_MAX_AGE_SEC,
+)
+auto_remediation_state_fallback_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_CONTINUITY_AUTO_REMEDIATION_STATE_FALLBACK_MAX_AGE_SEC",
+    default=300,
+)
+auto_remediation_state_fallback_future_skew_sec = _read_nonnegative_int_env(
+    "OPENCLAW_CONTINUITY_AUTO_REMEDIATION_STATE_FALLBACK_FUTURE_SKEW_SEC",
+    default=30,
+)
+
+execution_frontier_bounded_queue_depth = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_FRONTIER_BOUNDED_QUEUE_DEPTH",
+    default=5,
+)
+if execution_frontier_bounded_queue_depth <= 0:
+    execution_frontier_bounded_queue_depth = 1
+
+execution_supervisor_dispatch_qualification_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_DISPATCH_QUALIFICATION_MAX_AGE_SEC",
+    default=21600,
+)
+execution_supervisor_worker_health_canary_probe_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_WORKER_CANARY_PROBE_MAX_AGE_SEC",
+    default=21600,
+)
+execution_supervisor_worker_health_canary_probe_future_skew_sec = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_WORKER_CANARY_PROBE_FUTURE_SKEW_SEC",
+    default=120,
+)
+execution_supervisor_launch_readiness_persistence_ticks = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_LAUNCH_READINESS_PERSISTENCE_TICKS",
+    default=3,
+)
+if execution_supervisor_launch_readiness_persistence_ticks <= 0:
+    execution_supervisor_launch_readiness_persistence_ticks = 1
+execution_supervisor_worker_health_canary_max_age_sec = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_WORKER_CANARY_MAX_AGE_SEC",
+    default=21600,
+)
+execution_supervisor_worker_health_canary_future_skew_sec = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_WORKER_CANARY_FUTURE_SKEW_SEC",
+    default=120,
+)
+execution_supervisor_preflight_memory_min_mb = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_MEMORY_MIN_MB",
+    default=1024,
+)
+execution_supervisor_preflight_memory_implementation_bump_mb = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_MEMORY_IMPLEMENTATION_BUMP_MB",
+    default=512,
+)
+execution_supervisor_preflight_memory_heavy_route_bump_mb = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_MEMORY_HEAVY_ROUTE_BUMP_MB",
+    default=768,
+)
+execution_supervisor_preflight_disk_free_min_gb = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_DISK_FREE_MIN_GB",
+    default=8,
+)
+execution_supervisor_preflight_load_pct_max = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_LOAD_PCT_MAX",
+    default=180,
+)
+if execution_supervisor_preflight_load_pct_max <= 0:
+    execution_supervisor_preflight_load_pct_max = 180
+execution_supervisor_preflight_tight_headroom_pct = _read_nonnegative_int_env(
+    "OPENCLAW_EXECUTION_SUPERVISOR_PREFLIGHT_TIGHT_HEADROOM_PCT",
+    default=15,
+)
+
+
+def _normalize_backpressure_action(value: str) -> str:
+    action = str(value or "").strip().lower()
+    if action in {"drop_freshness_stage", "skip_optional_stage", "fail_closed"}:
+        return action
+    return "drop_freshness_stage"
+
+
+def _parse_backpressure_action_matrix(raw_matrix: str, *, default_action: str) -> Dict[str, str]:
+    matrix = {
+        "ready": _normalize_backpressure_action(default_action),
+        "dependency_blocked": _normalize_backpressure_action(default_action),
+    }
+    if not isinstance(raw_matrix, str) or not raw_matrix.strip():
+        return matrix
+
+    for item in raw_matrix.split(","):
+        if "=" not in item:
+            continue
+        key_raw, value_raw = item.split("=", 1)
+        key = str(key_raw or "").strip().lower().replace(" ", "_")
+        action = _normalize_backpressure_action(value_raw)
+        if key in matrix:
+            matrix[key] = action
+
+    return matrix
+
+
+execution_frontier_bounded_queue_backpressure_action = _normalize_backpressure_action(
+    os.environ.get("OPENCLAW_EXECUTION_FRONTIER_BOUNDED_QUEUE_ACTION", "drop_freshness_stage")
+)
+execution_frontier_bounded_queue_backpressure_action_matrix = _parse_backpressure_action_matrix(
+    os.environ.get("OPENCLAW_EXECUTION_FRONTIER_BOUNDED_QUEUE_ACTION_MATRIX", ""),
+    default_action=execution_frontier_bounded_queue_backpressure_action,
+)
+execution_frontier_bounded_queue_fail_closed_tiers = {
+    token.strip().upper()
+    for token in str(
+        os.environ.get("OPENCLAW_EXECUTION_FRONTIER_BOUNDED_QUEUE_FAIL_CLOSED_TIERS", "P0")
+    )
+    .split(",")
+    if token.strip()
+}
+
+refresh_auto_reconcile_drift = str(
+    os.environ.get("OPENCLAW_CONTINUITY_REFRESH_AUTO_RECONCILE_DRIFT", "1")
+).strip().lower() in {"1", "true", "yes", "y", "on"}
+refresh_auto_reconcile_disabled = str(
+    os.environ.get("OPENCLAW_CONTINUITY_CURRENT_DISABLE_AUTO_RECONCILE", "0")
+).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def now_iso() -> str:
+    return clock_now_iso()
+
+
+def atomic_write(path: pathlib.Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[pathlib.Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            tmp_path = pathlib.Path(fh.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def to_rel(path: pathlib.Path) -> str:
+    try:
+        return path.resolve().relative_to(root).as_posix()
+    except Exception:
+        return str(path)
+
+
+def atomic_write_text(path: pathlib.Path, text_payload: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Optional[pathlib.Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(text_payload)
+            tmp_path = pathlib.Path(fh.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+def append_jsonl(path: pathlib.Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+
+def sanitize_token(raw: Any, *, fallback: str) -> str:
+    txt = str(raw or "").strip()
+    if not txt:
+        return fallback
+    chars: List[str] = []
+    for ch in txt:
+        if ch.isalnum() or ch in {"-", "_"}:
+            chars.append(ch)
+        else:
+            chars.append("-")
+    cleaned = "".join(chars).strip("-")
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned[:80].strip("-")
+    return cleaned or fallback
+
+
+def materialize_continuity_now_contract(now_obj: Dict[str, Any]) -> Dict[str, Any]:
+    continuity_now_contract_path_rel = "state/continuity/latest/continuity_now_latest.json"
+    continuity_now_contract_path = (root / continuity_now_contract_path_rel).resolve()
+
+    now_payload = now_obj if isinstance(now_obj, dict) else {}
+    generated_at = str(now_payload.get("generated_at") or "").strip() or None
+    generation_id = str((((now_payload.get("coherence") or {}).get("build_generation_id") or "")).strip()) or None
+
+    contract_payload: Optional[Dict[str, Any]] = None
+    contract_raw: Optional[str] = None
+
+    if continuity_now_contract_path.exists():
+        try:
+            candidate_raw = continuity_now_contract_path.read_text(encoding="utf-8")
+            candidate_payload = json.loads(candidate_raw)
+            if isinstance(candidate_payload, dict):
+                contract_payload = candidate_payload
+                contract_raw = candidate_raw
+        except Exception:
+            contract_payload = None
+            contract_raw = None
+
+    # Test stubs and degraded paths may emit continuity_now JSON to stdout without
+    # writing continuity_now_latest.json. Materialize the canonical contract file
+    # from the live payload so downstream derivatives do not fail-close.
+    if contract_payload is None:
+        contract_payload = dict(now_payload)
+        contract_raw = json.dumps(contract_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        atomic_write_text(continuity_now_contract_path, contract_raw)
+
+    generated_at = generated_at or str(contract_payload.get("generated_at") or "").strip() or None
+    generation_id = generation_id or str((((contract_payload.get("coherence") or {}).get("build_generation_id") or "")).strip()) or None
+
+    if contract_raw is None:
+        contract_raw = json.dumps(contract_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+
+    contract_sha = hashlib.sha256(contract_raw.encode("utf-8")).hexdigest()
+    contracts_dir = root / "state" / "continuity" / "contracts" / "continuity_now"
+    generation_token = sanitize_token(generation_id, fallback="cohgen_unknown")
+    generated_token = sanitize_token(generated_at, fallback="generated_unknown")
+    contract_name = f"{generation_token}__{generated_token}__{contract_sha[:20]}.json"
+    contract_pinned_path = contracts_dir / contract_name
+
+    if not contract_pinned_path.exists():
+        atomic_write_text(contract_pinned_path, contract_raw)
+
+    return {
+        "path": to_rel(contract_pinned_path),
+        "sha256": contract_sha,
+        "generated_at": generated_at,
+        "coherence_build_generation_id": generation_id,
+    }
+
+
+def materialize_reset_ready_refresh_posture(now_obj: Dict[str, Any]) -> Dict[str, Any]:
+    default_path_rel = RESET_READY_REFRESH_LATEST_REL
+    now_payload = now_obj if isinstance(now_obj, dict) else {}
+    now_surface = now_payload.get("reset_ready_refresh") if isinstance(now_payload.get("reset_ready_refresh"), dict) else {}
+
+    path_rel = str(now_surface.get("path") or default_path_rel).strip() or default_path_rel
+    path_obj = pathlib.Path(path_rel)
+    if not path_obj.is_absolute():
+        path_obj = (root / path_obj).resolve()
+    else:
+        path_obj = path_obj.resolve()
+
+    latest_payload: Dict[str, Any] = {}
+    if path_obj.exists():
+        try:
+            candidate_payload = load_json(path_obj)
+            if isinstance(candidate_payload, dict):
+                latest_payload = candidate_payload
+        except Exception:
+            latest_payload = {}
+
+    present = bool(now_surface.get("present") is True or (path_obj.exists() and bool(latest_payload)))
+
+    source_sha256 = None
+    if path_obj.exists():
+        try:
+            source_sha256 = sha256_file(path_obj)
+        except Exception:
+            source_sha256 = None
+
+    return _project_reset_ready_refresh_posture(
+        surface=now_surface,
+        latest_payload=latest_payload,
+        path=to_rel(path_obj),
+        sha256=source_sha256,
+        present=present,
+        now_ts=clock_now_ts(),
+        freshness_max_age_sec=reset_ready_refresh_freshness_max_age_sec,
+    )
+
+
+def load_json(path: pathlib.Path) -> Dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def sha256_file(path: pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_iso(raw: Any):
+    txt = str(raw or "").strip()
+    if not txt:
+        return None
+    if txt.endswith("Z"):
+        txt = txt[:-1] + "+00:00"
+    try:
+        out = dt.datetime.fromisoformat(txt)
+    except Exception:
+        return None
+    if out.tzinfo is None:
+        out = out.replace(tzinfo=dt.timezone.utc)
+    return out
+
+
+def fallback_state_timestamp(raw: Dict[str, Any]) -> Optional[dt.datetime]:
+    if not isinstance(raw, dict):
+        return None
+    for key in (
+        "last_eval_at",
+        "last_attempt_at",
+        "last_success_at",
+        "checked_at",
+        "generated_at",
+        "updated_at",
+    ):
+        parsed = parse_iso(raw.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def fallback_state_contract_rejection_reason(
+    raw: Dict[str, Any],
+    *,
+    now_generated_at: Any,
+) -> Optional[str]:
+    now_dt = parse_iso(now_generated_at)
+    if now_dt is None:
+        return None
+
+    state_dt = fallback_state_timestamp(raw)
+    if state_dt is None:
+        return "fallback_state_timestamp_missing"
+
+    skew_sec = int((now_dt - state_dt).total_seconds())
+    if skew_sec < -int(auto_remediation_state_fallback_future_skew_sec):
+        return "fallback_state_timestamp_future"
+    if skew_sec > int(auto_remediation_state_fallback_max_age_sec):
+        return "fallback_state_stale"
+    return None
+
+
+def load_json_if_exists(path: pathlib.Path) -> Optional[Dict[str, Any]]:
+    if not path.exists():
+        return None
+    try:
+        payload = load_json(path)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def load_doctrine_drift_surface(path: pathlib.Path) -> Dict[str, Any]:
+    def _unique_strings(values: Any) -> List[str]:
+        out: List[str] = []
+        seen = set()
+        for raw in (values or []):
+            text = str(raw or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+        return out
+
+    out: Dict[str, Any] = {
+        "source": to_rel(path),
+        "present": False,
+        "generated_at": None,
+        "contract_state": "missing",
+        "contract_error": None,
+        "open_total": 0,
+        "blocker_total": 0,
+        "warn_total": 0,
+        "info_total": 0,
+        "open": [],
+        "projected_warning_reasons": [],
+    }
+
+    if not path.exists():
+        return out
+
+    out["present"] = True
+    try:
+        payload = load_json(path)
+    except Exception as exc:
+        out["contract_state"] = "invalid"
+        out["contract_error"] = f"read_failed:{exc}"
+        out["projected_warning_reasons"] = ["doctrine_drift_registry_invalid"]
+        return out
+
+    if not isinstance(payload, dict):
+        out["contract_state"] = "invalid"
+        out["contract_error"] = "not_object"
+        out["projected_warning_reasons"] = ["doctrine_drift_registry_invalid"]
+        return out
+
+    out["generated_at"] = str(payload.get("generated_at") or "").strip() or None
+    incidents = payload.get("incidents") if isinstance(payload.get("incidents"), list) else []
+
+    open_rows: List[Dict[str, Any]] = []
+    blocker_total = 0
+    warn_total = 0
+    info_total = 0
+    for idx, raw in enumerate(incidents):
+        if not isinstance(raw, dict):
+            continue
+
+        reason = str(raw.get("reason") or raw.get("code") or raw.get("incident_id") or "").strip()
+        if not reason:
+            reason = f"incident_{idx + 1}"
+
+        severity = str(raw.get("severity") or "warn").strip().lower() or "warn"
+        if severity not in {"blocker", "warn", "info"}:
+            severity = "warn"
+
+        status = str(raw.get("status") or "open").strip().lower() or "open"
+        if status in {"closed", "resolved", "done", "dismissed"}:
+            continue
+
+        if severity == "blocker":
+            blocker_total += 1
+        elif severity == "warn":
+            warn_total += 1
+        else:
+            info_total += 1
+
+        reason_token = f"doctrine_drift:{reason}"
+        open_rows.append(
+            {
+                "incident_id": str(raw.get("incident_id") or "").strip() or None,
+                "reason": reason,
+                "severity": severity,
+                "status": status,
+                "detail": str(raw.get("detail") or "").strip() or None,
+                "reported_at": str(raw.get("reported_at") or raw.get("detected_at") or "").strip() or None,
+                "evidence": _unique_strings(raw.get("evidence")),
+                "warning_reason": reason_token,
+            }
+        )
+
+    out["contract_state"] = "ok"
+    out["open_total"] = len(open_rows)
+    out["blocker_total"] = blocker_total
+    out["warn_total"] = warn_total
+    out["info_total"] = info_total
+    out["open"] = open_rows[:20]
+    out["projected_warning_reasons"] = _unique_strings(
+        [row.get("warning_reason") for row in open_rows]
+    )
+    return out
+
+
+def doctrine_drift_incident_id_from_reason(reason: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", str(reason or "").strip().lower()).strip("_")
+    slug = re.sub(r"_+", "_", slug)[:64]
+    if not slug:
+        slug = "incident"
+    return f"dd_{slug}"
+
+
+def doctrine_drift_status_is_open(raw_status: Any) -> bool:
+    status = str(raw_status or "open").strip().lower() or "open"
+    return status not in {"resolved", "closed", "done", "dismissed"}
+
+
+def sort_doctrine_drift_incidents(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    severity_rank = {"blocker": 0, "warn": 1, "info": 2}
+
+    def key_fn(row: Dict[str, Any]) -> Tuple[int, int, str, str]:
+        status_rank = 0 if doctrine_drift_status_is_open(row.get("status")) else 1
+        severity = str(row.get("severity") or "warn").strip().lower() or "warn"
+        reason = str(row.get("reason") or "").strip()
+        incident_id = str(row.get("incident_id") or "").strip()
+        return (
+            status_rank,
+            severity_rank.get(severity, 1),
+            reason,
+            incident_id,
+        )
+
+    return sorted(rows, key=key_fn)
+
+
+def sync_stall_trigger_incidents(
+    *,
+    path: pathlib.Path,
+    warning_reasons: List[str],
+    generated_at: str,
+) -> Dict[str, Any]:
+    detected_at = str(generated_at or now_iso()).strip() or now_iso()
+    warning_set = {str(item).strip() for item in (warning_reasons or []) if str(item).strip()}
+
+    trigger_rules = [
+        rule
+        for rule in STALL_TRIGGER_INCIDENT_RULES
+        if isinstance(rule, dict) and str(rule.get("reason") or "").strip()
+    ]
+    trigger_reasons = {str(rule.get("reason")).strip() for rule in trigger_rules}
+    active_reasons = {reason for reason in trigger_reasons if reason in warning_set}
+
+    result: Dict[str, Any] = {
+        "attempted": bool(trigger_rules),
+        "changed": False,
+        "opened": [],
+        "resolved": [],
+        "active_reasons": sorted(active_reasons),
+        "source": to_rel(path),
+        "error": None,
+    }
+
+    if not trigger_rules:
+        return result
+
+    payload: Dict[str, Any]
+    if path.exists():
+        try:
+            loaded = load_json(path)
+        except Exception as exc:
+            result["error"] = f"registry_read_failed:{exc}"
+            return result
+        if not isinstance(loaded, dict):
+            result["error"] = "registry_invalid:not_object"
+            return result
+        payload = dict(loaded)
+    else:
+        if not active_reasons:
+            return result
+        payload = {
+            "schema": "clawd.continuity.doctrine_drift_registry.v1",
+            "generated_at": detected_at,
+            "incidents": [],
+        }
+
+    incidents_raw = payload.get("incidents") if isinstance(payload.get("incidents"), list) else []
+    incidents: List[Dict[str, Any]] = []
+    for raw in incidents_raw:
+        if isinstance(raw, dict):
+            incidents.append(dict(raw))
+
+    changed = False
+    rule_by_reason = {str(rule.get("reason")).strip(): rule for rule in trigger_rules}
+    row_index: Dict[str, int] = {}
+    for idx, row in enumerate(incidents):
+        reason = str(row.get("reason") or "").strip()
+        if reason:
+            row_index[reason] = idx
+
+    for reason, rule in rule_by_reason.items():
+        idx = row_index.get(reason)
+        prior_status = None
+        if idx is not None:
+            prior_status = str(incidents[idx].get("status") or "open").strip().lower() or "open"
+
+        evidence_refs = _dedupe_nonempty_strings(rule.get("evidence") if isinstance(rule.get("evidence"), list) else [])
+        severity = str(rule.get("severity") or "warn").strip().lower() or "warn"
+        if severity not in {"blocker", "warn", "info"}:
+            severity = "warn"
+
+        if reason in active_reasons:
+            if idx is None:
+                row = {
+                    "incident_id": doctrine_drift_incident_id_from_reason(reason),
+                    "reason": reason,
+                    "severity": severity,
+                    "status": "open",
+                    "detail": str(rule.get("detail") or "").strip() or None,
+                    "reported_at": detected_at,
+                    "detected_at": detected_at,
+                    "updated_at": detected_at,
+                }
+                if evidence_refs:
+                    row["evidence"] = evidence_refs
+                incidents.append(row)
+                row_index[reason] = len(incidents) - 1
+                changed = True
+                result["opened"].append(reason)
+            else:
+                row = dict(incidents[idx])
+                row["incident_id"] = str(row.get("incident_id") or "").strip() or doctrine_drift_incident_id_from_reason(reason)
+                row["reason"] = reason
+                row["severity"] = severity
+                row["status"] = "open"
+                row["detected_at"] = detected_at
+                if not parse_iso(row.get("reported_at")):
+                    row["reported_at"] = detected_at
+                detail_text = str(rule.get("detail") or "").strip()
+                if detail_text:
+                    row["detail"] = detail_text
+                merged_evidence = _dedupe_nonempty_strings((row.get("evidence") or []) + evidence_refs)
+                if merged_evidence:
+                    row["evidence"] = merged_evidence
+                elif "evidence" in row:
+                    row.pop("evidence", None)
+                row["updated_at"] = detected_at
+                if row != incidents[idx]:
+                    incidents[idx] = row
+                    changed = True
+                if prior_status is not None and not doctrine_drift_status_is_open(prior_status):
+                    result["opened"].append(reason)
+        else:
+            if idx is None:
+                continue
+            row = dict(incidents[idx])
+            if doctrine_drift_status_is_open(row.get("status")):
+                row["status"] = "resolved"
+                row["updated_at"] = detected_at
+                close_detail = "Auto-resolved by continuity_current: stall trigger no longer active."
+                if not str(row.get("detail") or "").strip():
+                    row["detail"] = close_detail
+                incidents[idx] = row
+                changed = True
+                result["resolved"].append(reason)
+
+    if not changed:
+        return result
+
+    payload["schema"] = str(payload.get("schema") or "").strip() or "clawd.continuity.doctrine_drift_registry.v1"
+    if payload["schema"] != "clawd.continuity.doctrine_drift_registry.v1":
+        result["error"] = f"registry_schema_mismatch:{payload['schema']}"
+        return result
+
+    payload["generated_at"] = detected_at
+    payload["incidents"] = sort_doctrine_drift_incidents(incidents)
+
+    atomic_write(path, payload)
+    result["changed"] = True
+    return result
+
+
+def build_load_shedding_projection(now_obj: Dict[str, Any]) -> Dict[str, Any]:
+    decision_obj = load_json_if_exists(load_shedding_decision_path)
+    signal_obj = load_json_if_exists(load_shedding_signal_snapshot_path)
+
+    decision_source = "artifact"
+    signal_source = "artifact"
+
+    if not isinstance(decision_obj, dict):
+        decision_candidate = now_obj.get("load_shedding_decision")
+        if isinstance(decision_candidate, dict):
+            decision_obj = decision_candidate
+            decision_source = "continuity_now_projection"
+
+    if not isinstance(signal_obj, dict):
+        signal_candidate = now_obj.get("load_shedding_signal_snapshot")
+        if isinstance(signal_candidate, dict):
+            signal_obj = signal_candidate
+            signal_source = "continuity_now_projection"
+
+    lane_tier = str((((decision_obj or {}).get("lane_tier") or (signal_obj or {}).get("derived_tier") or "UNKNOWN")).strip() or "UNKNOWN").upper()
+    trigger_emitted = str(((decision_obj or {}).get("trigger_emitted") or "").strip()) or None
+    escape_triggered = trigger_emitted in {"TR_CRITICAL_THRESHOLD_REACHED", "TR_UNKNOWN_OR_INCOMPLETE_SIGNAL"}
+
+    unknown_signals = [
+        str(item).strip()
+        for item in ((signal_obj or {}).get("unknown_signals") or [])
+        if str(item).strip()
+    ]
+
+    decision_artifact_present = load_shedding_decision_path.exists()
+    signal_artifact_present = load_shedding_signal_snapshot_path.exists()
+    artifact_family_present = decision_artifact_present or signal_artifact_present
+
+    contract_source_degraded = bool(
+        artifact_family_present
+        and (not isinstance(decision_obj, dict) or (signal_artifact_present and not isinstance(signal_obj, dict)))
+    )
+    degraded_reason = None
+    if contract_source_degraded:
+        degraded_reason = "load_shedding_decision_missing" if not isinstance(decision_obj, dict) else "load_shedding_signal_snapshot_missing"
+
+    return {
+        "lane_health_state": lane_tier,
+        "warning_tier": lane_tier in {"WARNING", "CRITICAL"},
+        "critical_tier": lane_tier == "CRITICAL",
+        "escape_triggered": escape_triggered,
+        "trigger_emitted": trigger_emitted,
+        "thin_mode": bool(((decision_obj or {}).get("thin_mode") is True)),
+        "unknown_signal_count": len(unknown_signals),
+        "unknown_signals": unknown_signals,
+        "evaluated_at": (decision_obj or {}).get("evaluated_at") or (signal_obj or {}).get("evaluated_at"),
+        "decision_tick_id": (decision_obj or {}).get("tick_id"),
+        "signal_tick_id": (signal_obj or {}).get("tick_id"),
+        "decision_source": decision_source,
+        "signal_source": signal_source,
+        "contract_source_degraded": contract_source_degraded,
+        "contract_source_degraded_reason": degraded_reason,
+        "decision_path": to_rel(load_shedding_decision_path),
+        "signal_snapshot_path": to_rel(load_shedding_signal_snapshot_path),
+    }
+
+
+def encode_action_token(parts: Dict[str, Any]) -> str:
+    rows: List[str] = []
+    for key, value in parts.items():
+        txt = str(value or "").strip()
+        if not txt:
+            continue
+        rows.append(f"{key}={quote(txt, safe='')}")
+    return ";".join(rows)
+
+
+def extract_continuity_now_contract(current_obj: Dict[str, Any]) -> Dict[str, Any]:
+    contract_obj = current_obj.get("continuity_now_contract") if isinstance(current_obj.get("continuity_now_contract"), dict) else {}
+    source_refs = current_obj.get("source_refs") if isinstance(current_obj.get("source_refs"), dict) else {}
+
+    continuity_now_rel = str(
+        contract_obj.get("path")
+        or source_refs.get("continuity_now")
+        or "state/continuity/latest/continuity_now_latest.json"
+    ).strip()
+
+    continuity_now_abs: Optional[pathlib.Path] = None
+    if continuity_now_rel:
+        continuity_now_abs = pathlib.Path(continuity_now_rel)
+        if not continuity_now_abs.is_absolute():
+            continuity_now_abs = (root / continuity_now_abs).resolve()
+
+    continuity_now_sha = str(contract_obj.get("sha256") or source_refs.get("continuity_now_sha256") or "").strip()
+    if not continuity_now_sha and continuity_now_abs is not None and continuity_now_abs.exists():
+        try:
+            continuity_now_sha = sha256_file(continuity_now_abs)
+        except Exception:
+            continuity_now_sha = ""
+
+    continuity_now_generated_at = str(contract_obj.get("generated_at") or "").strip()
+    continuity_now_generation_id = str(contract_obj.get("coherence_build_generation_id") or "").strip()
+
+    if continuity_now_abs is not None and continuity_now_abs.exists():
+        try:
+            now_obj = load_json(continuity_now_abs)
+            if not continuity_now_generated_at:
+                continuity_now_generated_at = str(now_obj.get("generated_at") or "").strip()
+            if not continuity_now_generation_id:
+                continuity_now_generation_id = str((((now_obj.get("coherence") or {}).get("build_generation_id") or "")).strip())
+        except Exception:
+            pass
+
+    return {
+        "path": continuity_now_rel or None,
+        "sha256": continuity_now_sha or None,
+        "generated_at": continuity_now_generated_at or None,
+        "coherence_build_generation_id": continuity_now_generation_id or None,
+    }
+
+
+def sync_generation_pointer_from_current(current_obj: Dict[str, Any]) -> None:
+    if not current_path.exists():
+        return
+
+    atomic_write(latest_current_path, current_obj)
+
+    truth_anchor = current_obj.get("truth_anchor") if isinstance(current_obj.get("truth_anchor"), dict) else {}
+    coherence = current_obj.get("coherence") if isinstance(current_obj.get("coherence"), dict) else {}
+    coherence_tuple_hash = str(coherence.get("tuple_hash") or "").strip()
+    policy_signature = str((((coherence.get("policy") or {}).get("signature") or "")).strip())
+    coherence_build_generation_id = str(coherence.get("build_generation_id") or "").strip()
+    coherence_valid_until = str(coherence.get("valid_until") or "").strip()
+
+    generated_at = str(current_obj.get("generated_at") or now_iso()).strip() or now_iso()
+    action_token = current_obj.get("action_token")
+    action_token_missing_fields = current_obj.get("action_token_missing_fields")
+    if not isinstance(action_token_missing_fields, list):
+        action_token_missing_fields = []
+
+    continuity_now_contract = extract_continuity_now_contract(current_obj)
+
+    current_sha = sha256_file(current_path)
+    pointer_payload = {
+        "schema": "clawd.continuity.pointer.v1",
+        "generated_at": generated_at,
+        "workspace_id": str(current_obj.get("workspace_id") or "clawd-architect"),
+        "snapshot_id": truth_anchor.get("snapshot_id"),
+        "journal_offset": truth_anchor.get("journal_offset"),
+        "pointer_hash": truth_anchor.get("pointer_hash"),
+        "coherence_tuple_hash": coherence_tuple_hash or None,
+        "policy_signature": policy_signature or None,
+        "coherence_build_generation_id": coherence_build_generation_id or None,
+        "coherence_valid_until": coherence_valid_until or None,
+        "action_token": action_token,
+        "action_token_missing_fields": action_token_missing_fields,
+        "derived_from": {
+            "legacy_pointer": to_rel(legacy_pointer_path),
+            "ground_truth_latest": "state/ground_truth/latest.json",
+            "coherence_stamp": "state/continuity/latest/coherence_stamp.json",
+            "coherence_bundle": "state/continuity/latest/coherence_bundle_latest.json",
+        },
+        "source_current": {
+            "path": to_rel(current_path),
+            "latest_path": to_rel(latest_current_path),
+            "sha256": current_sha,
+            "generated_at": generated_at,
+        },
+        "continuity_read_contract": {
+            "schema_version": "clawd.continuity.read_contract.v1",
+            "continuity_current_path": to_rel(current_path),
+            "continuity_current_latest_path": to_rel(latest_current_path),
+            "continuity_current_sha256": current_sha,
+            "continuity_current_generated_at": generated_at,
+            "coherence_build_generation_id": coherence_build_generation_id or None,
+            "coherence_valid_until": coherence_valid_until or None,
+            "continuity_now_path": continuity_now_contract.get("path"),
+            "continuity_now_sha256": continuity_now_contract.get("sha256"),
+            "continuity_now_generated_at": continuity_now_contract.get("generated_at"),
+            "continuity_now_build_generation_id": continuity_now_contract.get("coherence_build_generation_id"),
+        },
+    }
+    atomic_write(pointer_out_path, pointer_payload)
+    atomic_write(canonical_pointer_out_path, pointer_payload)
+
+
+def derive_in_flight_from_queue(queue_obj: Dict[str, Any]) -> Dict[str, Any]:
+    status_counts = queue_obj.get("status_counts") or {}
+    raw_running_count = int(status_counts.get("RUNNING") or 0)
+    raw_active_locks = int(queue_obj.get("active_file_lock_count") or 0)
+    stale_active_locks = max(0, int(queue_obj.get("stale_active_file_lock_count") or 0))
+    orphaned_running_without_locks = max(0, int(queue_obj.get("orphaned_running_without_locks_count") or 0))
+
+    queue_effective_running = queue_obj.get("effective_running_count")
+    if queue_effective_running is None:
+        effective_running_count = max(0, raw_running_count - orphaned_running_without_locks)
+    else:
+        effective_running_count = max(0, int(queue_effective_running or 0))
+
+    queue_effective_active_locks = queue_obj.get("effective_active_file_lock_count")
+    if queue_effective_active_locks is None:
+        effective_active_locks = max(0, raw_active_locks - stale_active_locks)
+    else:
+        effective_active_locks = max(0, int(queue_effective_active_locks or 0))
+
+    return {
+        "running_tasks": effective_running_count,
+        "active_locks": effective_active_locks,
+        "raw_running_tasks": raw_running_count,
+        "raw_active_locks": raw_active_locks,
+        "stale_active_locks": stale_active_locks,
+        "orphaned_running_without_locks": orphaned_running_without_locks,
+        "value": bool(effective_running_count > 0 or effective_active_locks > 0),
+    }
+
+
+ORPHANED_AUTO_REMEDIATION_FAILURE_STATUSES = {
+    "command_failed",
+    "payload_not_ok",
+    "remediator_missing",
+    "queue_arbitrator_nonzero",
+    "queue_arbitrator_payload_not_ok",
+    "queue_arbitrator_failed",
+    "queue_arbitrator_exec_failed",
+}
+
+ORPHANED_AUTO_REMEDIATION_CANONICAL_SOURCE = "continuity_now_queue_projection"
+ORPHANED_AUTO_REMEDIATION_CONTRACT_PATH = "queue.orphaned_running_auto_remediation_contract"
+ORPHANED_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH = "queue.orphaned_running_auto_remediation_contract.healthy"
+ORPHANED_AUTO_REMEDIATION_DEGRADED_WARNING_MAP = {
+    "continuity_now_state_file": "orphaned_running_auto_remediation_source_state_file_fallback",
+    "unavailable": "orphaned_running_auto_remediation_source_unavailable",
+}
+ORPHANED_AUTO_REMEDIATION_DEGRADED_REASON_WARNING_MAP = {
+    "queue_projection_contract_unhealthy": "orphaned_running_auto_remediation_contract_invalid",
+    "queue_projection_contract_health_missing": "orphaned_running_auto_remediation_contract_health_missing",
+    "fallback_state_timestamp_missing": "orphaned_running_auto_remediation_state_timestamp_missing",
+    "fallback_state_timestamp_future": "orphaned_running_auto_remediation_state_timestamp_future",
+    "fallback_state_stale": "orphaned_running_auto_remediation_state_stale",
+}
+
+STALE_WAVE_AUTO_REMEDIATION_FAILURE_STATUSES = {
+    "command_failed",
+    "payload_not_ok",
+    "remediator_missing",
+    "remediation_degraded",
+}
+
+STALE_WAVE_AUTO_REMEDIATION_CANONICAL_SOURCE = "continuity_now_queue_projection"
+STALE_WAVE_AUTO_REMEDIATION_CONTRACT_PATH = "queue.stale_wave_auto_remediation_contract"
+STALE_WAVE_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH = "queue.stale_wave_auto_remediation_contract.healthy"
+STALE_WAVE_AUTO_REMEDIATION_DEGRADED_WARNING_MAP = {
+    "continuity_now_state_file": "queue_stale_wave_auto_remediation_source_state_file_fallback",
+    "unavailable": "queue_stale_wave_auto_remediation_source_unavailable",
+}
+STALE_WAVE_AUTO_REMEDIATION_DEGRADED_REASON_WARNING_MAP = {
+    "queue_projection_contract_unhealthy": "queue_stale_wave_auto_remediation_contract_invalid",
+    "queue_projection_contract_health_missing": "queue_stale_wave_auto_remediation_contract_health_missing",
+    "fallback_state_timestamp_missing": "queue_stale_wave_auto_remediation_state_timestamp_missing",
+    "fallback_state_timestamp_future": "queue_stale_wave_auto_remediation_state_timestamp_future",
+    "fallback_state_stale": "queue_stale_wave_auto_remediation_state_stale",
+}
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def build_queue_recovery_counters(
+    *,
+    queue_obj: Dict[str, Any],
+    orphaned_auto: Dict[str, Any],
+    stale_wave_auto: Dict[str, Any],
+) -> Dict[str, Any]:
+    queue_recovery_raw = (
+        queue_obj.get("stale_task_recovery_counters")
+        if isinstance(queue_obj.get("stale_task_recovery_counters"), dict)
+        else {}
+    )
+
+    raw_attempts_total = max(0, _to_int(queue_recovery_raw.get("attempts_total"), 0))
+    raw_recovered_total = max(0, _to_int(queue_recovery_raw.get("recovered_total"), 0))
+    raw_failed_total = max(0, _to_int(queue_recovery_raw.get("failed_total"), 0))
+    raw_processing_total = max(0, _to_int(queue_recovery_raw.get("stale_processing_recovered_total"), 0))
+    raw_running_total = max(0, _to_int(queue_recovery_raw.get("stale_running_recovered_total"), 0))
+
+    derived_attempts_total = max(
+        0,
+        _to_int(stale_wave_auto.get("attempt_sequence"), 0)
+        + (1 if bool(orphaned_auto.get("attempted") is True) else 0),
+    )
+    derived_processing_total = max(
+        0,
+        _to_int(stale_wave_auto.get("ready_count_before"), 0) - _to_int(stale_wave_auto.get("ready_count_after"), 0),
+    )
+    if bool(stale_wave_auto.get("recovered") is True):
+        derived_processing_total = max(derived_processing_total, 1)
+    derived_running_total = max(
+        0,
+        _to_int(orphaned_auto.get("applied_requeued_orphaned_running"), 0),
+    )
+    derived_recovered_total = max(0, derived_processing_total + derived_running_total)
+    derived_failed_total = max(
+        0,
+        _to_int(stale_wave_auto.get("consecutive_failures"), 0)
+        + (1 if (orphaned_auto.get("attempted") and orphaned_auto.get("ok") is False) else 0),
+    )
+
+    if queue_recovery_raw:
+        attempts_total = raw_attempts_total
+        stale_processing_total = raw_processing_total
+        stale_running_total = raw_running_total
+        recovered_total = max(raw_recovered_total, stale_processing_total + stale_running_total)
+        failed_total = raw_failed_total
+    else:
+        attempts_total = derived_attempts_total
+        stale_processing_total = derived_processing_total
+        stale_running_total = derived_running_total
+        recovered_total = max(derived_recovered_total, stale_processing_total + stale_running_total)
+        failed_total = derived_failed_total
+
+    return {
+        "schema_version": str(
+            queue_recovery_raw.get("schema_version")
+            or "continuity.queue_stale_task_recovery_counters_projection.v1"
+        ),
+        "source": "queue_infra_degraded" if queue_recovery_raw else "derived_projection",
+        "attempts_total": attempts_total,
+        "recovered_total": recovered_total,
+        "failed_total": failed_total,
+        "stale_processing_recovered_total": stale_processing_total,
+        "stale_running_recovered_total": stale_running_total,
+        "attempts_last_tick": max(0, _to_int(queue_recovery_raw.get("attempts_last_tick"), 0)),
+        "recovered_last_tick": max(0, _to_int(queue_recovery_raw.get("recovered_last_tick"), 0)),
+        "failed_last_tick": max(0, _to_int(queue_recovery_raw.get("failed_last_tick"), 0)),
+        "updated_at": queue_recovery_raw.get("updated_at") or None,
+        "last_recovery": (
+            queue_recovery_raw.get("last_recovery")
+            if isinstance(queue_recovery_raw.get("last_recovery"), dict)
+            else None
+        ),
+        "last_recovery_at": queue_recovery_raw.get("last_recovery_at") or stale_wave_auto.get("last_success_at") or orphaned_auto.get("last_success_at"),
+    }
+
+
+def _augment_queue_recovery_with_relaunch_accounting(
+    *,
+    queue_recovery_counters: Dict[str, Any],
+    relaunch_recovery_accounting: Dict[str, Any],
+) -> Dict[str, Any]:
+    counters = dict(queue_recovery_counters) if isinstance(queue_recovery_counters, dict) else {}
+    relaunch = (
+        relaunch_recovery_accounting.get("invalid_output_reroute")
+        if isinstance(relaunch_recovery_accounting.get("invalid_output_reroute"), dict)
+        else {}
+    )
+
+    required_count = max(0, _to_int(relaunch.get("required_count"), 0))
+    dispatch_ready_count = max(0, _to_int(relaunch.get("dispatch_ready_count"), 0))
+    blocked_count = max(0, _to_int(relaunch.get("blocked_count"), 0))
+    required_count_raw = max(required_count, _to_int(relaunch.get("required_count_raw"), required_count))
+    dispatch_ready_count_raw = max(
+        dispatch_ready_count,
+        _to_int(relaunch.get("dispatch_ready_count_raw"), dispatch_ready_count),
+    )
+    blocked_count_raw = max(blocked_count, _to_int(relaunch.get("blocked_count_raw"), blocked_count))
+    residue_suppressed = bool(relaunch.get("residue_suppressed") is True)
+    residue_task_ids = _dedupe_nonempty_strings(relaunch.get("residue_task_ids") or [])
+    residue_suppression_reason = str(relaunch.get("residue_suppression_reason") or "").strip() or None
+
+    counters["invalid_output_reroute"] = {
+        "required_count": required_count,
+        "dispatch_ready_count": dispatch_ready_count,
+        "blocked_count": blocked_count,
+        "ready_task_ids": _dedupe_nonempty_strings(relaunch.get("ready_task_ids") or []),
+        "blocked_task_ids": _dedupe_nonempty_strings(relaunch.get("blocked_task_ids") or []),
+        "active": bool(required_count > 0),
+        "required_count_raw": required_count_raw,
+        "dispatch_ready_count_raw": dispatch_ready_count_raw,
+        "blocked_count_raw": blocked_count_raw,
+        "residue_suppressed": residue_suppressed,
+        "residue_task_ids": residue_task_ids,
+        "residue_suppression_reason": residue_suppression_reason,
+    }
+    counters["relaunch_recovery_accounting_source"] = str(
+        relaunch_recovery_accounting.get("source") or "execution_supervisor_task_ledger"
+    ).strip() or "execution_supervisor_task_ledger"
+
+    return counters
+
+
+def load_canonical_orphaned_auto_remediation_state() -> Dict[str, Any]:
+    if not orphaned_auto_remediation_state_path.exists():
+        return {}
+    try:
+        payload = load_json(orphaned_auto_remediation_state_path)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def normalize_orphaned_auto_remediation(
+    raw: Dict[str, Any],
+    *,
+    source: str,
+    in_flight: Dict[str, Any],
+    degraded_reason: Optional[str] = None,
+    degraded_path: Optional[str] = None,
+    contract_health_explicit_healthy: Optional[bool] = None,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+
+    status = str(out.get("status") or "").strip()
+    if not status:
+        status = "unavailable"
+    out["status"] = status
+
+    if not str(out.get("schema_version") or "").strip():
+        out["schema_version"] = "continuity.queue_orphaned_running_auto_remediation.v1"
+
+    state_path_rel = str(out.get("state_path") or "").strip() or to_rel(orphaned_auto_remediation_state_path)
+    out["state_path"] = state_path_rel
+    out["latest_path"] = state_path_rel
+
+    orphaned_count = _to_int(
+        out.get("orphaned_running_without_locks_count"),
+        _to_int(out.get("orphaned_running_without_locks"), int(in_flight.get("orphaned_running_without_locks") or 0)),
+    )
+    out["orphaned_running_without_locks_count"] = int(orphaned_count)
+    out["orphaned_running_without_locks"] = int(orphaned_count)
+
+    effective_in_flight = bool(out.get("in_flight_effective") if out.get("in_flight_effective") is not None else in_flight.get("value"))
+    out["in_flight_effective"] = effective_in_flight
+    out["effective_in_flight"] = effective_in_flight
+    out["safe_to_run"] = bool(orphaned_count > 0 and not effective_in_flight)
+
+    out["enabled"] = bool(out.get("enabled") is True)
+    out["attempted"] = bool(out.get("attempted") is True)
+    out["triggered"] = bool(out.get("triggered") is True)
+
+    cooldown_remaining_sec = max(0, _to_int(out.get("cooldown_remaining_sec"), 0))
+    out["cooldown_remaining_sec"] = cooldown_remaining_sec
+    out["cooldown_sec"] = max(0, _to_int(out.get("cooldown_sec"), 0))
+    out["cooldown_active"] = bool(out.get("cooldown_active") is True or status == "cooldown_active" or cooldown_remaining_sec > 0)
+
+    applied_count = _to_int(
+        out.get("applied_requeued_orphaned_running"),
+        _to_int(out.get("applied_orphaned_count"), 0),
+    )
+    out["applied_requeued_orphaned_running"] = int(applied_count)
+    out["applied_orphaned_count"] = int(applied_count)
+    out["applied"] = bool(applied_count > 0)
+
+    if out.get("ok") is None:
+        out["ok"] = status not in ORPHANED_AUTO_REMEDIATION_FAILURE_STATUSES
+    elif isinstance(out.get("ok"), bool):
+        out["ok"] = bool(out.get("ok"))
+    else:
+        out["ok"] = None
+
+    contract_source_canonical = source == ORPHANED_AUTO_REMEDIATION_CANONICAL_SOURCE
+    contract_source_degraded_reason = (
+        None
+        if contract_source_canonical
+        else (
+            str(degraded_reason or "").strip()
+            or (
+                "fallback_to_state_file"
+                if source == "continuity_now_state_file"
+                else ("source_unavailable" if source == "unavailable" else "noncanonical_contract_source")
+            )
+        )
+    )
+    contract_source_degraded_path = (
+        None
+        if contract_source_canonical
+        else (
+            str(degraded_path or "").strip()
+            or (
+                to_rel(orphaned_auto_remediation_state_path)
+                if source == "continuity_now_state_file"
+                else (
+                    to_rel(orphaned_auto_remediation_state_path)
+                    if source == "unavailable"
+                    else ORPHANED_AUTO_REMEDIATION_CONTRACT_PATH
+                )
+            )
+        )
+    )
+    out["contract_source"] = source
+    out["contract_source_canonical"] = bool(contract_source_canonical)
+    out["contract_source_degraded"] = bool(not contract_source_canonical)
+    out["contract_source_degraded_reason"] = contract_source_degraded_reason
+    out["contract_source_degraded_path"] = contract_source_degraded_path
+    out["contract_health_explicit_healthy"] = contract_health_explicit_healthy
+    return out
+
+
+def load_canonical_stale_wave_auto_remediation_state() -> Dict[str, Any]:
+    if not stale_wave_auto_remediation_state_path.exists():
+        return {}
+    try:
+        payload = load_json(stale_wave_auto_remediation_state_path)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def normalize_stale_wave_auto_remediation(
+    raw: Dict[str, Any],
+    *,
+    source: str,
+    in_flight: Dict[str, Any],
+    degraded_reason: Optional[str] = None,
+    degraded_path: Optional[str] = None,
+    contract_health_explicit_healthy: Optional[bool] = None,
+) -> Dict[str, Any]:
+    out: Dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
+
+    status = str(out.get("status") or "").strip()
+    if not status:
+        status = "unavailable"
+    out["status"] = status
+
+    if not str(out.get("schema_version") or "").strip():
+        out["schema_version"] = "continuity.queue_stale_wave_auto_remediation.v1"
+
+    state_path_rel = str(out.get("state_path") or "").strip() or to_rel(stale_wave_auto_remediation_state_path)
+    out["state_path"] = state_path_rel
+    out["latest_path"] = state_path_rel
+
+    out["enabled"] = bool(out.get("enabled") is True)
+    out["attempted"] = bool(out.get("attempted") is True)
+    out["triggered"] = bool(out.get("triggered") is True)
+    out["eligible"] = bool(out.get("eligible") is True)
+    out["recovered"] = bool(out.get("recovered") is True)
+
+    ready_count_before = _to_int(out.get("ready_count_before"), 0)
+    ready_count_after = _to_int(out.get("ready_count_after"), ready_count_before)
+    out["ready_count_before"] = int(ready_count_before)
+    out["ready_count_after"] = int(ready_count_after)
+
+    wave_active_after = bool(
+        out.get("queue_stale_wave_active_after")
+        if out.get("queue_stale_wave_active_after") is not None
+        else (ready_count_after > 0 and not bool(in_flight.get("value")))
+    )
+    out["queue_stale_wave_active_after"] = wave_active_after
+
+    cooldown_remaining_sec = max(0, _to_int(out.get("cooldown_remaining_sec"), 0))
+    out["cooldown_remaining_sec"] = cooldown_remaining_sec
+    out["cooldown_sec"] = max(0, _to_int(out.get("cooldown_sec"), 0))
+    out["cooldown_active"] = bool(out.get("cooldown_active") is True or status == "cooldown_active" or cooldown_remaining_sec > 0)
+
+    if out.get("ok") is None:
+        out["ok"] = status not in STALE_WAVE_AUTO_REMEDIATION_FAILURE_STATUSES
+    elif isinstance(out.get("ok"), bool):
+        out["ok"] = bool(out.get("ok"))
+    else:
+        out["ok"] = None
+
+    retry_contract = out.get("retry_contract") if isinstance(out.get("retry_contract"), dict) else {}
+    retry_contract_out = dict(retry_contract)
+    retry_contract_out.setdefault("schema_version", "continuity.queue_stale_wave_auto_remediation_retry_contract.v1")
+    retry_contract_out.setdefault("policy", "fixed_cooldown")
+    retry_contract_out.setdefault("deterministic_key", "queue_stale_wave_auto_remediation")
+    retry_contract_out["eligible_now"] = bool(retry_contract_out.get("eligible_now") is True or out.get("eligible") is True)
+    retry_contract_out["retry_scheduled"] = bool(retry_contract_out.get("retry_scheduled") is True or cooldown_remaining_sec > 0)
+    retry_contract_out["retry_due"] = bool(
+        retry_contract_out.get("retry_due") is True
+        or (retry_contract_out.get("eligible_now") is True and not retry_contract_out.get("retry_scheduled"))
+    )
+    retry_contract_out["cooldown_sec"] = max(0, _to_int(retry_contract_out.get("cooldown_sec"), out.get("cooldown_sec") or 0))
+    retry_contract_out["cooldown_remaining_sec"] = cooldown_remaining_sec
+    retry_contract_out["next_attempt_after_ts"] = _to_int(retry_contract_out.get("next_attempt_after_ts"), _to_int(out.get("next_attempt_after_ts"), 0))
+    retry_contract_out["next_attempt_after_iso"] = (
+        str(retry_contract_out.get("next_attempt_after_iso") or "").strip()
+        or str(out.get("next_attempt_after_iso") or "").strip()
+        or None
+    )
+    out["retry_contract"] = retry_contract_out
+
+    failure_evidence = out.get("failure_evidence") if isinstance(out.get("failure_evidence"), dict) else {}
+    failure_evidence_out = dict(failure_evidence)
+    failure_evidence_out.setdefault("schema_version", "continuity.queue_stale_wave_auto_remediation_failure_evidence.v1")
+    failure_evidence_out["present"] = bool(failure_evidence_out.get("present") is True)
+    failure_evidence_out.setdefault("status", out.get("last_attempt_status") or out.get("status"))
+    failure_evidence_out.setdefault("reason", out.get("reason"))
+    failure_evidence_out.setdefault("next_retry_after_ts", _to_int(out.get("next_attempt_after_ts"), 0))
+    failure_evidence_out.setdefault("next_retry_after_iso", out.get("next_attempt_after_iso"))
+    if out.get("ok") is False and not failure_evidence_out.get("present"):
+        failure_evidence_out["present"] = True
+    out["failure_evidence"] = failure_evidence_out
+
+    contract_source_canonical = source == STALE_WAVE_AUTO_REMEDIATION_CANONICAL_SOURCE
+    contract_source_degraded_reason = (
+        None
+        if contract_source_canonical
+        else (
+            str(degraded_reason or "").strip()
+            or (
+                "fallback_to_state_file"
+                if source == "continuity_now_state_file"
+                else ("source_unavailable" if source == "unavailable" else "noncanonical_contract_source")
+            )
+        )
+    )
+    contract_source_degraded_path = (
+        None
+        if contract_source_canonical
+        else (
+            str(degraded_path or "").strip()
+            or (
+                to_rel(stale_wave_auto_remediation_state_path)
+                if source == "continuity_now_state_file"
+                else (
+                    to_rel(stale_wave_auto_remediation_state_path)
+                    if source == "unavailable"
+                    else STALE_WAVE_AUTO_REMEDIATION_CONTRACT_PATH
+                )
+            )
+        )
+    )
+    out["contract_source"] = source
+    out["contract_source_canonical"] = bool(contract_source_canonical)
+    out["contract_source_degraded"] = bool(not contract_source_canonical)
+    out["contract_source_degraded_reason"] = contract_source_degraded_reason
+    out["contract_source_degraded_path"] = contract_source_degraded_path
+    out["contract_health_explicit_healthy"] = contract_health_explicit_healthy
+    return out
+
+
+
+def build_dispatch_health_matrix() -> Dict[str, Any]:
+    path = root / "state" / "continuity" / "latest" / "dispatch_health_matrix.json"
+    if not path.exists():
+        return {
+            "schema": "clawd.dispatch_health_matrix.v1",
+            "generated_at": now_iso(),
+            "workers": {},
+            "error": "file_not_found",
+        }
+    try:
+        payload = load_json(path)
+        if not isinstance(payload, dict):
+            raise ValueError("not_a_dictionary")
+        return payload
+    except Exception as e:
+        return {
+            "schema": "clawd.dispatch_health_matrix.v1",
+            "generated_at": now_iso(),
+            "workers": {},
+            "error": f"failed_to_load_or_parse:{e}",
+        }
+
+def build_operator_working_doctrine() -> Dict[str, Any]:
+    return {
+        "schema": "clawd.operator_working_doctrine.v1",
+        "session_role": "main_session_control_plane",
+        "main_session_default": "orchestrate_and_keep_truth",
+        "default_worker_lane": "subagent_default",
+        "main_session_exception_path": "main_session_tiny_exception",
+        "execution_mode": {
+            "required": True,
+            "allowed_values": ["EXECUTE_NOW", "PLAN_ONLY"],
+            "default_without_action": "PLAN_ONLY",
+            "spawn_before_speak_required": True,
+        },
+        "execution_tuple": {
+            "required": True,
+            "required_fields": ["execution_mode", "worker_lane", "model_selection"],
+        },
+        "dispatch_contract": {
+            "required": True,
+            "required_fields": [
+                "task_class",
+                "risk_tier",
+                "scope_shape",
+                "verification_class",
+                "worker_topology",
+                "fold_in_target",
+            ],
+        },
+        "active_assumptions": [
+            "main_session_stays_lean",
+            "subagent_first_for_non_trivial_work",
+            "deliberate_model_selection_required",
+        ],
+        "source_refs": [
+            "docs/ops/unified_operating_doctrine_v1.md",
+            "WORKFLOW_AUTO.md",
+            "WORKING_PROTOCOL.md",
+            "docs/ops/subagent_slot_fill_protocol_v1.md",
+        ],
+    }
+
+
+def _requires_post_completion_enforcement(
+    *,
+    selector_state: Optional[str],
+    close_condition_met: Optional[bool],
+    next_candidate: Optional[str],
+    frontier_queue_ready_count: int,
+    frontier_queue_dependency_blocked_count: int,
+    block_reasons: Optional[List[str]] = None,
+) -> bool:
+    if close_condition_met is not True:
+        return False
+
+    selector = str(selector_state or "").strip()
+    next_candidate_txt = str(next_candidate or "").strip()
+    ready_count = max(0, _to_int(frontier_queue_ready_count, 0))
+    dependency_blocked_count = max(0, _to_int(frontier_queue_dependency_blocked_count, 0))
+    reason_set = {str(item or "").strip() for item in (block_reasons or []) if str(item or "").strip()}
+    dependency_blocked_signal = bool(
+        dependency_blocked_count > 0
+        or "frontier_queue_only_dependency_blocked_candidates" in reason_set
+        or "next_candidate_dependency_blocked" in reason_set
+    )
+
+    if selector == "ready_for_dispatch":
+        return bool(next_candidate_txt or ready_count > 0)
+    if selector in {"closed_blocked", "idle_no_candidate"}:
+        return bool(next_candidate_txt or ready_count > 0 or dependency_blocked_signal)
+    return False
+
+
+def _is_post_completion_quiet_steady_state(
+    *,
+    selector_state: Optional[str],
+    close_condition_met: Optional[bool],
+    next_candidate: Optional[str],
+    frontier_queue_ready_count: int,
+    frontier_queue_dependency_blocked_count: int,
+    block_reasons: Optional[List[str]] = None,
+) -> bool:
+    if close_condition_met is not True:
+        return False
+
+    selector = str(selector_state or "").strip()
+    if selector not in {"closed_blocked", "idle_no_candidate"}:
+        return False
+
+    next_candidate_txt = str(next_candidate or "").strip()
+    ready_count = max(0, _to_int(frontier_queue_ready_count, 0))
+    dependency_blocked_count = max(0, _to_int(frontier_queue_dependency_blocked_count, 0))
+    reason_set = {str(item or "").strip() for item in (block_reasons or []) if str(item or "").strip()}
+    dependency_blocked_signal = bool(
+        dependency_blocked_count > 0
+        or "frontier_queue_only_dependency_blocked_candidates" in reason_set
+        or "next_candidate_dependency_blocked" in reason_set
+    )
+    return not next_candidate_txt and ready_count <= 0 and not dependency_blocked_signal
+
+
+def build_dispatch_context(now_obj: Dict[str, Any]) -> Dict[str, Any]:
+    autopilot_now = now_obj.get("autopilot") if isinstance(now_obj.get("autopilot"), dict) else {}
+    queue_now = now_obj.get("queue") if isinstance(now_obj.get("queue"), dict) else {}
+    idle_lane = autopilot_now.get("idle_lane_autospawn") if isinstance(autopilot_now.get("idle_lane_autospawn"), dict) else {}
+    execution_frontier_controller = (
+        autopilot_now.get("execution_frontier_controller")
+        if isinstance(autopilot_now.get("execution_frontier_controller"), dict)
+        else {}
+    )
+
+    execution_frontier_latch = {}
+    if execution_frontier_enforcement_latch_path.exists():
+        try:
+            loaded_latch = load_json(execution_frontier_enforcement_latch_path)
+        except Exception:
+            loaded_latch = {}
+        if isinstance(loaded_latch, dict):
+            execution_frontier_latch = loaded_latch
+
+    autonomous_execution_intent = {}
+    if autonomous_execution_intent_path.exists():
+        try:
+            loaded_intent = load_json(autonomous_execution_intent_path)
+        except Exception:
+            loaded_intent = {}
+        if isinstance(loaded_intent, dict):
+            autonomous_execution_intent = loaded_intent
+
+    raw_status = str(idle_lane.get("status") or "missing")
+    ready_work_exists = bool(idle_lane.get("ready_work_exists") is True)
+    idle_threshold_exceeded = bool(idle_lane.get("idle_threshold_exceeded") is True)
+    target_step_id = str(idle_lane.get("target_step_id") or "").strip() or None
+    launched_step_id = str(idle_lane.get("launched_step_id") or "").strip() or None
+    skip_reason = str(idle_lane.get("skip_reason") or "").strip() or None
+    trace_path = str(idle_lane.get("trace_path") or "state/continuity/latest/no_nudge_idle_lane_autospawn_latest.json")
+    idle_sec = max(0, int(idle_lane.get("idle_sec") or 0))
+    failure_like = raw_status in {"tick_failed", "attempted_no_launch", "error"}
+
+    stale_wave_signal = queue_now.get("stale_wave_signal") if isinstance(queue_now.get("stale_wave_signal"), dict) else {}
+    stale_wave_auto = (
+        queue_now.get("stale_wave_auto_remediation")
+        if isinstance(queue_now.get("stale_wave_auto_remediation"), dict)
+        else {}
+    )
+    stale_wave_auto_retry_contract = (
+        stale_wave_auto.get("retry_contract")
+        if isinstance(stale_wave_auto.get("retry_contract"), dict)
+        else {}
+    )
+
+    stale_wave_active = bool(stale_wave_signal.get("active") is True)
+    stale_wave_reason = str(stale_wave_signal.get("reason") or "").strip() or None
+    stale_wave_ready_count = max(0, _to_int(stale_wave_signal.get("ready_count"), 0))
+    stale_wave_ready_oldest_age_sec = max(0, _to_int(stale_wave_signal.get("ready_oldest_age_sec"), 0))
+    stale_wave_in_flight_effective = bool(stale_wave_signal.get("in_flight_effective") is True)
+
+    stale_wave_auto_status = str(stale_wave_auto.get("status") or "").strip().lower() or None
+    stale_wave_auto_attempted = bool(stale_wave_auto.get("attempted") is True)
+    stale_wave_auto_triggered = bool(stale_wave_auto.get("triggered") is True)
+    stale_wave_auto_recovered = bool(stale_wave_auto.get("recovered") is True)
+    stale_wave_auto_progress_detected = bool(stale_wave_auto.get("progress_detected") is True)
+    stale_wave_auto_ok = stale_wave_auto.get("ok")
+    stale_wave_auto_retry_scheduled = bool(stale_wave_auto_retry_contract.get("retry_scheduled") is True)
+    stale_wave_auto_retry_due = bool(stale_wave_auto_retry_contract.get("retry_due") is True)
+
+    stale_wave_auto_failure_states = {
+        "command_failed",
+        "remediation_degraded",
+        "failed",
+        "error",
+    }
+    stale_wave_auto_failure_present = bool(
+        stale_wave_auto_attempted
+        and (
+            stale_wave_auto_ok is False
+            or (stale_wave_auto_status in stale_wave_auto_failure_states)
+            or (
+                stale_wave_auto_triggered
+                and not stale_wave_auto_recovered
+                and not stale_wave_auto_progress_detected
+            )
+        )
+    )
+    stale_wave_auto_failure_signal = bool(
+        stale_wave_auto_failure_present
+        and (
+            stale_wave_active
+            or bool(stale_wave_auto.get("queue_stale_wave_active_after") is True)
+        )
+    )
+    stale_wave_auto_failure_residue_suppressed = bool(
+        stale_wave_auto_failure_present
+        and not stale_wave_auto_failure_signal
+    )
+    stale_wave_auto_failure_residue_reason = (
+        "historical_failure_no_active_stale_wave"
+        if stale_wave_auto_failure_residue_suppressed
+        else None
+    )
+    if stale_wave_auto_failure_signal:
+        stale_wave_auto_failure_signal_state = "live_failure_signal"
+    elif stale_wave_auto_failure_residue_suppressed:
+        stale_wave_auto_failure_signal_state = "historical_residue_suppressed"
+    else:
+        stale_wave_auto_failure_signal_state = "none"
+
+    stale_wave_failure_evidence = (
+        stale_wave_auto.get("failure_evidence")
+        if isinstance(stale_wave_auto.get("failure_evidence"), dict)
+        else {}
+    )
+    stale_wave_auto_failure_observed_at = (
+        str(stale_wave_failure_evidence.get("captured_at") or "").strip()
+        or str(stale_wave_auto.get("last_failure_at") or "").strip()
+        or str(stale_wave_failure_evidence.get("attempt_at") or "").strip()
+        or str(stale_wave_auto.get("last_attempt_at") or "").strip()
+        or None
+    )
+    stale_wave_auto_failure_observed_age_sec = None
+    if stale_wave_auto_failure_observed_at:
+        observed_dt = parse_iso(stale_wave_auto_failure_observed_at)
+        reference_dt = parse_iso(str(now_obj.get("generated_at") or "").strip()) or clock_now_dt()
+        if observed_dt is not None and reference_dt is not None:
+            stale_wave_auto_failure_observed_age_sec = max(0, int((reference_dt - observed_dt).total_seconds()))
+
+    stale_wave_frontier_stall_signal = bool(
+        stale_wave_active
+        and stale_wave_ready_count > 0
+        and not stale_wave_in_flight_effective
+        and idle_threshold_exceeded
+    )
+
+    continuity_warning_reasons = _dedupe_nonempty_strings(now_obj.get("warning_reasons") or [])
+    rollout_warning_reasons = _dedupe_nonempty_strings(now_obj.get("rollout_warning_reasons") or [])
+    warning_reason_set = set(continuity_warning_reasons + rollout_warning_reasons)
+    probe_due_now_idle_no_dispatch_candidate_warning = (
+        "execution_supervisor_probe_execution_due_now_idle_no_dispatch_candidate" in warning_reason_set
+    )
+    probe_due_now_idle_no_dispatch_candidate_signal = bool(
+        probe_due_now_idle_no_dispatch_candidate_warning
+    )
+    probe_due_now_idle_no_dispatch_candidate_warning_projection_missing = False
+    probe_execution_due_now_worker_count = 0
+    probe_execution_overdue_worker_count = 0
+    probe_execution_plan_age_sec = None
+    probe_execution_plan_fresh = None
+
+    probe_execution_plan = load_json_if_exists(execution_supervisor_probe_execution_plan_latest_path)
+    if isinstance(probe_execution_plan, dict) and probe_execution_plan:
+        probe_execution_due_now_worker_count = max(
+            0,
+            _to_int(probe_execution_plan.get("due_now_worker_count"), 0),
+        )
+        probe_execution_overdue_worker_count = max(
+            0,
+            _to_int(probe_execution_plan.get("overdue_worker_count"), 0),
+        )
+        plan_generated_at = str(probe_execution_plan.get("generated_at") or "").strip()
+        if plan_generated_at:
+            reference_generated_at = str(now_obj.get("generated_at") or "").strip()
+            reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+            plan_dt = parse_iso(plan_generated_at)
+            if reference_dt and plan_dt:
+                probe_execution_plan_age_sec = int((reference_dt - plan_dt).total_seconds())
+                probe_max_age_sec = max(
+                    0,
+                    int(execution_supervisor_worker_health_canary_probe_max_age_sec),
+                )
+                probe_future_skew_sec = max(
+                    0,
+                    int(execution_supervisor_worker_health_canary_probe_future_skew_sec),
+                )
+                probe_execution_plan_fresh = bool(
+                    probe_execution_plan_age_sec >= (-1 * probe_future_skew_sec)
+                    and probe_execution_plan_age_sec <= probe_max_age_sec
+                )
+
+        probe_due_now_idle_no_dispatch_candidate_artifact_signal = bool(
+            (probe_execution_due_now_worker_count > 0 or probe_execution_overdue_worker_count > 0)
+            and probe_execution_plan_fresh is not False
+        )
+        if probe_due_now_idle_no_dispatch_candidate_artifact_signal:
+            probe_due_now_idle_no_dispatch_candidate_signal = True
+            if not probe_due_now_idle_no_dispatch_candidate_warning:
+                probe_due_now_idle_no_dispatch_candidate_warning_projection_missing = True
+
+    worker_health_canary_stale_warning = (
+        "execution_supervisor_worker_health_canary_stale" in warning_reason_set
+    )
+
+    execution_supervisor_dispatch_intent = {}
+    if execution_supervisor_dispatch_intent_latest_path.exists():
+        try:
+            loaded_dispatch_intent = load_json(execution_supervisor_dispatch_intent_latest_path)
+        except Exception:
+            loaded_dispatch_intent = {}
+        if isinstance(loaded_dispatch_intent, dict):
+            execution_supervisor_dispatch_intent = loaded_dispatch_intent
+
+    execution_supervisor_dispatch_intent_status = str(
+        execution_supervisor_dispatch_intent.get("status") or ""
+    ).strip().lower()
+    execution_supervisor_dispatch_intent_reroute_summary = (
+        execution_supervisor_dispatch_intent.get("reroute_summary")
+        if isinstance(execution_supervisor_dispatch_intent.get("reroute_summary"), dict)
+        else {}
+    )
+    execution_supervisor_dispatch_intent_reroute_required_count = max(
+        0,
+        _to_int(execution_supervisor_dispatch_intent_reroute_summary.get("required_count"), 0),
+    )
+    execution_supervisor_dispatch_intent_reroute_dispatch_ready_count = max(
+        0,
+        _to_int(execution_supervisor_dispatch_intent_reroute_summary.get("dispatch_ready_count"), 0),
+    )
+    execution_supervisor_dispatch_intent_reroute_blocked_count = max(
+        0,
+        _to_int(execution_supervisor_dispatch_intent_reroute_summary.get("blocked_count"), 0),
+    )
+    execution_supervisor_dispatch_intent_reasons = _dedupe_nonempty_strings(
+        execution_supervisor_dispatch_intent.get("decision_reasons") or []
+    )
+
+    quota_lane_exhausted_reason_tokens = {
+        "provider_quota_exhausted",
+        "provider_quota_routes_exhausted",
+        "provider_quota_routes_exhausted_or_cooldown_active",
+    }
+    execution_supervisor_provider_quota_lane_exhausted_reason = next(
+        (
+            reason
+            for reason in execution_supervisor_dispatch_intent_reasons
+            if reason in quota_lane_exhausted_reason_tokens
+        ),
+        None,
+    )
+    execution_supervisor_provider_quota_lane_exhausted_signal = bool(
+        execution_supervisor_dispatch_intent_status == "blocked"
+        and execution_supervisor_dispatch_intent_reroute_required_count > 0
+        and execution_supervisor_dispatch_intent_reroute_dispatch_ready_count <= 0
+        and execution_supervisor_dispatch_intent_reroute_blocked_count
+        >= execution_supervisor_dispatch_intent_reroute_required_count
+        and execution_supervisor_provider_quota_lane_exhausted_reason
+    )
+
+    autonomous_dispatch_status = str(execution_frontier_controller.get("status") or "missing")
+    autonomous_dispatch_block_reason = str(execution_frontier_controller.get("block_reason") or "")
+    autonomous_dispatch_skip_reason = str(execution_frontier_controller.get("skip_reason") or "")
+    autonomous_dispatch_selector_state = str(execution_frontier_controller.get("selector_state") or "")
+    autonomous_dispatch_close_condition_met = execution_frontier_controller.get("close_condition_met")
+    if not isinstance(autonomous_dispatch_close_condition_met, bool):
+        autonomous_dispatch_close_condition_met = None
+    autonomous_dispatch_next_candidate = str(execution_frontier_controller.get("next_candidate") or "").strip() or None
+    autonomous_dispatch_frontier_ready_count = 0
+    autonomous_dispatch_frontier_dependency_blocked_count = 0
+
+    autonomous_dispatch_loop_state = str(
+        execution_frontier_controller.get("post_completion_loop_state")
+        or execution_frontier_latch.get("loop_state")
+        or autonomous_execution_intent.get("loop_state")
+        or ""
+    ).strip()
+    autonomous_dispatch_retry_contract = (
+        execution_frontier_controller.get("post_completion_retry_contract")
+        if isinstance(execution_frontier_controller.get("post_completion_retry_contract"), dict)
+        else {}
+    )
+    if not autonomous_dispatch_retry_contract and isinstance(execution_frontier_latch.get("retry_contract"), dict):
+        autonomous_dispatch_retry_contract = execution_frontier_latch.get("retry_contract")
+    autonomous_dispatch_cooldown_policy = (
+        execution_frontier_controller.get("post_completion_cooldown_policy")
+        if isinstance(execution_frontier_controller.get("post_completion_cooldown_policy"), dict)
+        else {}
+    )
+    if not autonomous_dispatch_cooldown_policy and isinstance(execution_frontier_latch.get("cooldown_policy"), dict):
+        autonomous_dispatch_cooldown_policy = execution_frontier_latch.get("cooldown_policy")
+    autonomous_dispatch_parity = (
+        execution_frontier_controller.get("queue_truth_vs_narrative_parity")
+        if isinstance(execution_frontier_controller.get("queue_truth_vs_narrative_parity"), dict)
+        else {}
+    )
+    if not autonomous_dispatch_parity and isinstance(execution_frontier_latch.get("queue_truth_vs_narrative_parity"), dict):
+        autonomous_dispatch_parity = execution_frontier_latch.get("queue_truth_vs_narrative_parity")
+
+    frontier_selector_states = {"wave_open", "ready_for_dispatch", "closed_blocked", "idle_no_candidate"}
+    frontier_fallback_selector_state = ""
+    frontier_fallback_close_condition_met = None
+    frontier_fallback_next_candidate = None
+    frontier_fallback_block_reasons: List[str] = []
+    if execution_frontier_ledger_path.exists():
+        try:
+            frontier_ledger_obj = load_json(execution_frontier_ledger_path)
+        except Exception:
+            frontier_ledger_obj = {}
+        if isinstance(frontier_ledger_obj, dict):
+            frontier_transition_obj = (
+                frontier_ledger_obj.get("transition")
+                if isinstance(frontier_ledger_obj.get("transition"), dict)
+                else {}
+            )
+            frontier_supervisor_obj = (
+                frontier_ledger_obj.get("supervisor_state")
+                if isinstance(frontier_ledger_obj.get("supervisor_state"), dict)
+                else {}
+            )
+            frontier_queue_obj = (
+                frontier_ledger_obj.get("frontier_queue")
+                if isinstance(frontier_ledger_obj.get("frontier_queue"), dict)
+                else {}
+            )
+            candidate_selector_state = str(
+                frontier_transition_obj.get("selector_state")
+                or frontier_supervisor_obj.get("selector_state")
+                or ""
+            ).strip()
+            if candidate_selector_state in frontier_selector_states:
+                frontier_fallback_selector_state = candidate_selector_state
+            candidate_close_condition = frontier_transition_obj.get("close_condition_met")
+            if isinstance(candidate_close_condition, bool):
+                frontier_fallback_close_condition_met = candidate_close_condition
+            frontier_fallback_next_candidate = str(frontier_ledger_obj.get("next_candidate") or "").strip() or None
+            frontier_fallback_block_reasons = _dedupe_nonempty_strings(
+                frontier_supervisor_obj.get("autonomous_dispatch_block_reasons") or []
+            )
+            autonomous_dispatch_frontier_ready_count = max(
+                autonomous_dispatch_frontier_ready_count,
+                _to_int(frontier_queue_obj.get("ready_count"), 0),
+            )
+            autonomous_dispatch_frontier_dependency_blocked_count = max(
+                autonomous_dispatch_frontier_dependency_blocked_count,
+                _to_int(frontier_queue_obj.get("dependency_blocked_count"), 0),
+            )
+
+    if not autonomous_dispatch_selector_state and frontier_fallback_selector_state:
+        autonomous_dispatch_selector_state = frontier_fallback_selector_state
+    if autonomous_dispatch_close_condition_met is None and isinstance(frontier_fallback_close_condition_met, bool):
+        autonomous_dispatch_close_condition_met = frontier_fallback_close_condition_met
+    if not autonomous_dispatch_next_candidate and frontier_fallback_next_candidate:
+        autonomous_dispatch_next_candidate = frontier_fallback_next_candidate
+
+    autonomous_dispatch_post_completion_enforcement_required = execution_frontier_controller.get(
+        "post_completion_enforcement_required"
+    )
+    derived_post_completion_enforcement_required = _requires_post_completion_enforcement(
+        selector_state=autonomous_dispatch_selector_state,
+        close_condition_met=autonomous_dispatch_close_condition_met,
+        next_candidate=autonomous_dispatch_next_candidate,
+        frontier_queue_ready_count=autonomous_dispatch_frontier_ready_count,
+        frontier_queue_dependency_blocked_count=autonomous_dispatch_frontier_dependency_blocked_count,
+        block_reasons=(execution_frontier_controller.get("block_reasons") or []) + frontier_fallback_block_reasons,
+    )
+    if isinstance(autonomous_dispatch_post_completion_enforcement_required, bool):
+        autonomous_dispatch_post_completion_enforcement_required = bool(
+            autonomous_dispatch_post_completion_enforcement_required
+            or derived_post_completion_enforcement_required
+        )
+    else:
+        autonomous_dispatch_post_completion_enforcement_required = derived_post_completion_enforcement_required
+
+    autonomous_dispatch_block_reasons: List[str] = []
+    seen_autonomous_dispatch_reasons = set()
+    for raw in (execution_frontier_controller.get("block_reasons") or []):
+        txt = str(raw or "").strip()
+        if not txt or txt in seen_autonomous_dispatch_reasons:
+            continue
+        seen_autonomous_dispatch_reasons.add(txt)
+        autonomous_dispatch_block_reasons.append(txt)
+
+    if (
+        autonomous_dispatch_post_completion_enforcement_required
+        and autonomous_dispatch_status in {"missing", "skipped"}
+        and autonomous_dispatch_selector_state in {"closed_blocked", "idle_no_candidate"}
+    ):
+        autonomous_dispatch_status = "blocked"
+        if not autonomous_dispatch_block_reason:
+            if autonomous_dispatch_selector_state == "closed_blocked":
+                autonomous_dispatch_block_reason = "post_completion_closed_blocked"
+            else:
+                autonomous_dispatch_block_reason = "post_completion_no_next_candidate"
+        if (
+            autonomous_dispatch_block_reason
+            and autonomous_dispatch_block_reason not in seen_autonomous_dispatch_reasons
+        ):
+            seen_autonomous_dispatch_reasons.add(autonomous_dispatch_block_reason)
+            autonomous_dispatch_block_reasons.append(autonomous_dispatch_block_reason)
+
+    quiet_post_completion_steady_state = _is_post_completion_quiet_steady_state(
+        selector_state=autonomous_dispatch_selector_state,
+        close_condition_met=autonomous_dispatch_close_condition_met,
+        next_candidate=autonomous_dispatch_next_candidate,
+        frontier_queue_ready_count=autonomous_dispatch_frontier_ready_count,
+        frontier_queue_dependency_blocked_count=autonomous_dispatch_frontier_dependency_blocked_count,
+        block_reasons=(execution_frontier_controller.get("block_reasons") or []) + frontier_fallback_block_reasons,
+    )
+    if quiet_post_completion_steady_state and not autonomous_dispatch_post_completion_enforcement_required:
+        autonomous_dispatch_status = "skipped"
+        autonomous_dispatch_block_reason = ""
+        autonomous_dispatch_block_reasons = []
+        autonomous_dispatch_loop_state = ""
+        autonomous_dispatch_retry_contract = {}
+        autonomous_dispatch_cooldown_policy = {}
+        autonomous_dispatch_parity = {}
+
+    post_completion_enforcement_blocked = bool(
+        autonomous_dispatch_post_completion_enforcement_required
+        and (
+            autonomous_dispatch_status == "blocked"
+            or autonomous_dispatch_selector_state in {"closed_blocked", "idle_no_candidate"}
+        )
+    )
+    post_completion_enforcement_stalled = bool(
+        autonomous_dispatch_post_completion_enforcement_required
+        and autonomous_dispatch_status in {"error", "missing", "skipped"}
+    )
+    post_completion_enforcement_latched = bool(
+        post_completion_enforcement_blocked or post_completion_enforcement_stalled
+    )
+    if isinstance(execution_frontier_controller.get("post_completion_enforcement_latched"), bool):
+        post_completion_enforcement_latched = bool(execution_frontier_controller.get("post_completion_enforcement_latched"))
+    elif isinstance(execution_frontier_latch.get("latched"), bool):
+        post_completion_enforcement_latched = bool(execution_frontier_latch.get("latched"))
+
+    autonomous_dispatch_intent_active = bool(
+        execution_frontier_controller.get("autonomous_execution_intent_active") is True
+        or autonomous_execution_intent.get("active") is True
+    )
+    if autonomous_dispatch_status in {"missing", "skipped"} and autonomous_dispatch_intent_active:
+        autonomous_dispatch_status = str(autonomous_execution_intent.get("status") or "blocked")
+
+    if quiet_post_completion_steady_state and not autonomous_dispatch_post_completion_enforcement_required:
+        post_completion_enforcement_latched = False
+        autonomous_dispatch_intent_active = False
+        autonomous_dispatch_status = "skipped"
+
+    autonomous_dispatch_cooldown_active = bool(
+        autonomous_dispatch_cooldown_policy.get("active") is True
+    )
+
+    if launched_step_id or raw_status == "launched":
+        dispatch_status = "launched"
+    elif autonomous_dispatch_loop_state == "BLOCKED_LOOP" or autonomous_dispatch_cooldown_active:
+        dispatch_status = "blocked"
+    elif autonomous_dispatch_loop_state == "STALLED_LOOP":
+        dispatch_status = "stalled"
+    elif post_completion_enforcement_blocked:
+        dispatch_status = "blocked"
+    elif post_completion_enforcement_stalled:
+        dispatch_status = "stalled"
+    elif failure_like and ready_work_exists and idle_threshold_exceeded:
+        dispatch_status = "stalled"
+    elif raw_status == "skipped" and ready_work_exists and idle_threshold_exceeded:
+        dispatch_status = "blocked"
+    elif target_step_id or ready_work_exists:
+        dispatch_status = "pending"
+    elif raw_status == "missing":
+        dispatch_status = "missing"
+    else:
+        dispatch_status = "idle"
+
+    status_truthfulness_overrides: List[str] = []
+
+    autonomous_dispatch_reason_set = set(
+        _dedupe_nonempty_strings(autonomous_dispatch_block_reasons + frontier_fallback_block_reasons)
+    )
+    execution_frontier_dependency_blocked_signal = bool(
+        "next_candidate_dependency_blocked" in autonomous_dispatch_reason_set
+        or "frontier_queue_only_dependency_blocked_candidates" in autonomous_dispatch_reason_set
+        or (
+            autonomous_dispatch_frontier_dependency_blocked_count > 0
+            and autonomous_dispatch_frontier_ready_count <= 0
+            and not autonomous_dispatch_next_candidate
+        )
+    )
+    execution_frontier_clear_next_slice_exists = bool(
+        autonomous_dispatch_frontier_ready_count > 0
+        or (
+            autonomous_dispatch_next_candidate
+            and not execution_frontier_dependency_blocked_signal
+        )
+    )
+    execution_frontier_closed_blocked_stagnation_signal = bool(
+        autonomous_dispatch_selector_state == "closed_blocked"
+        and autonomous_dispatch_close_condition_met is True
+        and idle_threshold_exceeded
+        and execution_frontier_clear_next_slice_exists
+        and not execution_frontier_dependency_blocked_signal
+        and autonomous_dispatch_loop_state not in {"BLOCKED_LOOP", "STALLED_LOOP"}
+        and not autonomous_dispatch_cooldown_active
+    )
+    if stale_wave_frontier_stall_signal and dispatch_status in {"pending", "idle", "missing"}:
+        dispatch_status = "stalled"
+        status_truthfulness_overrides.append("queue_stale_wave_frontier_stall_truthfulness")
+
+    queue_stale_wave_auto_remediation_failure_stall_signal = bool(
+        stale_wave_auto_failure_signal
+        and not stale_wave_frontier_stall_signal
+    )
+    if queue_stale_wave_auto_remediation_failure_stall_signal and dispatch_status in {
+        "pending",
+        "idle",
+        "missing",
+    }:
+        dispatch_status = "stalled"
+        status_truthfulness_overrides.append("queue_stale_wave_auto_remediation_broken_truthfulness")
+
+    if execution_frontier_closed_blocked_stagnation_signal and dispatch_status in {
+        "pending",
+        "idle",
+        "missing",
+        "blocked",
+    }:
+        dispatch_status = "stalled"
+        status_truthfulness_overrides.append("execution_frontier_closed_blocked_stagnation_truthfulness")
+
+    execution_supervisor_idle_no_candidate_stall_signal = bool(
+        probe_due_now_idle_no_dispatch_candidate_signal
+        and autonomous_dispatch_selector_state in {"", "idle_no_candidate", "closed_blocked"}
+        and not ready_work_exists
+    )
+    if execution_supervisor_idle_no_candidate_stall_signal and dispatch_status in {"pending", "idle", "missing"}:
+        dispatch_status = "stalled"
+        status_truthfulness_overrides.append("execution_supervisor_due_now_idle_no_candidate_truthfulness")
+    if (
+        execution_supervisor_idle_no_candidate_stall_signal
+        and probe_due_now_idle_no_dispatch_candidate_warning_projection_missing
+    ):
+        status_truthfulness_overrides.append(
+            "execution_supervisor_probe_due_now_signal_projection_missing_truthfulness"
+        )
+    if execution_supervisor_idle_no_candidate_stall_signal and worker_health_canary_stale_warning:
+        status_truthfulness_overrides.append("execution_supervisor_worker_health_canary_stale_truthfulness")
+
+    if execution_supervisor_provider_quota_lane_exhausted_signal and dispatch_status in {
+        "pending",
+        "idle",
+        "missing",
+    }:
+        dispatch_status = "stalled"
+        status_truthfulness_overrides.append(
+            "execution_supervisor_provider_quota_lane_exhausted_truthfulness"
+        )
+
+    return {
+        "status": dispatch_status,
+        "source": "continuity_now.autopilot.idle_lane_autospawn",
+        "autopilot_status": raw_status,
+        "ready_work_exists": ready_work_exists,
+        "idle_threshold_exceeded": idle_threshold_exceeded,
+        "idle_sec": idle_sec,
+        "target_step_id": target_step_id,
+        "launched_step_id": launched_step_id,
+        "skip_reason": skip_reason,
+        "trace_path": trace_path,
+        "updated_at": idle_lane.get("updated_at"),
+        "autonomous_dispatch_status": autonomous_dispatch_status,
+        "autonomous_dispatch_decision": str(execution_frontier_controller.get("decision") or ""),
+        "autonomous_dispatch_skip_reason": autonomous_dispatch_skip_reason,
+        "autonomous_dispatch_block_reason": autonomous_dispatch_block_reason,
+        "autonomous_dispatch_block_reasons": autonomous_dispatch_block_reasons,
+        "autonomous_dispatch_error": str(execution_frontier_controller.get("error") or ""),
+        "autonomous_dispatch_updated_at": execution_frontier_controller.get("recorded_at"),
+        "autonomous_dispatch_selector_state": autonomous_dispatch_selector_state,
+        "autonomous_dispatch_close_condition_met": autonomous_dispatch_close_condition_met,
+        "autonomous_dispatch_post_completion_enforcement_required": autonomous_dispatch_post_completion_enforcement_required,
+        "autonomous_dispatch_post_completion_enforcement_latched": post_completion_enforcement_latched,
+        "autonomous_dispatch_post_completion_loop_state": autonomous_dispatch_loop_state or None,
+        "autonomous_dispatch_retry_contract": autonomous_dispatch_retry_contract,
+        "autonomous_dispatch_cooldown_policy": autonomous_dispatch_cooldown_policy,
+        "autonomous_dispatch_queue_truth_vs_narrative_parity": autonomous_dispatch_parity,
+        "autonomous_dispatch_intent_active": autonomous_dispatch_intent_active,
+        "autonomous_dispatch_latch_path": str(
+            execution_frontier_controller.get("post_completion_latch_path")
+            or execution_frontier_latch.get("latch_path")
+            or "state/continuity/latest/execution_frontier_post_completion_enforcement_latch.json"
+        ),
+        "autonomous_dispatch_latch_history_path": str(
+            execution_frontier_controller.get("post_completion_latch_history_path")
+            or execution_frontier_latch.get("latch_history_path")
+            or "state/continuity/history/execution_frontier_post_completion_enforcement_latch.jsonl"
+        ),
+        "autonomous_execution_intent_path": str(
+            execution_frontier_controller.get("autonomous_execution_intent_path")
+            or autonomous_execution_intent.get("intent_path")
+            or "state/continuity/latest/autonomous_execution_intent_latest.json"
+        ),
+        "autonomous_execution_intent_history_path": str(
+            execution_frontier_controller.get("autonomous_execution_intent_history_path")
+            or autonomous_execution_intent.get("intent_history_path")
+            or "state/continuity/history/autonomous_execution_intent_history.jsonl"
+        ),
+        "autonomous_dispatch_trace_path": str(
+            execution_frontier_controller.get("trace_path")
+            or "state/continuity/latest/no_nudge_execution_frontier_controller_tick_latest.json"
+        ),
+        "autonomous_dispatch_history_path": str(
+            execution_frontier_controller.get("history_path")
+            or "state/continuity/history/no_nudge_execution_frontier_controller_ticks.jsonl"
+        ),
+        "autonomous_dispatch_source_degraded": bool(
+            execution_frontier_controller.get("contract_source_degraded") is True
+        ),
+        "queue_stale_wave_active": stale_wave_active,
+        "queue_stale_wave_reason": stale_wave_reason,
+        "queue_stale_wave_ready_count": stale_wave_ready_count,
+        "queue_stale_wave_ready_oldest_age_sec": stale_wave_ready_oldest_age_sec,
+        "queue_stale_wave_in_flight_effective": stale_wave_in_flight_effective,
+        "queue_stale_wave_auto_status": stale_wave_auto_status,
+        "queue_stale_wave_auto_failure_present": stale_wave_auto_failure_present,
+        "queue_stale_wave_auto_failure_signal": stale_wave_auto_failure_signal,
+        "queue_stale_wave_auto_failure_signal_state": stale_wave_auto_failure_signal_state,
+        "queue_stale_wave_auto_failure_residue_suppressed": stale_wave_auto_failure_residue_suppressed,
+        "queue_stale_wave_auto_failure_residue_reason": stale_wave_auto_failure_residue_reason,
+        "queue_stale_wave_auto_failure_observed_at": stale_wave_auto_failure_observed_at,
+        "queue_stale_wave_auto_failure_observed_age_sec": stale_wave_auto_failure_observed_age_sec,
+        "queue_stale_wave_auto_retry_scheduled": stale_wave_auto_retry_scheduled,
+        "queue_stale_wave_auto_retry_due": stale_wave_auto_retry_due,
+        "queue_stale_wave_frontier_stall_signal": stale_wave_frontier_stall_signal,
+        "queue_stale_wave_auto_remediation_failure_stall_signal": queue_stale_wave_auto_remediation_failure_stall_signal,
+        "execution_frontier_clear_next_slice_exists": execution_frontier_clear_next_slice_exists,
+        "execution_frontier_dependency_blocked_signal": execution_frontier_dependency_blocked_signal,
+        "execution_frontier_closed_blocked_stagnation_signal": execution_frontier_closed_blocked_stagnation_signal,
+        "execution_supervisor_probe_due_now_idle_no_dispatch_candidate_warning": probe_due_now_idle_no_dispatch_candidate_warning,
+        "execution_supervisor_probe_due_now_idle_no_dispatch_candidate_signal": probe_due_now_idle_no_dispatch_candidate_signal,
+        "execution_supervisor_probe_due_now_idle_no_dispatch_candidate_warning_projection_missing": probe_due_now_idle_no_dispatch_candidate_warning_projection_missing,
+        "execution_supervisor_probe_execution_due_now_worker_count": probe_execution_due_now_worker_count,
+        "execution_supervisor_probe_execution_overdue_worker_count": probe_execution_overdue_worker_count,
+        "execution_supervisor_probe_execution_plan_age_sec": probe_execution_plan_age_sec,
+        "execution_supervisor_probe_execution_plan_fresh": probe_execution_plan_fresh,
+        "execution_supervisor_worker_health_canary_stale_warning": worker_health_canary_stale_warning,
+        "execution_supervisor_idle_no_candidate_stall_signal": execution_supervisor_idle_no_candidate_stall_signal,
+        "execution_supervisor_provider_quota_lane_exhausted_signal": execution_supervisor_provider_quota_lane_exhausted_signal,
+        "execution_supervisor_provider_quota_lane_exhausted_reason": execution_supervisor_provider_quota_lane_exhausted_reason,
+        "execution_supervisor_dispatch_intent_path": to_rel(execution_supervisor_dispatch_intent_latest_path),
+        "execution_supervisor_dispatch_intent_status": (
+            execution_supervisor_dispatch_intent_status or None
+        ),
+        "execution_supervisor_dispatch_intent_reroute_required_count": (
+            execution_supervisor_dispatch_intent_reroute_required_count
+        ),
+        "execution_supervisor_dispatch_intent_reroute_dispatch_ready_count": (
+            execution_supervisor_dispatch_intent_reroute_dispatch_ready_count
+        ),
+        "execution_supervisor_dispatch_intent_reroute_blocked_count": (
+            execution_supervisor_dispatch_intent_reroute_blocked_count
+        ),
+        "status_truthfulness_overrides": status_truthfulness_overrides,
+    }
+
+
+def build_execution_context(
+    *,
+    readiness: str,
+    in_flight: Dict[str, Any],
+    mutation_gate: Dict[str, Any],
+    dispatch_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    dispatch_status = str(dispatch_context.get("status") or "missing")
+    if bool(in_flight.get("value") is True):
+        posture = "in_flight"
+    elif dispatch_status == "launched":
+        posture = "dispatch_launched"
+    elif dispatch_status == "stalled":
+        posture = "dispatch_stalled"
+    elif dispatch_status == "blocked":
+        posture = "dispatch_blocked"
+    elif dispatch_status == "pending":
+        posture = "dispatch_pending"
+    else:
+        posture = "idle"
+
+    expected_in_flight_guard = mutation_gate.get("expected_in_flight_guard")
+    if not isinstance(expected_in_flight_guard, bool):
+        expected_in_flight_guard = None
+
+    return {
+        "posture": posture,
+        "source": "derived_from_current_queue_mutation_gate_and_autopilot",
+        "readiness": readiness,
+        "in_flight": bool(in_flight.get("value") is True),
+        "running_tasks": max(0, int(in_flight.get("running_tasks") or 0)),
+        "active_locks": max(0, int(in_flight.get("active_locks") or 0)),
+        "mutation_gate_status": str(mutation_gate.get("status") or "unknown"),
+        "mutation_gate_posture": str(mutation_gate.get("posture") or "unknown"),
+        "expected_in_flight_guard": expected_in_flight_guard,
+        "dispatch_status": dispatch_status,
+    }
+
+
+def _dedupe_nonempty_strings(values: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in (values or []):
+        txt = str(raw or "").strip()
+        if not txt or txt in seen:
+            continue
+        seen.add(txt)
+        out.append(txt)
+    return out
+
+
+def _parse_cycle_value(raw: Any) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw >= 0 else None
+
+    txt = str(raw or "").strip()
+    if not txt:
+        return None
+
+    if txt.isdigit():
+        try:
+            value = int(txt)
+            return value if value >= 0 else None
+        except Exception:
+            return None
+
+    match = re.search(r"(?:^|[;\s])cycle=(\d+)(?:/\d+)?(?:$|[;\s])", txt)
+    if not match:
+        return None
+    try:
+        value = int(match.group(1))
+    except Exception:
+        return None
+    return value if value >= 0 else None
+
+
+def _slugify_token(value: Any, *, fallback: str = "slice", limit: int = 80) -> str:
+    text = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    if not text:
+        text = fallback
+    if len(text) > max(8, int(limit)):
+        text = text[: max(8, int(limit))].rstrip("_")
+    return text or fallback
+
+
+def _json_ptr(parts: Any) -> str:
+    seq = list(parts or [])
+    if not seq:
+        return "$"
+    return "$/" + "/".join(str(part) for part in seq)
+
+
+def _core_roadmap_state_category(state_token: str) -> str:
+    state = str(state_token or "").strip().upper()
+    if state in {"DONE", "COMPLETE", "COMPLETED", "SKIPPED", "CANCELLED"}:
+        return "done"
+    if state in {"READY_NOW"}:
+        return "ready"
+    if state in {"IN_PROGRESS", "RUNNING", "ACTIVE"}:
+        return "running"
+    if state == "DEPENDENCY_BLOCKED" or state.endswith("_BLOCKED") or state.startswith("READY_PENDING_"):
+        return "dependency_blocked"
+    return "queued"
+
+
+def _validate_core_roadmap_queue_layer_schema(payload: Dict[str, Any]) -> List[str]:
+    if Draft202012Validator is None or FormatChecker is None:
+        return ["queue_layer_schema_validator_unavailable"]
+
+    if not core_roadmap_queue_layer_schema_path.exists():
+        return [f"queue_layer_schema_missing:{to_rel(core_roadmap_queue_layer_schema_path)}"]
+
+    try:
+        schema_doc = json.loads(core_roadmap_queue_layer_schema_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [f"queue_layer_schema_parse_error:{exc}"]
+
+    if not isinstance(schema_doc, dict):
+        return ["queue_layer_schema_not_object"]
+
+    try:
+        validator = Draft202012Validator(schema_doc, format_checker=FormatChecker())
+    except Exception as exc:
+        return [f"queue_layer_schema_validator_init_failed:{exc}"]
+
+    errors = sorted(
+        validator.iter_errors(payload),
+        key=lambda err: (list(err.absolute_path), list(err.absolute_schema_path), str(err.message)),
+    )
+    if not errors:
+        return []
+
+    err = errors[0]
+    return [
+        "queue_layer_schema_validation_failed:"
+        f"data_path={_json_ptr(err.absolute_path)}:"
+        f"schema_path={_json_ptr(err.absolute_schema_path)}:"
+        f"error={err.message}"
+    ]
+
+
+def _queue_candidate_ids(rows: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in (rows if isinstance(rows, list) else []):
+        if not isinstance(raw, dict):
+            continue
+        task_id = str(raw.get("task_id") or "").strip()
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        out.append(task_id)
+    return out
+
+
+def _normalize_backpressure_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    return {
+        "task_id": str(row.get("task_id") or "").strip() or None,
+        "state": str(row.get("state") or "").strip() or None,
+        "role_required": str(row.get("role_required") or "").strip() or None,
+        "wave": _extract_wave_number(row.get("wave") if row.get("wave") is not None else row.get("task_id")),
+        "created_at": str(row.get("created_at") or "").strip() or None,
+        "updated_at": str(row.get("updated_at") or "").strip() or None,
+        "tier": str(row.get("tier") or "").strip() or None,
+        "lane": row.get("lane"),
+        "title": str(row.get("title") or "").strip() or None,
+    }
+
+
+def _backpressure_critical_row(row: Dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    tier = str(row.get("tier") or "").strip().upper()
+    if tier and any(tier.startswith(prefix) for prefix in execution_frontier_bounded_queue_fail_closed_tiers):
+        return True
+
+    lanes = row.get("lane")
+    lane_tokens = []
+    if isinstance(lanes, (list, tuple, set)):
+        lane_tokens = [str(lane or "").strip().upper() for lane in lanes]
+    elif lanes is not None:
+        lane_tokens = [str(lanes).strip().upper()]
+    if any(token.startswith("A0") for token in lane_tokens if token):
+        return True
+
+    text = str(row.get("title") or "").strip().lower()
+    if not text:
+        return False
+    critical_markers = {"transaction", "transactional", "mutat", "evidence", "checkpoint", "ledger", "publish", "commit"}
+    return any(token in text for token in critical_markers)
+
+
+def _backpressure_optional_row(row: Dict[str, Any]) -> bool:
+    if not isinstance(row, dict):
+        return False
+    if _backpressure_critical_row(row):
+        return False
+
+    lanes = row.get("lane")
+    lane_tokens = []
+    if isinstance(lanes, (list, tuple, set)):
+        lane_tokens = [str(lane or "").strip().upper() for lane in lanes]
+    elif lanes is not None:
+        lane_tokens = [str(lanes).strip().upper()]
+
+    if any(token.startswith("XO") for token in lane_tokens if token):
+        return True
+
+    tier = str(row.get("tier") or "").strip().upper()
+    if tier and (tier.startswith("P3") or "OPTIONAL" in tier):
+        return True
+
+    title = str(row.get("title") or "").strip().lower()
+    return "optional" in title
+
+
+def _apply_frontier_queue_backpressure(
+    rows: Any,
+    *,
+    source: str,
+    category: str,
+    max_depth: int,
+    policy: str,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    raw_rows: List[Dict[str, Any]] = [raw for raw in (rows if isinstance(rows, list) else []) if isinstance(raw, dict)]
+    candidates = [_normalize_backpressure_row(raw) for raw in raw_rows]
+    raw_count = len(candidates)
+    action = _normalize_backpressure_action(policy)
+    if max_depth <= 0:
+        max_depth = 1
+
+    if raw_count <= 0:
+        return raw_rows, {
+            "source": str(source or "").strip() or None,
+            "category": str(category or "").strip() or None,
+            "policy": action,
+            "depth_cap": int(max_depth),
+            "raw_count": 0,
+            "kept_count": 0,
+            "dropped_count": 0,
+            "dropped_task_ids": [],
+            "critical_dropped_task_ids": [],
+            "applied": False,
+            "fail_closed_required": False,
+            "matrix": {
+                "source": str(source or "").strip() or "unknown",
+                "category": str(category or "").strip() or "unknown",
+                "action": action,
+            },
+        }
+
+    if action == "fail_closed":
+        if raw_count > max_depth:
+            return raw_rows, {
+                "source": str(source or "").strip() or None,
+                "category": str(category or "").strip() or None,
+                "policy": action,
+                "depth_cap": int(max_depth),
+                "raw_count": raw_count,
+                "kept_count": raw_count,
+                "dropped_count": 0,
+                "dropped_task_ids": [],
+                "critical_dropped_task_ids": [],
+                "applied": False,
+                "fail_closed_required": True,
+                "matrix": {
+                    "source": str(source or "").strip() or "unknown",
+                    "category": str(category or "").strip() or "unknown",
+                    "action": action,
+                },
+            }
+        return raw_rows, {
+            "source": str(source or "").strip() or None,
+            "category": str(category or "").strip() or None,
+            "policy": action,
+            "depth_cap": int(max_depth),
+            "raw_count": raw_count,
+            "kept_count": raw_count,
+            "dropped_count": 0,
+            "dropped_task_ids": [],
+            "critical_dropped_task_ids": [],
+            "applied": False,
+            "fail_closed_required": False,
+            "matrix": {
+                "source": str(source or "").strip() or "unknown",
+                "category": str(category or "").strip() or "unknown",
+                "action": action,
+            },
+        }
+
+    if raw_count <= max_depth:
+        return raw_rows, {
+            "source": str(source or "").strip() or None,
+            "category": str(category or "").strip() or None,
+            "policy": action,
+            "depth_cap": int(max_depth),
+            "raw_count": raw_count,
+            "kept_count": raw_count,
+            "dropped_count": 0,
+            "dropped_task_ids": [],
+            "critical_dropped_task_ids": [],
+            "applied": False,
+            "fail_closed_required": False,
+            "matrix": {
+                "source": str(source or "").strip() or "unknown",
+                "category": str(category or "").strip() or "unknown",
+                "action": action,
+            },
+        }
+
+    def _freshness_key(row: Dict[str, Any]) -> tuple:
+        raw_task_id = str(row.get("task_id") or "").strip()
+        created_at = parse_iso(row.get("created_at"))
+        updated_at = parse_iso(row.get("updated_at"))
+        when = created_at or updated_at
+        if when is None:
+            when = dt.datetime.fromtimestamp(0, tz=dt.timezone.utc)
+        return (when, raw_task_id)
+
+    ranked = sorted(raw_rows, key=_freshness_key)
+    drops_remaining = max(0, len(ranked) - int(max_depth))
+    dropped_rows: List[Dict[str, Any]] = []
+    kept_rows: List[Dict[str, Any]] = []
+
+    for row in ranked:
+        can_drop = False
+        if drops_remaining > 0:
+            if action == "skip_optional_stage":
+                can_drop = _backpressure_optional_row(row)
+            else:
+                can_drop = not _backpressure_critical_row(row)
+
+        if can_drop and drops_remaining > 0:
+            dropped_rows.append(row)
+            drops_remaining -= 1
+        else:
+            kept_rows.append(row)
+
+    critical_drops = [
+        str(row.get("task_id") or "").strip() for row in dropped_rows if _backpressure_critical_row(row)
+    ]
+    dropped_task_ids = [str(row.get("task_id") or "").strip() for row in dropped_rows if str(row.get("task_id") or "").strip()]
+    fail_closed_required = bool(critical_drops) or (raw_count > max_depth and len(kept_rows) > max_depth)
+
+    return kept_rows, {
+        "source": str(source or "").strip() or None,
+        "category": str(category or "").strip() or None,
+        "policy": action,
+        "depth_cap": int(max_depth),
+        "raw_count": raw_count,
+        "kept_count": len(kept_rows),
+        "dropped_count": len(dropped_rows),
+        "dropped_task_ids": dropped_task_ids,
+        "critical_dropped_task_ids": critical_drops,
+        "applied": bool(dropped_rows) or (raw_count > max_depth and fail_closed_required),
+        "fail_closed_required": bool(fail_closed_required),
+        "matrix": {
+            "source": str(source or "").strip() or "unknown",
+            "category": str(category or "").strip() or "unknown",
+            "action": action,
+        },
+    }
+
+
+def _normalize_core_roadmap_transaction_runtime() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "schema": core_roadmap_queue_transaction_runtime_projection_schema,
+        "runtime_schema": core_roadmap_queue_transaction_runtime_schema,
+        "runtime_path": to_rel(core_roadmap_queue_transaction_runtime_path),
+        "lock_path": to_rel(core_roadmap_queue_transaction_runtime_lock_path),
+        "present": False,
+        "contract_status": "missing",
+        "issues": [],
+        "generated_at": None,
+        "fencing_epoch": 0,
+        "active_claim": None,
+        "task_runtime": {},
+        "history_size": 0,
+        "recovery_counters": {"stale_claim_expired": 0, "total": 0},
+        "last_recovery": None,
+    }
+
+    if not core_roadmap_queue_transaction_runtime_path.exists():
+        return out
+
+    out["present"] = True
+    try:
+        payload = load_json(core_roadmap_queue_transaction_runtime_path)
+    except Exception as exc:
+        out["contract_status"] = "invalid"
+        out["issues"] = [f"runtime_parse_failed:{exc}"]
+        return out
+
+    if not isinstance(payload, dict):
+        out["contract_status"] = "invalid"
+        out["issues"] = ["runtime_not_object"]
+        return out
+
+    issues: List[str] = []
+    runtime_schema = str(payload.get("schema") or "").strip()
+    if runtime_schema and runtime_schema != core_roadmap_queue_transaction_runtime_schema:
+        issues.append("runtime_schema_unexpected")
+
+    out["generated_at"] = str(payload.get("generated_at") or "").strip() or None
+
+    try:
+        out["fencing_epoch"] = max(0, int(payload.get("fencing_epoch") or 0))
+    except Exception:
+        out["fencing_epoch"] = 0
+        issues.append("runtime_fencing_epoch_invalid")
+
+    active_claim = payload.get("active_claim") if isinstance(payload.get("active_claim"), dict) else None
+    if active_claim:
+        task_id = str(active_claim.get("task_id") or "").strip()
+        claim_token = str(active_claim.get("claim_token") or "").strip()
+        state = str(active_claim.get("state") or "claimed").strip().lower() or "claimed"
+        try:
+            claim_epoch = int(active_claim.get("claim_epoch"))
+        except Exception:
+            claim_epoch = None
+
+        if task_id and claim_token and isinstance(claim_epoch, int) and claim_epoch >= 0 and state in {"claimed", "running"}:
+            try:
+                lease_sec = max(1, int(active_claim.get("lease_sec") or 900))
+            except Exception:
+                lease_sec = 900
+            out["active_claim"] = {
+                "task_id": task_id,
+                "worker_id": str(active_claim.get("worker_id") or "").strip() or None,
+                "claim_epoch": claim_epoch,
+                "claim_token": claim_token,
+                "state": state,
+                "claimed_at": str(active_claim.get("claimed_at") or "").strip() or None,
+                "running_at": str(active_claim.get("running_at") or "").strip() or None,
+                "lease_sec": lease_sec,
+                "lease_expires_at": str(active_claim.get("lease_expires_at") or "").strip() or None,
+            }
+        else:
+            issues.append("runtime_active_claim_invalid")
+
+    task_runtime: Dict[str, Dict[str, Any]] = {}
+    raw_task_runtime = payload.get("task_runtime") if isinstance(payload.get("task_runtime"), dict) else {}
+    for key, raw in raw_task_runtime.items():
+        task_id = str(key or "").strip()
+        if not task_id or not isinstance(raw, dict):
+            continue
+
+        state = str(raw.get("state") or "").strip().lower()
+        if state not in {"claimed", "running", "done", "blocked", "retry"}:
+            continue
+
+        try:
+            claim_epoch = int(raw.get("claim_epoch")) if raw.get("claim_epoch") is not None else None
+        except Exception:
+            claim_epoch = None
+
+        try:
+            retry_count = max(0, int(raw.get("retry_count") or 0))
+        except Exception:
+            retry_count = 0
+
+        task_runtime[task_id] = {
+            "task_id": task_id,
+            "state": state,
+            "updated_at": str(raw.get("updated_at") or "").strip() or None,
+            "last_transition": str(raw.get("last_transition") or state).strip().lower() or state,
+            "last_transition_at": str(raw.get("last_transition_at") or raw.get("updated_at") or "").strip() or None,
+            "claim_epoch": claim_epoch,
+            "claim_token": str(raw.get("claim_token") or "").strip() or None,
+            "worker_id": str(raw.get("worker_id") or "").strip() or None,
+            "retry_count": retry_count,
+            "cooldown_until": str(raw.get("cooldown_until") or "").strip() or None,
+            "reason": str(raw.get("reason") or "").strip() or None,
+        }
+
+    out["task_runtime"] = task_runtime
+    recovery = payload.get("recovery") if isinstance(payload.get("recovery"), dict) else {}
+    recovery_counters = recovery.get("counters") if isinstance(recovery.get("counters"), dict) else {}
+    normalized_recovery_counters: Dict[str, int] = {}
+    for key, value in recovery_counters.items():
+        if not isinstance(key, str):
+            continue
+        try:
+            normalized_recovery_counters[str(key).strip()] = max(0, int(value))
+        except Exception:
+            continue
+    out["recovery_counters"] = {
+        "stale_claim_expired": normalized_recovery_counters.get("stale_claim_expired", 0),
+        "total": normalized_recovery_counters.get("total", normalized_recovery_counters.get("stale_claim_expired", 0)),
+    }
+    out["last_recovery"] = recovery.get("last_recovery") if isinstance(recovery.get("last_recovery"), dict) else None
+
+    history = payload.get("transition_history") if isinstance(payload.get("transition_history"), list) else []
+    out["history_size"] = len([row for row in history if isinstance(row, dict)])
+    out["issues"] = _dedupe_nonempty_strings(issues)
+    out["contract_status"] = "ok" if not out["issues"] else "invalid"
+    return out
+
+
+def _normalize_txn_handoff_soak_reset_event(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+
+    reset_at = str(raw.get("reset_at") or "").strip() or None
+    reason = str(raw.get("reason") or "").strip() or None
+    if not reset_at or not reason:
+        return None
+
+    prev_consecutive_blocked = max(0, _to_int(raw.get("previous_consecutive_blocked"), 0))
+    prev_blocked_total = max(0, _to_int(raw.get("previous_blocked_total"), 0))
+
+    return {
+        "reset_at": reset_at,
+        "reason": reason,
+        "actor": str(raw.get("actor") or "").strip() or None,
+        "action": str(raw.get("action") or "").strip() or None,
+        "reset_id": str(raw.get("reset_id") or "").strip() or None,
+        "previous_consecutive_blocked": prev_consecutive_blocked,
+        "previous_guard_active": bool(raw.get("previous_guard_active") is True),
+        "previous_blocked_total": prev_blocked_total,
+    }
+
+
+def _normalize_core_roadmap_txn_handoff_soak() -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "schema": core_roadmap_queue_txn_handoff_soak_projection_schema,
+        "soak_schema": core_roadmap_queue_txn_handoff_soak_schema,
+        "soak_path": to_rel(core_roadmap_queue_txn_handoff_soak_path),
+        "present": False,
+        "contract_status": "missing",
+        "issues": [],
+        "generated_at": None,
+        "guard": {
+            "enabled": True,
+            "active": False,
+            "reason": None,
+            "consecutive_block_threshold": 3,
+        },
+        "counters": {
+            "attempts_total": 0,
+            "applied_total": 0,
+            "blocked_total": 0,
+            "skipped_total": 0,
+            "consecutive_blocked": 0,
+        },
+        "reset": {
+            "total": 0,
+            "last_reset_at": None,
+            "last_reset_reason": None,
+            "last_reset_actor": None,
+            "last_reset_action": None,
+            "last_reset_id": None,
+        },
+        "last_attempt": None,
+        "last_attempt_at": None,
+        "guard_block_reasons": [],
+    }
+
+    if not core_roadmap_queue_txn_handoff_soak_path.exists():
+        return out
+
+    out["present"] = True
+    try:
+        payload = load_json(core_roadmap_queue_txn_handoff_soak_path)
+    except Exception as exc:
+        out["contract_status"] = "invalid"
+        out["issues"] = [f"soak_parse_failed:{exc}"]
+        out["guard_block_reasons"] = ["transaction_runtime_handoff_soak_contract_invalid"]
+        return out
+
+    if not isinstance(payload, dict):
+        out["contract_status"] = "invalid"
+        out["issues"] = ["soak_not_object"]
+        out["guard_block_reasons"] = ["transaction_runtime_handoff_soak_contract_invalid"]
+        return out
+
+    issues: List[str] = []
+
+    soak_schema = str(payload.get("schema") or "").strip()
+    if soak_schema and soak_schema != core_roadmap_queue_txn_handoff_soak_schema:
+        issues.append("soak_schema_unexpected")
+
+    guard_obj = payload.get("guard") if isinstance(payload.get("guard"), dict) else {}
+    if not isinstance(payload.get("guard"), dict):
+        issues.append("soak_guard_missing")
+    guard_enabled_raw = guard_obj.get("enabled")
+    if isinstance(guard_enabled_raw, bool):
+        guard_enabled = guard_enabled_raw
+    else:
+        guard_enabled = True
+        issues.append("soak_guard_enabled_missing")
+    guard_threshold = max(1, _to_int(guard_obj.get("consecutive_block_threshold"), 3))
+
+    counters_obj = payload.get("counters") if isinstance(payload.get("counters"), dict) else {}
+    if not isinstance(payload.get("counters"), dict):
+        issues.append("soak_counters_missing")
+    attempts_total = max(0, _to_int(counters_obj.get("attempts_total"), 0))
+    applied_total = max(0, _to_int(counters_obj.get("applied_total"), 0))
+    blocked_total = max(0, _to_int(counters_obj.get("blocked_total"), 0))
+    skipped_total = max(0, _to_int(counters_obj.get("skipped_total"), 0))
+    consecutive_blocked = max(0, _to_int(counters_obj.get("consecutive_blocked"), 0))
+
+    payload_guard_active = bool(guard_obj.get("active") is True)
+    guard_active = bool(
+        guard_enabled
+        and (payload_guard_active or (blocked_total > 0 and consecutive_blocked >= guard_threshold))
+    )
+
+    contract_status = str(payload.get("contract_status") or "").strip().lower() or "ok"
+    if contract_status not in {"ok", "invalid", "missing"}:
+        issues.append(f"soak_contract_status_unexpected:{contract_status}")
+        contract_status = "invalid"
+
+    if contract_status == "invalid":
+        issues.append("soak_contract_status_invalid")
+
+    last_attempt = payload.get("last_attempt") if isinstance(payload.get("last_attempt"), dict) else None
+    if isinstance(last_attempt, dict):
+        selected_next_wave_raw = last_attempt.get("selected_next_wave")
+        try:
+            selected_next_wave = int(selected_next_wave_raw) if selected_next_wave_raw is not None else None
+        except Exception:
+            selected_next_wave = None
+        last_attempt = {
+            "recorded_at": str(last_attempt.get("recorded_at") or "").strip() or None,
+            "action": str(last_attempt.get("action") or "").strip() or None,
+            "decision": str(last_attempt.get("decision") or "").strip() or None,
+            "status": str(last_attempt.get("status") or "").strip() or None,
+            "phase": str(last_attempt.get("phase") or "").strip() or None,
+            "error": str(last_attempt.get("error") or "").strip() or None,
+            "task_id": str(last_attempt.get("task_id") or "").strip() or None,
+            "selected_next_wave": selected_next_wave,
+            "next_candidate": str(last_attempt.get("next_candidate") or "").strip() or None,
+            "block_reasons": _dedupe_nonempty_strings(last_attempt.get("block_reasons") or []),
+        }
+
+    reset_obj = payload.get("reset") if isinstance(payload.get("reset"), dict) else {}
+    reset_history = []
+    for raw in (reset_obj.get("history") if isinstance(reset_obj.get("history"), list) else []):
+        row = _normalize_txn_handoff_soak_reset_event(raw)
+        if row:
+            reset_history.append(row)
+    if reset_history:
+        reset_history = reset_history[-32:]
+
+    last_reset = _normalize_txn_handoff_soak_reset_event(reset_obj.get("last_reset"))
+    if last_reset is None and reset_history:
+        last_reset = reset_history[-1]
+
+    reset_total = max(0, _to_int(reset_obj.get("total"), 0))
+    if reset_total < len(reset_history):
+        reset_total = len(reset_history)
+
+    issues = _dedupe_nonempty_strings(issues + list(payload.get("issues") or []))
+
+    if contract_status != "invalid":
+        contract_status = "ok" if not issues else "invalid"
+
+    out["generated_at"] = str(payload.get("generated_at") or "").strip() or None
+    out["contract_status"] = contract_status
+    out["issues"] = issues
+    out["guard"] = {
+        "enabled": guard_enabled,
+        "active": guard_active,
+        "reason": (
+            "consecutive_handoff_blocks_threshold_reached"
+            if guard_active
+            else (str(guard_obj.get("reason") or "").strip() or None)
+        ),
+        "consecutive_block_threshold": guard_threshold,
+    }
+    out["counters"] = {
+        "attempts_total": attempts_total,
+        "applied_total": applied_total,
+        "blocked_total": blocked_total,
+        "skipped_total": skipped_total,
+        "consecutive_blocked": consecutive_blocked,
+    }
+    out["reset"] = {
+        "total": reset_total,
+        "last_reset_at": (
+            str(reset_obj.get("last_reset_at") or "").strip()
+            or (str(last_reset.get("reset_at") or "").strip() if isinstance(last_reset, dict) else "")
+            or None
+        ),
+        "last_reset_reason": (
+            str(reset_obj.get("last_reset_reason") or "").strip()
+            or (str(last_reset.get("reason") or "").strip() if isinstance(last_reset, dict) else "")
+            or None
+        ),
+        "last_reset_actor": (
+            str(reset_obj.get("last_reset_actor") or "").strip()
+            or (str(last_reset.get("actor") or "").strip() if isinstance(last_reset, dict) else "")
+            or None
+        ),
+        "last_reset_action": (
+            str(reset_obj.get("last_reset_action") or "").strip()
+            or (str(last_reset.get("action") or "").strip() if isinstance(last_reset, dict) else "")
+            or None
+        ),
+        "last_reset_id": (
+            str(reset_obj.get("last_reset_id") or "").strip()
+            or (str(last_reset.get("reset_id") or "").strip() if isinstance(last_reset, dict) else "")
+            or None
+        ),
+    }
+    out["last_attempt"] = last_attempt
+    out["last_attempt_at"] = (
+        str(last_attempt.get("recorded_at") or "").strip() if isinstance(last_attempt, dict) else None
+    ) or None
+
+    guard_block_reasons: List[str] = []
+    if contract_status == "invalid":
+        guard_block_reasons.append("transaction_runtime_handoff_soak_contract_invalid")
+    elif guard_enabled and guard_active:
+        guard_block_reasons.append("transaction_runtime_handoff_soak_guard_active")
+    out["guard_block_reasons"] = _dedupe_nonempty_strings(guard_block_reasons)
+
+    return out
+
+
+def _runtime_cooldown_remaining_sec(cooldown_until: Optional[str], *, now: dt.datetime) -> int:
+    deadline = parse_iso(cooldown_until)
+    if deadline is None:
+        return 0
+    return max(0, int((deadline - now).total_seconds()))
+
+
+def _project_core_roadmap_transaction_runtime_for_frontier(
+    *,
+    queue_source: str,
+    ready_candidates: Any,
+    dependency_blocked_candidates: Any,
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    runtime = _normalize_core_roadmap_transaction_runtime()
+    runtime_task = runtime.get("task_runtime") if isinstance(runtime.get("task_runtime"), dict) else {}
+    now_dt = clock_now_dt()
+
+    ready_rows = [row for row in (ready_candidates if isinstance(ready_candidates, list) else []) if isinstance(row, dict)]
+    blocked_rows = [row for row in (dependency_blocked_candidates if isinstance(dependency_blocked_candidates, list) else []) if isinstance(row, dict)]
+
+    state_counts = {"claimed": 0, "running": 0, "done": 0, "blocked": 0, "retry": 0}
+    cooldown_active: List[Dict[str, Any]] = []
+    retry_ready: List[str] = []
+    for task_id, raw in sorted(runtime_task.items()):
+        if not isinstance(raw, dict):
+            continue
+        state = str(raw.get("state") or "").strip().lower()
+        if state in state_counts:
+            state_counts[state] += 1
+        if state == "retry":
+            cooldown_until = str(raw.get("cooldown_until") or "").strip() or None
+            remaining = _runtime_cooldown_remaining_sec(cooldown_until, now=now_dt)
+            if remaining > 0:
+                cooldown_active.append(
+                    {
+                        "task_id": task_id,
+                        "cooldown_until": cooldown_until,
+                        "cooldown_remaining_sec": remaining,
+                    }
+                )
+            else:
+                retry_ready.append(task_id)
+
+    applies = bool(
+        str(queue_source or "").strip().startswith("core_roadmap_queue_layer")
+        and str(runtime.get("contract_status") or "missing").strip() == "ok"
+    )
+
+    masked_rows: List[Dict[str, Any]] = []
+    eligible_ready_rows: List[Dict[str, Any]] = []
+
+    blocked_by_task: Dict[str, Dict[str, Any]] = {}
+    blocked_order: List[str] = []
+    for row in blocked_rows:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        if task_id not in blocked_by_task:
+            blocked_by_task[task_id] = dict(row)
+            blocked_order.append(task_id)
+
+    for row in ready_rows:
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id:
+            continue
+
+        runtime_row = runtime_task.get(task_id) if isinstance(runtime_task.get(task_id), dict) else {}
+        runtime_state = str(runtime_row.get("state") or "").strip().lower()
+
+        mask_reason: Optional[str] = None
+        cooldown_remaining_sec = 0
+        if applies:
+            if runtime_state in {"done", "blocked", "claimed", "running"}:
+                mask_reason = f"state_{runtime_state}"
+            elif runtime_state == "retry":
+                cooldown_remaining_sec = _runtime_cooldown_remaining_sec(
+                    str(runtime_row.get("cooldown_until") or "").strip() or None,
+                    now=now_dt,
+                )
+                if cooldown_remaining_sec > 0:
+                    mask_reason = "retry_cooldown_active"
+
+        if mask_reason:
+            masked_rows.append(
+                {
+                    "task_id": task_id,
+                    "runtime_state": runtime_state or None,
+                    "reason": mask_reason,
+                    "cooldown_until": str(runtime_row.get("cooldown_until") or "").strip() or None,
+                    "cooldown_remaining_sec": cooldown_remaining_sec if cooldown_remaining_sec > 0 else None,
+                }
+            )
+
+            blocked_by = _dedupe_nonempty_strings(
+                (blocked_by_task.get(task_id, {}).get("blocked_by") if isinstance(blocked_by_task.get(task_id), dict) else [])
+                + [f"transaction_runtime:{mask_reason}"]
+                + ([f"transaction_runtime_state:{runtime_state}"] if runtime_state else [])
+                + (
+                    [f"transaction_runtime_cooldown_remaining_sec:{cooldown_remaining_sec}"]
+                    if cooldown_remaining_sec > 0
+                    else []
+                )
+            )
+
+            if task_id in blocked_by_task:
+                blocked_by_task[task_id]["blocked_by"] = blocked_by
+                blocked_by_task[task_id]["state"] = "dependency_blocked"
+            else:
+                blocked_by_task[task_id] = {
+                    "task_id": task_id,
+                    "role_required": str(row.get("role_required") or "").strip() or None,
+                    "wave": _extract_wave_number(row.get("wave") if row.get("wave") is not None else task_id),
+                    "state": "dependency_blocked",
+                    "blocked_by": blocked_by,
+                    "created_at": str(row.get("created_at") or "").strip() or None,
+                    "updated_at": runtime.get("generated_at") or now_iso(),
+                }
+                blocked_order.append(task_id)
+            continue
+
+        eligible_ready_rows.append(dict(row))
+
+    effective_blocked_rows: List[Dict[str, Any]] = []
+    seen_blocked = set()
+    for task_id in blocked_order:
+        if not task_id or task_id in seen_blocked:
+            continue
+        row = blocked_by_task.get(task_id)
+        if not isinstance(row, dict):
+            continue
+        seen_blocked.add(task_id)
+        effective_blocked_rows.append(row)
+
+    projection: Dict[str, Any] = {
+        "schema": core_roadmap_queue_transaction_runtime_projection_schema,
+        "runtime_schema": core_roadmap_queue_transaction_runtime_schema,
+        "runtime_path": to_rel(core_roadmap_queue_transaction_runtime_path),
+        "lock_path": to_rel(core_roadmap_queue_transaction_runtime_lock_path),
+        "queue_source": queue_source,
+        "present": bool(runtime.get("present") is True),
+        "contract_status": str(runtime.get("contract_status") or "missing").strip() or "missing",
+        "issues": _dedupe_nonempty_strings(runtime.get("issues") or []),
+        "generated_at": runtime.get("generated_at"),
+        "fencing_epoch": int(runtime.get("fencing_epoch") or 0),
+        "active_claim": runtime.get("active_claim") if isinstance(runtime.get("active_claim"), dict) else None,
+        "task_state_counts": state_counts,
+        "cooldown_active": cooldown_active,
+        "retry_ready": _dedupe_nonempty_strings(retry_ready),
+        "history_size": max(0, _to_int(runtime.get("history_size"), 0)),
+        "masking_applied": applies,
+        "masking_policy": "state=done|blocked|claimed|running|retry(cooldown_active)",
+        "eligible_ready": _dedupe_nonempty_strings([row.get("task_id") for row in eligible_ready_rows]),
+        "masked_candidates": masked_rows,
+        "ready_candidate_count": len(ready_rows),
+        "eligible_ready_count": len(eligible_ready_rows),
+        "masked_ready_count": len(masked_rows),
+        "recovery_counters": {
+            "stale_claim_expired": max(0, _to_int((runtime.get("recovery_counters") or {}).get("stale_claim_expired"), 0)),
+            "total": max(0, _to_int((runtime.get("recovery_counters") or {}).get("total"), 0)),
+        },
+        "last_recovery": runtime.get("last_recovery") if isinstance(runtime.get("last_recovery"), dict) else None,
+    }
+
+    return projection, eligible_ready_rows, effective_blocked_rows
+
+
+def _build_core_roadmap_queue_projection_parity(
+    *,
+    surface: str,
+    queue_source: str,
+    core_queue_layer: Dict[str, Any],
+    projected_ready_count: int,
+    projected_dependency_blocked_count: int,
+    projected_next_candidate: Optional[str],
+    projected_ready_candidates: Any,
+    projected_dependency_blocked_candidates: Any,
+    projected_next_candidates: Any = None,
+    runtime_queue: Optional[Dict[str, Any]] = None,
+    backpressure_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    surface_name = str(surface or "unknown").strip() or "unknown"
+    source_name = str(queue_source or "continuity_os_queue_db").strip() or "continuity_os_queue_db"
+    pressure_profile = backpressure_profile if isinstance(backpressure_profile, dict) else {}
+    matrix_profile = pressure_profile.get("action_matrix") if isinstance(pressure_profile.get("action_matrix"), dict) else {}
+    ready_policy = str(
+        matrix_profile.get("ready")
+        or pressure_profile.get("policy")
+        or execution_frontier_bounded_queue_backpressure_action
+    ).strip() or "drop_freshness_stage"
+    blocked_policy = str(
+        matrix_profile.get("dependency_blocked")
+        or pressure_profile.get("policy")
+        or execution_frontier_bounded_queue_backpressure_action
+    ).strip() or "drop_freshness_stage"
+    ready_policy = _normalize_backpressure_action(ready_policy)
+    blocked_policy = _normalize_backpressure_action(blocked_policy)
+    policy = "mixed"
+    if ready_policy == blocked_policy:
+        policy = ready_policy
+
+    parity_payload: Dict[str, Any] = {
+        "schema": "clawd.core_roadmap_queue_projection_parity.v1",
+        "surface": surface_name,
+        "checked_at": now_iso(),
+        "queue_source": source_name,
+        "status": "not_applicable",
+        "authoritative_contract": False,
+        "mismatches": [],
+        "runtime_deltas": [],
+        "runtime_delta_requires_attention": False,
+        "runtime_delta_attention_reasons": [],
+        "fail_closed_required": False,
+        "runtime_observation": {
+            "available": isinstance(runtime_queue, dict),
+            "ready_count": None,
+            "dependency_blocked_count": None,
+        },
+        "expected": {
+            "ready_count": None,
+            "dependency_blocked_count": None,
+            "next_candidate": None,
+            "ready_count_raw": None,
+            "dependency_blocked_count_raw": None,
+            "ready_candidate_ids": [],
+            "dependency_blocked_candidate_ids": [],
+            "next_candidates": [],
+            "backpressure": {
+                "source": source_name,
+                "policy": policy,
+                "depth_cap": int(execution_frontier_bounded_queue_depth),
+                "applied": False,
+                "ready": {
+                    "dropped_count": 0,
+                    "applied": False,
+                },
+                "dependency_blocked": {
+                    "dropped_count": 0,
+                    "applied": False,
+                },
+                "fail_closed_required": False,
+            },
+        },
+        "projection": {
+            "ready_count": max(0, _to_int(projected_ready_count, 0)),
+            "dependency_blocked_count": max(0, _to_int(projected_dependency_blocked_count, 0)),
+            "next_candidate": str(projected_next_candidate or "").strip() or None,
+            "ready_candidate_ids": _queue_candidate_ids(projected_ready_candidates),
+            "dependency_blocked_candidate_ids": _queue_candidate_ids(projected_dependency_blocked_candidates),
+            "next_candidates": _dedupe_nonempty_strings(projected_next_candidates or []),
+        },
+    }
+
+    if not source_name.startswith("core_roadmap_queue_layer"):
+        return parity_payload
+
+    summary_obj = core_queue_layer.get("summary") if isinstance(core_queue_layer.get("summary"), dict) else {}
+    contract_status = str(core_queue_layer.get("contract_status") or "missing").strip().lower() or "missing"
+    authoritative = bool(core_queue_layer.get("authoritative") is True and contract_status == "ok")
+
+    expected_ready_rows = core_queue_layer.get("ready_candidates") if isinstance(core_queue_layer.get("ready_candidates"), list) else []
+    expected_blocked_rows = (
+        core_queue_layer.get("dependency_blocked_candidates")
+        if isinstance(core_queue_layer.get("dependency_blocked_candidates"), list)
+        else []
+    )
+    raw_expected_ready_count = max(0, len(expected_ready_rows))
+    raw_expected_blocked_count = max(0, len(expected_blocked_rows))
+
+    bounded_ready_rows, expected_ready_pressure = _apply_frontier_queue_backpressure(
+        rows=expected_ready_rows,
+        source=source_name,
+        category="ready",
+        max_depth=execution_frontier_bounded_queue_depth,
+        policy=ready_policy,
+    )
+    bounded_blocked_rows, expected_blocked_pressure = _apply_frontier_queue_backpressure(
+        rows=expected_blocked_rows,
+        source=source_name,
+        category="dependency_blocked",
+        max_depth=execution_frontier_bounded_queue_depth,
+        policy=blocked_policy,
+    )
+
+    expected_ready_count = len(bounded_ready_rows)
+    expected_blocked_count = len(bounded_blocked_rows)
+    expected_ready_ids = _queue_candidate_ids(bounded_ready_rows)
+    expected_blocked_ids = _queue_candidate_ids(bounded_blocked_rows)
+    expected_next_candidate = expected_ready_ids[0] if expected_ready_ids else str(core_queue_layer.get("next_candidate") or "").strip() or None
+    expected_next_candidates = _dedupe_nonempty_strings(expected_ready_ids[:5])
+
+    parity_payload["expected"]["ready_count_raw"] = raw_expected_ready_count
+    parity_payload["expected"]["dependency_blocked_count_raw"] = raw_expected_blocked_count
+    parity_payload["expected"]["ready_count"] = expected_ready_count
+    parity_payload["expected"]["dependency_blocked_count"] = expected_blocked_count
+    parity_payload["expected"]["next_candidate"] = expected_next_candidate
+    parity_payload["expected"]["ready_candidate_ids"] = expected_ready_ids
+    parity_payload["expected"]["dependency_blocked_candidate_ids"] = expected_blocked_ids
+    parity_payload["expected"]["next_candidates"] = expected_next_candidates
+    parity_payload["expected"]["backpressure"] = {
+        "source": source_name,
+        "policy": str(policy),
+        "depth_cap": int(execution_frontier_bounded_queue_depth),
+        "applied": bool(
+            expected_ready_pressure.get("applied") is True
+            or expected_blocked_pressure.get("applied") is True
+        ),
+        "ready": expected_ready_pressure,
+        "dependency_blocked": expected_blocked_pressure,
+        "fail_closed_required": bool(
+            (expected_ready_pressure.get("fail_closed_required") is True)
+            or (expected_blocked_pressure.get("fail_closed_required") is True)
+            or (pressure_profile.get("fail_closed_required") is True)
+        ),
+    }
+    parity_payload["authoritative_contract"] = authoritative
+
+    mismatches: List[str] = []
+    if parity_payload["projection"]["ready_count"] != expected_ready_count:
+        mismatches.append(
+            "projection_ready_count_mismatch:"
+            f"expected={expected_ready_count}:actual={parity_payload['projection']['ready_count']}"
+        )
+    if parity_payload["projection"]["dependency_blocked_count"] != expected_blocked_count:
+        mismatches.append(
+            "projection_dependency_blocked_count_mismatch:"
+            f"expected={expected_blocked_count}:actual={parity_payload['projection']['dependency_blocked_count']}"
+        )
+
+    projection_next_candidate = parity_payload["projection"]["next_candidate"]
+    if projection_next_candidate != expected_next_candidate:
+        mismatches.append(
+            "projection_next_candidate_mismatch:"
+            f"expected={expected_next_candidate}:actual={projection_next_candidate}"
+        )
+
+    if expected_ready_ids:
+        if parity_payload["projection"]["ready_candidate_ids"] != expected_ready_ids:
+            mismatches.append("projection_ready_candidate_ids_mismatch")
+    if expected_blocked_ids:
+        if parity_payload["projection"]["dependency_blocked_candidate_ids"] != expected_blocked_ids:
+            mismatches.append("projection_dependency_blocked_candidate_ids_mismatch")
+    if expected_next_candidates:
+        if parity_payload["projection"]["next_candidates"] != expected_next_candidates:
+            mismatches.append("projection_next_candidates_mismatch")
+
+    if parity_payload["expected"]["backpressure"]["fail_closed_required"]:
+        mismatches.append("projection_backpressure_fail_closed_required")
+
+    runtime_deltas: List[str] = []
+    runtime_ready_overrun = False
+    runtime_blocked_overrun = False
+    if isinstance(runtime_queue, dict):
+        runtime_ready_count = max(0, _to_int(runtime_queue.get("ready_count"), 0))
+        runtime_blocked_count = max(0, _to_int(runtime_queue.get("dependency_blocked_count"), 0))
+        parity_payload["runtime_observation"] = {
+            "available": True,
+            "ready_count": runtime_ready_count,
+            "dependency_blocked_count": runtime_blocked_count,
+        }
+        if runtime_ready_count != expected_ready_count:
+            runtime_ready_overrun = runtime_ready_count > expected_ready_count
+            runtime_deltas.append(
+                "runtime_ready_count_delta:"
+                f"expected={expected_ready_count}:actual={runtime_ready_count}"
+            )
+        if runtime_blocked_count != expected_blocked_count:
+            runtime_blocked_overrun = runtime_blocked_count > expected_blocked_count
+            runtime_deltas.append(
+                "runtime_dependency_blocked_count_delta:"
+                f"expected={expected_blocked_count}:actual={runtime_blocked_count}"
+            )
+
+    parity_payload["mismatches"] = _dedupe_nonempty_strings(mismatches)
+    parity_payload["runtime_deltas"] = _dedupe_nonempty_strings(runtime_deltas)
+    runtime_delta_attention = bool(
+        authoritative
+        and source_name == "core_roadmap_queue_layer"
+        and bool(parity_payload["runtime_deltas"])
+        and not bool(parity_payload["mismatches"])
+        and bool(runtime_ready_overrun or runtime_blocked_overrun)
+    )
+    parity_payload["runtime_delta_requires_attention"] = runtime_delta_attention
+    parity_payload["runtime_delta_attention_reasons"] = (
+        list(parity_payload["runtime_deltas"]) if runtime_delta_attention else []
+    )
+    if parity_payload["mismatches"]:
+        parity_payload["status"] = "mismatch"
+    elif runtime_delta_attention:
+        parity_payload["status"] = "runtime_delta"
+    else:
+        parity_payload["status"] = "match"
+    parity_payload["fail_closed_required"] = bool(
+        parity_payload["status"] == "mismatch" and authoritative and source_name == "core_roadmap_queue_layer"
+    )
+    return parity_payload
+
+def _read_core_roadmap_queue_layer() -> Dict[str, Any]:
+    env_override = str(os.environ.get("OPENCLAW_CORE_ROADMAP_QUEUE_PATH") or "").strip()
+    sources: List[pathlib.Path] = []
+    if env_override:
+        override_path = pathlib.Path(env_override)
+        if not override_path.is_absolute():
+            override_path = (root / override_path).resolve()
+        else:
+            override_path = override_path.resolve()
+        sources.append(override_path)
+    else:
+        sources.extend(
+            [
+                core_roadmap_execution_queue_primary_path,
+                core_roadmap_execution_queue_mirror_path,
+            ]
+        )
+
+    source_meta: List[Dict[str, Any]] = []
+    parsed_payloads: List[Dict[str, Any]] = []
+    contract_issues: List[str] = []
+    source_state_counts: Dict[str, int] = {}
+
+    for idx, source_path in enumerate(sources):
+        rel_path = to_rel(source_path)
+        exists = source_path.exists()
+        payload_obj: Dict[str, Any] = {}
+        parse_error: Optional[str] = None
+        sha = None
+        generated_at = None
+        schema = None
+        if exists:
+            try:
+                raw_text = source_path.read_text(encoding="utf-8")
+                sha = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict):
+                    payload_obj = parsed
+                    schema = str(payload_obj.get("schema") or "").strip() or None
+                    generated_at = str(payload_obj.get("generated_at") or "").strip() or None
+                else:
+                    parse_error = "not_object"
+            except Exception as exc:
+                parse_error = f"parse_error:{exc}"
+        source_meta.append(
+            {
+                "path": rel_path,
+                "exists": exists,
+                "sha256": sha,
+                "schema": schema,
+                "generated_at": generated_at,
+                "parse_error": parse_error,
+                "priority": idx,
+            }
+        )
+        if payload_obj:
+            parsed_payloads.append(
+                {
+                    "path": rel_path,
+                    "priority": idx,
+                    "payload": payload_obj,
+                }
+            )
+
+    primary_payload = parsed_payloads[0] if parsed_payloads else None
+    source_present = any(item.get("exists") is True for item in source_meta)
+
+    layer_payload: Dict[str, Any] = {
+        "schema": core_roadmap_queue_layer_schema,
+        "generated_at": now_iso(),
+        "queue_source": "core_roadmap_slice_queue",
+        "contract_status": "missing",
+        "authoritative": False,
+        "issues": [],
+        "source_present": source_present,
+        "source_paths": [item.get("path") for item in source_meta if item.get("path")],
+        "selected_source_path": None,
+        "selected_source_generated_at": None,
+        "source_details": source_meta,
+        "selection_policy": "recommended_order_then_slice_id",
+        "dependency_model_available": True,
+        "status_taxonomy": {
+            "schema": "clawd.core_roadmap_queue_status_taxonomy.v1",
+            "categories": list(core_roadmap_queue_state_categories),
+            "dependency_blocked_source_states": ["DEPENDENCY_BLOCKED", "*_BLOCKED", "READY_PENDING_*"] ,
+        },
+        "contract_fingerprint": None,
+        "summary": {
+            "total_slices": 0,
+            "done_count": 0,
+            "ready_count": 0,
+            "running_count": 0,
+            "dependency_blocked_count": 0,
+            "queued_count": 0,
+            "open_count": 0,
+            "queue_empty": True,
+            "state_counts": {key: 0 for key in core_roadmap_queue_state_categories},
+            "source_state_counts": {},
+        },
+        "ready_candidates": [],
+        "running_candidates": [],
+        "dependency_blocked_candidates": [],
+        "next_candidates": [],
+        "next_candidate": None,
+    }
+
+    def _assign_contract_fingerprint() -> None:
+        fingerprint_payload = {
+            "schema": layer_payload.get("schema"),
+            "queue_source": layer_payload.get("queue_source"),
+            "contract_status": layer_payload.get("contract_status"),
+            "authoritative": layer_payload.get("authoritative"),
+            "issues": layer_payload.get("issues"),
+            "selected_source_path": layer_payload.get("selected_source_path"),
+            "selected_source_generated_at": layer_payload.get("selected_source_generated_at"),
+            "source_details": layer_payload.get("source_details"),
+            "summary": layer_payload.get("summary"),
+            "next_candidate": layer_payload.get("next_candidate"),
+            "next_candidates": layer_payload.get("next_candidates"),
+            "ready_candidate_ids": _queue_candidate_ids(layer_payload.get("ready_candidates")),
+            "running_candidate_ids": _queue_candidate_ids(layer_payload.get("running_candidates")),
+            "dependency_blocked_candidate_ids": _queue_candidate_ids(layer_payload.get("dependency_blocked_candidates")),
+        }
+        layer_payload["contract_fingerprint"] = hashlib.sha256(
+            json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+
+    def _finalize_layer_payload() -> Dict[str, Any]:
+        summary_obj = layer_payload.get("summary") if isinstance(layer_payload.get("summary"), dict) else {}
+        normalized_counts = {key: 0 for key in core_roadmap_queue_state_categories}
+        for key, raw_value in (summary_obj.get("state_counts") if isinstance(summary_obj.get("state_counts"), dict) else {}).items():
+            name = str(key or "").strip().lower()
+            if name in normalized_counts:
+                normalized_counts[name] = max(0, _to_int(raw_value, 0))
+        summary_obj["state_counts"] = normalized_counts
+        summary_obj["source_state_counts"] = {
+            str(key or "").strip().upper(): max(0, _to_int(value, 0))
+            for key, value in sorted(source_state_counts.items())
+            if str(key or "").strip()
+        }
+        layer_payload["summary"] = summary_obj
+
+        issues = _dedupe_nonempty_strings(contract_issues)
+        if issues:
+            contract_status = "degraded"
+        elif source_present:
+            contract_status = "ok"
+        else:
+            contract_status = "missing"
+
+        layer_payload["contract_status"] = contract_status
+        layer_payload["authoritative"] = contract_status == "ok"
+        layer_payload["issues"] = issues
+        _assign_contract_fingerprint()
+
+        schema_issues = _validate_core_roadmap_queue_layer_schema(layer_payload)
+        if schema_issues:
+            layer_payload["issues"] = _dedupe_nonempty_strings(list(layer_payload.get("issues") or []) + schema_issues)
+            layer_payload["contract_status"] = "degraded"
+            layer_payload["authoritative"] = False
+            _assign_contract_fingerprint()
+
+        return layer_payload
+
+    if not primary_payload:
+        if source_present:
+            contract_issues.append("source_present_but_unreadable")
+        return _finalize_layer_payload()
+
+    canonical_source = primary_payload.get("payload") if isinstance(primary_payload.get("payload"), dict) else {}
+    layer_payload["selected_source_path"] = str(primary_payload.get("path") or "") or None
+    layer_payload["selected_source_generated_at"] = str(canonical_source.get("generated_at") or "").strip() or None
+
+    schema = str(canonical_source.get("schema") or "").strip()
+    if schema and schema != core_roadmap_queue_source_schema:
+        contract_issues.append("source_schema_unexpected")
+
+    slices_raw = canonical_source.get("slices") if isinstance(canonical_source.get("slices"), list) else None
+    if slices_raw is None:
+        contract_issues.append("slices_missing_or_invalid")
+        slices_raw = []
+
+    if len(parsed_payloads) >= 2:
+        mirror_payload = parsed_payloads[1].get("payload") if isinstance(parsed_payloads[1].get("payload"), dict) else {}
+        left = {
+            "schema": canonical_source.get("schema"),
+            "generated_at": canonical_source.get("generated_at"),
+            "recommended_order": canonical_source.get("recommended_order"),
+            "slices": canonical_source.get("slices"),
+        }
+        right = {
+            "schema": mirror_payload.get("schema"),
+            "generated_at": mirror_payload.get("generated_at"),
+            "recommended_order": mirror_payload.get("recommended_order"),
+            "slices": mirror_payload.get("slices"),
+        }
+        if json.dumps(left, ensure_ascii=False, sort_keys=True) != json.dumps(right, ensure_ascii=False, sort_keys=True):
+            contract_issues.append("source_queue_mirror_mismatch")
+
+    slices_by_id: Dict[int, Dict[str, Any]] = {}
+    state_by_id: Dict[int, str] = {}
+    order_ids: List[int] = []
+
+    for raw_id in (canonical_source.get("recommended_order") if isinstance(canonical_source.get("recommended_order"), list) else []):
+        if isinstance(raw_id, bool):
+            continue
+        try:
+            slice_id = int(raw_id)
+        except Exception:
+            continue
+        if slice_id < 0 or slice_id in order_ids:
+            continue
+        order_ids.append(slice_id)
+
+    for raw in slices_raw:
+        if not isinstance(raw, dict):
+            continue
+        raw_id = raw.get("id")
+        if isinstance(raw_id, bool):
+            continue
+        try:
+            slice_id = int(raw_id)
+        except Exception:
+            contract_issues.append("slice_id_invalid")
+            continue
+        if slice_id < 0:
+            contract_issues.append("slice_id_negative")
+            continue
+
+        title = str(raw.get("title") or f"slice_{slice_id}").strip() or f"slice_{slice_id}"
+        state_token = str(raw.get("state") or "UNKNOWN").strip().upper() or "UNKNOWN"
+        lane_list = raw.get("lane") if isinstance(raw.get("lane"), list) else []
+        lane_token = str((lane_list[0] if lane_list else "") or "").strip().lower() or "core"
+        role_required = f"{lane_token}_executor"
+
+        dependencies: List[int] = []
+        for dep_raw in (raw.get("dependencies") if isinstance(raw.get("dependencies"), list) else []):
+            if isinstance(dep_raw, bool):
+                continue
+            try:
+                dep_id = int(dep_raw)
+            except Exception:
+                continue
+            if dep_id >= 0 and dep_id not in dependencies:
+                dependencies.append(dep_id)
+
+        task_id = f"core_roadmap:wave{slice_id}:{_slugify_token(title, fallback=f'slice_{slice_id}')}"
+        row = {
+            "slice_id": slice_id,
+            "task_id": task_id,
+            "title": title,
+            "tier": str(raw.get("tier") or "").strip() or None,
+            "lane": [str(token or "").strip() for token in lane_list if str(token or "").strip()],
+            "state": state_token,
+            "state_category": _core_roadmap_state_category(state_token),
+            "role_required": role_required,
+            "wave": slice_id,
+            "dependencies": dependencies,
+            "status_reason": str(raw.get("status_reason") or "").strip() or None,
+            "unblock_condition": str(raw.get("unblock_condition") or "").strip() or None,
+            "source_generated_at": layer_payload.get("selected_source_generated_at"),
+        }
+
+        slices_by_id[slice_id] = row
+        state_by_id[slice_id] = state_token
+        source_state_counts[state_token] = source_state_counts.get(state_token, 0) + 1
+        if slice_id not in order_ids:
+            order_ids.append(slice_id)
+
+    order_index = {slice_id: idx for idx, slice_id in enumerate(order_ids)}
+
+    ready_candidates: List[Dict[str, Any]] = []
+    running_candidates: List[Dict[str, Any]] = []
+    blocked_candidates: List[Dict[str, Any]] = []
+
+    for slice_id, row in slices_by_id.items():
+        category = str(row.get("state_category") or "queued")
+        if category == "done":
+            continue
+
+        normalized = {
+            "task_id": str(row.get("task_id") or "").strip(),
+            "slice_id": slice_id,
+            "title": row.get("title"),
+            "tier": row.get("tier"),
+            "lane": row.get("lane"),
+            "role_required": row.get("role_required"),
+            "wave": row.get("wave"),
+            "state": category,
+            "created_at": row.get("source_generated_at"),
+            "updated_at": row.get("source_generated_at"),
+        }
+
+        unresolved: List[str] = []
+        for dep_id in (row.get("dependencies") if isinstance(row.get("dependencies"), list) else []):
+            dep_state = str(state_by_id.get(dep_id) or "MISSING")
+            dep_category = _core_roadmap_state_category(dep_state)
+            if dep_category != "done":
+                unresolved.append(f"slice_{dep_id}:{dep_category}")
+
+        if category == "ready" and unresolved:
+            category = "dependency_blocked"
+
+        if category == "ready":
+            ready_candidates.append({**normalized, "state": "ready"})
+            continue
+
+        if category == "running":
+            running_candidates.append({**normalized, "state": "running"})
+            continue
+
+        blocked_by = [f"dependency:{token}" for token in unresolved]
+        blocked_by.append(f"state:{category}")
+        source_state = str(row.get("state") or "").strip().upper()
+        if source_state and source_state != category.upper():
+            blocked_by.append(f"source_state:{source_state.lower()}")
+        status_reason = str(row.get("status_reason") or "").strip()
+        if status_reason:
+            blocked_by.append(f"status_reason:{status_reason[:180]}")
+
+        blocked_candidates.append(
+            {
+                **normalized,
+                "state": "dependency_blocked",
+                "blocked_by": _dedupe_nonempty_strings(blocked_by),
+            }
+        )
+
+    def _order_key(item: Dict[str, Any]) -> Any:
+        raw_slice_id = item.get("slice_id")
+        try:
+            sid = int(raw_slice_id)
+        except Exception:
+            sid = 10_000_000
+        return (order_index.get(sid, 10_000_000), sid, str(item.get("task_id") or ""))
+
+    ready_candidates.sort(key=_order_key)
+    running_candidates.sort(key=_order_key)
+    blocked_candidates.sort(key=_order_key)
+
+    queue_total = max(0, len(ready_candidates) + len(running_candidates) + len(blocked_candidates))
+    next_candidates = [
+        str(row.get("task_id") or "").strip()
+        for row in ready_candidates
+        if str(row.get("task_id") or "").strip()
+    ][:5]
+
+    normalized_state_counts = {key: 0 for key in core_roadmap_queue_state_categories}
+    for token in state_by_id.values():
+        mapped = _core_roadmap_state_category(token)
+        if mapped in normalized_state_counts:
+            normalized_state_counts[mapped] = normalized_state_counts.get(mapped, 0) + 1
+
+    layer_payload["ready_candidates"] = ready_candidates
+    layer_payload["running_candidates"] = running_candidates
+    layer_payload["dependency_blocked_candidates"] = blocked_candidates
+    layer_payload["next_candidates"] = next_candidates
+    layer_payload["next_candidate"] = next_candidates[0] if next_candidates else None
+    layer_payload["summary"] = {
+        "total_slices": len(slices_by_id),
+        "done_count": normalized_state_counts.get("done", 0),
+        "ready_count": len(ready_candidates),
+        "running_count": len(running_candidates),
+        "dependency_blocked_count": len(blocked_candidates),
+        "queued_count": queue_total,
+        "open_count": queue_total,
+        "queue_empty": queue_total == 0,
+        "state_counts": normalized_state_counts,
+        "source_state_counts": {},
+    }
+
+    return _finalize_layer_payload()
+
+
+def _read_execution_program_queue_activity() -> Dict[str, Any]:
+    db_env = str(os.environ.get("OPENCLAW_CONTINUITY_DB_PATH") or "").strip()
+    db_path = pathlib.Path(db_env) if db_env else (root / "state" / "continuity" / "continuity_os.sqlite")
+    if not db_path.is_absolute():
+        db_path = (root / db_path).resolve()
+    else:
+        db_path = db_path.resolve()
+
+    core_layer = _read_core_roadmap_queue_layer()
+    try:
+        atomic_write(core_roadmap_queue_layer_path, core_layer)
+    except Exception:
+        pass
+
+    ready_backpressure_action = _normalize_backpressure_action(
+        execution_frontier_bounded_queue_backpressure_action_matrix.get("ready")
+    )
+    blocked_backpressure_action = _normalize_backpressure_action(
+        execution_frontier_bounded_queue_backpressure_action_matrix.get("dependency_blocked")
+    )
+
+    out: Dict[str, Any] = {
+        "queue_source": "continuity_os_queue_db",
+        "queue_db_path": to_rel(db_path),
+        "queue_db_present": db_path.exists(),
+        "dependency_model_available": False,
+        "running_task_ids": [],
+        "running_roles": [],
+        "queued_task_ids": [],
+        "queued_roles": [],
+        "ready_task_ids": [],
+        "ready_roles": [],
+        "ready_candidates": [],
+        "queued_candidates": [],
+        "dependency_blocked_task_ids": [],
+        "dependency_blocked_candidates": [],
+        "frontier_queue_backpressure": {
+            "schema": "clawd.execution_frontier_queue_backpressure.v1",
+            "applied": False,
+            "depth_cap": int(execution_frontier_bounded_queue_depth),
+            "policy": str(execution_frontier_bounded_queue_backpressure_action).strip() or "drop_freshness_stage",
+            "ready": {
+                "source": "core_roadmap_queue_layer",
+                "category": "ready",
+                "policy": str(ready_backpressure_action).strip() or "drop_freshness_stage",
+                "depth_cap": int(execution_frontier_bounded_queue_depth),
+                "raw_count": 0,
+                "kept_count": 0,
+                "dropped_count": 0,
+                "dropped_task_ids": [],
+                "critical_dropped_task_ids": [],
+                "applied": False,
+                "fail_closed_required": False,
+            },
+            "dependency_blocked": {
+                "source": "core_roadmap_queue_layer",
+                "category": "dependency_blocked",
+                "policy": str(blocked_backpressure_action).strip() or "drop_freshness_stage",
+                "depth_cap": int(execution_frontier_bounded_queue_depth),
+                "raw_count": 0,
+                "kept_count": 0,
+                "dropped_count": 0,
+                "dropped_task_ids": [],
+                "critical_dropped_task_ids": [],
+                "applied": False,
+                "fail_closed_required": False,
+            },
+            "applied_task_ids": [],
+            "critical_task_ids": [],
+            "action_matrix": {
+                "ready": str(ready_backpressure_action).strip() or "drop_freshness_stage",
+                "dependency_blocked": str(blocked_backpressure_action).strip() or "drop_freshness_stage",
+            },
+        },
+        "last_cycle_transition": None,
+        "core_roadmap_queue_layer": core_layer,
+    }
+
+    core_contract_status = str(core_layer.get("contract_status") or "missing").strip().lower()
+    core_source_present = bool(core_layer.get("source_present") is True)
+    if core_contract_status == "ok":
+        ready_candidates = core_layer.get("ready_candidates") if isinstance(core_layer.get("ready_candidates"), list) else []
+        running_candidates = core_layer.get("running_candidates") if isinstance(core_layer.get("running_candidates"), list) else []
+        blocked_candidates = (
+            core_layer.get("dependency_blocked_candidates")
+            if isinstance(core_layer.get("dependency_blocked_candidates"), list)
+            else []
+        )
+        ready_candidates, ready_backpressure = _apply_frontier_queue_backpressure(
+            rows=ready_candidates,
+            source="core_roadmap_queue_layer",
+            category="ready",
+            max_depth=int(execution_frontier_bounded_queue_depth),
+            policy=ready_backpressure_action,
+        )
+        blocked_candidates, blocked_backpressure = _apply_frontier_queue_backpressure(
+            rows=blocked_candidates,
+            source="core_roadmap_queue_layer",
+            category="dependency_blocked",
+            max_depth=int(execution_frontier_bounded_queue_depth),
+            policy=blocked_backpressure_action,
+        )
+        queued_candidates = running_candidates + ready_candidates + blocked_candidates
+        frontier_queue_backpressure = {
+            "schema": "clawd.execution_frontier_queue_backpressure.v1",
+            "applied": bool(ready_backpressure.get("applied") is True or blocked_backpressure.get("applied") is True),
+            "depth_cap": int(execution_frontier_bounded_queue_depth),
+            "policy": str(execution_frontier_bounded_queue_backpressure_action).strip() or "drop_freshness_stage",
+            "ready": ready_backpressure,
+            "dependency_blocked": blocked_backpressure,
+            "action_matrix": {
+                "ready": str(ready_backpressure_action).strip() or "drop_freshness_stage",
+                "dependency_blocked": str(blocked_backpressure_action).strip() or "drop_freshness_stage",
+            },
+            "applied_task_ids": _dedupe_nonempty_strings(
+                list(ready_backpressure.get("dropped_task_ids") or [])
+                + list(blocked_backpressure.get("dropped_task_ids") or [])
+            ),
+            "critical_task_ids": _dedupe_nonempty_strings(
+                list(ready_backpressure.get("critical_dropped_task_ids") or [])
+                + list(blocked_backpressure.get("critical_dropped_task_ids") or [])
+            ),
+            "fail_closed_required": bool(
+                (ready_backpressure.get("fail_closed_required") is True)
+                or (blocked_backpressure.get("fail_closed_required") is True)
+            ),
+        }
+
+        out.update(
+            {
+                "queue_source": "core_roadmap_queue_layer",
+                "queue_db_path": to_rel(core_roadmap_queue_layer_path),
+                "queue_db_present": bool(core_roadmap_queue_layer_path.exists()),
+                "dependency_model_available": True,
+                "running_task_ids": _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in running_candidates]),
+                "running_roles": _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in running_candidates]),
+                "queued_task_ids": _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in queued_candidates]),
+                "queued_roles": _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in queued_candidates]),
+                "ready_task_ids": _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in ready_candidates]),
+                "ready_roles": _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in ready_candidates]),
+                "ready_candidates": ready_candidates,
+                "queued_candidates": queued_candidates,
+                "dependency_blocked_task_ids": _dedupe_nonempty_strings(
+                    [str(row.get("task_id") or "") for row in blocked_candidates]
+                ),
+                "dependency_blocked_candidates": blocked_candidates,
+                "frontier_queue_backpressure": frontier_queue_backpressure,
+                "last_cycle_transition": {
+                    "created_at": str(core_layer.get("selected_source_generated_at") or "").strip() or None,
+                    "reason": "core_roadmap_queue_layer",
+                },
+            }
+        )
+        return out
+
+    if core_source_present:
+        fail_closed_reason = _dedupe_nonempty_strings(core_layer.get("issues") or ["core_roadmap_queue_layer_invalid"])
+        blocked_candidate = {
+            "task_id": "core_roadmap:wave0:queue_layer_contract_invalid",
+            "role_required": "a2_executor",
+            "wave": 0,
+            "state": "dependency_blocked",
+            "blocked_by": fail_closed_reason,
+            "created_at": str(core_layer.get("generated_at") or "").strip() or now_iso(),
+            "updated_at": str(core_layer.get("generated_at") or "").strip() or now_iso(),
+        }
+        out.update(
+            {
+                "queue_source": "core_roadmap_queue_layer_fail_closed",
+                "queue_db_path": to_rel(core_roadmap_queue_layer_path),
+                "queue_db_present": bool(core_roadmap_queue_layer_path.exists()),
+                "dependency_model_available": True,
+                "queued_task_ids": [blocked_candidate["task_id"]],
+                "queued_roles": ["a2_executor"],
+                "dependency_blocked_task_ids": [blocked_candidate["task_id"]],
+                "dependency_blocked_candidates": [blocked_candidate],
+                "queued_candidates": [blocked_candidate],
+                "last_cycle_transition": {
+                    "created_at": str(core_layer.get("generated_at") or "").strip() or now_iso(),
+                    "reason": "core_roadmap_queue_layer_fail_closed",
+                },
+            }
+        )
+        return out
+
+    if not db_path.exists():
+        return out
+
+    try:
+        db_uri = f"file:{quote(str(db_path))}?mode=ro"
+        con = sqlite3.connect(db_uri, uri=True)
+    except Exception:
+        return out
+
+    try:
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+
+        try:
+            running_rows = cur.execute(
+                """
+SELECT task_id, role_required, created_at, updated_at
+FROM work_queue
+WHERE status = 'RUNNING'
+ORDER BY updated_at ASC, task_id ASC
+LIMIT 16
+"""
+            ).fetchall()
+        except Exception:
+            running_rows = []
+
+        try:
+            queued_rows = cur.execute(
+                """
+SELECT task_id, role_required, created_at, updated_at
+FROM work_queue
+WHERE status = 'QUEUED'
+ORDER BY created_at ASC, task_id ASC
+LIMIT 16
+"""
+            ).fetchall()
+        except Exception:
+            queued_rows = []
+
+        out["running_task_ids"] = _dedupe_nonempty_strings([str(row["task_id"] or "") for row in running_rows])
+        out["running_roles"] = _dedupe_nonempty_strings([str(row["role_required"] or "") for row in running_rows])
+        out["queued_task_ids"] = _dedupe_nonempty_strings([str(row["task_id"] or "") for row in queued_rows])
+        out["queued_roles"] = _dedupe_nonempty_strings([str(row["role_required"] or "") for row in queued_rows])
+
+        queued_candidates: List[Dict[str, Any]] = []
+        for row in queued_rows:
+            task_id = str(row["task_id"] or "").strip()
+            if not task_id:
+                continue
+            role_required = str(row["role_required"] or "").strip() or None
+            queued_candidates.append(
+                {
+                    "task_id": task_id,
+                    "role_required": role_required,
+                    "wave": _extract_wave_number(task_id),
+                    "created_at": str(row["created_at"] or "").strip() or None,
+                    "updated_at": str(row["updated_at"] or "").strip() or None,
+                }
+            )
+        out["queued_candidates"] = queued_candidates
+
+        try:
+            ready_rows = cur.execute(
+                """
+SELECT w.task_id, w.role_required, w.created_at, w.updated_at
+FROM work_queue w
+WHERE w.status = 'QUEUED'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM task_dependencies d
+    LEFT JOIN work_queue dep ON dep.task_id = d.depends_on_task_id
+    WHERE d.task_id = w.task_id
+      AND d.relation = 'blocks'
+      AND COALESCE(dep.status, 'MISSING') <> 'DONE'
+  )
+ORDER BY COALESCE(w.created_at, w.updated_at, '') ASC, w.task_id ASC
+LIMIT 16
+"""
+            ).fetchall()
+
+            blocked_rows = cur.execute(
+                """
+SELECT
+  w.task_id,
+  w.role_required,
+  w.created_at,
+  w.updated_at,
+  GROUP_CONCAT(
+    d.depends_on_task_id || ':' || COALESCE(dep.status, 'MISSING'),
+    ' | '
+  ) AS blockers
+FROM work_queue w
+JOIN task_dependencies d ON d.task_id = w.task_id AND d.relation = 'blocks'
+LEFT JOIN work_queue dep ON dep.task_id = d.depends_on_task_id
+WHERE w.status = 'QUEUED'
+  AND COALESCE(dep.status, 'MISSING') <> 'DONE'
+GROUP BY w.task_id, w.role_required, w.created_at, w.updated_at
+ORDER BY COALESCE(w.created_at, w.updated_at, '') ASC, w.task_id ASC
+LIMIT 16
+"""
+            ).fetchall()
+            out["dependency_model_available"] = True
+        except Exception:
+            ready_rows = queued_rows
+            blocked_rows = []
+
+        ready_candidates: List[Dict[str, Any]] = []
+        seen_ready = set()
+        for row in ready_rows:
+            task_id = str(row["task_id"] or "").strip()
+            if not task_id or task_id in seen_ready:
+                continue
+            seen_ready.add(task_id)
+            role_required = str(row["role_required"] or "").strip() or None
+            ready_candidates.append(
+                {
+                    "task_id": task_id,
+                    "role_required": role_required,
+                    "wave": _extract_wave_number(task_id),
+                    "state": "ready",
+                    "created_at": str(row["created_at"] or "").strip() or None,
+                    "updated_at": str(row["updated_at"] or "").strip() or None,
+                }
+            )
+
+        blocked_candidates: List[Dict[str, Any]] = []
+        seen_blocked = set()
+        for row in blocked_rows:
+            task_id = str(row["task_id"] or "").strip()
+            if not task_id or task_id in seen_blocked:
+                continue
+            seen_blocked.add(task_id)
+            role_required = str(row["role_required"] or "").strip() or None
+            blocked_by_tokens = [
+                token.strip()
+                for token in str(row["blockers"] or "").split("|")
+                if token and token.strip()
+            ]
+            blocked_candidates.append(
+                {
+                    "task_id": task_id,
+                    "role_required": role_required,
+                    "wave": _extract_wave_number(task_id),
+                    "state": "dependency_blocked",
+                    "blocked_by": blocked_by_tokens,
+                    "created_at": str(row["created_at"] or "").strip() or None,
+                    "updated_at": str(row["updated_at"] or "").strip() or None,
+                }
+            )
+
+        out["ready_candidates"] = ready_candidates
+        out["dependency_blocked_candidates"] = blocked_candidates
+        out["ready_task_ids"] = _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in ready_candidates])
+        out["ready_roles"] = _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in ready_candidates])
+        out["dependency_blocked_task_ids"] = _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "") for row in blocked_candidates]
+        )
+
+        try:
+            transition_row = cur.execute(
+                """
+SELECT created_at, reason
+FROM task_transitions
+WHERE task_id = 'autopilot:cycle'
+  AND from_status = 'RUNNING'
+  AND to_status = 'QUEUED'
+ORDER BY created_at DESC
+LIMIT 1
+"""
+            ).fetchone()
+        except Exception:
+            transition_row = None
+
+        if transition_row is not None:
+            out["last_cycle_transition"] = {
+                "created_at": str(transition_row["created_at"] or "").strip() or None,
+                "reason": str(transition_row["reason"] or "").strip() or None,
+            }
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+    return out
+
+def _latest_iso(values: List[Any]) -> Optional[str]:
+    best_dt: Optional[dt.datetime] = None
+    for raw in values:
+        parsed = parse_iso(raw)
+        if parsed is None:
+            continue
+        if best_dt is None or parsed > best_dt:
+            best_dt = parsed
+    if best_dt is None:
+        return None
+    return best_dt.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _latest_successful_transition_attempt_at(
+    history_path: pathlib.Path,
+    *,
+    action: str,
+    max_scan_lines: int = 2048,
+) -> Optional[str]:
+    if max_scan_lines <= 0 or not history_path.exists() or not history_path.is_file():
+        return None
+
+    try:
+        with history_path.open("r", encoding="utf-8") as fh:
+            recent_lines = collections.deque(fh, maxlen=max_scan_lines)
+    except Exception:
+        return None
+
+    action_norm = str(action or "").strip()
+    for raw_line in reversed(recent_lines):
+        line = str(raw_line or "").strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+
+        if action_norm:
+            candidate_action = str(row.get("action") or "").strip()
+            if candidate_action != action_norm:
+                continue
+
+        decision = str(row.get("decision") or "").strip().upper()
+        if decision != "APPLY":
+            continue
+
+        if row.get("advance_applied") is not True:
+            continue
+
+        recorded_at = parse_iso(row.get("recorded_at"))
+        if recorded_at is None:
+            continue
+
+        return recorded_at.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    return None
+
+
+def _derive_execution_program_state(
+    *,
+    readiness: str,
+    active_worker_count: int,
+    queue_ready_count: int,
+    queue_dependency_blocked_count: int,
+    dispatch_status: str,
+    paused: bool,
+    mutation_gate_status: str,
+) -> str:
+    if active_worker_count > 0 or dispatch_status == "launched":
+        return "running"
+
+    if dispatch_status in {"blocked", "stalled"}:
+        return "blocked"
+
+    if paused:
+        return "waiting"
+
+    if readiness in {"RECONCILE_REQUIRED", "NOT_READY", "UNKNOWN"}:
+        if queue_ready_count > 0 or queue_dependency_blocked_count > 0 or mutation_gate_status == "forbidden":
+            return "blocked"
+
+    if queue_ready_count > 0 or dispatch_status == "pending":
+        return "waiting"
+
+    return "idle"
+
+
+def _extract_wave_number(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    direct = _parse_cycle_value(text)
+    if isinstance(direct, int) and direct >= 0:
+        return direct
+
+    match = re.search(r"wave[_:-]?(\d+)", text, flags=re.IGNORECASE)
+    if match:
+        try:
+            parsed = int(match.group(1))
+            return parsed if parsed >= 0 else None
+        except Exception:
+            return None
+
+    return None
+
+
+EXECUTION_SUPERVISOR_IMPLEMENTATION_ROUTE = [
+    "codex-worker-plus-11",
+    "gemini-pro",
+    "deepseek-reasoner",
+    "codex-worker-plus-9",
+    "codex-worker-plus-8",
+    "codex-worker-plus-7",
+    "codex-worker-plus-6",
+    "codex-worker-plus-5",
+    "codex-worker-plus-4",
+    "codex-worker-plus-3",
+    "codex-worker-plus-2",
+    "codex-worker-plus-1",
+    "codex-worker-pro",
+]
+EXECUTION_SUPERVISOR_SUPPORT_ROUTE = [
+    "gemini-flash-lite",
+    "gemini-flash",
+    "deepseek-chat",
+    "kimi-k2",
+]
+
+EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_DEFAULTS = {
+    "reading": "DeepSeek",
+    "triage": "DeepSeek",
+    "audit_compression": "DeepSeek",
+    "research": "Gemini",
+    "planning": "Gemini",
+    "comparison": "Kimi",
+    "implementation": "Codex",
+    "code:generate": "Codex",
+    "code:edit": "Codex",
+    "code:review": "DeepSeek",
+    "code:test": "Codex",
+    "code:docs": "DeepSeek",
+}
+
+EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_FALLBACKS = {
+    "reading": ["Gemini", "Kimi", "Codex"],
+    "triage": ["Gemini", "Codex"],
+    "audit_compression": ["Gemini", "Kimi", "Codex"],
+    "research": ["DeepSeek", "Kimi", "Codex"],
+    "planning": ["DeepSeek", "Kimi", "Codex"],
+    "comparison": ["DeepSeek", "Gemini", "Codex"],
+    "implementation": ["Gemini", "DeepSeek"],
+    "code:generate": ["Gemini", "Kimi", "DeepSeek"],
+    "code:edit": ["Gemini", "DeepSeek", "Kimi"],
+    "code:review": ["Gemini", "Codex", "Kimi"],
+    "code:test": ["Gemini", "DeepSeek", "Kimi"],
+    "code:docs": ["Gemini", "Codex", "Kimi"],
+}
+
+EXECUTION_SUPERVISOR_CODING_TASK_CLASS_ROUTING_ALIASES = {
+    "code:generate": "implementation",
+    "code:edit": "implementation",
+    "code:review": "implementation",
+    "code:test": "implementation",
+    "code:docs": "implementation",
+}
+
+EXECUTION_SUPERVISOR_ALLOWED_TASK_CLASSES = {
+    "reading",
+    "triage",
+    "audit_compression",
+    "research",
+    "planning",
+    "comparison",
+    "implementation",
+    "code:generate",
+    "code:edit",
+    "code:review",
+    "code:test",
+    "code:docs",
+}
+
+
+def _execution_supervisor_dispatch_task_class(task_type: Any) -> str:
+    task_type_token = str(task_type or "").strip().lower()
+    if task_type_token == "implementation":
+        return "implementation"
+    if task_type_token == "support_spec":
+        return "planning"
+    if task_type_token == "support_synthesis":
+        return "research"
+    return "research"
+
+
+def _normalize_execution_supervisor_task_class(task_class: Any, *, task_type: Any) -> str:
+    token = str(task_class or "").strip().lower()
+    if token in EXECUTION_SUPERVISOR_ALLOWED_TASK_CLASSES:
+        return token
+    return _execution_supervisor_dispatch_task_class(task_type)
+
+
+def _execution_supervisor_task_class_selector_variants(task_class: Any) -> set[str]:
+    token = str(task_class or "").strip().lower()
+    if not token:
+        return set()
+    variants = {token}
+    alias = str(EXECUTION_SUPERVISOR_CODING_TASK_CLASS_ROUTING_ALIASES.get(token) or "").strip().lower()
+    if alias:
+        variants.add(alias)
+    return variants
+
+
+def _execution_supervisor_dispatch_risk_tier(priority: Any) -> str:
+    tier = _normalize_execution_supervisor_priority(priority)
+    if tier == "P0":
+        return "critical"
+    if tier == "P1":
+        return "high"
+    return "medium"
+
+
+def _execution_supervisor_model_family_from_model_key(model_key: Any) -> Optional[str]:
+    token = str(model_key or "").strip().lower()
+    if not token:
+        return None
+    if token.startswith("openai-codex/") or "codex" in token:
+        return "Codex"
+    if token.startswith("deepseek/") or "deepseek" in token:
+        return "DeepSeek"
+    if (token.startswith("google/") and "gemini" in token) or "gemini" in token:
+        return "Gemini"
+    if token.startswith("moonshot/") or "kimi" in token:
+        return "Kimi"
+    return "Other"
+
+
+def _execution_supervisor_worker_family(worker: Any) -> Optional[str]:
+    return _execution_supervisor_model_family_from_model_key(worker)
+
+
+def _execution_supervisor_stage_is_allowed(required_stage: Any, allowed_stages: Any) -> bool:
+    required = str(required_stage or "").strip().lower()
+    allowed = {str(item or "").strip().lower() for item in (allowed_stages if isinstance(allowed_stages, list) else [])}
+    if required == "canary":
+        return "canary" in allowed or "active" in allowed
+    if required == "active":
+        return "active" in allowed
+    return False
+
+
+def _execution_supervisor_prioritize_gate_candidates(
+    *,
+    task_class: str,
+    candidates: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    default_family = str(
+        EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_DEFAULTS.get(task_class, "Gemini")
+    ).strip() or "Gemini"
+    fallback_families = [
+        str(item or "").strip()
+        for item in EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_FALLBACKS.get(task_class, ["Codex"])
+        if str(item or "").strip()
+    ]
+    ordered_families: List[str] = []
+    family_priority: Dict[str, int] = {}
+    for family in [default_family, *fallback_families]:
+        if family and family not in family_priority:
+            family_priority[family] = len(family_priority)
+            ordered_families.append(family)
+
+    def _rank(candidate: Dict[str, Any]) -> Tuple[int, int, str]:
+        model_key = str(candidate.get("model_key") or "")
+        family = _execution_supervisor_model_family_from_model_key(model_key)
+        if family and family in family_priority:
+            return family_priority[family], 0, model_key
+        return len(family_priority), 1, model_key
+
+    return sorted(list(candidates), key=_rank)
+
+
+def _load_execution_supervisor_gate_index() -> Dict[str, Any]:
+    gate_dir = root / "state" / "continuity" / "latest"
+    gate_index: Dict[str, Dict[str, Any]] = {}
+    source_paths: List[str] = []
+
+    if not gate_dir.exists() or not gate_dir.is_dir():
+        return {
+            "source_dir": to_rel(gate_dir),
+            "source_present": False,
+            "decision_paths": [],
+            "gate_index": {},
+        }
+
+    for candidate_path in sorted(gate_dir.glob("*.json")):
+        payload = load_json_if_exists(candidate_path)
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("schema") or "").strip() != "clawd.model_rollout_gate.decision.v1":
+            continue
+        if str(payload.get("decision") or "").strip().upper() != "PASS":
+            continue
+
+        model_obj = payload.get("model") if isinstance(payload.get("model"), dict) else {}
+        rollout_obj = payload.get("rollout") if isinstance(payload.get("rollout"), dict) else {}
+        model_key = str(model_obj.get("model_key") or "").strip()
+        route_class = str(model_obj.get("route_class") or "").strip()
+        if not model_key or not route_class:
+            continue
+
+        current = gate_index.get(model_key)
+        evaluated_at = str(payload.get("evaluated_at") or "").strip() or None
+        current_evaluated_at = str(current.get("evaluated_at") or "").strip() if isinstance(current, dict) else ""
+        replace = False
+        if not isinstance(current, dict):
+            replace = True
+        else:
+            current_dt = parse_iso(current_evaluated_at)
+            next_dt = parse_iso(evaluated_at)
+            if current_dt is None and next_dt is not None:
+                replace = True
+            elif current_dt is not None and next_dt is not None and next_dt >= current_dt:
+                replace = True
+
+        if replace:
+            gate_index[model_key] = {
+                "model_key": model_key,
+                "route_class": route_class,
+                "allowed_stages": [
+                    str(item or "").strip()
+                    for item in (rollout_obj.get("allowed_stages") or [])
+                    if str(item or "").strip()
+                ],
+                "evaluated_at": evaluated_at,
+                "source_path": to_rel(candidate_path),
+            }
+        source_paths.append(to_rel(candidate_path))
+
+    return {
+        "source_dir": to_rel(gate_dir),
+        "source_present": True,
+        "decision_paths": _dedupe_nonempty_strings(source_paths),
+        "gate_index": gate_index,
+    }
+
+
+def _load_execution_supervisor_worker_health_canary_index() -> Dict[str, Any]:
+    payload = load_json_if_exists(execution_supervisor_worker_health_canary_latest_path)
+    payload_obj = payload if isinstance(payload, dict) else {}
+    workers = payload_obj.get("workers") if isinstance(payload_obj.get("workers"), list) else []
+
+    index: Dict[str, Dict[str, Any]] = {}
+    for raw in workers:
+        if not isinstance(raw, dict):
+            continue
+        worker = str(raw.get("worker") or "").strip()
+        if not worker:
+            continue
+        canary_obj = raw.get("canary") if isinstance(raw.get("canary"), dict) else {}
+        probe_obj = raw.get("probe") if isinstance(raw.get("probe"), dict) else {}
+        health_status = str(raw.get("health_status") or raw.get("status") or "").strip().lower() or None
+        canary_status = str(
+            raw.get("canary_status")
+            or canary_obj.get("status")
+            or (raw.get("canary") if not isinstance(raw.get("canary"), dict) else "")
+            or ""
+        ).strip().lower() or None
+        canary_checked_at = str(
+            raw.get("canary_checked_at")
+            or canary_obj.get("checked_at")
+            or raw.get("checked_at")
+            or ""
+        ).strip() or None
+        canary_artifact_path = str(
+            raw.get("canary_artifact_path")
+            or canary_obj.get("artifact_path")
+            or ""
+        ).strip() or None
+        probe_status = str(
+            raw.get("probe_status")
+            or probe_obj.get("status")
+            or ""
+        ).strip().lower() or None
+        probe_checked_at = str(
+            raw.get("probe_checked_at")
+            or probe_obj.get("checked_at")
+            or raw.get("checked_at")
+            or ""
+        ).strip() or None
+        probe_artifact_path = str(
+            raw.get("probe_artifact_path")
+            or probe_obj.get("artifact_path")
+            or raw.get("canary_artifact_path")
+            or ""
+        ).strip() or None
+        index[worker] = {
+            "worker": worker,
+            "health_status": health_status,
+            "canary_status": canary_status,
+            "canary_reason": str(raw.get("canary_reason") or canary_obj.get("reason") or raw.get("reason") or "").strip() or None,
+            "canary_checked_at": canary_checked_at,
+            "canary_artifact_path": canary_artifact_path,
+            "reason": str(raw.get("reason") or "").strip() or None,
+            "checked_at": str(raw.get("checked_at") or "").strip() or None,
+            "probe_status": probe_status,
+            "probe_reason": str(raw.get("probe_reason") or probe_obj.get("reason") or "").strip() or None,
+            "probe_checked_at": probe_checked_at,
+            "probe_artifact_path": probe_artifact_path,
+            "source_schema": str(payload_obj.get("schema") or "").strip() or None,
+            "source_generated_at": str(payload_obj.get("generated_at") or "").strip() or None,
+        }
+
+    return {
+        "source_path": to_rel(execution_supervisor_worker_health_canary_latest_path),
+        "source_present": bool(payload_obj),
+        "schema": str(payload_obj.get("schema") or "").strip() or None,
+        "generated_at": str(payload_obj.get("generated_at") or "").strip() or None,
+        "canary_max_age_sec": max(0, int(execution_supervisor_worker_health_canary_max_age_sec)),
+        "canary_future_skew_sec": max(0, int(execution_supervisor_worker_health_canary_future_skew_sec)),
+        "probe_max_age_sec": max(0, int(execution_supervisor_worker_health_canary_probe_max_age_sec)),
+        "probe_future_skew_sec": max(0, int(execution_supervisor_worker_health_canary_probe_future_skew_sec)),
+        "workers": index,
+    }
+
+
+def _execution_supervisor_probe_artifact_state(path_token: Any) -> Dict[str, Any]:
+    token = str(path_token or "").strip()
+    if not token:
+        return {
+            "artifact_path": None,
+            "artifact_present": False,
+            "artifact_size_bytes": None,
+        }
+
+    artifact_path = pathlib.Path(token)
+    if not artifact_path.is_absolute():
+        artifact_path = (root / artifact_path).resolve()
+    else:
+        artifact_path = artifact_path.resolve()
+
+    artifact_present = False
+    artifact_size_bytes: Optional[int] = None
+    try:
+        if artifact_path.exists() and artifact_path.is_file():
+            artifact_size_bytes = int(artifact_path.stat().st_size)
+            artifact_present = bool(artifact_size_bytes > 0)
+    except Exception:
+        artifact_present = False
+        artifact_size_bytes = None
+
+    return {
+        "artifact_path": to_rel(artifact_path),
+        "artifact_present": artifact_present,
+        "artifact_size_bytes": artifact_size_bytes,
+    }
+
+
+def _execution_supervisor_assess_worker_health_canary(
+    *,
+    worker_health: Dict[str, Any],
+    reference_generated_at: Any,
+) -> Dict[str, Any]:
+    worker_health_obj = worker_health if isinstance(worker_health, dict) else {}
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+
+    canary_status = str(worker_health_obj.get("canary_status") or "").strip().lower() or None
+    canary_reason = str(worker_health_obj.get("canary_reason") or worker_health_obj.get("reason") or "").strip() or None
+    canary_checked_at = str(
+        worker_health_obj.get("canary_checked_at")
+        or worker_health_obj.get("checked_at")
+        or ""
+    ).strip() or None
+
+    canary_max_age_sec = max(0, int(execution_supervisor_worker_health_canary_max_age_sec))
+    canary_future_skew_sec = max(0, int(execution_supervisor_worker_health_canary_future_skew_sec))
+
+    canary_checked_dt = parse_iso(canary_checked_at)
+    canary_age_sec: Optional[int] = None
+    canary_fresh: Optional[bool] = None
+    freshness_reason: Optional[str] = None
+    if canary_checked_dt is None:
+        canary_fresh = False
+        freshness_reason = "dispatch_target_worker_canary_timestamp_missing"
+    else:
+        age_delta_sec = int((reference_dt - canary_checked_dt).total_seconds())
+        if age_delta_sec < -canary_future_skew_sec:
+            canary_fresh = False
+            freshness_reason = "dispatch_target_worker_canary_from_future"
+        else:
+            canary_age_sec = max(0, age_delta_sec)
+            canary_fresh = bool(canary_age_sec <= canary_max_age_sec)
+            if canary_fresh is not True:
+                freshness_reason = "dispatch_target_worker_canary_stale"
+
+    canary_artifact = _execution_supervisor_probe_artifact_state(worker_health_obj.get("canary_artifact_path"))
+    canary_artifact_path = canary_artifact.get("artifact_path")
+    canary_artifact_present = bool(canary_artifact.get("artifact_present") is True)
+
+    gate_passed = False
+    gate_reason = "dispatch_target_worker_canary_not_passed"
+    if canary_status != "pass":
+        gate_reason = "dispatch_target_worker_canary_not_passed"
+    elif canary_fresh is not True:
+        gate_reason = freshness_reason or "dispatch_target_worker_canary_stale"
+    elif canary_artifact_present is not True:
+        gate_reason = "dispatch_target_worker_canary_artifact_missing"
+    else:
+        gate_passed = True
+        gate_reason = "dispatch_target_worker_canary_passed"
+
+    return {
+        "canary_status": canary_status,
+        "canary_reason": canary_reason,
+        "canary_checked_at": canary_checked_at,
+        "canary_age_sec": canary_age_sec,
+        "canary_fresh": canary_fresh,
+        "canary_max_age_sec": canary_max_age_sec,
+        "canary_future_skew_sec": canary_future_skew_sec,
+        "canary_artifact_path": canary_artifact_path,
+        "canary_artifact_present": canary_artifact_present,
+        "canary_artifact_size_bytes": canary_artifact.get("artifact_size_bytes"),
+        "gate_passed": gate_passed,
+        "gate_reason": gate_reason,
+    }
+
+
+def _execution_supervisor_assess_worker_health_probe(
+    *,
+    worker_health: Dict[str, Any],
+    reference_generated_at: Any,
+) -> Dict[str, Any]:
+    worker_health_obj = worker_health if isinstance(worker_health, dict) else {}
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+
+    probe_status = str(worker_health_obj.get("probe_status") or "").strip().lower() or None
+    probe_reason = str(worker_health_obj.get("probe_reason") or "").strip() or None
+    probe_checked_at = str(worker_health_obj.get("probe_checked_at") or worker_health_obj.get("checked_at") or "").strip() or None
+
+    probe_max_age_sec = max(0, int(execution_supervisor_worker_health_canary_probe_max_age_sec))
+    probe_future_skew_sec = max(0, int(execution_supervisor_worker_health_canary_probe_future_skew_sec))
+
+    probe_checked_dt = parse_iso(probe_checked_at)
+    probe_age_sec: Optional[int] = None
+    probe_fresh: Optional[bool] = None
+    freshness_reason: Optional[str] = None
+    if probe_checked_dt is None:
+        probe_fresh = False
+        freshness_reason = "dispatch_target_worker_canary_probe_timestamp_missing"
+    else:
+        age_delta_sec = int((reference_dt - probe_checked_dt).total_seconds())
+        if age_delta_sec < -probe_future_skew_sec:
+            probe_fresh = False
+            freshness_reason = "dispatch_target_worker_canary_probe_from_future"
+        else:
+            probe_age_sec = max(0, age_delta_sec)
+            probe_fresh = bool(probe_age_sec <= probe_max_age_sec)
+            if probe_fresh is not True:
+                freshness_reason = "dispatch_target_worker_canary_probe_stale"
+
+    probe_artifact = _execution_supervisor_probe_artifact_state(worker_health_obj.get("probe_artifact_path"))
+    probe_artifact_path = probe_artifact.get("artifact_path")
+    probe_artifact_present = bool(probe_artifact.get("artifact_present") is True)
+
+    gate_passed = False
+    gate_reason = "dispatch_target_worker_canary_probe_not_passed"
+    if probe_status != "pass":
+        gate_reason = "dispatch_target_worker_canary_probe_not_passed"
+    elif probe_fresh is not True:
+        gate_reason = freshness_reason or "dispatch_target_worker_canary_probe_stale"
+    elif probe_artifact_present is not True:
+        gate_reason = "dispatch_target_worker_canary_probe_artifact_missing"
+    else:
+        gate_passed = True
+        gate_reason = "dispatch_target_worker_canary_probe_passed"
+
+    return {
+        "probe_status": probe_status,
+        "probe_reason": probe_reason,
+        "probe_checked_at": probe_checked_at,
+        "probe_age_sec": probe_age_sec,
+        "probe_fresh": probe_fresh,
+        "probe_max_age_sec": probe_max_age_sec,
+        "probe_future_skew_sec": probe_future_skew_sec,
+        "probe_artifact_path": probe_artifact_path,
+        "probe_artifact_present": probe_artifact_present,
+        "probe_artifact_size_bytes": probe_artifact.get("artifact_size_bytes"),
+        "gate_passed": gate_passed,
+        "gate_reason": gate_reason,
+    }
+
+
+def _execution_supervisor_parse_nonnegative_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(str(value).strip())
+    except Exception:
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _execution_supervisor_parse_nonnegative_int(value: Any) -> Optional[int]:
+    parsed = _execution_supervisor_parse_nonnegative_float(value)
+    if parsed is None:
+        return None
+    return max(0, int(round(parsed)))
+
+
+def _execution_supervisor_first_nonnegative_int(values: List[Any]) -> Optional[int]:
+    for raw in values:
+        parsed = _execution_supervisor_parse_nonnegative_int(raw)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _execution_supervisor_collect_resource_snapshot(*, reference_generated_at: Any) -> Dict[str, Any]:
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+
+    mem_total_mb: Optional[int] = None
+    mem_available_mb: Optional[int] = None
+    meminfo_readable = False
+    try:
+        meminfo_path = pathlib.Path("/proc/meminfo")
+        if meminfo_path.exists() and meminfo_path.is_file():
+            meminfo_readable = True
+            meminfo_map: Dict[str, int] = {}
+            for line in meminfo_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                if ":" not in line:
+                    continue
+                key_raw, value_raw = line.split(":", 1)
+                key = str(key_raw or "").strip()
+                token = str(value_raw or "").strip().split(" ")[0]
+                try:
+                    meminfo_map[key] = max(0, int(token))
+                except Exception:
+                    continue
+            if "MemTotal" in meminfo_map:
+                mem_total_mb = max(0, int(meminfo_map["MemTotal"] // 1024))
+            if "MemAvailable" in meminfo_map:
+                mem_available_mb = max(0, int(meminfo_map["MemAvailable"] // 1024))
+    except Exception:
+        meminfo_readable = False
+
+    disk_total_gb: Optional[int] = None
+    disk_free_gb: Optional[int] = None
+    disk_usage_path = to_rel(root)
+    disk_usage_ok = False
+    try:
+        usage = shutil.disk_usage(root)
+        disk_total_gb = max(0, int(usage.total // (1024 ** 3)))
+        disk_free_gb = max(0, int(usage.free // (1024 ** 3)))
+        disk_usage_ok = True
+    except Exception:
+        disk_usage_ok = False
+
+    load_1m: Optional[float] = None
+    load_per_core_pct: Optional[int] = None
+    load_ok = False
+    cpu_count = max(1, int(os.cpu_count() or 1))
+    try:
+        load_1m, _, _ = os.getloadavg()
+        if isinstance(load_1m, (int, float)):
+            load_1m = float(load_1m)
+            load_per_core_pct = max(0, int(round((load_1m / cpu_count) * 100)))
+            load_ok = True
+    except Exception:
+        load_ok = False
+
+    telemetry_complete = bool(
+        mem_available_mb is not None
+        and disk_free_gb is not None
+        and load_per_core_pct is not None
+    )
+
+    return {
+        "captured_at": reference_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "memory_total_mb": mem_total_mb,
+        "memory_available_mb": mem_available_mb,
+        "meminfo_readable": meminfo_readable,
+        "disk_total_gb": disk_total_gb,
+        "disk_free_gb": disk_free_gb,
+        "disk_usage_ok": disk_usage_ok,
+        "disk_usage_path": disk_usage_path,
+        "cpu_count": cpu_count,
+        "load_1m": round(load_1m, 4) if isinstance(load_1m, float) else None,
+        "load_per_core_pct": load_per_core_pct,
+        "load_ok": load_ok,
+        "telemetry_complete": telemetry_complete,
+    }
+
+
+def _execution_supervisor_build_resource_requirements(
+    *,
+    task_class: str,
+    task_type: str,
+    route_class: Optional[str],
+    candidate_row: Dict[str, Any],
+    task_row: Dict[str, Any],
+) -> Dict[str, Any]:
+    candidate_obj = candidate_row if isinstance(candidate_row, dict) else {}
+    task_obj = task_row if isinstance(task_row, dict) else {}
+
+    memory_min_mb = max(256, int(execution_supervisor_preflight_memory_min_mb))
+    if str(task_class or "").strip().lower() == "implementation" or str(task_type or "").strip().lower() == "implementation":
+        memory_min_mb += max(0, int(execution_supervisor_preflight_memory_implementation_bump_mb))
+    if str(route_class or "").strip().upper() == "HEAVY":
+        memory_min_mb += max(0, int(execution_supervisor_preflight_memory_heavy_route_bump_mb))
+
+    hinted_memory_mb = _execution_supervisor_first_nonnegative_int(
+        [
+            candidate_obj.get("required_memory_mb"),
+            candidate_obj.get("minimum_memory_mb"),
+            candidate_obj.get("estimated_memory_mb"),
+            task_obj.get("required_memory_mb"),
+            task_obj.get("minimum_memory_mb"),
+            task_obj.get("estimated_memory_mb"),
+        ]
+    )
+    if hinted_memory_mb is not None:
+        memory_min_mb = max(memory_min_mb, hinted_memory_mb)
+
+    disk_free_min_gb = max(1, int(execution_supervisor_preflight_disk_free_min_gb))
+    hinted_disk_gb = _execution_supervisor_first_nonnegative_int(
+        [
+            candidate_obj.get("required_disk_free_gb"),
+            candidate_obj.get("minimum_disk_free_gb"),
+            task_obj.get("required_disk_free_gb"),
+            task_obj.get("minimum_disk_free_gb"),
+        ]
+    )
+    hinted_disk_mb = _execution_supervisor_first_nonnegative_int(
+        [
+            candidate_obj.get("required_disk_free_mb"),
+            candidate_obj.get("minimum_disk_free_mb"),
+            task_obj.get("required_disk_free_mb"),
+            task_obj.get("minimum_disk_free_mb"),
+        ]
+    )
+    if hinted_disk_mb is not None:
+        hinted_disk_gb = max(hinted_disk_gb or 0, max(1, int((hinted_disk_mb + 1023) // 1024)))
+    if hinted_disk_gb is not None:
+        disk_free_min_gb = max(disk_free_min_gb, hinted_disk_gb)
+
+    load_pct_max = max(50, int(execution_supervisor_preflight_load_pct_max))
+    hinted_load_pct_max = _execution_supervisor_first_nonnegative_int(
+        [
+            candidate_obj.get("max_load_pct"),
+            candidate_obj.get("preflight_max_load_pct"),
+            task_obj.get("max_load_pct"),
+            task_obj.get("preflight_max_load_pct"),
+        ]
+    )
+    if hinted_load_pct_max is not None and hinted_load_pct_max > 0:
+        load_pct_max = max(50, min(load_pct_max, hinted_load_pct_max))
+
+    return {
+        "memory_available_min_mb": memory_min_mb,
+        "disk_free_min_gb": disk_free_min_gb,
+        "load_per_core_pct_max": load_pct_max,
+        "tight_headroom_pct_threshold": max(0, int(execution_supervisor_preflight_tight_headroom_pct)),
+    }
+
+
+def _execution_supervisor_assess_resource_preflight(
+    *,
+    requirements: Dict[str, Any],
+    resource_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    requirements_obj = requirements if isinstance(requirements, dict) else {}
+    snapshot_obj = resource_snapshot if isinstance(resource_snapshot, dict) else {}
+
+    memory_min_mb = max(0, _to_int(requirements_obj.get("memory_available_min_mb"), 0))
+    disk_min_gb = max(0, _to_int(requirements_obj.get("disk_free_min_gb"), 0))
+    load_pct_max = max(0, _to_int(requirements_obj.get("load_per_core_pct_max"), 0))
+    tight_headroom_pct_threshold = max(0, _to_int(requirements_obj.get("tight_headroom_pct_threshold"), 0))
+
+    memory_available_mb = _execution_supervisor_parse_nonnegative_int(snapshot_obj.get("memory_available_mb"))
+    disk_free_gb = _execution_supervisor_parse_nonnegative_int(snapshot_obj.get("disk_free_gb"))
+    load_per_core_pct = _execution_supervisor_parse_nonnegative_int(snapshot_obj.get("load_per_core_pct"))
+
+    failure_reasons: List[str] = []
+    telemetry_missing: List[str] = []
+
+    if memory_available_mb is None:
+        telemetry_missing.append("memory_available")
+    elif memory_available_mb < memory_min_mb:
+        failure_reasons.append("dispatch_preflight_resource_memory_insufficient")
+
+    if disk_free_gb is None:
+        telemetry_missing.append("disk_free")
+    elif disk_free_gb < disk_min_gb:
+        failure_reasons.append("dispatch_preflight_resource_disk_insufficient")
+
+    if load_per_core_pct is None:
+        telemetry_missing.append("load_per_core")
+    elif load_pct_max > 0 and load_per_core_pct > load_pct_max:
+        failure_reasons.append("dispatch_preflight_resource_cpu_pressure_high")
+
+    memory_headroom_mb = (memory_available_mb - memory_min_mb) if memory_available_mb is not None else None
+    disk_headroom_gb = (disk_free_gb - disk_min_gb) if disk_free_gb is not None else None
+    load_headroom_pct = (load_pct_max - load_per_core_pct) if load_per_core_pct is not None else None
+
+    headroom_pct_rows: List[int] = []
+    if memory_available_mb is not None and memory_min_mb > 0:
+        headroom_pct_rows.append(int(round(((memory_available_mb - memory_min_mb) / memory_min_mb) * 100)))
+    if disk_free_gb is not None and disk_min_gb > 0:
+        headroom_pct_rows.append(int(round(((disk_free_gb - disk_min_gb) / disk_min_gb) * 100)))
+    if load_per_core_pct is not None and load_pct_max > 0:
+        headroom_pct_rows.append(int(round(((load_pct_max - load_per_core_pct) / load_pct_max) * 100)))
+    lowest_headroom_pct = min(headroom_pct_rows) if headroom_pct_rows else None
+
+    telemetry_complete = bool(snapshot_obj.get("telemetry_complete") is True and not telemetry_missing)
+    tight_headroom = bool(
+        lowest_headroom_pct is not None and lowest_headroom_pct < tight_headroom_pct_threshold
+    )
+
+    gate_passed = bool((not failure_reasons) and telemetry_complete)
+
+    gate_reason = "dispatch_preflight_resource_validated"
+    if failure_reasons:
+        gate_reason = failure_reasons[0]
+    elif not telemetry_complete:
+        gate_reason = "dispatch_preflight_resource_telemetry_unavailable"
+    elif tight_headroom:
+        gate_reason = "dispatch_preflight_resource_headroom_tight"
+
+    return {
+        "gate_passed": gate_passed,
+        "gate_reason": gate_reason,
+        "failure_reasons": _dedupe_nonempty_strings(failure_reasons),
+        "telemetry_missing": telemetry_missing,
+        "telemetry_complete": telemetry_complete,
+        "attention_required": bool(tight_headroom or not telemetry_complete),
+        "requirements": {
+            "memory_available_min_mb": memory_min_mb,
+            "disk_free_min_gb": disk_min_gb,
+            "load_per_core_pct_max": load_pct_max,
+            "tight_headroom_pct_threshold": tight_headroom_pct_threshold,
+        },
+        "snapshot": {
+            "memory_available_mb": memory_available_mb,
+            "disk_free_gb": disk_free_gb,
+            "load_per_core_pct": load_per_core_pct,
+            "cpu_count": snapshot_obj.get("cpu_count"),
+            "captured_at": snapshot_obj.get("captured_at"),
+            "disk_usage_path": snapshot_obj.get("disk_usage_path"),
+        },
+        "headroom": {
+            "memory_headroom_mb": memory_headroom_mb,
+            "disk_headroom_gb": disk_headroom_gb,
+            "load_headroom_pct": load_headroom_pct,
+            "lowest_headroom_pct": lowest_headroom_pct,
+            "tight_headroom": tight_headroom,
+        },
+        "action_priority": (
+            "p1"
+            if failure_reasons
+            else ("p2" if (tight_headroom or not telemetry_complete) else None)
+        ),
+        "would_block_dispatch": False,
+    }
+
+
+def _build_execution_supervisor_resource_preflight_summary(
+    *,
+    evaluated_candidates: List[Dict[str, Any]],
+    resource_snapshot: Dict[str, Any],
+    ready_candidate_count: int,
+) -> Dict[str, Any]:
+    failing_task_ids: List[str] = []
+    attention_task_ids: List[str] = []
+    failure_reasons: List[str] = []
+    telemetry_missing: List[str] = []
+    lowest_headroom_candidates: List[int] = []
+
+    for row in evaluated_candidates:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "").strip()
+        resource_gate = row.get("resource_preflight") if isinstance(row.get("resource_preflight"), dict) else {}
+        if not resource_gate:
+            continue
+        if bool(resource_gate.get("would_block_dispatch") is True) and task_id:
+            failing_task_ids.append(task_id)
+        if bool(resource_gate.get("attention_required") is True) and task_id:
+            attention_task_ids.append(task_id)
+        failure_reasons.extend(
+            [
+                str(token).strip()
+                for token in (resource_gate.get("failure_reasons") or [])
+                if str(token).strip()
+            ]
+        )
+        telemetry_missing.extend(
+            [
+                str(token).strip()
+                for token in (resource_gate.get("telemetry_missing") or [])
+                if str(token).strip()
+            ]
+        )
+        lowest_headroom_pct = _execution_supervisor_parse_nonnegative_int(
+            (resource_gate.get("headroom") or {}).get("lowest_headroom_pct")
+            if isinstance(resource_gate.get("headroom"), dict)
+            else None
+        )
+        if lowest_headroom_pct is not None:
+            lowest_headroom_candidates.append(lowest_headroom_pct)
+
+    if ready_candidate_count <= 0:
+        status = "idle"
+        reason = "no_dispatch_candidate_to_validate"
+    elif failing_task_ids:
+        status = "blocked"
+        reason = "resource_preflight_blocking_candidate"
+    elif telemetry_missing:
+        status = "degraded"
+        reason = "resource_preflight_telemetry_incomplete"
+    elif attention_task_ids:
+        status = "degraded"
+        reason = "resource_preflight_headroom_tight"
+    else:
+        status = "pass"
+        reason = "resource_preflight_ok"
+
+    return {
+        "schema": "clawd.execution_supervisor_resource_preflight.v1",
+        "required": True,
+        "status": status,
+        "reason": reason,
+        "failure_reasons": _dedupe_nonempty_strings(failure_reasons),
+        "blocking_task_ids": _dedupe_nonempty_strings(failing_task_ids),
+        "attention_task_ids": _dedupe_nonempty_strings(attention_task_ids),
+        "blocking_candidate_count": len(_dedupe_nonempty_strings(failing_task_ids)),
+        "attention_candidate_count": len(_dedupe_nonempty_strings(attention_task_ids)),
+        "telemetry_missing": _dedupe_nonempty_strings(telemetry_missing),
+        "telemetry_complete": bool(resource_snapshot.get("telemetry_complete") is True and not telemetry_missing),
+        "host_snapshot": {
+            "captured_at": resource_snapshot.get("captured_at"),
+            "memory_total_mb": resource_snapshot.get("memory_total_mb"),
+            "memory_available_mb": resource_snapshot.get("memory_available_mb"),
+            "disk_total_gb": resource_snapshot.get("disk_total_gb"),
+            "disk_free_gb": resource_snapshot.get("disk_free_gb"),
+            "load_1m": resource_snapshot.get("load_1m"),
+            "load_per_core_pct": resource_snapshot.get("load_per_core_pct"),
+            "cpu_count": resource_snapshot.get("cpu_count"),
+            "disk_usage_path": resource_snapshot.get("disk_usage_path"),
+        },
+        "requirements_defaults": {
+            "memory_available_min_mb": max(256, int(execution_supervisor_preflight_memory_min_mb)),
+            "disk_free_min_gb": max(1, int(execution_supervisor_preflight_disk_free_min_gb)),
+            "load_per_core_pct_max": max(50, int(execution_supervisor_preflight_load_pct_max)),
+            "tight_headroom_pct_threshold": max(0, int(execution_supervisor_preflight_tight_headroom_pct)),
+        },
+        "lowest_headroom_pct": min(lowest_headroom_candidates) if lowest_headroom_candidates else None,
+        "action_priority": ("p1" if failing_task_ids else ("p2" if status == "degraded" else None)),
+    }
+
+
+def _build_execution_supervisor_uncertainty_signal(
+    *,
+    resource_preflight: Dict[str, Any],
+    ready_candidate_count: int,
+    qualified_candidate_count: int,
+    blocked_candidate_count: int,
+) -> Dict[str, Any]:
+    resource_obj = resource_preflight if isinstance(resource_preflight, dict) else {}
+    resource_status = str(resource_obj.get("status") or "unknown").strip().lower()
+
+    confidence_score = 85
+    uncertainty_reasons: List[str] = []
+
+    if resource_status == "blocked":
+        confidence_score -= 40
+        uncertainty_reasons.append("resource_preflight_blocked")
+    elif resource_status == "degraded":
+        confidence_score -= 20
+        uncertainty_reasons.append("resource_preflight_degraded")
+    elif resource_status == "unknown":
+        confidence_score -= 25
+        uncertainty_reasons.append("resource_preflight_unknown")
+
+    if bool(resource_obj.get("telemetry_complete") is not True):
+        confidence_score -= 15
+        uncertainty_reasons.append("resource_telemetry_incomplete")
+
+    lowest_headroom_pct = _execution_supervisor_parse_nonnegative_int(resource_obj.get("lowest_headroom_pct"))
+    tight_headroom_threshold = max(0, int(execution_supervisor_preflight_tight_headroom_pct))
+    if lowest_headroom_pct is not None and lowest_headroom_pct < tight_headroom_threshold:
+        confidence_score -= 15
+        uncertainty_reasons.append("resource_headroom_tight")
+
+    if ready_candidate_count > 0 and qualified_candidate_count > 0 and blocked_candidate_count > 0:
+        confidence_score -= 8
+        uncertainty_reasons.append("mixed_candidate_posture")
+    if ready_candidate_count > 0 and qualified_candidate_count <= 0:
+        confidence_score -= 5
+        uncertainty_reasons.append("no_qualified_candidate")
+
+    confidence_score = max(0, min(100, confidence_score))
+    if confidence_score >= 75:
+        confidence_label = "high"
+    elif confidence_score >= 55:
+        confidence_label = "medium"
+    else:
+        confidence_label = "low"
+
+    quantiles = {
+        "p10": max(0, confidence_score - 20),
+        "p50": confidence_score,
+        "p90": min(100, confidence_score + 10),
+    }
+    requires_operator_review = bool(
+        confidence_label == "low"
+        or resource_status in {"blocked", "degraded", "unknown"}
+        or "resource_telemetry_incomplete" in uncertainty_reasons
+    )
+
+    return {
+        "schema": "clawd.execution_supervisor_uncertainty_signal.v1",
+        "confidence_score": confidence_score,
+        "confidence_label": confidence_label,
+        "confidence_quantiles": quantiles,
+        "uncertainty_reasons": _dedupe_nonempty_strings(uncertainty_reasons),
+        "requires_operator_review": requires_operator_review,
+        "source": "resource_preflight_heuristic",
+    }
+
+
+def _execution_supervisor_is_canary_block_reason(reason: Any) -> bool:
+    token = str(reason or "").strip().lower()
+    if not token:
+        return False
+    return token.startswith("dispatch_target_worker_canary") or token == "dispatch_target_worker_quarantined"
+
+
+def _execution_supervisor_is_probe_block_reason(reason: Any) -> bool:
+    token = str(reason or "").strip().lower()
+    if not token:
+        return False
+    return token.startswith("dispatch_target_worker_canary_probe")
+
+
+def _build_execution_supervisor_canary_probe_schedule(
+    *,
+    evaluated_candidates: List[Dict[str, Any]],
+    worker_health_inputs: Dict[str, Any],
+    reference_generated_at: Any,
+) -> Dict[str, Any]:
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+    reference_iso = reference_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    previous_payload = load_json_if_exists(execution_supervisor_canary_probe_schedule_latest_path)
+    previous_obj = previous_payload if isinstance(previous_payload, dict) else {}
+    previous_workers = previous_obj.get("workers") if isinstance(previous_obj.get("workers"), list) else []
+    previous_index: Dict[str, Dict[str, Any]] = {}
+    for row in previous_workers:
+        if not isinstance(row, dict):
+            continue
+        worker = str(row.get("worker") or "").strip()
+        if worker:
+            previous_index[worker] = row
+
+    worker_health_index = (
+        worker_health_inputs.get("workers")
+        if isinstance(worker_health_inputs.get("workers"), dict)
+        else {}
+    )
+
+    candidate_index: Dict[str, Dict[str, Any]] = {}
+    for row in evaluated_candidates:
+        if not isinstance(row, dict):
+            continue
+        worker = str(row.get("target_worker") or "").strip()
+        if not worker:
+            continue
+        bucket = candidate_index.setdefault(
+            worker,
+            {
+                "task_ids": [],
+                "blocked_task_ids": [],
+                "qualified_task_ids": [],
+                "blocked_reasons": [],
+            },
+        )
+        task_id = str(row.get("task_id") or "").strip()
+        if task_id:
+            bucket["task_ids"].append(task_id)
+
+        qualification = row.get("qualification") if isinstance(row.get("qualification"), dict) else {}
+        qualification_status = str(qualification.get("status") or "").strip().lower()
+        qualification_reason = str(qualification.get("reason") or "").strip()
+        if qualification_status == "qualified_ready" and task_id:
+            bucket["qualified_task_ids"].append(task_id)
+        elif task_id:
+            bucket["blocked_task_ids"].append(task_id)
+        if qualification_reason:
+            bucket["blocked_reasons"].append(qualification_reason)
+
+    worker_keys = sorted(
+        {
+            str(worker or "").strip()
+            for worker in list(worker_health_index.keys()) + list(candidate_index.keys())
+            if str(worker or "").strip()
+        }
+    )
+
+    demoted_states = {"demoted_quarantined", "canary_required", "probe_required"}
+    pending_states = {"canary_required", "probe_required"}
+    restored_states = {"restored_by_probe"}
+
+    rows: List[Dict[str, Any]] = []
+    for worker in worker_keys:
+        health_row = worker_health_index.get(worker) if isinstance(worker_health_index.get(worker), dict) else {}
+        health_status = str(health_row.get("health_status") or "").strip().lower() or None
+        canary = _execution_supervisor_assess_worker_health_canary(
+            worker_health=health_row,
+            reference_generated_at=reference_dt,
+        )
+        probe = _execution_supervisor_assess_worker_health_probe(
+            worker_health=health_row,
+            reference_generated_at=reference_dt,
+        )
+
+        candidate_meta = candidate_index.get(worker) if isinstance(candidate_index.get(worker), dict) else {}
+        task_ids = _dedupe_nonempty_strings(candidate_meta.get("task_ids") or [])
+        blocked_task_ids = _dedupe_nonempty_strings(candidate_meta.get("blocked_task_ids") or [])
+        qualified_task_ids = _dedupe_nonempty_strings(candidate_meta.get("qualified_task_ids") or [])
+        blocked_reasons = _dedupe_nonempty_strings(candidate_meta.get("blocked_reasons") or [])
+
+        state = "monitoring"
+        gate_reason = blocked_reasons[0] if blocked_reasons else None
+        demoted = False
+        restore_pending = False
+        restored = False
+
+        if health_status == "quarantined":
+            state = "demoted_quarantined"
+            gate_reason = gate_reason or "dispatch_target_worker_quarantined"
+            demoted = True
+        elif health_status == "probationary":
+            if bool(canary.get("gate_passed") is not True):
+                state = "canary_required"
+                gate_reason = gate_reason or str(
+                    canary.get("gate_reason") or "dispatch_target_worker_canary_not_passed"
+                ).strip() or "dispatch_target_worker_canary_not_passed"
+                demoted = True
+                restore_pending = True
+            elif bool(probe.get("gate_passed") is True):
+                state = "restored_by_probe"
+                gate_reason = "dispatch_target_worker_canary_probe_passed"
+                restored = True
+            else:
+                state = "probe_required"
+                gate_reason = gate_reason or str(
+                    probe.get("gate_reason") or "dispatch_target_worker_canary_probe_not_passed"
+                ).strip() or "dispatch_target_worker_canary_probe_not_passed"
+                demoted = True
+                restore_pending = True
+        elif health_status == "healthy":
+            state = "healthy"
+        elif health_status:
+            state = "monitoring"
+
+        if not demoted and any(_execution_supervisor_is_canary_block_reason(reason) for reason in blocked_reasons):
+            demoted = True
+        if not restore_pending and any(_execution_supervisor_is_probe_block_reason(reason) for reason in blocked_reasons):
+            restore_pending = True
+
+        probe_due_at: Optional[str] = None
+        probe_due_in_sec: Optional[int] = None
+        probe_overdue = False
+        if state == "probe_required":
+            probe_checked_at = str(probe.get("probe_checked_at") or "").strip() or None
+            probe_checked_dt = parse_iso(probe_checked_at)
+            probe_max_age_sec = max(0, _to_int(probe.get("probe_max_age_sec"), 0))
+            if probe_checked_dt is not None and probe_max_age_sec > 0:
+                due_dt = probe_checked_dt + dt.timedelta(seconds=probe_max_age_sec)
+                probe_due_at = due_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                probe_due_in_sec = int((due_dt - reference_dt).total_seconds())
+                probe_overdue = bool(probe_due_in_sec < 0)
+
+        previous = previous_index.get(worker) if isinstance(previous_index.get(worker), dict) else {}
+        previous_state = str(previous.get("state") or "").strip() or None
+        previous_consecutive = max(0, _to_int(previous.get("consecutive_ticks_in_state"), 0))
+        consecutive_ticks = previous_consecutive + 1 if previous_state == state else 1
+        first_seen_at = str(previous.get("first_seen_at") or "").strip() or reference_iso
+
+        pending_since = str(previous.get("pending_since") or "").strip() or None
+        if state in pending_states:
+            if previous_state in pending_states and pending_since:
+                pass
+            else:
+                pending_since = reference_iso
+        else:
+            pending_since = None
+
+        demoted_at = str(previous.get("demoted_at") or "").strip() or None
+        if state in demoted_states:
+            if previous_state in demoted_states and demoted_at:
+                pass
+            else:
+                demoted_at = reference_iso
+        else:
+            demoted_at = None
+
+        restored_at = str(previous.get("restored_at") or "").strip() or None
+        if state in restored_states:
+            if previous_state in restored_states and restored_at:
+                pass
+            else:
+                restored_at = reference_iso
+        elif previous_state in restored_states and state not in restored_states:
+            restored_at = None
+
+        rows.append(
+            {
+                "worker": worker,
+                "state": state,
+                "gate_reason": gate_reason,
+                "health_status": health_status,
+                "canary_status": canary.get("canary_status"),
+                "canary_reason": canary.get("canary_reason"),
+                "canary_checked_at": canary.get("canary_checked_at"),
+                "canary_age_sec": canary.get("canary_age_sec"),
+                "canary_fresh": canary.get("canary_fresh"),
+                "canary_artifact_path": canary.get("canary_artifact_path"),
+                "canary_artifact_present": canary.get("canary_artifact_present"),
+                "canary_gate_passed": canary.get("gate_passed"),
+                "canary_gate_reason": canary.get("gate_reason"),
+                "reason": str(health_row.get("reason") or "").strip() or None,
+                "checked_at": str(health_row.get("checked_at") or "").strip() or None,
+                "target_task_ids": task_ids,
+                "blocked_task_ids": blocked_task_ids,
+                "qualified_task_ids": qualified_task_ids,
+                "blocked_reasons": blocked_reasons,
+                "candidate_count": len(task_ids),
+                "demoted": demoted,
+                "restore_pending": restore_pending,
+                "restored": restored,
+                "probe_status": probe.get("probe_status"),
+                "probe_reason": probe.get("probe_reason"),
+                "probe_checked_at": probe.get("probe_checked_at"),
+                "probe_age_sec": probe.get("probe_age_sec"),
+                "probe_fresh": probe.get("probe_fresh"),
+                "probe_artifact_path": probe.get("probe_artifact_path"),
+                "probe_artifact_present": probe.get("probe_artifact_present"),
+                "probe_gate_passed": probe.get("gate_passed"),
+                "probe_gate_reason": probe.get("gate_reason"),
+                "probe_due_at": probe_due_at,
+                "probe_due_in_sec": probe_due_in_sec,
+                "probe_overdue": probe_overdue,
+                "first_seen_at": first_seen_at,
+                "last_seen_at": reference_iso,
+                "consecutive_ticks_in_state": consecutive_ticks,
+                "pending_since": pending_since,
+                "demoted_at": demoted_at,
+                "restored_at": restored_at,
+            }
+        )
+
+    state_rank = {
+        "demoted_quarantined": 0,
+        "canary_required": 1,
+        "probe_required": 2,
+        "restored_by_probe": 3,
+        "healthy": 4,
+        "monitoring": 5,
+        "unknown": 6,
+    }
+    rows.sort(key=lambda row: (state_rank.get(str(row.get("state") or "unknown"), 9), str(row.get("worker") or "")))
+
+    worker_count = len(rows)
+    demoted_worker_count = len([row for row in rows if row.get("demoted") is True])
+    restore_pending_worker_count = len([row for row in rows if row.get("restore_pending") is True])
+    restored_worker_count = len([row for row in rows if row.get("restored") is True])
+    quarantined_worker_count = len([row for row in rows if row.get("state") == "demoted_quarantined"])
+    probe_required_worker_count = len([row for row in rows if row.get("state") == "probe_required"])
+    canary_required_worker_count = len([row for row in rows if row.get("state") == "canary_required"])
+    overdue_probe_worker_count = len([row for row in rows if row.get("probe_overdue") is True])
+
+    next_probe_due_at: Optional[str] = None
+    next_probe_due_in_sec: Optional[int] = None
+    for row in rows:
+        due_at = str(row.get("probe_due_at") or "").strip() or None
+        due_in_sec = row.get("probe_due_in_sec") if isinstance(row.get("probe_due_in_sec"), int) else None
+        if not due_at:
+            continue
+        if next_probe_due_in_sec is None or (due_in_sec is not None and due_in_sec < next_probe_due_in_sec):
+            next_probe_due_at = due_at
+            next_probe_due_in_sec = due_in_sec
+
+    if worker_count <= 0:
+        status = "idle"
+        reason = "no_canary_workers_detected"
+    elif restore_pending_worker_count > 0 or demoted_worker_count > 0:
+        status = "attention_required"
+        reason = "canary_restore_pending"
+    elif restored_worker_count > 0:
+        status = "restored"
+        reason = "canary_restoration_verified"
+    else:
+        status = "monitoring"
+        reason = "canary_monitoring_only"
+
+    return {
+        "schema": "clawd.execution_supervisor_canary_probe_schedule.v1",
+        "generated_at": reference_iso,
+        "schedule_path": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+        "schedule_history_path": to_rel(execution_supervisor_canary_probe_schedule_history_path),
+        "source": {
+            "dispatch_qualification_path": to_rel(execution_supervisor_dispatch_qualification_latest_path),
+            "worker_health_canary_path": worker_health_inputs.get("source_path"),
+            "worker_health_canary_present": bool(worker_health_inputs.get("source_present") is True),
+            "worker_health_canary_schema": worker_health_inputs.get("schema"),
+            "worker_health_canary_generated_at": worker_health_inputs.get("generated_at"),
+            "worker_health_canary_max_age_sec": worker_health_inputs.get("canary_max_age_sec"),
+            "worker_health_canary_future_skew_sec": worker_health_inputs.get("canary_future_skew_sec"),
+            "worker_health_canary_artifact_required": True,
+        },
+        "status": status,
+        "reason": reason,
+        "worker_count": worker_count,
+        "demoted_worker_count": demoted_worker_count,
+        "restore_pending_worker_count": restore_pending_worker_count,
+        "restored_worker_count": restored_worker_count,
+        "quarantined_worker_count": quarantined_worker_count,
+        "probe_required_worker_count": probe_required_worker_count,
+        "canary_required_worker_count": canary_required_worker_count,
+        "overdue_probe_worker_count": overdue_probe_worker_count,
+        "next_probe_due_at": next_probe_due_at,
+        "next_probe_due_in_sec": next_probe_due_in_sec,
+        "workers": rows,
+    }
+
+
+def _execution_supervisor_probe_expected_artifact_hint(
+    *,
+    worker: Any,
+    evidence_kind: str,
+    reference_generated_at: Any,
+) -> str:
+    worker_token = _slugify_token(worker, fallback="worker", limit=80)
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+    date_token = reference_dt.date().isoformat()
+    kind_token = "canary" if str(evidence_kind or "").strip().lower() == "canary" else "probe"
+    return f"reports/{worker_token}_restore_{kind_token}_{date_token}.md"
+
+
+def _build_execution_supervisor_probe_execution_plan(
+    *,
+    canary_probe_schedule: Dict[str, Any],
+    reference_generated_at: Any,
+) -> Dict[str, Any]:
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+    reference_iso = reference_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    schedule_obj = canary_probe_schedule if isinstance(canary_probe_schedule, dict) else {}
+    schedule_workers = schedule_obj.get("workers") if isinstance(schedule_obj.get("workers"), list) else []
+
+    previous_payload = load_json_if_exists(execution_supervisor_probe_execution_plan_latest_path)
+    previous_obj = previous_payload if isinstance(previous_payload, dict) else {}
+    previous_workers = previous_obj.get("workers") if isinstance(previous_obj.get("workers"), list) else []
+    previous_index: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for previous_row in previous_workers:
+        if not isinstance(previous_row, dict):
+            continue
+        worker = str(previous_row.get("worker") or "").strip()
+        evidence_kind = str(previous_row.get("required_evidence_kind") or "").strip().lower()
+        if worker and evidence_kind:
+            previous_index[(worker, evidence_kind)] = previous_row
+
+    items: List[Dict[str, Any]] = []
+    for row in schedule_workers:
+        if not isinstance(row, dict):
+            continue
+        worker = str(row.get("worker") or "").strip()
+        state = str(row.get("state") or "").strip()
+        if not worker or state not in {"canary_required", "probe_required"}:
+            continue
+
+        evidence_kind = "canary" if state == "canary_required" else "probe"
+        status_field = f"{evidence_kind}_status"
+        checked_at_field = f"{evidence_kind}_checked_at"
+        artifact_path_field = f"{evidence_kind}_artifact_path"
+        artifact_present_field = f"{evidence_kind}_artifact_present"
+
+        due_at: Optional[str] = None
+        due_in_sec: Optional[int] = None
+        overdue = False
+        execution_state = "due_now"
+        if evidence_kind == "probe":
+            due_at = str(row.get("probe_due_at") or "").strip() or None
+            due_in_sec = row.get("probe_due_in_sec") if isinstance(row.get("probe_due_in_sec"), int) else None
+            overdue = bool(row.get("probe_overdue") is True)
+            if overdue:
+                execution_state = "overdue"
+            elif due_in_sec is not None and due_in_sec > 0:
+                execution_state = "scheduled"
+            else:
+                execution_state = "due_now"
+
+        previous = previous_index.get((worker, evidence_kind)) if isinstance(previous_index.get((worker, evidence_kind)), dict) else {}
+        previous_execution_state = str(previous.get("execution_state") or "").strip() or None
+        previous_execution_state_ticks = max(0, _to_int(previous.get("execution_state_consecutive_ticks"), 0))
+        execution_state_consecutive_ticks = (
+            previous_execution_state_ticks + 1 if previous_execution_state == execution_state else 1
+        )
+        execution_state_first_seen_at = str(previous.get("execution_state_first_seen_at") or "").strip() or None
+        if previous_execution_state == execution_state and execution_state_first_seen_at:
+            pass
+        else:
+            execution_state_first_seen_at = reference_iso
+
+        first_due_now_at = str(previous.get("first_due_now_at") or "").strip() or None
+        if execution_state in {"due_now", "overdue"}:
+            if previous_execution_state in {"due_now", "overdue"} and first_due_now_at:
+                pass
+            else:
+                first_due_now_at = reference_iso
+        else:
+            first_due_now_at = None
+
+        first_overdue_at = str(previous.get("first_overdue_at") or "").strip() or None
+        if execution_state == "overdue":
+            if previous_execution_state == "overdue" and first_overdue_at:
+                pass
+            else:
+                first_overdue_at = reference_iso
+        else:
+            first_overdue_at = None
+
+        items.append(
+            {
+                "worker": worker,
+                "state": state,
+                "required_step": (
+                    "capture_canary_execution_evidence"
+                    if evidence_kind == "canary"
+                    else "capture_probe_execution_evidence"
+                ),
+                "required_evidence_kind": evidence_kind,
+                "required_status_field": status_field,
+                "required_status_value": "pass",
+                "required_checked_at_field": checked_at_field,
+                "required_artifact_path_field": artifact_path_field,
+                "required_artifact_present_field": artifact_present_field,
+                "existing_status": str(row.get(status_field) or "").strip() or None,
+                "existing_checked_at": str(row.get(checked_at_field) or "").strip() or None,
+                "existing_artifact_path": str(row.get(artifact_path_field) or "").strip() or None,
+                "existing_artifact_present": bool(row.get(artifact_present_field) is True),
+                "expected_artifact_hint": _execution_supervisor_probe_expected_artifact_hint(
+                    worker=worker,
+                    evidence_kind=evidence_kind,
+                    reference_generated_at=reference_iso,
+                ),
+                "gate_reason": str(row.get("gate_reason") or "").strip() or None,
+                "target_task_ids": _dedupe_nonempty_strings(row.get("target_task_ids") or []),
+                "blocked_task_ids": _dedupe_nonempty_strings(row.get("blocked_task_ids") or []),
+                "pending_since": str(row.get("pending_since") or "").strip() or None,
+                "demoted_at": str(row.get("demoted_at") or "").strip() or None,
+                "consecutive_ticks_in_state": max(0, _to_int(row.get("consecutive_ticks_in_state"), 0)),
+                "execution_state": execution_state,
+                "execution_state_first_seen_at": execution_state_first_seen_at,
+                "execution_state_consecutive_ticks": execution_state_consecutive_ticks,
+                "first_due_now_at": first_due_now_at,
+                "first_overdue_at": first_overdue_at,
+                "due_at": due_at,
+                "due_in_sec": due_in_sec,
+                "overdue": overdue,
+            }
+        )
+
+    state_rank = {
+        "overdue": 0,
+        "due_now": 1,
+        "scheduled": 2,
+    }
+    items.sort(
+        key=lambda row: (
+            state_rank.get(str(row.get("execution_state") or "scheduled"), 9),
+            0 if row.get("due_in_sec") is None else int(row.get("due_in_sec")),
+            str(row.get("worker") or ""),
+        )
+    )
+
+    pending_worker_count = len(items)
+    canary_required_worker_count = len([
+        row for row in items if str(row.get("required_evidence_kind") or "") == "canary"
+    ])
+    probe_required_worker_count = len([
+        row for row in items if str(row.get("required_evidence_kind") or "") == "probe"
+    ])
+    overdue_worker_count = len([row for row in items if row.get("overdue") is True])
+    due_now_worker_count = len([
+        row for row in items if str(row.get("execution_state") or "") in {"overdue", "due_now"}
+    ])
+    scheduled_worker_count = len([
+        row for row in items if str(row.get("execution_state") or "") == "scheduled"
+    ])
+
+    due_now_cohort_workers = sorted(
+        _dedupe_nonempty_strings([
+            str(row.get("worker") or "").strip()
+            for row in items
+            if str(row.get("execution_state") or "") in {"overdue", "due_now"}
+        ])
+    )
+    overdue_cohort_workers = sorted(
+        _dedupe_nonempty_strings([
+            str(row.get("worker") or "").strip()
+            for row in items
+            if str(row.get("execution_state") or "") == "overdue"
+        ])
+    )
+
+    due_now_cohort_signature = (
+        hashlib.sha256("|".join(due_now_cohort_workers).encode("utf-8")).hexdigest()[:16]
+        if due_now_cohort_workers
+        else None
+    )
+    overdue_cohort_signature = (
+        hashlib.sha256("|".join(overdue_cohort_workers).encode("utf-8")).hexdigest()[:16]
+        if overdue_cohort_workers
+        else None
+    )
+
+    previous_due_now_cohort_signature = str(previous_obj.get("due_now_cohort_signature") or "").strip() or None
+    previous_due_now_cohort_signature_first_seen_at = (
+        str(previous_obj.get("due_now_cohort_signature_first_seen_at") or "").strip() or None
+    )
+    previous_due_now_cohort_signature_ticks = max(
+        0,
+        _to_int(previous_obj.get("due_now_cohort_signature_consecutive_ticks"), 0),
+    )
+
+    due_now_cohort_signature_first_seen_at: Optional[str] = None
+    due_now_cohort_signature_consecutive_ticks = 0
+    if due_now_cohort_signature:
+        if (
+            due_now_cohort_signature == previous_due_now_cohort_signature
+            and previous_due_now_cohort_signature_first_seen_at
+        ):
+            due_now_cohort_signature_first_seen_at = previous_due_now_cohort_signature_first_seen_at
+            due_now_cohort_signature_consecutive_ticks = max(1, previous_due_now_cohort_signature_ticks + 1)
+        else:
+            due_now_cohort_signature_first_seen_at = reference_iso
+            due_now_cohort_signature_consecutive_ticks = 1
+
+    previous_overdue_cohort_signature = str(previous_obj.get("overdue_cohort_signature") or "").strip() or None
+    previous_overdue_cohort_signature_first_seen_at = (
+        str(previous_obj.get("overdue_cohort_signature_first_seen_at") or "").strip() or None
+    )
+    previous_overdue_cohort_signature_ticks = max(
+        0,
+        _to_int(previous_obj.get("overdue_cohort_signature_consecutive_ticks"), 0),
+    )
+
+    overdue_cohort_signature_first_seen_at: Optional[str] = None
+    overdue_cohort_signature_consecutive_ticks = 0
+    if overdue_cohort_signature:
+        if (
+            overdue_cohort_signature == previous_overdue_cohort_signature
+            and previous_overdue_cohort_signature_first_seen_at
+        ):
+            overdue_cohort_signature_first_seen_at = previous_overdue_cohort_signature_first_seen_at
+            overdue_cohort_signature_consecutive_ticks = max(1, previous_overdue_cohort_signature_ticks + 1)
+        else:
+            overdue_cohort_signature_first_seen_at = reference_iso
+            overdue_cohort_signature_consecutive_ticks = 1
+
+    oldest_due_now_started_at: Optional[str] = None
+    oldest_due_now_worker: Optional[str] = None
+    oldest_due_now_age_sec: Optional[int] = None
+    oldest_overdue_started_at: Optional[str] = None
+    oldest_overdue_worker: Optional[str] = None
+    oldest_overdue_age_sec: Optional[int] = None
+
+    for row in items:
+        execution_state = str(row.get("execution_state") or "").strip()
+        worker = str(row.get("worker") or "").strip() or None
+        if execution_state in {"due_now", "overdue"}:
+            started_at = str(
+                row.get("first_due_now_at")
+                or row.get("execution_state_first_seen_at")
+                or ""
+            ).strip() or None
+            started_dt = parse_iso(started_at)
+            age_sec = max(0, int((reference_dt - started_dt).total_seconds())) if started_dt is not None else None
+            if oldest_due_now_started_at is None:
+                oldest_due_now_started_at = started_at
+                oldest_due_now_worker = worker
+                oldest_due_now_age_sec = age_sec
+            elif started_dt is not None:
+                current_oldest_dt = parse_iso(oldest_due_now_started_at)
+                if current_oldest_dt is None or started_dt < current_oldest_dt:
+                    oldest_due_now_started_at = started_at
+                    oldest_due_now_worker = worker
+                    oldest_due_now_age_sec = age_sec
+
+        if execution_state == "overdue":
+            overdue_started_at = str(
+                row.get("first_overdue_at")
+                or row.get("execution_state_first_seen_at")
+                or ""
+            ).strip() or None
+            overdue_started_dt = parse_iso(overdue_started_at)
+            overdue_age_sec = (
+                max(0, int((reference_dt - overdue_started_dt).total_seconds()))
+                if overdue_started_dt is not None
+                else None
+            )
+            if oldest_overdue_started_at is None:
+                oldest_overdue_started_at = overdue_started_at
+                oldest_overdue_worker = worker
+                oldest_overdue_age_sec = overdue_age_sec
+            elif overdue_started_dt is not None:
+                current_oldest_overdue_dt = parse_iso(oldest_overdue_started_at)
+                if current_oldest_overdue_dt is None or overdue_started_dt < current_oldest_overdue_dt:
+                    oldest_overdue_started_at = overdue_started_at
+                    oldest_overdue_worker = worker
+                    oldest_overdue_age_sec = overdue_age_sec
+
+    if pending_worker_count <= 0:
+        status = "idle"
+        decision = "NO_ACTION"
+        reason = "no_probe_execution_required"
+    elif overdue_worker_count > 0 or due_now_worker_count > 0:
+        status = "attention_required"
+        decision = "PLAN_ONLY"
+        reason = "probe_execution_due"
+    else:
+        status = "plan_ready"
+        decision = "PLAN_ONLY"
+        reason = "probe_execution_scheduled"
+
+    action_priority: Optional[str] = None
+    if overdue_worker_count > 0:
+        action_priority = "p1"
+    elif due_now_worker_count > 0:
+        action_priority = "p2"
+
+    return {
+        "schema": "clawd.execution_supervisor_probe_execution_plan.v1",
+        "generated_at": reference_iso,
+        "plan_path": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+        "plan_history_path": to_rel(execution_supervisor_probe_execution_plan_history_path),
+        "mode": "plan_only_fail_closed",
+        "fail_closed": True,
+        "launch_mutation_allowed": False,
+        "status": status,
+        "decision": decision,
+        "active": bool(pending_worker_count > 0),
+        "reason": reason,
+        "action_priority": action_priority,
+        "pending_worker_count": pending_worker_count,
+        "canary_required_worker_count": canary_required_worker_count,
+        "probe_required_worker_count": probe_required_worker_count,
+        "due_now_worker_count": due_now_worker_count,
+        "scheduled_worker_count": scheduled_worker_count,
+        "overdue_worker_count": overdue_worker_count,
+        "due_now_cohort_workers": due_now_cohort_workers,
+        "due_now_cohort_signature": due_now_cohort_signature,
+        "due_now_cohort_signature_first_seen_at": due_now_cohort_signature_first_seen_at,
+        "due_now_cohort_signature_consecutive_ticks": due_now_cohort_signature_consecutive_ticks,
+        "overdue_cohort_workers": overdue_cohort_workers,
+        "overdue_cohort_signature": overdue_cohort_signature,
+        "overdue_cohort_signature_first_seen_at": overdue_cohort_signature_first_seen_at,
+        "overdue_cohort_signature_consecutive_ticks": overdue_cohort_signature_consecutive_ticks,
+        "oldest_due_now_started_at": oldest_due_now_started_at,
+        "oldest_due_now_worker": oldest_due_now_worker,
+        "oldest_due_now_age_sec": oldest_due_now_age_sec,
+        "oldest_overdue_started_at": oldest_overdue_started_at,
+        "oldest_overdue_worker": oldest_overdue_worker,
+        "oldest_overdue_age_sec": oldest_overdue_age_sec,
+        "source": {
+            "canary_probe_schedule_path": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+            "canary_probe_schedule_schema": str(schedule_obj.get("schema") or "").strip() or None,
+            "canary_probe_schedule_generated_at": str(schedule_obj.get("generated_at") or "").strip() or None,
+            "canary_probe_schedule_status": str(schedule_obj.get("status") or "").strip() or None,
+        },
+        "workers": items,
+    }
+
+
+def _build_execution_supervisor_launch_readiness(
+    *,
+    ready_candidate_count: int,
+    qualified_candidate_count: int,
+    blocked_candidates: List[Dict[str, Any]],
+    decision_reasons: List[str],
+    canary_probe_schedule: Dict[str, Any],
+    dispatch_blocked_reasons: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    blocked_reason_counts: Dict[str, int] = {}
+    blocked_reasons: List[str] = []
+    for row in blocked_candidates:
+        if not isinstance(row, dict):
+            continue
+        qualification = row.get("qualification") if isinstance(row.get("qualification"), dict) else {}
+        reason = str(qualification.get("reason") or row.get("reason") or "").strip()
+        if not reason:
+            continue
+        blocked_reason_counts[reason] = blocked_reason_counts.get(reason, 0) + 1
+        blocked_reasons.append(reason)
+
+    dispatch_blocked_reason_counts: Dict[str, int] = {}
+    for raw_reason in (dispatch_blocked_reasons or []):
+        reason_token = str(raw_reason or "").strip()
+        if not reason_token:
+            continue
+        dispatch_blocked_reason_counts[reason_token] = dispatch_blocked_reason_counts.get(reason_token, 0) + 1
+
+    for reason_token, count in dispatch_blocked_reason_counts.items():
+        blocked_reason_counts[reason_token] = blocked_reason_counts.get(reason_token, 0) + max(0, int(count))
+        blocked_reasons.extend([reason_token] * max(0, int(count)))
+
+    blocked_reason_tokens = _dedupe_nonempty_strings(blocked_reasons)
+
+    blocked_candidate_count = len([row for row in blocked_candidates if isinstance(row, dict)])
+    blocked_canary_candidate_count = sum(
+        1 for reason in blocked_reasons if _execution_supervisor_is_canary_block_reason(reason)
+    )
+    blocked_probe_candidate_count = sum(
+        1 for reason in blocked_reasons if _execution_supervisor_is_probe_block_reason(reason)
+    )
+
+    if ready_candidate_count <= 0:
+        if blocked_reason_tokens:
+            state = "blocked"
+            reason = blocked_reason_tokens[0]
+        else:
+            state = "idle"
+            reason = "no_dispatch_candidate_to_qualify"
+    elif blocked_candidate_count <= 0 and qualified_candidate_count >= ready_candidate_count:
+        state = "ready"
+        reason = "dispatch_candidates_qualified_ready"
+    elif qualified_candidate_count > 0:
+        state = "degraded"
+        reason = blocked_reason_tokens[0] if blocked_reason_tokens else "dispatch_candidates_partially_qualified"
+    else:
+        state = "blocked"
+        reason = blocked_reason_tokens[0] if blocked_reason_tokens else "dispatch_candidates_not_qualified"
+
+    schedule_obj = canary_probe_schedule if isinstance(canary_probe_schedule, dict) else {}
+    schedule_workers = schedule_obj.get("workers") if isinstance(schedule_obj.get("workers"), list) else []
+    demoted_workers = _dedupe_nonempty_strings(
+        [str(row.get("worker") or "").strip() for row in schedule_workers if isinstance(row, dict) and row.get("demoted") is True]
+    )
+    restore_pending_workers = _dedupe_nonempty_strings(
+        [str(row.get("worker") or "").strip() for row in schedule_workers if isinstance(row, dict) and row.get("restore_pending") is True]
+    )
+    restored_workers = _dedupe_nonempty_strings(
+        [str(row.get("worker") or "").strip() for row in schedule_workers if isinstance(row, dict) and row.get("restored") is True]
+    )
+
+    severity_threshold_ticks = max(1, int(execution_supervisor_launch_readiness_persistence_ticks))
+    demotion_cohort_rows = [
+        row
+        for row in schedule_workers
+        if isinstance(row, dict)
+        and (
+            row.get("demoted") is True
+            or row.get("restore_pending") is True
+        )
+    ]
+    demotion_cohort_workers = _dedupe_nonempty_strings(
+        [str(row.get("worker") or "").strip() for row in demotion_cohort_rows]
+    )
+    cohort_signature = (
+        hashlib.sha256(
+            "|".join(sorted(demotion_cohort_workers)).encode("utf-8")
+        ).hexdigest()[:16]
+        if demotion_cohort_workers
+        else None
+    )
+    cohort_worker_ticks = [
+        max(0, _to_int(row.get("consecutive_ticks_in_state"), 0))
+        for row in demotion_cohort_rows
+        if isinstance(row, dict)
+    ]
+    cohort_min_worker_state_ticks = min(cohort_worker_ticks) if cohort_worker_ticks else None
+    cohort_max_worker_state_ticks = max(cohort_worker_ticks) if cohort_worker_ticks else None
+
+    previous_payload = load_json_if_exists(execution_supervisor_dispatch_qualification_latest_path)
+    previous_obj = previous_payload if isinstance(previous_payload, dict) else {}
+    previous_launch = (
+        previous_obj.get("launch_readiness")
+        if isinstance(previous_obj.get("launch_readiness"), dict)
+        else {}
+    )
+    previous_severity = (
+        previous_launch.get("severity_gate")
+        if isinstance(previous_launch.get("severity_gate"), dict)
+        else {}
+    )
+    previous_state = str(previous_launch.get("state") or "").strip().lower()
+    previous_signature = str(previous_severity.get("cohort_signature") or "").strip() or None
+    previous_non_ready_ticks = max(0, _to_int(previous_severity.get("non_ready_ticks_consecutive"), 0))
+
+    non_ready_state = state if state in {"blocked", "degraded"} else None
+    same_non_ready_cohort = bool(
+        non_ready_state
+        and previous_state in {"blocked", "degraded"}
+        and previous_signature
+        and cohort_signature
+        and previous_signature == cohort_signature
+    )
+    if non_ready_state and cohort_signature:
+        non_ready_ticks = previous_non_ready_ticks + 1 if same_non_ready_cohort else 1
+    else:
+        non_ready_ticks = 0
+
+    severity_state = "clear"
+    severity_reason = "launch_readiness_ready_or_idle"
+    severity_active = False
+    escalation_priority = "none"
+
+    if non_ready_state and not cohort_signature:
+        severity_reason = "launch_readiness_non_ready_without_demoted_cohort"
+    elif non_ready_state and non_ready_ticks < severity_threshold_ticks:
+        severity_reason = "launch_readiness_persistence_threshold_not_reached"
+    elif non_ready_state and non_ready_ticks >= severity_threshold_ticks:
+        severity_active = True
+        if non_ready_state == "blocked":
+            severity_state = "critical"
+            severity_reason = "launch_readiness_persistent_blocked_demoted_cohort"
+            escalation_priority = "p1"
+        else:
+            severity_state = "warning"
+            severity_reason = "launch_readiness_persistent_degraded_demoted_cohort"
+            escalation_priority = "p2"
+
+    schedule_reference_dt = parse_iso(schedule_obj.get("generated_at")) or clock_now_dt()
+
+    def _parse_worker_event_dt(row: Any, field: str) -> Optional[dt.datetime]:
+        if not isinstance(row, dict):
+            return None
+        token = str(row.get(field) or "").strip()
+        if not token:
+            return None
+        return parse_iso(token)
+
+    oldest_restore_pending_worker: Optional[str] = None
+    oldest_restore_pending_since: Optional[str] = None
+    oldest_restore_pending_age_sec: Optional[int] = None
+    oldest_restore_pending_dt: Optional[dt.datetime] = None
+
+    oldest_demoted_worker: Optional[str] = None
+    oldest_demoted_at: Optional[str] = None
+    oldest_demoted_age_sec: Optional[int] = None
+    oldest_demoted_dt: Optional[dt.datetime] = None
+
+    latest_restored_worker: Optional[str] = None
+    latest_restored_at: Optional[str] = None
+    latest_restored_age_sec: Optional[int] = None
+    latest_restored_dt: Optional[dt.datetime] = None
+
+    for row in schedule_workers:
+        if not isinstance(row, dict):
+            continue
+        worker = str(row.get("worker") or "").strip() or None
+
+        if row.get("restore_pending") is True:
+            pending_dt = _parse_worker_event_dt(row, "pending_since")
+            if pending_dt is not None and (oldest_restore_pending_dt is None or pending_dt < oldest_restore_pending_dt):
+                oldest_restore_pending_dt = pending_dt
+                oldest_restore_pending_worker = worker
+                oldest_restore_pending_since = pending_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+        if row.get("demoted") is True:
+            demoted_dt = _parse_worker_event_dt(row, "demoted_at")
+            if demoted_dt is not None and (oldest_demoted_dt is None or demoted_dt < oldest_demoted_dt):
+                oldest_demoted_dt = demoted_dt
+                oldest_demoted_worker = worker
+                oldest_demoted_at = demoted_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+        if row.get("restored") is True:
+            restored_dt = _parse_worker_event_dt(row, "restored_at")
+            if restored_dt is not None and (latest_restored_dt is None or restored_dt > latest_restored_dt):
+                latest_restored_dt = restored_dt
+                latest_restored_worker = worker
+                latest_restored_at = restored_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    if oldest_restore_pending_dt is not None:
+        oldest_restore_pending_age_sec = max(0, int((schedule_reference_dt - oldest_restore_pending_dt).total_seconds()))
+    if oldest_demoted_dt is not None:
+        oldest_demoted_age_sec = max(0, int((schedule_reference_dt - oldest_demoted_dt).total_seconds()))
+    if latest_restored_dt is not None:
+        latest_restored_age_sec = max(0, int((schedule_reference_dt - latest_restored_dt).total_seconds()))
+
+    schedule_overdue_probe_worker_count = max(0, _to_int(schedule_obj.get("overdue_probe_worker_count"), 0))
+    demotion_action_priority: Optional[str] = None
+    if restore_pending_workers:
+        demotion_action_priority = "p1" if schedule_overdue_probe_worker_count > 0 else "p2"
+    elif demoted_workers:
+        demotion_action_priority = "p2"
+
+    return {
+        "schema": "clawd.execution_supervisor_launch_readiness.v1",
+        "state": state,
+        "reason": reason,
+        "ready_candidate_count": max(0, int(ready_candidate_count)),
+        "qualified_candidate_count": max(0, int(qualified_candidate_count)),
+        "blocked_candidate_count": max(0, int(blocked_candidate_count)),
+        "blocked_reason_counts": blocked_reason_counts,
+        "blocked_canary_candidate_count": max(0, int(blocked_canary_candidate_count)),
+        "blocked_probe_candidate_count": max(0, int(blocked_probe_candidate_count)),
+        "decision_reasons": _dedupe_nonempty_strings(decision_reasons),
+        "demotion_restore_posture": {
+            "schema": "clawd.execution_supervisor_worker_demotion_restore_posture.v1",
+            "automatic_demotion_active": bool(demoted_workers),
+            "automatic_restore_pending": bool(restore_pending_workers),
+            "automatic_restore_ready": bool(restored_workers and not restore_pending_workers),
+            "demoted_worker_count": len(demoted_workers),
+            "restore_pending_worker_count": len(restore_pending_workers),
+            "restored_worker_count": len(restored_workers),
+            "demoted_workers": demoted_workers,
+            "restore_pending_workers": restore_pending_workers,
+            "restored_workers": restored_workers,
+            "oldest_restore_pending_since": oldest_restore_pending_since,
+            "oldest_restore_pending_worker": oldest_restore_pending_worker,
+            "oldest_restore_pending_age_sec": oldest_restore_pending_age_sec,
+            "oldest_demoted_at": oldest_demoted_at,
+            "oldest_demoted_worker": oldest_demoted_worker,
+            "oldest_demoted_age_sec": oldest_demoted_age_sec,
+            "latest_restored_at": latest_restored_at,
+            "latest_restored_worker": latest_restored_worker,
+            "latest_restored_age_sec": latest_restored_age_sec,
+            "action_priority": demotion_action_priority,
+        },
+        "canary_probe_schedule": {
+            "schema": str(schedule_obj.get("schema") or "clawd.execution_supervisor_canary_probe_schedule.v1"),
+            "source_path": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+            "status": str(schedule_obj.get("status") or "idle").strip() or "idle",
+            "reason": str(schedule_obj.get("reason") or "").strip() or None,
+            "worker_count": max(0, _to_int(schedule_obj.get("worker_count"), 0)),
+            "demoted_worker_count": max(0, _to_int(schedule_obj.get("demoted_worker_count"), 0)),
+            "restore_pending_worker_count": max(0, _to_int(schedule_obj.get("restore_pending_worker_count"), 0)),
+            "restored_worker_count": max(0, _to_int(schedule_obj.get("restored_worker_count"), 0)),
+            "overdue_probe_worker_count": schedule_overdue_probe_worker_count,
+            "next_probe_due_at": str(schedule_obj.get("next_probe_due_at") or "").strip() or None,
+            "next_probe_due_in_sec": (
+                schedule_obj.get("next_probe_due_in_sec")
+                if isinstance(schedule_obj.get("next_probe_due_in_sec"), int)
+                else None
+            ),
+        },
+        "severity_gate": {
+            "schema": "clawd.execution_supervisor_launch_readiness_severity_gate.v1",
+            "state": severity_state,
+            "reason": severity_reason,
+            "active": severity_active,
+            "escalation_priority": escalation_priority,
+            "threshold_ticks": severity_threshold_ticks,
+            "non_ready_state": non_ready_state,
+            "non_ready_ticks_consecutive": max(0, int(non_ready_ticks)),
+            "cohort_worker_count": len(demotion_cohort_workers),
+            "cohort_workers": demotion_cohort_workers,
+            "cohort_signature": cohort_signature,
+            "cohort_min_worker_state_ticks": cohort_min_worker_state_ticks,
+            "cohort_max_worker_state_ticks": cohort_max_worker_state_ticks,
+            "schedule_status": str(schedule_obj.get("status") or "").strip() or None,
+            "schedule_reason": str(schedule_obj.get("reason") or "").strip() or None,
+        },
+    }
+
+
+def _execution_supervisor_assess_dispatch_qualification_consumption(
+    *,
+    ready_task_ids: List[str],
+    reference_generated_at: Any = None,
+    qualification_snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    ready_ids = _dedupe_nonempty_strings(ready_task_ids or [])
+    ready_id_set = set(ready_ids)
+
+    if isinstance(qualification_snapshot, dict):
+        qualification_obj = qualification_snapshot
+    else:
+        qualification_payload = load_json_if_exists(execution_supervisor_dispatch_qualification_latest_path)
+        qualification_obj = qualification_payload if isinstance(qualification_payload, dict) else {}
+    source_present = bool(qualification_obj)
+    reference_dt = parse_iso(reference_generated_at) or clock_now_dt()
+
+    source_generated_at = str(
+        qualification_obj.get("generated_at")
+        or qualification_obj.get("source_generated_at")
+        or ""
+    ).strip() or None
+    source_generated_dt = parse_iso(source_generated_at)
+    freshness_max_age_sec = max(0, int(execution_supervisor_dispatch_qualification_max_age_sec))
+    qualification_age_sec: Optional[int] = None
+    qualification_fresh: Optional[bool] = None
+    freshness_reason: Optional[str] = None
+    if source_present and ready_ids:
+        if source_generated_dt is None:
+            qualification_fresh = False
+            freshness_reason = "dispatch_qualification_generated_at_missing"
+        else:
+            age_delta_sec = int((reference_dt - source_generated_dt).total_seconds())
+            if age_delta_sec < 0:
+                qualification_fresh = False
+                freshness_reason = "dispatch_qualification_from_future"
+            else:
+                qualification_age_sec = max(0, age_delta_sec)
+                qualification_fresh = bool(qualification_age_sec <= freshness_max_age_sec)
+                if qualification_fresh is not True:
+                    freshness_reason = "dispatch_qualification_stale"
+
+    evaluated_ids = _dedupe_nonempty_strings(qualification_obj.get("ready_candidate_task_ids") or [])
+    qualified_ids = _dedupe_nonempty_strings(qualification_obj.get("qualified_candidate_task_ids") or [])
+    blocked_ids = _dedupe_nonempty_strings(qualification_obj.get("blocked_candidate_task_ids") or [])
+    evaluated_set = set(evaluated_ids)
+    qualified_set = set(qualified_ids)
+    blocked_set = set(blocked_ids)
+
+    matched_qualified = [task_id for task_id in ready_ids if task_id in qualified_set]
+    matched_blocked = [task_id for task_id in ready_ids if task_id in blocked_set]
+    pending_recheck = [task_id for task_id in ready_ids if task_id not in evaluated_set]
+    retired_candidates = [task_id for task_id in evaluated_ids if task_id not in ready_id_set]
+
+    consumption_state = "qualification_missing"
+    gate_passed = False
+    gate_reason = "dispatch_qualification_missing"
+    decision_reasons: List[str] = []
+
+    qualification_fail_closed = (
+        qualification_obj.get("fail_closed")
+        if isinstance(qualification_obj.get("fail_closed"), bool)
+        else None
+    )
+    qualification_launch_mutation_allowed = (
+        qualification_obj.get("launch_mutation_allowed")
+        if isinstance(qualification_obj.get("launch_mutation_allowed"), bool)
+        else None
+    )
+
+    if not ready_ids:
+        consumption_state = "no_dispatch_required"
+        gate_passed = True
+        gate_reason = "no_dispatch_required"
+    elif not source_present:
+        consumption_state = "qualification_missing"
+        gate_reason = "dispatch_qualification_missing"
+    elif qualification_fail_closed is not True or qualification_launch_mutation_allowed is not False:
+        consumption_state = "qualification_contract_invalid"
+        gate_reason = "dispatch_qualification_contract_invalid"
+    elif qualification_fresh is False:
+        consumption_state = "requalification_required"
+        gate_reason = freshness_reason or "dispatch_qualification_stale"
+    elif pending_recheck or retired_candidates:
+        consumption_state = "requalification_required"
+        gate_reason = "dispatch_candidate_set_changed"
+    elif matched_blocked and not matched_qualified:
+        consumption_state = "blocked"
+        gate_reason = "dispatch_candidates_blocked_by_qualification"
+    elif len(matched_qualified) == len(ready_ids):
+        consumption_state = "qualified_ready"
+        gate_passed = True
+        gate_reason = "dispatch_candidates_qualified_ready"
+    elif matched_qualified:
+        consumption_state = "mixed"
+        gate_reason = "dispatch_candidates_partially_qualified"
+    else:
+        consumption_state = "blocked"
+        gate_reason = "dispatch_candidates_not_qualified"
+
+    decision_reasons = _dedupe_nonempty_strings(
+        [
+            gate_reason,
+            str(qualification_obj.get("status") or "").strip(),
+            str(qualification_obj.get("decision") or "").strip(),
+        ]
+    )
+
+    launch_readiness_obj = (
+        qualification_obj.get("launch_readiness")
+        if isinstance(qualification_obj.get("launch_readiness"), dict)
+        else {}
+    )
+    launch_readiness_state = str(launch_readiness_obj.get("state") or "").strip() or None
+    if not launch_readiness_state:
+        if not ready_ids:
+            launch_readiness_state = "idle"
+        elif gate_passed:
+            launch_readiness_state = "ready"
+        elif matched_qualified:
+            launch_readiness_state = "degraded"
+        else:
+            launch_readiness_state = "blocked"
+
+    launch_readiness = {
+        "schema": str(launch_readiness_obj.get("schema") or "clawd.execution_supervisor_launch_readiness.v1"),
+        "state": launch_readiness_state,
+        "reason": str(launch_readiness_obj.get("reason") or gate_reason).strip() or gate_reason,
+        "blocked_reason_counts": (
+            launch_readiness_obj.get("blocked_reason_counts")
+            if isinstance(launch_readiness_obj.get("blocked_reason_counts"), dict)
+            else {}
+        ),
+        "blocked_canary_candidate_count": max(
+            0,
+            _to_int(
+                launch_readiness_obj.get("blocked_canary_candidate_count"),
+                len([reason for reason in decision_reasons if _execution_supervisor_is_canary_block_reason(reason)]),
+            ),
+        ),
+        "blocked_probe_candidate_count": max(
+            0,
+            _to_int(
+                launch_readiness_obj.get("blocked_probe_candidate_count"),
+                len([reason for reason in decision_reasons if _execution_supervisor_is_probe_block_reason(reason)]),
+            ),
+        ),
+        "demotion_restore_posture": (
+            launch_readiness_obj.get("demotion_restore_posture")
+            if isinstance(launch_readiness_obj.get("demotion_restore_posture"), dict)
+            else {}
+        ),
+        "canary_probe_schedule": (
+            launch_readiness_obj.get("canary_probe_schedule")
+            if isinstance(launch_readiness_obj.get("canary_probe_schedule"), dict)
+            else {}
+        ),
+        "probe_execution_plan": (
+            launch_readiness_obj.get("probe_execution_plan")
+            if isinstance(launch_readiness_obj.get("probe_execution_plan"), dict)
+            else {}
+        ),
+        "severity_gate": (
+            launch_readiness_obj.get("severity_gate")
+            if isinstance(launch_readiness_obj.get("severity_gate"), dict)
+            else {}
+        ),
+    }
+
+    return {
+        "schema": "clawd.execution_supervisor_dispatch_qualification_consumption.v1",
+        "source_path": to_rel(execution_supervisor_dispatch_qualification_latest_path),
+        "source_present": source_present,
+        "source_schema": str(qualification_obj.get("schema") or "").strip() or None,
+        "source_generated_at": source_generated_at,
+        "status": str(qualification_obj.get("status") or "").strip() or None,
+        "decision": str(qualification_obj.get("decision") or "").strip() or None,
+        "fail_closed": qualification_fail_closed,
+        "launch_mutation_allowed": qualification_launch_mutation_allowed,
+        "freshness_reference_generated_at": (
+            reference_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+            if isinstance(reference_dt, dt.datetime)
+            else None
+        ),
+        "freshness_max_age_sec": freshness_max_age_sec,
+        "qualification_age_sec": qualification_age_sec,
+        "qualification_fresh": qualification_fresh,
+        "freshness_reason": freshness_reason,
+        "ready_candidate_count": len(ready_ids),
+        "evaluated_ready_candidate_count": len(evaluated_ids),
+        "qualified_candidate_count": len(matched_qualified),
+        "blocked_candidate_count": len(matched_blocked),
+        "pending_candidate_count": len(pending_recheck),
+        "qualified_candidate_task_ids": matched_qualified,
+        "blocked_candidate_task_ids": matched_blocked,
+        "pending_candidate_task_ids": pending_recheck,
+        "retired_candidate_task_ids": retired_candidates,
+        "consumption_state": consumption_state,
+        "qualification_gate_passed": gate_passed,
+        "gate_reason": gate_reason,
+        "decision_reasons": decision_reasons,
+        "launch_readiness": launch_readiness,
+    }
+
+
+def _execution_supervisor_select_route_rule(
+    *,
+    topology: Dict[str, Any],
+    session_kind: str,
+    task_class: str,
+    risk_tier: str,
+) -> Dict[str, Any]:
+    rules = topology.get("rules") if isinstance(topology.get("rules"), list) else []
+
+    def _matches(selector: Dict[str, Any]) -> bool:
+        expected_session_kind = str(selector.get("session_kind") or "*").strip()
+        expected_task_class = str(selector.get("task_class") or "*").strip()
+        expected_risk_tier = str(selector.get("risk_tier") or "*").strip()
+        task_class_variants = _execution_supervisor_task_class_selector_variants(task_class)
+        return all(
+            [
+                expected_session_kind in {"*", session_kind},
+                expected_task_class == "*" or expected_task_class in task_class_variants,
+                expected_risk_tier in {"*", risk_tier},
+            ]
+        )
+
+    selected_rule: Dict[str, Any] = {}
+    selected_priority: Optional[int] = None
+    for raw in rules:
+        if not isinstance(raw, dict):
+            continue
+        selector = raw.get("selector") if isinstance(raw.get("selector"), dict) else {}
+        if not _matches(selector):
+            continue
+        priority = _to_int(raw.get("priority"), 999999)
+        if selected_priority is None or priority < selected_priority:
+            selected_rule = raw
+            selected_priority = priority
+
+    if selected_rule:
+        return {
+            "selected_rule_id": str(selected_rule.get("rule_id") or "").strip() or None,
+            "route_class": str(selected_rule.get("route_class") or "").strip() or None,
+            "required_rollout_stage": str(selected_rule.get("required_rollout_stage") or "").strip() or None,
+        }
+
+    return {
+        "selected_rule_id": None,
+        "route_class": str(topology.get("default_route_class") or "").strip() or None,
+        "required_rollout_stage": str(topology.get("default_required_rollout_stage") or "").strip() or None,
+    }
+
+
+def _execution_supervisor_resolve_route_alignment(
+    *,
+    task_type: Any,
+    priority: Any,
+    task_class_override: Any = None,
+    topology: Optional[Dict[str, Any]],
+    gate_index: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    topology_obj = topology if isinstance(topology, dict) else {}
+    gate_index_obj = gate_index if isinstance(gate_index, dict) else {}
+    topology_loaded = bool(topology_obj)
+
+    task_type_token = str(task_type or "other").strip() or "other"
+    task_class = _normalize_execution_supervisor_task_class(
+        task_class_override,
+        task_type=task_type_token,
+    )
+    risk_tier = _execution_supervisor_dispatch_risk_tier(priority)
+    route_workers = _execution_supervisor_routes_for_task_type(task_type_token)
+
+    default_model_family = str(
+        EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_DEFAULTS.get(task_class, "Gemini")
+    ).strip() or "Gemini"
+    fallback_model_families = [
+        str(item or "").strip()
+        for item in EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_FALLBACKS.get(task_class, ["Codex"])
+        if str(item or "").strip()
+    ]
+
+    route_rule = {
+        "selected_rule_id": None,
+        "route_class": None,
+        "required_rollout_stage": None,
+    }
+    route_class: Optional[str] = None
+    required_stage: Optional[str] = None
+    if topology_loaded:
+        route_rule = _execution_supervisor_select_route_rule(
+            topology=topology_obj,
+            session_kind="worker_slice",
+            task_class=task_class,
+            risk_tier=risk_tier,
+        )
+        route_class = str(route_rule.get("route_class") or "").strip() or None
+        required_stage = str(route_rule.get("required_rollout_stage") or "").strip() or None
+
+    model_pools = topology_obj.get("model_pools") if isinstance(topology_obj.get("model_pools"), dict) else {}
+    pool = model_pools.get(route_class) if isinstance(model_pools.get(route_class), list) else []
+
+    gate_candidates: List[Dict[str, Any]] = []
+    for model_key in [str(item or "").strip() for item in pool if str(item or "").strip()]:
+        meta = gate_index_obj.get(model_key)
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("route_class") or "").strip() != str(route_class or ""):
+            continue
+        if not _execution_supervisor_stage_is_allowed(required_stage, meta.get("allowed_stages") or []):
+            continue
+        gate_candidates.append(meta)
+
+    prioritized_candidates = _execution_supervisor_prioritize_gate_candidates(
+        task_class=task_class,
+        candidates=gate_candidates,
+    ) if gate_candidates else []
+    selected_gate = prioritized_candidates[0] if prioritized_candidates else {}
+    selected_model = str(selected_gate.get("model_key") or "").strip() or None
+    selected_model_family = _execution_supervisor_model_family_from_model_key(selected_model)
+    compatible_route_workers = [
+        worker
+        for worker in route_workers
+        if _execution_supervisor_worker_family(worker) == selected_model_family
+    ] if selected_model_family else []
+
+    status = "unavailable"
+    reason = "route_alignment_unavailable"
+    enforceable = False
+    if not topology_loaded:
+        reason = "session_topology_contract_missing"
+    elif not route_class or not required_stage:
+        reason = "route_rule_unresolved"
+    elif not gate_candidates:
+        reason = "no_qualified_model_for_route"
+    elif not selected_model_family:
+        reason = "selected_model_family_unknown"
+    else:
+        enforceable = True
+        if compatible_route_workers:
+            status = "aligned"
+            reason = "route_worker_family_aligned"
+        else:
+            status = "blocked"
+            reason = "no_route_worker_for_selected_model_family"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "enforceable": enforceable,
+        "task_class": task_class,
+        "risk_tier": risk_tier,
+        "default_model_family": default_model_family,
+        "fallback_model_families": fallback_model_families,
+        "selected_rule_id": route_rule.get("selected_rule_id"),
+        "route_class": route_class,
+        "required_rollout_stage": required_stage,
+        "selected_model": selected_model,
+        "selected_model_family": selected_model_family,
+        "route_workers": route_workers,
+        "compatible_route_workers": compatible_route_workers,
+        "qualified_model_candidates": [
+            {
+                "model_key": str(row.get("model_key") or "").strip() or None,
+                "model_family": _execution_supervisor_model_family_from_model_key(row.get("model_key")),
+                "allowed_stages": [
+                    str(item or "").strip()
+                    for item in (row.get("allowed_stages") or [])
+                    if str(item or "").strip()
+                ],
+                "source_path": str(row.get("source_path") or "").strip() or None,
+            }
+            for row in prioritized_candidates
+            if isinstance(row, dict)
+        ],
+    }
+
+
+def _execution_supervisor_collect_cooldown_registry(
+    previous_ledger: Optional[Dict[str, Any]],
+    *,
+    now: dt.datetime,
+) -> Dict[str, Dict[str, Any]]:
+    registry: Dict[str, Dict[str, Any]] = {}
+    ledger = previous_ledger if isinstance(previous_ledger, dict) else {}
+
+    def _append(worker: Any, cooldown_until: Any, *, reason: Any, task_id: Any) -> None:
+        worker_token = str(worker or "").strip()
+        cooldown_token = str(cooldown_until or "").strip() or None
+        if not worker_token or not cooldown_token:
+            return
+        remaining = _runtime_cooldown_remaining_sec(cooldown_token, now=now)
+        if remaining <= 0:
+            return
+        registry[worker_token] = {
+            "worker": worker_token,
+            "cooldown_until": cooldown_token,
+            "cooldown_remaining_sec": remaining,
+            "reason": str(reason or "provider_quota_exhausted").strip() or "provider_quota_exhausted",
+            "source_task_id": str(task_id or "").strip() or None,
+        }
+
+    routing_policy = ledger.get("routing_policy") if isinstance(ledger.get("routing_policy"), dict) else {}
+    cooldown_state = routing_policy.get("cooldown_state") if isinstance(routing_policy.get("cooldown_state"), dict) else {}
+    active_workers = cooldown_state.get("active_workers") if isinstance(cooldown_state.get("active_workers"), list) else []
+    for raw in active_workers:
+        if not isinstance(raw, dict):
+            continue
+        _append(
+            raw.get("worker"),
+            raw.get("cooldown_until"),
+            reason=raw.get("reason"),
+            task_id=raw.get("source_task_id"),
+        )
+
+    tasks = ledger.get("tasks") if isinstance(ledger.get("tasks"), list) else []
+    for raw in tasks:
+        if not isinstance(raw, dict):
+            continue
+        reroute = raw.get("reroute") if isinstance(raw.get("reroute"), dict) else {}
+        latest_attempt = raw.get("latest_attempt") if isinstance(raw.get("latest_attempt"), dict) else {}
+        worker = reroute.get("cooldown_worker") or latest_attempt.get("worker")
+        cooldown_until = reroute.get("cooldown_until")
+        if not worker or not cooldown_until:
+            continue
+        _append(
+            worker,
+            cooldown_until,
+            reason=reroute.get("reason") or reroute.get("cooldown_reason") or "provider_quota_exhausted",
+            task_id=raw.get("task_id"),
+        )
+
+    return registry
+
+
+def _load_execution_supervisor_terminal_error_disposition_index(
+    *,
+    now: dt.datetime,
+) -> Dict[str, Any]:
+    expected_schema = "clawd.execution_supervisor_terminal_error_dispositions.v1"
+    payload = load_json_if_exists(execution_supervisor_terminal_error_dispositions_latest_path)
+    source_present = isinstance(payload, dict)
+    source = payload if isinstance(payload, dict) else {}
+    source_schema = str(source.get("schema") or "").strip() or None
+    rows = source.get("dispositions") if isinstance(source.get("dispositions"), list) else []
+
+    if source_present and source_schema != expected_schema:
+        return {
+            "source_path": to_rel(execution_supervisor_terminal_error_dispositions_latest_path),
+            "source_present": True,
+            "source_schema": source_schema,
+            "schema_valid": False,
+            "reason": "terminal_error_disposition_schema_mismatch",
+            "active_count": 0,
+            "active_task_ids": [],
+            "active_by_task": {},
+            "skipped_invalid_count": len(rows),
+            "skipped_expired_count": 0,
+        }
+
+    active_by_task: Dict[str, Dict[str, Any]] = {}
+    active_approved_at: Dict[str, dt.datetime] = {}
+    skipped_invalid_count = 0
+    skipped_expired_count = 0
+
+    for raw in rows:
+        if not isinstance(raw, dict):
+            skipped_invalid_count += 1
+            continue
+
+        task_id = str(raw.get("task_id") or "").strip()
+        action = str(raw.get("action") or raw.get("disposition") or "").strip().lower()
+        approved_by = str(raw.get("approved_by") or "").strip()
+        approved_at_token = str(raw.get("approved_at") or "").strip()
+        approved_at_dt = parse_iso(approved_at_token)
+        expires_at_token = str(raw.get("expires_at") or "").strip() or None
+        expires_at_dt = parse_iso(expires_at_token) if expires_at_token else None
+
+        if not task_id or action != "acknowledge_and_park" or not approved_by or approved_at_dt is None:
+            skipped_invalid_count += 1
+            continue
+        if expires_at_token and expires_at_dt is None:
+            skipped_invalid_count += 1
+            continue
+        if isinstance(expires_at_dt, dt.datetime) and expires_at_dt <= now:
+            skipped_expired_count += 1
+            continue
+
+        prior_approved_at = active_approved_at.get(task_id)
+        if isinstance(prior_approved_at, dt.datetime) and approved_at_dt <= prior_approved_at:
+            continue
+
+        active_approved_at[task_id] = approved_at_dt
+        active_by_task[task_id] = {
+            "task_id": task_id,
+            "action": "acknowledge_and_park",
+            "approved_by": approved_by,
+            "approved_at": approved_at_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            "expires_at": (
+                expires_at_dt.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+                if isinstance(expires_at_dt, dt.datetime)
+                else None
+            ),
+            "classification": str(raw.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER",
+            "failure_reason": (
+                str(raw.get("failure_reason") or "terminal_error_without_artifact_failure").strip()
+                or "terminal_error_without_artifact_failure"
+            ),
+            "reroute_reason": (
+                str(raw.get("reroute_reason") or "terminal_error_requires_operator_review").strip()
+                or "terminal_error_requires_operator_review"
+            ),
+            "justification": str(raw.get("justification") or raw.get("notes") or "").strip() or None,
+            "source_ref": str(raw.get("source_ref") or "").strip() or None,
+        }
+
+    active_task_ids = sorted(active_by_task.keys())
+    return {
+        "source_path": to_rel(execution_supervisor_terminal_error_dispositions_latest_path),
+        "source_present": source_present,
+        "source_schema": source_schema,
+        "schema_valid": bool(source_present and source_schema == expected_schema),
+        "reason": None,
+        "active_count": len(active_task_ids),
+        "active_task_ids": active_task_ids,
+        "active_by_task": active_by_task,
+        "skipped_invalid_count": skipped_invalid_count,
+        "skipped_expired_count": skipped_expired_count,
+    }
+
+
+def _execution_supervisor_routes_for_task_type(task_type: Any) -> List[str]:
+    task_type_token = str(task_type or "").strip().lower()
+    if task_type_token == "implementation":
+        return list(EXECUTION_SUPERVISOR_IMPLEMENTATION_ROUTE)
+    return list(EXECUTION_SUPERVISOR_SUPPORT_ROUTE)
+
+
+def _execution_supervisor_next_route_worker(
+    *,
+    task_type: Any,
+    current_worker: Any,
+    cooldown_registry: Optional[Dict[str, Dict[str, Any]]] = None,
+    now: Optional[dt.datetime] = None,
+    route_workers: Optional[List[str]] = None,
+) -> Optional[str]:
+    routes = [
+        str(worker or "").strip()
+        for worker in (route_workers if isinstance(route_workers, list) else _execution_supervisor_routes_for_task_type(task_type))
+        if str(worker or "").strip()
+    ]
+    if not routes:
+        return None
+
+    now_dt = now if isinstance(now, dt.datetime) else clock_now_dt()
+    worker_health_inputs = _load_execution_supervisor_worker_health_canary_index()
+    worker_health_source_present = bool(worker_health_inputs.get("source_present") is True)
+    worker_health_index = (
+        worker_health_inputs.get("workers")
+        if isinstance(worker_health_inputs.get("workers"), dict)
+        else {}
+    )
+
+    def _worker_health_available(worker_token: str) -> bool:
+        if not worker_token:
+            return False
+        if worker_health_source_present is not True:
+            return True
+
+        worker_health_row = worker_health_index.get(worker_token)
+        if not isinstance(worker_health_row, dict) or not worker_health_row:
+            return _execution_supervisor_worker_family(worker_token) != "Codex"
+
+        health_status = str(worker_health_row.get("health_status") or "").strip().lower()
+        if health_status == "healthy":
+            return True
+        if health_status == "quarantined":
+            return False
+        if health_status == "probationary":
+            return True
+        return False
+
+    def _is_available(worker_token: str) -> bool:
+        if not worker_token:
+            return False
+        if _worker_health_available(worker_token) is not True:
+            return False
+        if not isinstance(cooldown_registry, dict):
+            return True
+        cooldown_row = cooldown_registry.get(worker_token)
+        if not isinstance(cooldown_row, dict):
+            return True
+        remaining = _runtime_cooldown_remaining_sec(
+            str(cooldown_row.get("cooldown_until") or "").strip() or None,
+            now=now_dt,
+        )
+        return remaining <= 0
+
+    worker = str(current_worker or "").strip()
+    if worker:
+        if worker in routes:
+            index = routes.index(worker)
+            for candidate in routes[index + 1 :]:
+                if _is_available(candidate):
+                    return candidate
+            return None
+        for candidate in routes:
+            if candidate != worker and _is_available(candidate):
+                return candidate
+        return None
+
+    for candidate in routes:
+        if _is_available(candidate):
+            return candidate
+    return None
+
+
+def _build_execution_supervisor_reroute_plan(
+    *,
+    task_type: Any,
+    priority: Any,
+    task_class_override: Any,
+    classification: Any,
+    latest_worker: Any,
+    task_id: Any,
+    cooldown_registry: Dict[str, Dict[str, Any]],
+    quota_backoff_sec: int,
+    now: dt.datetime,
+    topology: Optional[Dict[str, Any]] = None,
+    gate_index: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    classification_token = str(classification or "").strip()
+    worker = str(latest_worker or "").strip() or None
+    task_id_token = str(task_id or "").strip() or None
+
+    route_alignment = _execution_supervisor_resolve_route_alignment(
+        task_type=task_type,
+        priority=priority,
+        task_class_override=task_class_override,
+        topology=topology,
+        gate_index=gate_index,
+    )
+    route_alignment_enforceable = bool(route_alignment.get("enforceable") is True)
+    compatible_route_workers = _dedupe_nonempty_strings(route_alignment.get("compatible_route_workers") or [])
+    effective_route_workers = (
+        compatible_route_workers
+        if route_alignment_enforceable and compatible_route_workers
+        else _execution_supervisor_routes_for_task_type(task_type)
+    )
+
+    def _route_decision(*, selected_worker: Any, reroute_reason: str, cooldown_blocked_workers: Optional[List[str]] = None) -> Dict[str, Any]:
+        selected_worker_token = str(selected_worker or "").strip() or None
+        quota_bypassed: List[str] = []
+        if selected_worker_token and selected_worker_token in effective_route_workers:
+            selected_index = effective_route_workers.index(selected_worker_token)
+            quota_bypassed.extend(effective_route_workers[:selected_index])
+        if worker and worker not in quota_bypassed:
+            quota_bypassed.insert(0, worker)
+        if isinstance(cooldown_blocked_workers, list):
+            quota_bypassed.extend(str(item or "").strip() for item in cooldown_blocked_workers if str(item or "").strip())
+
+        selection_rubric = "route_alignment_family_enforced" if route_alignment_enforceable else "task_type_route_fallback"
+        if classification_token == "FAILED_NO_ARTIFACT":
+            selection_rubric = f"{selection_rubric}_artifact_retry"
+        elif classification_token == "FAILED_PROVIDER_QUOTA":
+            selection_rubric = f"{selection_rubric}_quota_bypass"
+
+        return {
+            "schema": "clawd.execution_supervisor.route_decision.v1",
+            "doctrine_id": "ex10_provider_doctrine_v1",
+            "classification": classification_token,
+            "task_class": route_alignment.get("task_class"),
+            "risk_tier": route_alignment.get("risk_tier"),
+            "route_class": route_alignment.get("route_class"),
+            "required_rollout_stage": route_alignment.get("required_rollout_stage"),
+            "selected_model": route_alignment.get("selected_model"),
+            "selected_model_family": route_alignment.get("selected_model_family"),
+            "selected_worker": selected_worker_token,
+            "selection_rubric": selection_rubric,
+            "selection_reason": reroute_reason,
+            "effective_route_workers": list(effective_route_workers),
+            "quota_bypassed": _dedupe_nonempty_strings(quota_bypassed),
+            "cooldown_blocked_workers": _dedupe_nonempty_strings(cooldown_blocked_workers or []),
+        }
+
+    def _cooled_route_workers() -> List[str]:
+        cooled: List[str] = []
+        for route_worker in effective_route_workers:
+            cooldown_row = cooldown_registry.get(route_worker) if isinstance(cooldown_registry, dict) else None
+            if not isinstance(cooldown_row, dict):
+                continue
+            remaining = _runtime_cooldown_remaining_sec(
+                str(cooldown_row.get("cooldown_until") or "").strip() or None,
+                now=now,
+            )
+            if remaining > 0:
+                cooled.append(route_worker)
+        return cooled
+
+    def _apply_worker_cooldown() -> Optional[Dict[str, Any]]:
+        if not worker or quota_backoff_sec <= 0:
+            return None
+        cooldown_until = (now + dt.timedelta(seconds=max(0, quota_backoff_sec))).replace(microsecond=0)
+        cooldown_until_iso = cooldown_until.isoformat().replace("+00:00", "Z")
+        cooldown_registry[worker] = {
+            "worker": worker,
+            "cooldown_until": cooldown_until_iso,
+            "cooldown_remaining_sec": max(0, quota_backoff_sec),
+            "reason": "provider_quota_exhausted",
+            "source_task_id": task_id_token,
+        }
+        return {
+            "worker": worker,
+            "cooldown_until": cooldown_until_iso,
+            "cooldown_sec": max(0, quota_backoff_sec),
+            "reason": "provider_quota_exhausted",
+            "source_task_id": task_id_token,
+        }
+
+    if route_alignment_enforceable and not compatible_route_workers:
+        route_decision = _route_decision(
+            selected_worker=None,
+            reroute_reason=str(route_alignment.get("reason") or "no_route_worker_for_selected_model_family").strip()
+            or "no_route_worker_for_selected_model_family",
+        )
+        return {
+            "required": True,
+            "status": "BLOCKED",
+            "task_class": route_alignment.get("task_class"),
+            "reason": str(route_alignment.get("reason") or "no_route_worker_for_selected_model_family").strip()
+            or "no_route_worker_for_selected_model_family",
+            "target_worker": None,
+            "route_decision": route_decision,
+            "cooldown_applied": None,
+            "cooldown_blocked_workers": [],
+            "cooldown_until": None,
+            "cooldown_worker": None,
+        }
+
+    if classification_token == "FAILED_PROVIDER_QUOTA":
+        cooldown_applied = _apply_worker_cooldown()
+        target_worker = _execution_supervisor_next_route_worker(
+            task_type=task_type,
+            current_worker=worker,
+            cooldown_registry=cooldown_registry,
+            now=now,
+            route_workers=effective_route_workers,
+        )
+        cooldown_blocked_workers = _cooled_route_workers()
+        if target_worker:
+            route_decision = _route_decision(
+                selected_worker=target_worker,
+                reroute_reason="provider_quota_exhausted",
+                cooldown_blocked_workers=cooldown_blocked_workers,
+            )
+            return {
+                "required": True,
+                "status": "REROUTE_QUEUED",
+                "task_class": route_alignment.get("task_class"),
+                "reason": "provider_quota_exhausted",
+                "target_worker": target_worker,
+                "route_decision": route_decision,
+                "cooldown_applied": cooldown_applied,
+                "cooldown_blocked_workers": cooldown_blocked_workers,
+                "cooldown_until": (
+                    str(cooldown_applied.get("cooldown_until") or "").strip()
+                    if isinstance(cooldown_applied, dict)
+                    else None
+                )
+                or None,
+                "cooldown_worker": (
+                    str(cooldown_applied.get("worker") or "").strip()
+                    if isinstance(cooldown_applied, dict)
+                    else None
+                )
+                or None,
+            }
+        route_decision = _route_decision(
+            selected_worker=None,
+            reroute_reason=(
+                "provider_quota_routes_exhausted_or_cooldown_active"
+                if cooldown_blocked_workers
+                else "provider_quota_routes_exhausted"
+            ),
+            cooldown_blocked_workers=cooldown_blocked_workers,
+        )
+        return {
+            "required": True,
+            "status": "BLOCKED",
+            "task_class": route_alignment.get("task_class"),
+            "reason": (
+                "provider_quota_routes_exhausted_or_cooldown_active"
+                if cooldown_blocked_workers
+                else "provider_quota_routes_exhausted"
+            ),
+            "target_worker": None,
+            "route_decision": route_decision,
+            "cooldown_applied": cooldown_applied,
+            "cooldown_blocked_workers": cooldown_blocked_workers,
+            "cooldown_until": (
+                str(cooldown_applied.get("cooldown_until") or "").strip()
+                if isinstance(cooldown_applied, dict)
+                else None
+            )
+            or None,
+            "cooldown_worker": (
+                str(cooldown_applied.get("worker") or "").strip()
+                if isinstance(cooldown_applied, dict)
+                else None
+            )
+            or None,
+        }
+
+    if classification_token == "FAILED_NO_ARTIFACT":
+        preferred_route_workers = list(effective_route_workers)
+        if worker and (not route_alignment_enforceable or worker in set(effective_route_workers)):
+            preferred_route_workers = _dedupe_nonempty_strings([worker] + preferred_route_workers)
+
+        target_worker = _execution_supervisor_next_route_worker(
+            task_type=task_type,
+            current_worker=None,
+            cooldown_registry=cooldown_registry,
+            now=now,
+            route_workers=preferred_route_workers,
+        )
+        cooldown_blocked_workers = _cooled_route_workers()
+        if target_worker:
+            route_decision = _route_decision(
+                selected_worker=target_worker,
+                reroute_reason="artifact_retry_required",
+                cooldown_blocked_workers=cooldown_blocked_workers,
+            )
+            return {
+                "required": True,
+                "status": "REROUTE_QUEUED",
+                "task_class": route_alignment.get("task_class"),
+                "reason": "artifact_retry_required",
+                "target_worker": target_worker,
+                "route_decision": route_decision,
+                "cooldown_applied": None,
+                "cooldown_blocked_workers": cooldown_blocked_workers,
+                "cooldown_until": None,
+                "cooldown_worker": None,
+            }
+        route_decision = _route_decision(
+            selected_worker=None,
+            reroute_reason=(
+                "artifact_retry_routes_exhausted_or_cooldown_active"
+                if cooldown_blocked_workers
+                else "artifact_retry_routes_exhausted"
+            ),
+            cooldown_blocked_workers=cooldown_blocked_workers,
+        )
+        return {
+            "required": True,
+            "status": "BLOCKED",
+            "task_class": route_alignment.get("task_class"),
+            "reason": (
+                "artifact_retry_routes_exhausted_or_cooldown_active"
+                if cooldown_blocked_workers
+                else "artifact_retry_routes_exhausted"
+            ),
+            "target_worker": None,
+            "route_decision": route_decision,
+            "cooldown_applied": None,
+            "cooldown_blocked_workers": cooldown_blocked_workers,
+            "cooldown_until": None,
+            "cooldown_worker": None,
+        }
+
+    if classification_token == "FAILED_OTHER":
+        route_decision = _route_decision(
+            selected_worker=None,
+            reroute_reason="terminal_error_requires_operator_review",
+            cooldown_blocked_workers=[],
+        )
+        return {
+            "required": True,
+            "status": "BLOCKED",
+            "task_class": route_alignment.get("task_class"),
+            "reason": "terminal_error_requires_operator_review",
+            "target_worker": None,
+            "route_decision": route_decision,
+            "cooldown_applied": None,
+            "cooldown_blocked_workers": [],
+            "cooldown_until": None,
+            "cooldown_worker": None,
+        }
+
+    return None
+
+
+def _infer_execution_supervisor_task_type(
+    *,
+    lane_tokens: Any,
+    role_required: Any,
+) -> str:
+    lanes = {
+        str(token or "").strip().upper()
+        for token in (lane_tokens if isinstance(lane_tokens, list) else [])
+        if str(token or "").strip()
+    }
+    role = str(role_required or "").strip().lower()
+
+    implementation_lane_tokens = {"A1", "A2", "A3", "A4", "A5", "B6", "C2"}
+    support_spec_lane_tokens = {"A6", "B2", "B3", "B4", "B5", "C1"}
+
+    if lanes.intersection(implementation_lane_tokens):
+        return "implementation"
+    if lanes.intersection(support_spec_lane_tokens):
+        return "support_spec"
+
+    if role.startswith(("a1_", "a2_", "a3_", "a4_", "a5_", "b6_", "c2_")):
+        return "implementation"
+    if role.startswith(("a6_", "b2_", "b3_", "b4_", "b5_", "c1_")):
+        return "support_spec"
+
+    return "support_synthesis"
+
+
+def _normalize_execution_supervisor_priority(raw_tier: Any) -> str:
+    tier = str(raw_tier or "").strip().upper()
+    if not tier:
+        return "P2"
+    match = re.search(r"\bP\d\b", tier)
+    if match:
+        return match.group(0)
+    return tier.split("-", 1)[0] if "-" in tier else tier
+
+
+_MEMORY_CONSOLIDATION_FAILURE_CLASSIFICATION_BRIDGE: Dict[str, Dict[str, str]] = {
+    "FAILED_GOVERNANCE_GATE": {
+        "classification": "FAILED_OTHER",
+        "reason": "memory_governance_gate_blocked",
+    },
+    "FAILED_SOURCE_VALIDATION": {
+        "classification": "FAILED_NO_ARTIFACT",
+        "reason": "memory_source_validation_failed",
+    },
+    "FAILED_ARCHIVE_MOVE": {
+        "classification": "FAILED_OTHER",
+        "reason": "memory_archive_move_failed",
+    },
+    "FAILED_POST_ARTIFACT_VALIDATION": {
+        "classification": "FAILED_NO_ARTIFACT",
+        "reason": "memory_post_artifact_validation_failed",
+    },
+    "FAILED_ROLLBACK_VALIDATION": {
+        "classification": "FAILED_OTHER",
+        "reason": "memory_rollback_validation_failed",
+    },
+}
+
+
+def _memory_consolidation_failure_bridge(code: Any) -> Optional[Dict[str, str]]:
+    token = str(code or "").strip().upper()
+    if not token:
+        return None
+    row = _MEMORY_CONSOLIDATION_FAILURE_CLASSIFICATION_BRIDGE.get(token)
+    if not isinstance(row, dict):
+        return None
+    return {
+        "failure_code": token,
+        "classification": str(row.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER",
+        "reason": str(row.get("reason") or "memory_consolidation_failure").strip() or "memory_consolidation_failure",
+    }
+
+
+def _extract_memory_consolidation_failure_code_from_signal(terminal_signal: Dict[str, Any]) -> Optional[str]:
+    explicit = str(terminal_signal.get("failure_code") or "").strip().upper()
+    if explicit and explicit in _MEMORY_CONSOLIDATION_FAILURE_CLASSIFICATION_BRIDGE:
+        return explicit
+
+    stop_reason = str(terminal_signal.get("stop_reason") or "")
+    provider_error = str(terminal_signal.get("provider_error") or "")
+    combined = f"{stop_reason} {provider_error}".upper()
+    for code in _MEMORY_CONSOLIDATION_FAILURE_CLASSIFICATION_BRIDGE.keys():
+        if code in combined:
+            return code
+    return None
+
+
+def _read_execution_supervisor_source_task_meta(
+    execution_status: Dict[str, Any],
+) -> Dict[str, Any]:
+    status_obj = execution_status if isinstance(execution_status, dict) else {}
+    core_queue_layer = (
+        status_obj.get("core_roadmap_queue_layer")
+        if isinstance(status_obj.get("core_roadmap_queue_layer"), dict)
+        else {}
+    )
+    selected_source_raw = str(core_queue_layer.get("selected_source_path") or "").strip()
+    if selected_source_raw:
+        selected_source = pathlib.Path(selected_source_raw)
+        if not selected_source.is_absolute():
+            selected_source = (root / selected_source).resolve()
+        else:
+            selected_source = selected_source.resolve()
+    else:
+        selected_source = core_roadmap_execution_queue_primary_path
+
+    payload = load_json_if_exists(selected_source)
+    if not isinstance(payload, dict):
+        return {
+            "source_path": to_rel(selected_source),
+            "source_present": bool(selected_source.exists()),
+            "source_generated_at": None,
+            "task_meta": {},
+            "landed_task_ids": [],
+        }
+
+    slices = payload.get("slices") if isinstance(payload.get("slices"), list) else []
+    task_meta: Dict[str, Dict[str, Any]] = {}
+    landed_task_ids: List[str] = []
+
+    for raw in slices:
+        if not isinstance(raw, dict):
+            continue
+        raw_id = raw.get("id")
+        if isinstance(raw_id, bool):
+            continue
+        try:
+            slice_id = int(raw_id)
+        except Exception:
+            continue
+        if slice_id < 0:
+            continue
+
+        title = str(raw.get("title") or f"slice_{slice_id}").strip() or f"slice_{slice_id}"
+        task_id = f"core_roadmap:wave{slice_id}:{_slugify_token(title, fallback=f'slice_{slice_id}')}"  # noqa: E501
+        lane_tokens = [
+            str(token or "").strip()
+            for token in (raw.get("lane") if isinstance(raw.get("lane"), list) else [])
+            if str(token or "").strip()
+        ]
+        role_required = f"{str((lane_tokens[0] if lane_tokens else 'core') or 'core').lower()}_executor"
+        task_type = _infer_execution_supervisor_task_type(
+            lane_tokens=lane_tokens,
+            role_required=role_required,
+        )
+        dispatch_task_class = _normalize_execution_supervisor_task_class(
+            raw.get("dispatch_task_class") or raw.get("task_class"),
+            task_type=task_type,
+        )
+
+        expected_artifacts = _dedupe_nonempty_strings(
+            [
+                raw.get("report_ref"),
+                raw.get("evidence_ref"),
+                *(
+                    raw.get("expected_artifacts")
+                    if isinstance(raw.get("expected_artifacts"), list)
+                    else []
+                ),
+            ]
+        )
+        required_title_tokens = _dedupe_nonempty_strings(
+            raw.get("required_title_tokens") if isinstance(raw.get("required_title_tokens"), list) else []
+        )
+
+        state_token = str(raw.get("state") or "").strip().upper()
+
+        raw_terminal_signal = raw.get("terminal_signal") if isinstance(raw.get("terminal_signal"), dict) else {}
+        raw_stop_reason = str(
+            raw_terminal_signal.get("stop_reason")
+            or raw.get("stop_reason")
+            or raw.get("completion_status")
+            or ""
+        ).strip()
+        raw_provider_error = str(
+            raw_terminal_signal.get("provider_error")
+            or raw.get("provider_error")
+            or raw.get("terminal_error")
+            or raw.get("error")
+            or ""
+        ).strip()
+        raw_failure_code = str(
+            raw_terminal_signal.get("failure_code")
+            or raw.get("failure_code")
+            or ""
+        ).strip().upper()
+
+        stop_reason = raw_stop_reason
+        provider_error = raw_provider_error or None
+        failure_code = (
+            raw_failure_code
+            if raw_failure_code in _MEMORY_CONSOLIDATION_FAILURE_CLASSIFICATION_BRIDGE
+            else None
+        )
+
+        final_content_length_raw = raw.get("final_content_length")
+        final_content_length_value: Optional[int] = None
+        if isinstance(final_content_length_raw, (int, float)) and not isinstance(final_content_length_raw, bool):
+            final_content_length_value = int(final_content_length_raw)
+        elif isinstance(final_content_length_raw, str):
+            final_content_length_token = final_content_length_raw.strip()
+            if final_content_length_token:
+                try:
+                    final_content_length_value = int(float(final_content_length_token))
+                except Exception:
+                    final_content_length_value = None
+
+        empty_content = raw_terminal_signal.get("empty_content")
+        if not isinstance(empty_content, bool):
+            if isinstance(raw.get("empty_content"), bool):
+                empty_content = bool(raw.get("empty_content"))
+            elif final_content_length_value is not None:
+                empty_content = bool(final_content_length_value <= 0)
+            else:
+                empty_content = False
+
+        completed_via = str(raw.get("completed_via") or "").strip() or None
+        worker = str(raw.get("worker") or completed_via or "").strip() or None
+        model = str(raw.get("model") or "").strip() or None
+        session_key = str(raw.get("session_key") or completed_via or "").strip() or None
+
+        if not stop_reason:
+            stop_reason = "error" if provider_error else "completed"
+
+        if not failure_code:
+            failure_code = _extract_memory_consolidation_failure_code_from_signal(
+                {
+                    "stop_reason": stop_reason,
+                    "provider_error": provider_error,
+                    "failure_code": raw_failure_code,
+                }
+            )
+
+        stop_reason_normalized = stop_reason.lower()
+        terminal_failure_hint = bool(
+            provider_error
+            or failure_code
+            or empty_content
+            or stop_reason_normalized in {"error", "failed", "aborted", "timeout", "crashed", "cancelled"}
+        )
+
+        terminal_signal_present = bool(
+            raw_stop_reason
+            or raw_provider_error
+            or raw_failure_code
+            or isinstance(raw_terminal_signal.get("empty_content"), bool)
+            or isinstance(raw.get("empty_content"), bool)
+            or final_content_length_value is not None
+        )
+        completion_provenance_present = bool(completed_via or worker or session_key)
+        if (
+            state_token == "DONE"
+            and not expected_artifacts
+            and completion_provenance_present
+            and not terminal_failure_hint
+            and not terminal_signal_present
+        ):
+            stop_reason = "error"
+            # Check raw data for quota hints before defaulting
+            raw_data_str = str(raw).lower()
+            quota_hints = [
+                "usage limit", "usage_limit", "quota", "rate limit", "rate_limit",
+                "429", "limit", "exceeded", "exhausted"
+            ]
+            has_quota_hint = any(hint in raw_data_str for hint in quota_hints)
+            provider_error = "provider_quota_suspected" if has_quota_hint else "insufficient_completion_evidence"
+            stop_reason_normalized = "error"
+            terminal_failure_hint = True
+
+        if state_token == "DONE" and (expected_artifacts or terminal_failure_hint):
+            landed_task_ids.append(task_id)
+
+        task_meta[task_id] = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "task_class": dispatch_task_class,
+            "priority": _normalize_execution_supervisor_priority(raw.get("tier")),
+            "expected_artifacts": expected_artifacts,
+            "required_title_tokens": required_title_tokens,
+            "state": state_token,
+            "completed_at": str(raw.get("completed_at") or "").strip() or None,
+            "completed_via": completed_via,
+            "worker": worker,
+            "model": model,
+            "session_key": session_key,
+            "terminal_signal": {
+                "stop_reason": stop_reason,
+                "provider_error": provider_error,
+                "failure_code": failure_code,
+                "empty_content": bool(empty_content),
+            },
+            "terminal_failure_hint": bool(terminal_failure_hint),
+            "source_generated_at": str(payload.get("generated_at") or "").strip() or None,
+        }
+
+    return {
+        "source_path": to_rel(selected_source),
+        "source_present": bool(selected_source.exists()),
+        "source_generated_at": str(payload.get("generated_at") or "").strip() or None,
+        "task_meta": task_meta,
+        "landed_task_ids": landed_task_ids,
+    }
+
+
+def _evaluate_execution_supervisor_artifact_check(
+    *,
+    expected_artifacts: List[str],
+    required_title_tokens: List[str],
+) -> Dict[str, Any]:
+    missing_paths: List[str] = []
+    empty_paths: List[str] = []
+
+    for rel_path in expected_artifacts:
+        rel_token = str(rel_path or "").strip()
+        if not rel_token:
+            continue
+        artifact_path = pathlib.Path(rel_token)
+        if not artifact_path.is_absolute():
+            artifact_path = (root / artifact_path).resolve()
+        else:
+            artifact_path = artifact_path.resolve()
+        if not artifact_path.exists() or not artifact_path.is_file():
+            missing_paths.append(rel_token)
+            continue
+        try:
+            if artifact_path.stat().st_size <= 0:
+                empty_paths.append(rel_token)
+        except Exception:
+            empty_paths.append(rel_token)
+
+    title_check_passed: Optional[bool] = None
+    if required_title_tokens:
+        title_check_passed = False
+        probe_lines: List[str] = []
+        for rel_path in expected_artifacts:
+            rel_token = str(rel_path or "").strip()
+            if not rel_token or rel_token in missing_paths or rel_token in empty_paths:
+                continue
+            artifact_path = pathlib.Path(rel_token)
+            if not artifact_path.is_absolute():
+                artifact_path = (root / artifact_path).resolve()
+            else:
+                artifact_path = artifact_path.resolve()
+            try:
+                with artifact_path.open("r", encoding="utf-8", errors="replace") as fh:
+                    probe_lines = [line.rstrip("\n") for _, line in zip(range(20), fh)]
+                break
+            except Exception:
+                probe_lines = []
+
+        normalized_probe = "\n".join(probe_lines).lower()
+        for token in required_title_tokens:
+            if str(token or "").strip().lower() in normalized_probe:
+                title_check_passed = True
+                break
+
+    return {
+        "all_expected_present": len(missing_paths) == 0 and len(empty_paths) == 0 and title_check_passed is not False,
+        "missing_paths": _dedupe_nonempty_strings(missing_paths),
+        "empty_paths": _dedupe_nonempty_strings(empty_paths),
+        "title_check_passed": title_check_passed,
+    }
+
+
+def _classify_execution_supervisor_attempt(
+    *,
+    artifact_check: Dict[str, Any],
+    terminal_signal: Dict[str, Any],
+) -> Tuple[str, Optional[str]]:
+    stop_reason = str(terminal_signal.get("stop_reason") or "").strip().lower()
+    provider_error = str(terminal_signal.get("provider_error") or "").strip().lower()
+    failure_code = _extract_memory_consolidation_failure_code_from_signal(terminal_signal)
+    empty_content = bool(terminal_signal.get("empty_content") is True)
+
+    if failure_code:
+        bridge = _memory_consolidation_failure_bridge(failure_code)
+        if isinstance(bridge, dict):
+            mapped_classification = str(bridge.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER"
+            mapped_reason = str(bridge.get("reason") or "memory_consolidation_failure").strip() or "memory_consolidation_failure"
+            return mapped_classification, f"{mapped_reason}:{failure_code}"
+
+    provider_quota_tokens = [
+        "usage limit",
+        "usage_limit",
+        "quota",
+        "rate limit",
+        "rate_limit",
+        "429",
+        "limit",
+        "exceeded",
+        "exhausted",
+    ]
+    combined_signal = f"{stop_reason} {provider_error}".strip()
+    if any(token in combined_signal for token in provider_quota_tokens):
+        return "FAILED_PROVIDER_QUOTA", "provider_quota_or_rate_limit_signal"
+
+    missing_paths = artifact_check.get("missing_paths") if isinstance(artifact_check.get("missing_paths"), list) else []
+    empty_paths = artifact_check.get("empty_paths") if isinstance(artifact_check.get("empty_paths"), list) else []
+    title_check_passed = artifact_check.get("title_check_passed")
+    if missing_paths or empty_paths or title_check_passed is False:
+        return "FAILED_NO_ARTIFACT", "expected_artifact_missing_or_invalid"
+
+    if empty_content:
+        return "FAILED_NO_ARTIFACT", "empty_terminal_content_invalid_completion"
+
+    if stop_reason in {"error", "failed", "aborted"}:
+        return "FAILED_OTHER", "terminal_error_without_artifact_failure"
+
+    return "LANDED", None
+
+
+def build_execution_supervisor_task_ledger(
+    *,
+    execution_status: Dict[str, Any],
+    frontier_ledger: Dict[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    status_obj = execution_status if isinstance(execution_status, dict) else {}
+    frontier_obj = frontier_ledger if isinstance(frontier_ledger, dict) else {}
+
+    active_worker_count = max(0, _to_int(status_obj.get("active_worker_count"), 0))
+    program_state = str(status_obj.get("program_state") or "idle").strip().lower()
+    mode = "active"
+    if program_state == "blocked":
+        mode = "blocked"
+    elif program_state in {"idle", "waiting"} and active_worker_count <= 0:
+        mode = "paused"
+
+    generated_dt = parse_iso(generated_at) or clock_now_dt()
+    quota_backoff_sec = _read_nonnegative_int_env(
+        "OPENCLAW_EXECUTION_SUPERVISOR_QUOTA_BACKOFF_SEC",
+        default=7200,
+    )
+    previous_ledger = load_json_if_exists(execution_supervisor_task_ledger_latest_path)
+    cooldown_registry = _execution_supervisor_collect_cooldown_registry(previous_ledger, now=generated_dt)
+    topology_payload = load_json_if_exists(session_topology_contract_template_path)
+    topology_obj = topology_payload if isinstance(topology_payload, dict) else {}
+    gate_inputs = _load_execution_supervisor_gate_index()
+    gate_index = gate_inputs.get("gate_index") if isinstance(gate_inputs.get("gate_index"), dict) else {}
+
+    source_meta = _read_execution_supervisor_source_task_meta(status_obj)
+    task_meta = source_meta.get("task_meta") if isinstance(source_meta.get("task_meta"), dict) else {}
+    landed_task_ids = source_meta.get("landed_task_ids") if isinstance(source_meta.get("landed_task_ids"), list) else []
+    terminal_error_dispositions = _load_execution_supervisor_terminal_error_disposition_index(now=generated_dt)
+    terminal_error_disposition_index = (
+        terminal_error_dispositions.get("active_by_task")
+        if isinstance(terminal_error_dispositions.get("active_by_task"), dict)
+        else {}
+    )
+
+    frontier_queue = status_obj.get("frontier_queue") if isinstance(status_obj.get("frontier_queue"), dict) else {}
+    if not frontier_queue and isinstance(frontier_obj.get("frontier_queue"), dict):
+        frontier_queue = frontier_obj.get("frontier_queue")
+
+    ready_candidates = frontier_queue.get("ready_candidates") if isinstance(frontier_queue.get("ready_candidates"), list) else []
+    running_candidates = frontier_queue.get("running_candidates") if isinstance(frontier_queue.get("running_candidates"), list) else []
+    blocked_candidates = (
+        frontier_queue.get("dependency_blocked_candidates")
+        if isinstance(frontier_queue.get("dependency_blocked_candidates"), list)
+        else []
+    )
+
+    def _meta_for_task(task_id: str, role_required: Any = None) -> Dict[str, Any]:
+        base_meta = task_meta.get(task_id) if isinstance(task_meta.get(task_id), dict) else {}
+        if base_meta:
+            return dict(base_meta)
+        inferred_task_type = _infer_execution_supervisor_task_type(
+            lane_tokens=[],
+            role_required=role_required,
+        )
+        return {
+            "task_id": task_id,
+            "task_type": inferred_task_type,
+            "task_class": _normalize_execution_supervisor_task_class(
+                None,
+                task_type=inferred_task_type,
+            ),
+            "priority": "P2",
+            "expected_artifacts": [],
+            "required_title_tokens": [],
+            "completed_at": None,
+            "completed_via": None,
+        }
+
+    running_ids = {
+        str(row.get("task_id") or "").strip()
+        for row in running_candidates
+        if isinstance(row, dict) and str(row.get("task_id") or "").strip()
+    }
+    ready_ids = {
+        str(row.get("task_id") or "").strip()
+        for row in ready_candidates
+        if isinstance(row, dict) and str(row.get("task_id") or "").strip()
+    }
+    blocked_ids = {
+        str(row.get("task_id") or "").strip()
+        for row in blocked_candidates
+        if isinstance(row, dict) and str(row.get("task_id") or "").strip()
+    }
+
+    selected_rows: List[Dict[str, Any]] = []
+    seen_task_ids = set()
+
+    def _append_live_row(raw_row: Dict[str, Any], status_token: str) -> None:
+        task_id = str(raw_row.get("task_id") or "").strip()
+        if not task_id or task_id in seen_task_ids:
+            return
+        seen_task_ids.add(task_id)
+        meta = _meta_for_task(task_id, role_required=raw_row.get("role_required"))
+        task_type = str(meta.get("task_type") or "other")
+        task_class = _normalize_execution_supervisor_task_class(
+            meta.get("task_class"),
+            task_type=task_type,
+        )
+        selected_rows.append(
+            {
+                "task_id": task_id,
+                "task_type": task_type,
+                "task_class": task_class,
+                "priority": str(meta.get("priority") or "P2"),
+                "status": status_token,
+                "queue_state": status_token,
+                "expected_artifacts": _dedupe_nonempty_strings(meta.get("expected_artifacts") or []),
+                "failure_classification": None,
+                "reroute": None,
+                "latest_attempt": None,
+                "attempts": [],
+            }
+        )
+
+    for row in running_candidates[:3]:
+        if isinstance(row, dict):
+            _append_live_row(row, "RUNNING")
+    for row in ready_candidates[:3]:
+        if isinstance(row, dict):
+            _append_live_row(row, "READY")
+    for row in blocked_candidates[:2]:
+        if isinstance(row, dict):
+            _append_live_row(row, "BLOCKED")
+
+    next_candidate = str(status_obj.get("next_candidate") or "").strip()
+    if next_candidate and next_candidate not in seen_task_ids:
+        _append_live_row({"task_id": next_candidate, "role_required": None}, "READY")
+
+    max_landed_rows = max(
+        1,
+        _read_nonnegative_int_env(
+            "OPENCLAW_EXECUTION_SUPERVISOR_MAX_LANDED_ROWS",
+            default=3,
+        ),
+    )
+    landed_task_ids = _dedupe_nonempty_strings(landed_task_ids)
+    landed_task_position = {task_id: idx for idx, task_id in enumerate(landed_task_ids)}
+    landed_candidates: List[str] = []
+    landed_seen = set()
+    landed_candidate_evaluations: Dict[str, Dict[str, Any]] = {}
+
+    def _append_landed_candidate(task_id: Any) -> None:
+        task_token = str(task_id or "").strip()
+        if not task_token or task_token in landed_seen:
+            return
+        landed_seen.add(task_token)
+        landed_candidates.append(task_token)
+
+    def _evaluate_landed_candidate(task_id: str) -> Dict[str, Any]:
+        cached = landed_candidate_evaluations.get(task_id)
+        if isinstance(cached, dict):
+            return cached
+
+        meta = _meta_for_task(task_id)
+        expected_artifacts = _dedupe_nonempty_strings(meta.get("expected_artifacts") or [])
+        required_title_tokens = _dedupe_nonempty_strings(meta.get("required_title_tokens") or [])
+        artifact_check = _evaluate_execution_supervisor_artifact_check(
+            expected_artifacts=expected_artifacts,
+            required_title_tokens=required_title_tokens,
+        )
+
+        terminal_signal_meta = (
+            meta.get("terminal_signal")
+            if isinstance(meta.get("terminal_signal"), dict)
+            else {}
+        )
+        terminal_signal = {
+            "stop_reason": str(terminal_signal_meta.get("stop_reason") or "completed").strip() or "completed",
+            "provider_error": str(terminal_signal_meta.get("provider_error") or "").strip() or None,
+            "failure_code": str(terminal_signal_meta.get("failure_code") or "").strip().upper() or None,
+            "empty_content": bool(terminal_signal_meta.get("empty_content") is True),
+        }
+
+        classification, reason = _classify_execution_supervisor_attempt(
+            artifact_check=artifact_check,
+            terminal_signal=terminal_signal,
+        )
+
+        completed_at = str(meta.get("completed_at") or generated_at or now_iso()).strip() or str(generated_at)
+        worker = str(meta.get("worker") or meta.get("completed_via") or "").strip() or None
+        task_type = str(meta.get("task_type") or "other")
+        task_class = _normalize_execution_supervisor_task_class(
+            meta.get("task_class"),
+            task_type=task_type,
+        )
+        task_priority = str(meta.get("priority") or "P2")
+        reroute_plan = _build_execution_supervisor_reroute_plan(
+            task_type=task_type,
+            priority=task_priority,
+            task_class_override=task_class,
+            classification=classification,
+            latest_worker=worker,
+            task_id=task_id,
+            cooldown_registry=cooldown_registry,
+            quota_backoff_sec=quota_backoff_sec,
+            now=generated_dt,
+            topology=topology_obj,
+            gate_index=gate_index,
+        )
+
+        latest_attempt = {
+            "attempt_id": f"{task_id}-attempt-1",
+            "session_key": str(meta.get("session_key") or meta.get("completed_via") or "").strip() or None,
+            "worker": worker,
+            "model": str(meta.get("model") or "").strip() or None,
+            "launched_at": completed_at,
+            "completed_at": completed_at,
+            "artifact_check": artifact_check,
+            "terminal_signal": terminal_signal,
+            "classification": classification,
+        }
+
+        evaluation = {
+            "meta": meta,
+            "expected_artifacts": expected_artifacts,
+            "required_title_tokens": required_title_tokens,
+            "artifact_check": artifact_check,
+            "terminal_signal": terminal_signal,
+            "classification": classification,
+            "reason": reason,
+            "completed_at": completed_at,
+            "worker": worker,
+            "task_type": task_type,
+            "task_class": task_class,
+            "task_priority": task_priority,
+            "reroute_plan": reroute_plan,
+            "latest_attempt": latest_attempt,
+        }
+        landed_candidate_evaluations[task_id] = evaluation
+        return evaluation
+
+    failure_classifications = {"FAILED_NO_ARTIFACT", "FAILED_PROVIDER_QUOTA", "FAILED_OTHER"}
+    recent_transition_task = str(status_obj.get("last_transition_task_id") or "").strip() or None
+
+    def _candidate_completed_sort_key(task_id: str) -> int:
+        completed_dt = parse_iso(_evaluate_landed_candidate(task_id).get("completed_at"))
+        if completed_dt is None:
+            return 0
+        return -int(completed_dt.timestamp())
+
+    def _actionable_candidate_sort_key(task_id: str) -> Tuple[int, int, int, int]:
+        evaluation = _evaluate_landed_candidate(task_id)
+        classification_token = str(evaluation.get("classification") or "").strip().upper()
+        classification_rank = {
+            "FAILED_NO_ARTIFACT": 0,
+            "FAILED_PROVIDER_QUOTA": 1,
+            "FAILED_OTHER": 2,
+        }.get(classification_token, 3)
+        recent_rank = 0 if task_id == recent_transition_task else 1
+        return (
+            recent_rank,
+            classification_rank,
+            _candidate_completed_sort_key(task_id),
+            landed_task_position.get(task_id, 10**9),
+        )
+
+    def _representative_candidate_sort_key(task_id: str) -> Tuple[int, int, int]:
+        recent_rank = 0 if task_id == recent_transition_task else 1
+        return (
+            recent_rank,
+            _candidate_completed_sort_key(task_id),
+            landed_task_position.get(task_id, 10**9),
+        )
+
+    actionable_landed_candidates: List[str] = []
+    representative_landed_candidates: List[str] = []
+    for task_id in landed_task_ids:
+        evaluation = _evaluate_landed_candidate(task_id)
+        classification_token = str(evaluation.get("classification") or "").strip().upper()
+        reroute_plan = evaluation.get("reroute_plan") if isinstance(evaluation.get("reroute_plan"), dict) else {}
+        if classification_token in failure_classifications or bool(reroute_plan.get("required") is True):
+            actionable_landed_candidates.append(task_id)
+        else:
+            representative_landed_candidates.append(task_id)
+
+    actionable_landed_candidates.sort(key=_actionable_candidate_sort_key)
+    representative_landed_candidates.sort(key=_representative_candidate_sort_key)
+    landed_row_budget = max(max_landed_rows, len(actionable_landed_candidates))
+
+    for task_id in actionable_landed_candidates:
+        _append_landed_candidate(task_id)
+
+    if recent_transition_task and recent_transition_task in set(representative_landed_candidates):
+        transition_meta = task_meta.get(recent_transition_task) if isinstance(task_meta.get(recent_transition_task), dict) else {}
+        transition_expected_artifacts = _dedupe_nonempty_strings(transition_meta.get("expected_artifacts") or [])
+        transition_failure_hint = bool(transition_meta.get("terminal_failure_hint") is True)
+        if transition_expected_artifacts or transition_failure_hint:
+            _append_landed_candidate(recent_transition_task)
+
+    for preferred_type in ("support_spec", "implementation"):
+        for task_id in representative_landed_candidates:
+            meta = _meta_for_task(task_id)
+            if str(meta.get("task_type") or "") == preferred_type:
+                _append_landed_candidate(task_id)
+                break
+
+    for task_id in representative_landed_candidates:
+        _append_landed_candidate(task_id)
+        if len(landed_candidates) >= landed_row_budget:
+            break
+
+    landed_candidates = landed_candidates[:landed_row_budget]
+
+    for landed_task_id in landed_candidates:
+        landed_evaluation = _evaluate_landed_candidate(landed_task_id)
+        meta = landed_evaluation.get("meta") if isinstance(landed_evaluation.get("meta"), dict) else {}
+        expected_artifacts = _dedupe_nonempty_strings(landed_evaluation.get("expected_artifacts") or [])
+        artifact_check = landed_evaluation.get("artifact_check") if isinstance(landed_evaluation.get("artifact_check"), dict) else {}
+        terminal_signal = landed_evaluation.get("terminal_signal") if isinstance(landed_evaluation.get("terminal_signal"), dict) else {}
+        classification = str(landed_evaluation.get("classification") or "LANDED").strip() or "LANDED"
+        reason = landed_evaluation.get("reason")
+        completed_at = str(landed_evaluation.get("completed_at") or generated_at or now_iso()).strip() or str(generated_at)
+        worker = str(landed_evaluation.get("worker") or "").strip() or None
+        latest_attempt = landed_evaluation.get("latest_attempt") if isinstance(landed_evaluation.get("latest_attempt"), dict) else {}
+        task_type = str(landed_evaluation.get("task_type") or meta.get("task_type") or "other")
+        task_class = _normalize_execution_supervisor_task_class(
+            landed_evaluation.get("task_class") or meta.get("task_class"),
+            task_type=task_type,
+        )
+        task_priority = str(landed_evaluation.get("task_priority") or meta.get("priority") or "P2")
+        reroute_plan = landed_evaluation.get("reroute_plan") if isinstance(landed_evaluation.get("reroute_plan"), dict) else None
+
+        landed_row = {
+            "task_id": landed_task_id,
+            "task_type": task_type,
+            "task_class": task_class,
+            "priority": task_priority,
+            "status": classification,
+            "queue_state": str(meta.get("state") or "DONE").strip().upper() or "DONE",
+            "expected_artifacts": expected_artifacts,
+            "failure_classification": None,
+            "reroute": reroute_plan,
+            "latest_attempt": latest_attempt,
+            "attempts": [latest_attempt],
+        }
+
+        if classification in {"FAILED_NO_ARTIFACT", "FAILED_PROVIDER_QUOTA", "FAILED_OTHER"}:
+            upstream_failure_code = _extract_memory_consolidation_failure_code_from_signal(terminal_signal)
+            bridge = _memory_consolidation_failure_bridge(upstream_failure_code)
+            landed_row["failure_classification"] = {
+                "code": classification,
+                "reason": reason,
+                "provider": None,
+                "detected_at": str(generated_at),
+            }
+            if upstream_failure_code:
+                landed_row["failure_classification"]["upstream_failure_code"] = upstream_failure_code
+            if isinstance(bridge, dict):
+                landed_row["failure_classification"]["classification_bridge"] = {
+                    "surface": "memory_consolidation",
+                    "classification": str(bridge.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER",
+                    "reason": str(bridge.get("reason") or "memory_consolidation_failure").strip() or "memory_consolidation_failure",
+                }
+
+        active_disposition = (
+            terminal_error_disposition_index.get(landed_task_id)
+            if isinstance(terminal_error_disposition_index, dict)
+            else None
+        )
+        if (
+            isinstance(active_disposition, dict)
+            and classification == "FAILED_OTHER"
+            and isinstance(reroute_plan, dict)
+            and bool(reroute_plan.get("required") is True)
+        ):
+            expected_classification = str(active_disposition.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER"
+            expected_failure_reason = (
+                str(active_disposition.get("failure_reason") or "terminal_error_without_artifact_failure").strip()
+                or "terminal_error_without_artifact_failure"
+            )
+            expected_reroute_reason = (
+                str(active_disposition.get("reroute_reason") or "terminal_error_requires_operator_review").strip()
+                or "terminal_error_requires_operator_review"
+            )
+            actual_reroute_reason = str(reroute_plan.get("reason") or "").strip() or None
+            if (
+                classification == expected_classification
+                and str(reason or "").strip() == expected_failure_reason
+                and actual_reroute_reason == expected_reroute_reason
+            ):
+                original_reroute = dict(reroute_plan)
+                reroute_plan = dict(reroute_plan)
+                reroute_plan.update(
+                    {
+                        "required": False,
+                        "status": "none",
+                        "reason": "operator_disposition_acknowledge_and_park",
+                        "target_worker": None,
+                        "cooldown_applied": None,
+                        "cooldown_blocked_workers": [],
+                        "cooldown_until": None,
+                        "cooldown_worker": None,
+                        "operator_disposition_applied": True,
+                        "operator_disposition_action": "acknowledge_and_park",
+                        "operator_disposition_original_reason": actual_reroute_reason,
+                    }
+                )
+                landed_row["reroute"] = reroute_plan
+                landed_row["operator_disposition"] = {
+                    "schema": "clawd.execution_supervisor_terminal_error_disposition_applied.v1",
+                    "action": "acknowledge_and_park",
+                    "approved_by": str(active_disposition.get("approved_by") or "").strip() or None,
+                    "approved_at": str(active_disposition.get("approved_at") or "").strip() or None,
+                    "expires_at": str(active_disposition.get("expires_at") or "").strip() or None,
+                    "justification": str(active_disposition.get("justification") or "").strip() or None,
+                    "source_ref": str(active_disposition.get("source_ref") or "").strip() or None,
+                    "applied_at": str(generated_at),
+                    "guard": {
+                        "classification": expected_classification,
+                        "failure_reason": expected_failure_reason,
+                        "reroute_reason": expected_reroute_reason,
+                    },
+                    "original_reroute": {
+                        "required": bool(original_reroute.get("required") is True),
+                        "status": str(original_reroute.get("status") or "").strip() or None,
+                        "reason": actual_reroute_reason,
+                    },
+                }
+                if isinstance(landed_row.get("failure_classification"), dict):
+                    landed_row["failure_classification"]["operator_disposition"] = {
+                        "action": "acknowledge_and_park",
+                        "approved_by": str(active_disposition.get("approved_by") or "").strip() or None,
+                        "approved_at": str(active_disposition.get("approved_at") or "").strip() or None,
+                        "expires_at": str(active_disposition.get("expires_at") or "").strip() or None,
+                    }
+
+        replaced = False
+        for idx, row in enumerate(selected_rows):
+            if str(row.get("task_id") or "") == landed_task_id:
+                selected_rows[idx] = landed_row
+                replaced = True
+                break
+        if not replaced:
+            selected_rows.append(landed_row)
+
+    def _task_type_for_candidate(raw_row: Dict[str, Any]) -> str:
+        task_id = str(raw_row.get("task_id") or "").strip()
+        if task_id and isinstance(task_meta.get(task_id), dict):
+            return str(task_meta[task_id].get("task_type") or "other")
+        return _infer_execution_supervisor_task_type(
+            lane_tokens=raw_row.get("lane") if isinstance(raw_row.get("lane"), list) else [],
+            role_required=raw_row.get("role_required"),
+        )
+
+    def _task_class_for_candidate(raw_row: Dict[str, Any]) -> str:
+        task_type = _task_type_for_candidate(raw_row)
+        task_id = str(raw_row.get("task_id") or "").strip()
+        if task_id and isinstance(task_meta.get(task_id), dict):
+            return _normalize_execution_supervisor_task_class(
+                task_meta[task_id].get("task_class"),
+                task_type=task_type,
+            )
+        return _normalize_execution_supervisor_task_class(
+            raw_row.get("task_class"),
+            task_type=task_type,
+        )
+
+    ready_core_count = 0
+    ready_support_count = 0
+    for row in ready_candidates:
+        if not isinstance(row, dict):
+            continue
+        task_type = _task_type_for_candidate(row)
+        if task_type == "implementation":
+            ready_core_count += 1
+        else:
+            ready_support_count += 1
+
+    blocked_count = max(
+        len(blocked_ids),
+        max(0, _to_int(status_obj.get("queue_dependency_blocked_count"), 0)),
+    )
+    core_floor = _read_nonnegative_int_env(
+        "OPENCLAW_EXECUTION_SUPERVISOR_MIN_CORE_WORKER_FLOOR",
+        default=1,
+    )
+    support_floor = _read_nonnegative_int_env(
+        "OPENCLAW_EXECUTION_SUPERVISOR_MIN_SUPPORT_WORKER_FLOOR",
+        default=1,
+    )
+
+    active_core_workers = 0
+    active_support_workers = 0
+    for row in running_candidates:
+        if not isinstance(row, dict):
+            continue
+        row_task_type = _task_type_for_candidate(row)
+        if row_task_type == "implementation":
+            active_core_workers += 1
+        else:
+            active_support_workers += 1
+
+    global_blocked = bool(mode == "blocked")
+
+    core_floor_required = bool(ready_core_count > 0 and core_floor > 0)
+    support_floor_required = bool(ready_support_count > 0 and support_floor > 0)
+
+    core_floor_deficit = max(0, core_floor - active_core_workers) if core_floor_required else 0
+    support_floor_deficit = max(0, support_floor - active_support_workers) if support_floor_required else 0
+
+    selected_floor_task_ids = set()
+    floor_planned_launches: List[Dict[str, Any]] = []
+    floor_blocked_launches: List[Dict[str, Any]] = []
+
+    def _collect_floor_candidates(task_type: str) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for candidate in ready_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            candidate_task_id = str(candidate.get("task_id") or "").strip()
+            if not candidate_task_id or candidate_task_id in selected_floor_task_ids:
+                continue
+            candidate_task_type = _task_type_for_candidate(candidate)
+            if task_type == "support_spec":
+                if candidate_task_type == "implementation":
+                    continue
+            elif candidate_task_type != task_type:
+                continue
+            out.append(candidate)
+        return out
+
+    def _plan_floor_launches(*, task_type: str, deficit: int) -> None:
+        if deficit <= 0:
+            return
+
+        if global_blocked:
+            floor_blocked_launches.append(
+                {
+                    "task_type": task_type,
+                    "reason": "global_blocked_before_floor_repair",
+                    "deficit": deficit,
+                }
+            )
+            return
+
+        candidates = _collect_floor_candidates(task_type)
+        if not candidates:
+            floor_blocked_launches.append(
+                {
+                    "task_type": task_type,
+                    "reason": "no_ready_candidate_for_floor_repair",
+                    "deficit": deficit,
+                }
+            )
+            return
+
+        for candidate in candidates:
+            if deficit <= 0:
+                break
+
+            candidate_task_id = str(candidate.get("task_id") or "").strip()
+            if not candidate_task_id:
+                continue
+
+            candidate_meta = _meta_for_task(candidate_task_id, role_required=candidate.get("role_required"))
+            candidate_task_type = _task_type_for_candidate(candidate)
+            candidate_task_class = _normalize_execution_supervisor_task_class(
+                candidate_meta.get("task_class") or _task_class_for_candidate(candidate),
+                task_type=candidate_task_type,
+            )
+            candidate_priority = str(candidate_meta.get("priority") or "P2")
+            route_alignment = _execution_supervisor_resolve_route_alignment(
+                task_type=candidate_task_type,
+                priority=candidate_priority,
+                task_class_override=candidate_task_class,
+                topology=topology_obj,
+                gate_index=gate_index,
+            )
+            route_alignment_enforceable = bool(route_alignment.get("enforceable") is True)
+            compatible_route_workers = _dedupe_nonempty_strings(route_alignment.get("compatible_route_workers") or [])
+            if route_alignment_enforceable and not compatible_route_workers:
+                floor_blocked_launches.append(
+                    {
+                        "task_id": candidate_task_id,
+                        "task_type": candidate_task_type,
+                        "task_class": candidate_task_class,
+                        "reason": str(route_alignment.get("reason") or "no_route_worker_for_selected_model_family").strip()
+                        or "no_route_worker_for_selected_model_family",
+                        "deficit": deficit,
+                    }
+                )
+                continue
+
+            target_worker = _execution_supervisor_next_route_worker(
+                task_type=candidate_task_type,
+                current_worker=None,
+                cooldown_registry=cooldown_registry,
+                now=generated_dt,
+                route_workers=(compatible_route_workers if route_alignment_enforceable else None),
+            )
+            if not target_worker:
+                floor_blocked_launches.append(
+                    {
+                        "task_id": candidate_task_id,
+                        "task_type": candidate_task_type,
+                        "task_class": candidate_task_class,
+                        "reason": "route_unavailable_or_cooldown_active",
+                        "deficit": deficit,
+                    }
+                )
+                continue
+
+            selected_floor_task_ids.add(candidate_task_id)
+            floor_planned_launches.append(
+                {
+                    "task_id": candidate_task_id,
+                    "task_type": candidate_task_type,
+                    "task_class": candidate_task_class,
+                    "target_worker": target_worker,
+                    "reason": "minimum_worker_floor_violation",
+                }
+            )
+            deficit -= 1
+
+        if deficit > 0:
+            floor_blocked_launches.append(
+                {
+                    "task_type": task_type,
+                    "reason": "floor_deficit_unresolved",
+                    "deficit": deficit,
+                }
+            )
+
+    _plan_floor_launches(task_type="implementation", deficit=core_floor_deficit)
+    _plan_floor_launches(task_type="support_spec", deficit=support_floor_deficit)
+
+    cooldown_active_workers: List[Dict[str, Any]] = []
+    for worker_name, raw in sorted(cooldown_registry.items()):
+        if not isinstance(raw, dict):
+            continue
+        cooldown_until = str(raw.get("cooldown_until") or "").strip() or None
+        remaining = _runtime_cooldown_remaining_sec(cooldown_until, now=generated_dt)
+        if remaining <= 0:
+            continue
+        cooldown_active_workers.append(
+            {
+                "worker": worker_name,
+                "cooldown_until": cooldown_until,
+                "cooldown_remaining_sec": remaining,
+                "reason": str(raw.get("reason") or "provider_quota_exhausted").strip() or "provider_quota_exhausted",
+                "source_task_id": str(raw.get("source_task_id") or "").strip() or None,
+            }
+        )
+
+    worker_floor_enforcement = {
+        "schema": "clawd.execution_supervisor_worker_floor_enforcement.v1",
+        "enabled": True,
+        "global_blocked": global_blocked,
+        "enforceable": not global_blocked,
+        "required": bool(core_floor_deficit > 0 or support_floor_deficit > 0),
+        "core": {
+            "ready_count": ready_core_count,
+            "active_count": active_core_workers,
+            "floor": core_floor,
+            "deficit": core_floor_deficit,
+        },
+        "support": {
+            "ready_count": ready_support_count,
+            "active_count": active_support_workers,
+            "floor": support_floor,
+            "deficit": support_floor_deficit,
+        },
+        "planned_launches": floor_planned_launches,
+        "blocked_launches": floor_blocked_launches,
+    }
+
+    reroute_required_count = 0
+    reroute_dispatch_ready_count = 0
+    reroute_blocked_count = 0
+    reroute_ready_task_ids: List[str] = []
+    reroute_required_task_ids: List[str] = []
+    reroute_done_residue_task_ids: List[str] = []
+    reroute_nondone_task_ids: List[str] = []
+
+    for row in selected_rows:
+        if not isinstance(row, dict):
+            continue
+        reroute = row.get("reroute") if isinstance(row.get("reroute"), dict) else {}
+        if not reroute or bool(reroute.get("required") is not True):
+            continue
+        reroute_required_count += 1
+        task_id_token = str(row.get("task_id") or "").strip()
+        if task_id_token:
+            reroute_required_task_ids.append(task_id_token)
+        queue_state_token = str(row.get("queue_state") or row.get("status") or "").strip().upper()
+        if queue_state_token == "DONE":
+            if task_id_token:
+                reroute_done_residue_task_ids.append(task_id_token)
+        elif task_id_token:
+            reroute_nondone_task_ids.append(task_id_token)
+        reroute_status = str(reroute.get("status") or "").strip()
+        reroute_target = str(reroute.get("target_worker") or "").strip()
+        if reroute_status == "REROUTE_QUEUED" and reroute_target:
+            reroute_dispatch_ready_count += 1
+            if task_id_token:
+                reroute_ready_task_ids.append(task_id_token)
+        elif reroute_status == "BLOCKED" or (reroute_status == "REROUTE_QUEUED" and not reroute_target):
+            reroute_blocked_count += 1
+
+    reroute_done_residue_task_ids = _dedupe_nonempty_strings(reroute_done_residue_task_ids)
+    reroute_nondone_task_ids = _dedupe_nonempty_strings(reroute_nondone_task_ids)
+    reroute_required_task_ids = _dedupe_nonempty_strings(reroute_required_task_ids)
+
+    reroute_residue_suppressed = bool(
+        reroute_required_count > 0
+        and ready_core_count <= 0
+        and ready_support_count <= 0
+        and blocked_count <= 0
+        and reroute_dispatch_ready_count <= 0
+        and not reroute_nondone_task_ids
+        and len(reroute_done_residue_task_ids) == reroute_required_count
+    )
+    reroute_residue_suppression_reason = (
+        "no_actionable_queue_candidates_done_only_reroute_residue"
+        if reroute_residue_suppressed
+        else None
+    )
+    effective_reroute_required_count = 0 if reroute_residue_suppressed else reroute_required_count
+    effective_reroute_dispatch_ready_count = 0 if reroute_residue_suppressed else reroute_dispatch_ready_count
+    effective_reroute_blocked_count = 0 if reroute_residue_suppressed else reroute_blocked_count
+    effective_reroute_ready_task_ids = [] if reroute_residue_suppressed else list(reroute_ready_task_ids)
+
+    dispatch_ready_task_ids = _dedupe_nonempty_strings(
+        effective_reroute_ready_task_ids
+        + [
+            str(raw.get("task_id") or "").strip()
+            for raw in floor_planned_launches
+            if isinstance(raw, dict) and str(raw.get("task_id") or "").strip()
+        ]
+    )
+    dispatch_qualification_consumption = _execution_supervisor_assess_dispatch_qualification_consumption(
+        ready_task_ids=dispatch_ready_task_ids,
+        reference_generated_at=generated_at,
+    )
+
+    tick_fingerprint = hashlib.sha256(
+        json.dumps(
+            {
+                "generated_at": generated_at,
+                "program_state": program_state,
+                "active_worker_count": active_worker_count,
+                "next_candidate": next_candidate,
+                "task_ids": [str(row.get("task_id") or "") for row in selected_rows],
+                "cooldown_workers": [str(row.get("worker") or "") for row in cooldown_active_workers],
+                "worker_floor_plans": [str(row.get("task_id") or "") for row in floor_planned_launches],
+                "dispatch_ready_task_ids": dispatch_ready_task_ids,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+
+    return {
+        "schema": "clawd.execution_supervisor_task_ledger.v1",
+        "generated_at": generated_at,
+        "supervisor_tick_id": f"execution_supervisor_tick_{tick_fingerprint}",
+        "mode": mode,
+        "queue_summary": {
+            "ready_core_count": ready_core_count,
+            "ready_support_count": ready_support_count,
+            "blocked_count": blocked_count,
+            "active_worker_count": active_worker_count,
+            "reroute_required_count": effective_reroute_required_count,
+            "reroute_dispatch_ready_count": effective_reroute_dispatch_ready_count,
+            "reroute_blocked_count": effective_reroute_blocked_count,
+            "reroute_ready_task_ids": effective_reroute_ready_task_ids,
+            "reroute_required_count_raw": reroute_required_count,
+            "reroute_dispatch_ready_count_raw": reroute_dispatch_ready_count,
+            "reroute_blocked_count_raw": reroute_blocked_count,
+            "reroute_required_task_ids": reroute_required_task_ids,
+            "reroute_residue_task_ids": reroute_done_residue_task_ids,
+            "reroute_residue_suppressed": reroute_residue_suppressed,
+            "reroute_residue_suppression_reason": reroute_residue_suppression_reason,
+            "terminal_error_disposition_active_count": max(
+                0,
+                _to_int(terminal_error_dispositions.get("active_count"), 0),
+            ),
+            "terminal_error_disposition_active_task_ids": _dedupe_nonempty_strings(
+                terminal_error_dispositions.get("active_task_ids") or []
+            ),
+            "terminal_error_disposition_source_present": bool(
+                terminal_error_dispositions.get("source_present") is True
+            ),
+            "terminal_error_disposition_schema_valid": (
+                True
+                if terminal_error_dispositions.get("schema_valid") is True
+                else False
+                if terminal_error_dispositions.get("source_present") is True
+                else None
+            ),
+            "dispatch_ready_candidate_count": len(dispatch_ready_task_ids),
+            "dispatch_ready_task_ids": dispatch_ready_task_ids,
+            "dispatch_ready_post_qualification_count": max(
+                0,
+                _to_int(dispatch_qualification_consumption.get("qualified_candidate_count"), 0),
+            ),
+            "dispatch_qualification_consumption": dispatch_qualification_consumption,
+            "minimum_worker_floor": {
+                "core": core_floor,
+                "support": support_floor,
+            },
+            "worker_floor_enforcement": worker_floor_enforcement,
+        },
+        "routing_policy": {
+            "policy_version": "execution_supervisor_reroute_policy.v1",
+            "quota_backoff_sec": quota_backoff_sec,
+            "task_class_routes": {
+                "implementation": list(EXECUTION_SUPERVISOR_IMPLEMENTATION_ROUTE),
+                "support_spec": list(EXECUTION_SUPERVISOR_SUPPORT_ROUTE),
+                "support_synthesis": list(EXECUTION_SUPERVISOR_SUPPORT_ROUTE),
+            },
+            "cooldown_state": {
+                "schema": "clawd.execution_supervisor_worker_cooldown_state.v1",
+                "generated_at": generated_at,
+                "active_count": len(cooldown_active_workers),
+                "active_workers": cooldown_active_workers,
+            },
+        },
+        "tasks": selected_rows,
+        "source_refs": {
+            "execution_program_status": to_rel(execution_program_status_path),
+            "execution_frontier_ledger": to_rel(execution_frontier_ledger_path),
+            "supervisor_trace": to_rel(execution_supervisor_task_ledger_latest_path),
+            "execution_supervisor_dispatch_qualification": to_rel(execution_supervisor_dispatch_qualification_latest_path),
+            "execution_supervisor_canary_probe_schedule": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+            "execution_supervisor_probe_execution_plan": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+            "execution_supervisor_terminal_error_dispositions": (
+                str(terminal_error_dispositions.get("source_path") or "").strip()
+                or to_rel(execution_supervisor_terminal_error_dispositions_latest_path)
+            ),
+            "core_roadmap_slice_queue": str(source_meta.get("source_path") or to_rel(core_roadmap_execution_queue_primary_path)),
+        },
+    }
+
+
+def build_execution_supervisor_dispatch_intent(
+    *,
+    supervisor_ledger: Dict[str, Any],
+    generated_at: str,
+    qualification_snapshot: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    if not isinstance(supervisor_ledger, dict):
+        supervisor_ledger = {}
+
+    queue_summary = (
+        supervisor_ledger.get("queue_summary")
+        if isinstance(supervisor_ledger.get("queue_summary"), dict)
+        else {}
+    )
+    worker_floor_enforcement = (
+        queue_summary.get("worker_floor_enforcement")
+        if isinstance(queue_summary.get("worker_floor_enforcement"), dict)
+        else {}
+    )
+    task_rows = supervisor_ledger.get("tasks") if isinstance(supervisor_ledger.get("tasks"), list) else []
+
+    ready_candidates: List[Dict[str, Any]] = []
+    blocked_candidates: List[Dict[str, Any]] = []
+
+    reroute_ready_task_ids = _dedupe_nonempty_strings(queue_summary.get("reroute_ready_task_ids") or [])
+    reroute_ready_task_id_set = set(reroute_ready_task_ids)
+    reroute_residue_suppressed = bool(queue_summary.get("reroute_residue_suppressed") is True)
+    reroute_residue_task_id_set = set(
+        _dedupe_nonempty_strings(queue_summary.get("reroute_residue_task_ids") or [])
+    )
+
+    for row in task_rows:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "").strip()
+        task_type = str(row.get("task_type") or "other").strip() or "other"
+        task_class = _normalize_execution_supervisor_task_class(
+            row.get("task_class"),
+            task_type=task_type,
+        )
+        if reroute_residue_suppressed and task_id in reroute_residue_task_id_set:
+            continue
+        latest_attempt = row.get("latest_attempt") if isinstance(row.get("latest_attempt"), dict) else {}
+        reroute = row.get("reroute") if isinstance(row.get("reroute"), dict) else {}
+        if not reroute or bool(reroute.get("required") is not True):
+            continue
+
+        reroute_status = str(reroute.get("status") or "").strip()
+        target_worker = str(reroute.get("target_worker") or "").strip() or None
+        reason = str(reroute.get("reason") or "reroute_required").strip() or "reroute_required"
+        candidate = {
+            "task_id": task_id or None,
+            "task_type": task_type,
+            "task_class": task_class,
+            "source": "reroute",
+            "reason": reason,
+            "target_worker": target_worker,
+            "route_decision": reroute.get("route_decision") if isinstance(reroute.get("route_decision"), dict) else None,
+            "classification": str(latest_attempt.get("classification") or row.get("status") or "").strip() or None,
+            "latest_worker": str(latest_attempt.get("worker") or "").strip() or None,
+        }
+
+        if reroute_status == "REROUTE_QUEUED" and target_worker and task_id in reroute_ready_task_id_set:
+            ready_candidates.append(candidate)
+        else:
+            blocked_reason = reason
+            if reroute_status == "BLOCKED":
+                blocked_reason = str(reroute.get("reason") or "reroute_blocked").strip() or "reroute_blocked"
+            elif reroute_status == "REROUTE_QUEUED" and not target_worker:
+                blocked_reason = "reroute_target_worker_missing"
+            elif reroute_status:
+                blocked_reason = f"reroute_status:{reroute_status.lower()}"
+            candidate["reason"] = blocked_reason
+            candidate["reroute_status"] = reroute_status or None
+            blocked_candidates.append(candidate)
+
+    floor_planned_launches = (
+        worker_floor_enforcement.get("planned_launches")
+        if isinstance(worker_floor_enforcement.get("planned_launches"), list)
+        else []
+    )
+    floor_blocked_launches = (
+        worker_floor_enforcement.get("blocked_launches")
+        if isinstance(worker_floor_enforcement.get("blocked_launches"), list)
+        else []
+    )
+
+    for raw in floor_planned_launches:
+        if not isinstance(raw, dict):
+            continue
+        ready_candidates.append(
+            {
+                "task_id": str(raw.get("task_id") or "").strip() or None,
+                "task_type": str(raw.get("task_type") or "other").strip() or "other",
+                "task_class": _normalize_execution_supervisor_task_class(
+                    raw.get("task_class"),
+                    task_type=str(raw.get("task_type") or "other").strip() or "other",
+                ),
+                "source": "worker_floor_enforcement",
+                "reason": str(raw.get("reason") or "minimum_worker_floor_violation").strip()
+                or "minimum_worker_floor_violation",
+                "target_worker": str(raw.get("target_worker") or "").strip() or None,
+                "classification": None,
+                "latest_worker": None,
+            }
+        )
+
+    for raw in floor_blocked_launches:
+        if not isinstance(raw, dict):
+            continue
+        blocked_candidates.append(
+            {
+                "task_id": str(raw.get("task_id") or "").strip() or None,
+                "task_type": str(raw.get("task_type") or "other").strip() or "other",
+                "task_class": _normalize_execution_supervisor_task_class(
+                    raw.get("task_class"),
+                    task_type=str(raw.get("task_type") or "other").strip() or "other",
+                ),
+                "source": "worker_floor_enforcement",
+                "reason": str(raw.get("reason") or "worker_floor_launch_blocked").strip()
+                or "worker_floor_launch_blocked",
+                "target_worker": str(raw.get("target_worker") or "").strip() or None,
+                "classification": None,
+                "latest_worker": None,
+                "deficit": max(0, _to_int(raw.get("deficit"), 0)),
+            }
+        )
+
+    decision_reasons = _dedupe_nonempty_strings(
+        [
+            "reroute_dispatch_ready"
+            for row in ready_candidates
+            if isinstance(row, dict) and str(row.get("source") or "") == "reroute"
+        ]
+        + [
+            "worker_floor_launch_ready"
+            for row in ready_candidates
+            if isinstance(row, dict) and str(row.get("source") or "") == "worker_floor_enforcement"
+        ]
+        + [
+            str(row.get("reason") or "").strip()
+            for row in blocked_candidates
+            if isinstance(row, dict)
+        ]
+    )
+
+    source_present = bool(supervisor_ledger)
+    supervisor_mode = str(supervisor_ledger.get("mode") or "").strip().lower()
+    worker_floor_required = bool(worker_floor_enforcement.get("required") is True)
+    reroute_required_count = max(0, _to_int(queue_summary.get("reroute_required_count"), 0))
+    reroute_dispatch_ready_count = max(0, _to_int(queue_summary.get("reroute_dispatch_ready_count"), 0))
+    reroute_blocked_count = max(0, _to_int(queue_summary.get("reroute_blocked_count"), 0))
+    qualification_consumption = _execution_supervisor_assess_dispatch_qualification_consumption(
+        ready_task_ids=[
+            str(row.get("task_id") or "").strip()
+            for row in ready_candidates
+            if isinstance(row, dict)
+        ],
+        reference_generated_at=generated_at,
+        qualification_snapshot=qualification_snapshot,
+    )
+    qualification_gate_passed = bool(qualification_consumption.get("qualification_gate_passed") is True)
+    qualification_gate_reason = str(
+        qualification_consumption.get("gate_reason") or "dispatch_qualification_required"
+    ).strip() or "dispatch_qualification_required"
+    launch_readiness = (
+        qualification_consumption.get("launch_readiness")
+        if isinstance(qualification_consumption.get("launch_readiness"), dict)
+        else {}
+    )
+    if not launch_readiness:
+        launch_readiness = {
+            "schema": "clawd.execution_supervisor_launch_readiness.v1",
+            "state": "ready" if qualification_gate_passed else "blocked",
+            "reason": qualification_gate_reason,
+            "blocked_reason_counts": {},
+            "demotion_restore_posture": {},
+            "canary_probe_schedule": {
+                "source_path": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+            },
+            "probe_execution_plan": {
+                "source_path": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+                "status": "unavailable",
+                "reason": "probe_execution_plan_unavailable",
+                "due_now_cohort_workers": [],
+                "due_now_cohort_signature": None,
+                "due_now_cohort_signature_first_seen_at": None,
+                "due_now_cohort_signature_consecutive_ticks": 0,
+                "overdue_cohort_workers": [],
+                "overdue_cohort_signature": None,
+                "overdue_cohort_signature_first_seen_at": None,
+                "overdue_cohort_signature_consecutive_ticks": 0,
+            },
+            "severity_gate": {
+                "schema": "clawd.execution_supervisor_launch_readiness_severity_gate.v1",
+                "state": "clear",
+                "reason": "launch_readiness_severity_gate_unavailable",
+                "active": False,
+                "escalation_priority": "none",
+                "threshold_ticks": max(1, int(execution_supervisor_launch_readiness_persistence_ticks)),
+                "non_ready_state": None,
+                "non_ready_ticks_consecutive": 0,
+                "cohort_worker_count": 0,
+                "cohort_workers": [],
+                "cohort_signature": None,
+                "cohort_min_worker_state_ticks": None,
+                "cohort_max_worker_state_ticks": None,
+                "schedule_status": None,
+                "schedule_reason": None,
+            },
+        }
+
+    if not source_present:
+        status = "degraded"
+        decision = "NO_ACTION"
+        decision_reasons = ["supervisor_ledger_missing"]
+    elif ready_candidates:
+        if qualification_gate_passed:
+            status = "dispatch_ready"
+            decision = "PLAN_ONLY"
+        else:
+            status = "blocked"
+            decision = "BLOCKED"
+            decision_reasons = _dedupe_nonempty_strings(decision_reasons + [qualification_gate_reason])
+    elif blocked_candidates or reroute_required_count > 0 or worker_floor_required or supervisor_mode == "blocked":
+        status = "blocked"
+        decision = "BLOCKED"
+        if not decision_reasons:
+            decision_reasons = [
+                "supervisor_mode_blocked" if supervisor_mode == "blocked" else "dispatch_required_but_no_ready_candidate"
+            ]
+    else:
+        status = "idle"
+        decision = "NO_ACTION"
+        decision_reasons = ["no_dispatch_required"]
+
+    return {
+        "schema": "clawd.execution_supervisor_dispatch_intent.v1",
+        "generated_at": generated_at,
+        "intent_path": to_rel(execution_supervisor_dispatch_intent_latest_path),
+        "intent_history_path": to_rel(execution_supervisor_dispatch_intent_history_path),
+        "source": {
+            "ledger_path": to_rel(execution_supervisor_task_ledger_latest_path),
+            "ledger_schema": str(supervisor_ledger.get("schema") or "").strip() or None,
+            "supervisor_tick_id": str(supervisor_ledger.get("supervisor_tick_id") or "").strip() or None,
+            "mode": str(supervisor_ledger.get("mode") or "").strip() or None,
+            "source_present": source_present,
+        },
+        "mode": "plan_only_fail_closed",
+        "fail_closed": True,
+        "launch_mutation_allowed": False,
+        "status": status,
+        "decision": decision,
+        "active": bool(status == "dispatch_ready"),
+        "decision_reasons": decision_reasons,
+        "ready_candidate_count": len(ready_candidates),
+        "blocked_candidate_count": len(blocked_candidates),
+        "ready_candidate_task_ids": _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "").strip() for row in ready_candidates if isinstance(row, dict)]
+        ),
+        "blocked_candidate_task_ids": _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "").strip() for row in blocked_candidates if isinstance(row, dict)]
+        ),
+        "ready_candidates": ready_candidates,
+        "blocked_candidates": blocked_candidates,
+        "qualification_consumption": qualification_consumption,
+        "launch_readiness": launch_readiness,
+        "reroute_summary": {
+            "required_count": reroute_required_count,
+            "dispatch_ready_count": reroute_dispatch_ready_count,
+            "blocked_count": reroute_blocked_count,
+            "ready_task_ids": reroute_ready_task_ids,
+        },
+        "worker_floor_enforcement": {
+            "required": worker_floor_required,
+            "enforceable": bool(worker_floor_enforcement.get("enforceable") is True),
+            "global_blocked": bool(worker_floor_enforcement.get("global_blocked") is True),
+            "core": worker_floor_enforcement.get("core") if isinstance(worker_floor_enforcement.get("core"), dict) else {},
+            "support": worker_floor_enforcement.get("support") if isinstance(worker_floor_enforcement.get("support"), dict) else {},
+            "planned_launch_count": len(floor_planned_launches),
+            "blocked_launch_count": len(floor_blocked_launches),
+        },
+    }
+
+
+def build_execution_supervisor_dispatch_qualification(
+    *,
+    supervisor_ledger: Dict[str, Any],
+    dispatch_intent: Dict[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    dispatch_intent_obj = dispatch_intent if isinstance(dispatch_intent, dict) else {}
+    supervisor_ledger_obj = supervisor_ledger if isinstance(supervisor_ledger, dict) else {}
+    topology = load_json_if_exists(session_topology_contract_template_path)
+    topology_obj = topology if isinstance(topology, dict) else {}
+    topology_loaded = bool(topology_obj)
+    gate_inputs = _load_execution_supervisor_gate_index()
+    gate_index = gate_inputs.get("gate_index") if isinstance(gate_inputs.get("gate_index"), dict) else {}
+    worker_health_inputs = _load_execution_supervisor_worker_health_canary_index()
+    worker_health_index = (
+        worker_health_inputs.get("workers")
+        if isinstance(worker_health_inputs.get("workers"), dict)
+        else {}
+    )
+    qualification_generated_dt = parse_iso(generated_at) or clock_now_dt()
+    resource_snapshot = _execution_supervisor_collect_resource_snapshot(
+        reference_generated_at=qualification_generated_dt,
+    )
+
+    task_rows = supervisor_ledger_obj.get("tasks") if isinstance(supervisor_ledger_obj.get("tasks"), list) else []
+    task_meta: Dict[str, Dict[str, Any]] = {}
+    for row in task_rows:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        task_meta[task_id] = row
+
+    ready_candidates = (
+        dispatch_intent_obj.get("ready_candidates")
+        if isinstance(dispatch_intent_obj.get("ready_candidates"), list)
+        else []
+    )
+    dispatch_blocked_candidates = (
+        dispatch_intent_obj.get("blocked_candidates")
+        if isinstance(dispatch_intent_obj.get("blocked_candidates"), list)
+        else []
+    )
+    evaluated_candidates: List[Dict[str, Any]] = []
+    qualified_candidates: List[Dict[str, Any]] = []
+    blocked_candidates: List[Dict[str, Any]] = []
+
+    for raw in ready_candidates:
+        if not isinstance(raw, dict):
+            continue
+        task_id = str(raw.get("task_id") or "").strip() or None
+        task_row = task_meta.get(task_id or "") if task_id else {}
+        task_type = str(raw.get("task_type") or task_row.get("task_type") or "other").strip() or "other"
+        priority = str(task_row.get("priority") or "P2").strip() or "P2"
+        task_class = _normalize_execution_supervisor_task_class(
+            raw.get("task_class") or task_row.get("task_class"),
+            task_type=task_type,
+        )
+        risk_tier = _execution_supervisor_dispatch_risk_tier(priority)
+        target_worker = str(raw.get("target_worker") or "").strip() or None
+        target_worker_family = _execution_supervisor_worker_family(target_worker)
+        default_model_family = str(
+            EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_DEFAULTS.get(task_class, "Gemini")
+        ).strip() or "Gemini"
+        fallback_model_families = [
+            str(item or "").strip()
+            for item in EXECUTION_SUPERVISOR_TASK_CLASS_MODEL_FAMILY_FALLBACKS.get(task_class, ["Codex"])
+            if str(item or "").strip()
+        ]
+        route_rule = _execution_supervisor_select_route_rule(
+            topology=topology_obj,
+            session_kind="worker_slice",
+            task_class=task_class,
+            risk_tier=risk_tier,
+        ) if topology_loaded else {"selected_rule_id": None, "route_class": None, "required_rollout_stage": None}
+        route_class = str(route_rule.get("route_class") or "").strip() or None
+        required_stage = str(route_rule.get("required_rollout_stage") or "").strip() or None
+        model_pools = topology_obj.get("model_pools") if isinstance(topology_obj.get("model_pools"), dict) else {}
+        pool = model_pools.get(route_class) if isinstance(model_pools.get(route_class), list) else []
+
+        gate_candidates: List[Dict[str, Any]] = []
+        for model_key in [str(item or "").strip() for item in pool if str(item or "").strip()]:
+            meta = gate_index.get(model_key)
+            if not isinstance(meta, dict):
+                continue
+            if str(meta.get("route_class") or "").strip() != str(route_class or ""):
+                continue
+            if not _execution_supervisor_stage_is_allowed(required_stage, meta.get("allowed_stages") or []):
+                continue
+            gate_candidates.append(meta)
+
+        prioritized_candidates = _execution_supervisor_prioritize_gate_candidates(
+            task_class=task_class,
+            candidates=gate_candidates,
+        ) if gate_candidates else []
+        selected_gate = prioritized_candidates[0] if prioritized_candidates else {}
+        selected_model = str(selected_gate.get("model_key") or "").strip() or None
+        selected_model_family = _execution_supervisor_model_family_from_model_key(selected_model)
+        route_workers = _execution_supervisor_routes_for_task_type(task_type)
+        compatible_route_workers = [
+            worker
+            for worker in route_workers
+            if _execution_supervisor_worker_family(worker) == selected_model_family
+        ]
+
+        resource_requirements = _execution_supervisor_build_resource_requirements(
+            task_class=task_class,
+            task_type=task_type,
+            route_class=route_class,
+            candidate_row=raw,
+            task_row=task_row if isinstance(task_row, dict) else {},
+        )
+        resource_preflight = _execution_supervisor_assess_resource_preflight(
+            requirements=resource_requirements,
+            resource_snapshot=resource_snapshot,
+        )
+
+        qualification_status = "blocked"
+        qualification_reason = "dispatch_qualification_unavailable"
+        decision_notes: List[str] = []
+        if not dispatch_intent_obj:
+            qualification_reason = "dispatch_intent_missing"
+        elif not topology_loaded:
+            qualification_reason = "session_topology_contract_missing"
+        elif not route_class or not required_stage:
+            qualification_reason = "route_rule_unresolved"
+        elif not gate_candidates:
+            qualification_reason = "no_qualified_model_for_route"
+        elif not target_worker:
+            qualification_reason = "dispatch_target_worker_missing"
+        elif not target_worker_family:
+            qualification_reason = "dispatch_target_worker_family_unknown"
+        elif target_worker_family != selected_model_family:
+            qualification_reason = "dispatch_target_worker_family_mismatch"
+            if compatible_route_workers:
+                decision_notes.append("compatible_route_workers_present")
+        else:
+            qualification_status = "qualified_ready"
+            qualification_reason = "target_worker_family_aligned"
+
+        worker_health_source_present = bool(worker_health_inputs.get("source_present") is True)
+        worker_health = worker_health_index.get(target_worker or "") if target_worker else {}
+        worker_health_present = bool(isinstance(worker_health, dict) and worker_health)
+        worker_health_status = (
+            str(worker_health.get("health_status") or "").strip().lower()
+            if isinstance(worker_health, dict)
+            else ""
+        )
+        worker_health_status_known = worker_health_status in {"healthy", "probationary", "quarantined"}
+        worker_health_canary = _execution_supervisor_assess_worker_health_canary(
+            worker_health=worker_health if isinstance(worker_health, dict) else {},
+            reference_generated_at=qualification_generated_dt,
+        )
+        worker_health_probe = _execution_supervisor_assess_worker_health_probe(
+            worker_health=worker_health if isinstance(worker_health, dict) else {},
+            reference_generated_at=qualification_generated_dt,
+        )
+
+        if qualification_status == "qualified_ready":
+            if worker_health_source_present is not True:
+                qualification_status = "blocked"
+                qualification_reason = "dispatch_worker_health_canary_missing"
+            elif worker_health_present is not True:
+                qualification_status = "blocked"
+                qualification_reason = "dispatch_target_worker_health_missing"
+            elif worker_health_status_known is not True:
+                qualification_status = "blocked"
+                qualification_reason = "dispatch_target_worker_health_status_unknown"
+            elif worker_health_status == "quarantined":
+                qualification_status = "blocked"
+                qualification_reason = "dispatch_target_worker_quarantined"
+            elif worker_health_status == "probationary":
+                if bool(worker_health_canary.get("gate_passed") is not True):
+                    qualification_status = "blocked"
+                    qualification_reason = str(
+                        worker_health_canary.get("gate_reason") or "dispatch_target_worker_canary_not_passed"
+                    ).strip() or "dispatch_target_worker_canary_not_passed"
+                elif bool(worker_health_probe.get("gate_passed") is not True):
+                    qualification_status = "blocked"
+                    qualification_reason = str(
+                        worker_health_probe.get("gate_reason") or "dispatch_target_worker_canary_probe_not_passed"
+                    ).strip() or "dispatch_target_worker_canary_probe_not_passed"
+                else:
+                    decision_notes.append("worker_health_restored_by_canary")
+                    decision_notes.append("worker_health_restored_by_canary_probe")
+            elif worker_health_status == "healthy":
+                decision_notes.append("worker_health_healthy")
+
+        if qualification_status == "qualified_ready":
+            if bool(resource_preflight.get("gate_passed") is not True):
+                qualification_status = "blocked"
+                qualification_reason = str(
+                    resource_preflight.get("gate_reason") or "dispatch_preflight_resource_validation_failed"
+                ).strip() or "dispatch_preflight_resource_validation_failed"
+                resource_preflight["would_block_dispatch"] = True
+                decision_notes.append("preflight_resource_blocked")
+            elif bool(resource_preflight.get("attention_required") is True):
+                decision_notes.append("preflight_resource_attention_required")
+            else:
+                decision_notes.append("preflight_resource_validated")
+        elif bool(resource_preflight.get("attention_required") is True):
+            decision_notes.append("preflight_resource_attention_nonprimary")
+
+        evaluation = {
+            "task_id": task_id,
+            "task_type": task_type,
+            "task_class": task_class,
+            "priority": priority,
+            "source": str(raw.get("source") or "").strip() or None,
+            "reason": str(raw.get("reason") or "").strip() or None,
+            "classification": str(raw.get("classification") or "").strip() or None,
+            "latest_worker": str(raw.get("latest_worker") or "").strip() or None,
+            "target_worker": target_worker,
+            "target_worker_family": target_worker_family,
+            "route_workers": route_workers,
+            "route_request": {
+                "session_kind": "worker_slice",
+                "task_class": task_class,
+                "risk_tier": risk_tier,
+                "scope_shape": "single_surface",
+                "verification_class": "validator_required",
+                "worker_topology": "single",
+                "fold_in_target": "canonical_doctrine" if task_type == "implementation" else "queue_continuity",
+            },
+            "route_selection": {
+                "selected_rule_id": route_rule.get("selected_rule_id"),
+                "route_class": route_class,
+                "required_rollout_stage": required_stage,
+                "selected_model": selected_model,
+                "selected_model_family": selected_model_family,
+                "default_model_family": default_model_family,
+                "fallback_model_families": fallback_model_families,
+                "qualified_model_candidates": [
+                    {
+                        "model_key": str(row.get("model_key") or "").strip() or None,
+                        "model_family": _execution_supervisor_model_family_from_model_key(row.get("model_key")),
+                        "allowed_stages": [
+                            str(item or "").strip()
+                            for item in (row.get("allowed_stages") or [])
+                            if str(item or "").strip()
+                        ],
+                        "source_path": str(row.get("source_path") or "").strip() or None,
+                    }
+                    for row in prioritized_candidates
+                    if isinstance(row, dict)
+                ],
+            },
+            "resource_preflight": resource_preflight,
+            "qualification": {
+                "status": qualification_status,
+                "reason": qualification_reason,
+                "compatible_route_workers": compatible_route_workers,
+                "decision_notes": decision_notes,
+            },
+            "worker_health": {
+                "source_present": worker_health_source_present,
+                "record_present": worker_health_present,
+                "status_known": worker_health_status_known,
+                "source_schema": worker_health_inputs.get("schema"),
+                "source_generated_at": worker_health_inputs.get("generated_at"),
+                "status": worker_health_status or None,
+                "canary_status": worker_health_canary.get("canary_status"),
+                "canary_reason": worker_health_canary.get("canary_reason"),
+                "canary_checked_at": worker_health_canary.get("canary_checked_at"),
+                "canary_age_sec": worker_health_canary.get("canary_age_sec"),
+                "canary_fresh": worker_health_canary.get("canary_fresh"),
+                "canary_max_age_sec": worker_health_canary.get("canary_max_age_sec"),
+                "canary_future_skew_sec": worker_health_canary.get("canary_future_skew_sec"),
+                "canary_artifact_path": worker_health_canary.get("canary_artifact_path"),
+                "canary_artifact_present": worker_health_canary.get("canary_artifact_present"),
+                "canary_gate_passed": worker_health_canary.get("gate_passed"),
+                "canary_gate_reason": worker_health_canary.get("gate_reason"),
+                "reason": (
+                    str(worker_health.get("reason") or "").strip() or None
+                    if isinstance(worker_health, dict)
+                    else None
+                ),
+                "probe_status": worker_health_probe.get("probe_status"),
+                "probe_reason": worker_health_probe.get("probe_reason"),
+                "probe_checked_at": worker_health_probe.get("probe_checked_at"),
+                "probe_age_sec": worker_health_probe.get("probe_age_sec"),
+                "probe_fresh": worker_health_probe.get("probe_fresh"),
+                "probe_max_age_sec": worker_health_probe.get("probe_max_age_sec"),
+                "probe_future_skew_sec": worker_health_probe.get("probe_future_skew_sec"),
+                "probe_artifact_path": worker_health_probe.get("probe_artifact_path"),
+                "probe_artifact_present": worker_health_probe.get("probe_artifact_present"),
+                "probe_gate_passed": worker_health_probe.get("gate_passed"),
+                "probe_gate_reason": worker_health_probe.get("gate_reason"),
+            },
+        }
+        evaluated_candidates.append(evaluation)
+        if qualification_status == "qualified_ready":
+            qualified_candidates.append(evaluation)
+        else:
+            blocked_candidates.append(evaluation)
+
+    decision_reasons = _dedupe_nonempty_strings(
+        [
+            str(row.get("qualification", {}).get("reason") or "").strip()
+            for row in evaluated_candidates
+            if isinstance(row, dict)
+        ]
+    )
+
+    ready_candidate_count = len(ready_candidates)
+    qualified_candidate_count = len(qualified_candidates)
+    blocked_candidate_count = len(blocked_candidates)
+    blocked_dispatch_reasons = [
+        str(row.get("reason") or "").strip()
+        for row in dispatch_blocked_candidates
+        if isinstance(row, dict) and str(row.get("reason") or "").strip()
+    ]
+    blocked_dispatch_reason_tokens = _dedupe_nonempty_strings(blocked_dispatch_reasons)
+
+    if not dispatch_intent_obj:
+        status = "degraded"
+        decision = "NO_ACTION"
+        decision_reasons = ["dispatch_intent_missing"]
+    elif not topology_loaded:
+        status = "degraded"
+        decision = "NO_ACTION"
+        decision_reasons = ["session_topology_contract_missing"]
+    elif ready_candidate_count <= 0:
+        dispatch_status = str(dispatch_intent_obj.get("status") or "").strip().lower()
+        if dispatch_status == "dispatch_ready":
+            status = "blocked"
+            decision = "BLOCKED"
+            decision_reasons = decision_reasons or ["dispatch_ready_without_evaluable_candidates"]
+        elif blocked_dispatch_reason_tokens:
+            status = "blocked"
+            decision = "BLOCKED"
+            decision_reasons = blocked_dispatch_reason_tokens
+        else:
+            status = "idle"
+            decision = "NO_ACTION"
+            decision_reasons = ["no_dispatch_candidate_to_qualify"]
+    elif qualified_candidate_count > 0 and blocked_candidate_count == 0:
+        status = "qualified_ready"
+        decision = "PLAN_ONLY"
+    elif qualified_candidate_count > 0:
+        status = "degraded"
+        decision = "PLAN_ONLY"
+    else:
+        status = "blocked"
+        decision = "BLOCKED"
+        if not decision_reasons:
+            decision_reasons = ["dispatch_candidates_not_route_qualified"]
+
+    resource_preflight = _build_execution_supervisor_resource_preflight_summary(
+        evaluated_candidates=evaluated_candidates,
+        resource_snapshot=resource_snapshot,
+        ready_candidate_count=ready_candidate_count,
+    )
+    uncertainty_signal = _build_execution_supervisor_uncertainty_signal(
+        resource_preflight=resource_preflight,
+        ready_candidate_count=ready_candidate_count,
+        qualified_candidate_count=qualified_candidate_count,
+        blocked_candidate_count=blocked_candidate_count,
+    )
+
+    canary_probe_schedule = _build_execution_supervisor_canary_probe_schedule(
+        evaluated_candidates=evaluated_candidates,
+        worker_health_inputs=worker_health_inputs,
+        reference_generated_at=generated_at,
+    )
+    probe_execution_plan = _build_execution_supervisor_probe_execution_plan(
+        canary_probe_schedule=canary_probe_schedule,
+        reference_generated_at=generated_at,
+    )
+    launch_readiness = _build_execution_supervisor_launch_readiness(
+        ready_candidate_count=ready_candidate_count,
+        qualified_candidate_count=qualified_candidate_count,
+        blocked_candidates=blocked_candidates,
+        decision_reasons=decision_reasons,
+        canary_probe_schedule=canary_probe_schedule,
+        dispatch_blocked_reasons=blocked_dispatch_reasons,
+    )
+    launch_readiness["probe_execution_plan"] = {
+        "schema": str(probe_execution_plan.get("schema") or "clawd.execution_supervisor_probe_execution_plan.v1"),
+        "source_path": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+        "status": str(probe_execution_plan.get("status") or "idle").strip() or "idle",
+        "reason": str(probe_execution_plan.get("reason") or "").strip() or None,
+        "action_priority": (
+            str(probe_execution_plan.get("action_priority") or "").strip().lower()
+            if str(probe_execution_plan.get("action_priority") or "").strip().lower() in {"p1", "p2"}
+            else None
+        ),
+        "pending_worker_count": max(0, _to_int(probe_execution_plan.get("pending_worker_count"), 0)),
+        "canary_required_worker_count": max(0, _to_int(probe_execution_plan.get("canary_required_worker_count"), 0)),
+        "probe_required_worker_count": max(0, _to_int(probe_execution_plan.get("probe_required_worker_count"), 0)),
+        "due_now_worker_count": max(0, _to_int(probe_execution_plan.get("due_now_worker_count"), 0)),
+        "scheduled_worker_count": max(0, _to_int(probe_execution_plan.get("scheduled_worker_count"), 0)),
+        "overdue_worker_count": max(0, _to_int(probe_execution_plan.get("overdue_worker_count"), 0)),
+        "due_now_cohort_workers": sorted(
+            _dedupe_nonempty_strings(probe_execution_plan.get("due_now_cohort_workers") or [])
+        ),
+        "due_now_cohort_signature": str(
+            probe_execution_plan.get("due_now_cohort_signature") or ""
+        ).strip() or None,
+        "due_now_cohort_signature_first_seen_at": str(
+            probe_execution_plan.get("due_now_cohort_signature_first_seen_at") or ""
+        ).strip() or None,
+        "due_now_cohort_signature_consecutive_ticks": max(
+            0,
+            _to_int(probe_execution_plan.get("due_now_cohort_signature_consecutive_ticks"), 0),
+        ),
+        "overdue_cohort_workers": sorted(
+            _dedupe_nonempty_strings(probe_execution_plan.get("overdue_cohort_workers") or [])
+        ),
+        "overdue_cohort_signature": str(
+            probe_execution_plan.get("overdue_cohort_signature") or ""
+        ).strip() or None,
+        "overdue_cohort_signature_first_seen_at": str(
+            probe_execution_plan.get("overdue_cohort_signature_first_seen_at") or ""
+        ).strip() or None,
+        "overdue_cohort_signature_consecutive_ticks": max(
+            0,
+            _to_int(probe_execution_plan.get("overdue_cohort_signature_consecutive_ticks"), 0),
+        ),
+        "oldest_due_now_started_at": str(probe_execution_plan.get("oldest_due_now_started_at") or "").strip() or None,
+        "oldest_due_now_worker": str(probe_execution_plan.get("oldest_due_now_worker") or "").strip() or None,
+        "oldest_due_now_age_sec": (
+            probe_execution_plan.get("oldest_due_now_age_sec")
+            if isinstance(probe_execution_plan.get("oldest_due_now_age_sec"), int)
+            else None
+        ),
+        "oldest_overdue_started_at": str(probe_execution_plan.get("oldest_overdue_started_at") or "").strip() or None,
+        "oldest_overdue_worker": str(probe_execution_plan.get("oldest_overdue_worker") or "").strip() or None,
+        "oldest_overdue_age_sec": (
+            probe_execution_plan.get("oldest_overdue_age_sec")
+            if isinstance(probe_execution_plan.get("oldest_overdue_age_sec"), int)
+            else None
+        ),
+    }
+    launch_readiness["resource_preflight"] = {
+        "schema": str(resource_preflight.get("schema") or "clawd.execution_supervisor_resource_preflight.v1"),
+        "status": str(resource_preflight.get("status") or "unknown").strip() or "unknown",
+        "reason": str(resource_preflight.get("reason") or "").strip() or None,
+        "blocking_candidate_count": max(0, _to_int(resource_preflight.get("blocking_candidate_count"), 0)),
+        "attention_candidate_count": max(0, _to_int(resource_preflight.get("attention_candidate_count"), 0)),
+        "blocking_task_ids": _dedupe_nonempty_strings(resource_preflight.get("blocking_task_ids") or []),
+        "telemetry_complete": bool(resource_preflight.get("telemetry_complete") is True),
+        "telemetry_missing": _dedupe_nonempty_strings(resource_preflight.get("telemetry_missing") or []),
+        "lowest_headroom_pct": resource_preflight.get("lowest_headroom_pct"),
+        "action_priority": (
+            str(resource_preflight.get("action_priority") or "").strip().lower()
+            if str(resource_preflight.get("action_priority") or "").strip().lower() in {"p1", "p2"}
+            else None
+        ),
+    }
+    launch_readiness["uncertainty_signal"] = {
+        "schema": str(uncertainty_signal.get("schema") or "clawd.execution_supervisor_uncertainty_signal.v1"),
+        "confidence_score": uncertainty_signal.get("confidence_score"),
+        "confidence_label": uncertainty_signal.get("confidence_label"),
+        "confidence_quantiles": dict(uncertainty_signal.get("confidence_quantiles") or {}),
+        "uncertainty_reasons": _dedupe_nonempty_strings(uncertainty_signal.get("uncertainty_reasons") or []),
+        "requires_operator_review": bool(uncertainty_signal.get("requires_operator_review") is True),
+    }
+
+    return {
+        "schema": "clawd.execution_supervisor_dispatch_qualification.v1",
+        "generated_at": generated_at,
+        "qualification_path": to_rel(execution_supervisor_dispatch_qualification_latest_path),
+        "qualification_history_path": to_rel(execution_supervisor_dispatch_qualification_history_path),
+        "source": {
+            "dispatch_intent_path": to_rel(execution_supervisor_dispatch_intent_latest_path),
+            "dispatch_intent_schema": str(dispatch_intent_obj.get("schema") or "").strip() or None,
+            "ledger_path": to_rel(execution_supervisor_task_ledger_latest_path),
+            "ledger_schema": str(supervisor_ledger_obj.get("schema") or "").strip() or None,
+            "supervisor_tick_id": str(supervisor_ledger_obj.get("supervisor_tick_id") or "").strip() or None,
+            "topology_path": to_rel(session_topology_contract_template_path),
+            "topology_loaded": topology_loaded,
+            "qualification_decision_dir": gate_inputs.get("source_dir"),
+            "qualification_decision_paths": gate_inputs.get("decision_paths") or [],
+            "worker_health_canary_path": worker_health_inputs.get("source_path"),
+            "worker_health_canary_present": bool(worker_health_inputs.get("source_present") is True),
+            "worker_health_canary_schema": worker_health_inputs.get("schema"),
+            "worker_health_canary_max_age_sec": worker_health_inputs.get("canary_max_age_sec"),
+            "worker_health_canary_future_skew_sec": worker_health_inputs.get("canary_future_skew_sec"),
+            "worker_health_canary_probe_max_age_sec": worker_health_inputs.get("probe_max_age_sec"),
+            "worker_health_canary_probe_future_skew_sec": worker_health_inputs.get("probe_future_skew_sec"),
+            "worker_health_canary_artifact_required": True,
+            "canary_probe_schedule_path": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+            "canary_probe_schedule_history_path": to_rel(execution_supervisor_canary_probe_schedule_history_path),
+            "probe_execution_plan_path": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+            "probe_execution_plan_history_path": to_rel(execution_supervisor_probe_execution_plan_history_path),
+            "worker_health_gate_required": True,
+            "resource_preflight_required": True,
+            "resource_preflight_memory_min_mb": max(256, int(execution_supervisor_preflight_memory_min_mb)),
+            "resource_preflight_disk_free_min_gb": max(1, int(execution_supervisor_preflight_disk_free_min_gb)),
+            "resource_preflight_load_pct_max": max(50, int(execution_supervisor_preflight_load_pct_max)),
+            "resource_preflight_tight_headroom_pct": max(0, int(execution_supervisor_preflight_tight_headroom_pct)),
+        },
+        "mode": "plan_only_fail_closed",
+        "fail_closed": True,
+        "launch_mutation_allowed": False,
+        "status": status,
+        "decision": decision,
+        "active": bool(status in {"qualified_ready", "degraded"}),
+        "decision_reasons": decision_reasons,
+        "ready_candidate_count": ready_candidate_count,
+        "qualified_candidate_count": qualified_candidate_count,
+        "blocked_candidate_count": blocked_candidate_count,
+        "ready_candidate_task_ids": _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "").strip() for row in ready_candidates if isinstance(row, dict)]
+        ),
+        "qualified_candidate_task_ids": _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "").strip() for row in qualified_candidates if isinstance(row, dict)]
+        ),
+        "blocked_candidate_task_ids": _dedupe_nonempty_strings(
+            [str(row.get("task_id") or "").strip() for row in blocked_candidates if isinstance(row, dict)]
+        ),
+        "evaluated_candidates": evaluated_candidates,
+        "qualified_candidates": qualified_candidates,
+        "blocked_candidates": blocked_candidates,
+        "canary_probe_schedule": canary_probe_schedule,
+        "probe_execution_plan": probe_execution_plan,
+        "resource_preflight": resource_preflight,
+        "uncertainty_signal": uncertainty_signal,
+        "launch_readiness": launch_readiness,
+    }
+
+
+def _derive_execution_blocked_reason(
+    *,
+    program_state: str,
+    dispatch_context: Dict[str, Any],
+    mutation_gate: Dict[str, Any],
+    queue_dependency_blocked_count: int,
+    readiness: str,
+) -> Optional[str]:
+    if program_state != "blocked":
+        return None
+
+    skip_reason = str(dispatch_context.get("skip_reason") or "").strip()
+    if skip_reason:
+        return f"dispatch:{skip_reason}"
+
+    post_completion_required = bool(
+        dispatch_context.get("autonomous_dispatch_post_completion_enforcement_required") is True
+    )
+    autonomous_dispatch_status = str(dispatch_context.get("autonomous_dispatch_status") or "missing").strip() or "missing"
+    autonomous_dispatch_block_reason = str(dispatch_context.get("autonomous_dispatch_block_reason") or "").strip()
+    autonomous_dispatch_block_reasons = _dedupe_nonempty_strings(
+        dispatch_context.get("autonomous_dispatch_block_reasons")
+    )
+    if post_completion_required:
+        if autonomous_dispatch_status == "blocked":
+            if autonomous_dispatch_block_reason:
+                return f"autonomous_dispatch:{autonomous_dispatch_block_reason}"
+            if autonomous_dispatch_block_reasons:
+                return f"autonomous_dispatch:{autonomous_dispatch_block_reasons[0]}"
+            selector_state = str(dispatch_context.get("autonomous_dispatch_selector_state") or "").strip()
+            if selector_state == "closed_blocked":
+                return "autonomous_dispatch:post_completion_closed_blocked"
+            if selector_state == "idle_no_candidate":
+                return "autonomous_dispatch:post_completion_no_next_candidate"
+            return "autonomous_dispatch:post_completion_dispatch_blocked"
+        if autonomous_dispatch_status in {"error", "missing", "skipped"}:
+            return f"autonomous_dispatch:{autonomous_dispatch_status}"
+
+    blocking_reasons = mutation_gate.get("blocking_reasons") if isinstance(mutation_gate.get("blocking_reasons"), list) else []
+    for raw in blocking_reasons:
+        token = str(raw or "").strip()
+        if token:
+            return token
+
+    if queue_dependency_blocked_count > 0:
+        return "queue_dependency_blocked"
+
+    readiness_token = str(readiness or "").strip()
+    if readiness_token and readiness_token in {"RECONCILE_REQUIRED", "NOT_READY", "UNKNOWN"}:
+        return f"readiness:{readiness_token.lower()}"
+
+    return "blocked_unspecified"
+
+
+def _derive_execution_liveness_state(
+    *,
+    program_state: str,
+    active_worker_count: int,
+    queue_ready_count: int,
+    dispatch_status: str,
+    stalled: bool,
+) -> Dict[str, Any]:
+    state = "unknown"
+    reason = "insufficient_signal"
+
+    if active_worker_count > 0:
+        state = "running_active"
+        reason = "active_workers_present"
+    elif stalled and queue_ready_count > 0:
+        state = "stalled_actionable"
+        reason = "ready_work_idle_timeout"
+    elif program_state == "waiting" and queue_ready_count > 0:
+        state = "waiting_for_dispatch"
+        reason = "wave_closed_ready_work_present"
+    elif program_state == "blocked":
+        state = "blocked"
+        reason = "blocked_preconditions"
+    elif program_state == "idle" and queue_ready_count <= 0:
+        state = "idle_no_ready_work"
+        reason = "no_ready_work_detected"
+    elif program_state == "running" and dispatch_status == "launched":
+        state = "running_dispatch_launched"
+        reason = "dispatch_recently_launched"
+    elif program_state == "running":
+        state = "running_no_active_workers"
+        reason = "running_state_without_workers"
+
+    return {
+        "state_version": "execution_program_liveness_state.v1",
+        "state": state,
+        "reason": reason,
+    }
+
+
+def build_execution_program_status(
+    *,
+    now_obj: Dict[str, Any],
+    queue: Dict[str, Any],
+    in_flight: Dict[str, Any],
+    dispatch_context: Dict[str, Any],
+    execution_context: Dict[str, Any],
+    mutation_gate: Dict[str, Any],
+    readiness: str,
+    generated_at: str,
+) -> Dict[str, Any]:
+    autopilot = now_obj.get("autopilot") if isinstance(now_obj.get("autopilot"), dict) else {}
+    idle_lane = autopilot.get("idle_lane_autospawn") if isinstance(autopilot.get("idle_lane_autospawn"), dict) else {}
+    last_transition_event = queue.get("last_transition_event") if isinstance(queue.get("last_transition_event"), dict) else {}
+    latest_handoff_packet = queue.get("latest_handoff_packet") if isinstance(queue.get("latest_handoff_packet"), dict) else {}
+
+    queue_activity = _read_execution_program_queue_activity()
+    queue_source = str(queue_activity.get("queue_source") or "continuity_os_queue_db").strip() or "continuity_os_queue_db"
+    core_queue_layer_raw = (
+        queue_activity.get("core_roadmap_queue_layer")
+        if isinstance(queue_activity.get("core_roadmap_queue_layer"), dict)
+        else {}
+    )
+    core_queue_layer_contract = {
+        "schema": str(core_queue_layer_raw.get("schema") or core_roadmap_queue_layer_schema),
+        "schema_path": to_rel(core_roadmap_queue_layer_schema_path),
+        "contract_status": str(core_queue_layer_raw.get("contract_status") or "missing").strip() or "missing",
+        "authoritative": bool(core_queue_layer_raw.get("authoritative") is True),
+        "source_present": bool(core_queue_layer_raw.get("source_present") is True),
+        "issues": _dedupe_nonempty_strings(core_queue_layer_raw.get("issues") or []),
+        "selected_source_path": str(core_queue_layer_raw.get("selected_source_path") or "").strip() or None,
+        "selected_source_generated_at": str(core_queue_layer_raw.get("selected_source_generated_at") or "").strip() or None,
+        "next_candidate": str(core_queue_layer_raw.get("next_candidate") or "").strip() or None,
+        "contract_fingerprint": str(core_queue_layer_raw.get("contract_fingerprint") or "").strip() or None,
+        "status_taxonomy": (
+            core_queue_layer_raw.get("status_taxonomy")
+            if isinstance(core_queue_layer_raw.get("status_taxonomy"), dict)
+            else {}
+        ),
+        "summary": core_queue_layer_raw.get("summary") if isinstance(core_queue_layer_raw.get("summary"), dict) else {},
+    }
+    running_task_ids = _dedupe_nonempty_strings(queue_activity.get("running_task_ids") or [])
+    running_roles = _dedupe_nonempty_strings(queue_activity.get("running_roles") or [])
+    queued_task_ids = _dedupe_nonempty_strings(queue_activity.get("queued_task_ids") or [])
+    queued_roles = _dedupe_nonempty_strings(queue_activity.get("queued_roles") or [])
+    ready_candidates = queue_activity.get("ready_candidates") if isinstance(queue_activity.get("ready_candidates"), list) else []
+    blocked_candidates = (
+        queue_activity.get("dependency_blocked_candidates")
+        if isinstance(queue_activity.get("dependency_blocked_candidates"), list)
+        else []
+    )
+    ready_task_ids = _dedupe_nonempty_strings(queue_activity.get("ready_task_ids") or [])
+    ready_roles = _dedupe_nonempty_strings(queue_activity.get("ready_roles") or [])
+
+    canonical_ready_candidates = [row for row in ready_candidates if isinstance(row, dict)]
+    canonical_blocked_candidates = [row for row in blocked_candidates if isinstance(row, dict)]
+    canonical_ready_task_ids = _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in canonical_ready_candidates])
+    frontier_queue_backpressure = queue_activity.get("frontier_queue_backpressure") if isinstance(
+        queue_activity.get("frontier_queue_backpressure"), dict
+    ) else {}
+
+    queue_projection_parity = _build_core_roadmap_queue_projection_parity(
+        surface="execution_program_status",
+        queue_source=queue_source,
+        core_queue_layer=core_queue_layer_raw,
+        projected_ready_count=len(canonical_ready_candidates),
+        projected_dependency_blocked_count=len(canonical_blocked_candidates),
+        projected_next_candidate=(
+            canonical_ready_task_ids[0]
+            if canonical_ready_task_ids
+            else core_queue_layer_raw.get("next_candidate")
+        ),
+        projected_ready_candidates=canonical_ready_candidates,
+        projected_dependency_blocked_candidates=canonical_blocked_candidates,
+        projected_next_candidates=[row.get("task_id") for row in canonical_ready_candidates][:5],
+        runtime_queue=queue,
+        backpressure_profile=queue_activity.get("frontier_queue_backpressure") if isinstance(queue_activity.get("frontier_queue_backpressure"), dict) else {},
+    )
+
+    transaction_runtime_projection, runtime_effective_ready_candidates, runtime_effective_blocked_candidates = (
+        _project_core_roadmap_transaction_runtime_for_frontier(
+            queue_source=queue_source,
+            ready_candidates=canonical_ready_candidates,
+            dependency_blocked_candidates=canonical_blocked_candidates,
+        )
+    )
+    transaction_runtime_handoff_soak_projection = _normalize_core_roadmap_txn_handoff_soak()
+    ready_candidates = runtime_effective_ready_candidates
+    blocked_candidates = runtime_effective_blocked_candidates
+    ready_task_ids = _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in ready_candidates])
+    ready_roles = _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in ready_candidates])
+    blocked_task_ids = _dedupe_nonempty_strings([str(row.get("task_id") or "") for row in blocked_candidates])
+    blocked_roles = _dedupe_nonempty_strings([str(row.get("role_required") or "") for row in blocked_candidates])
+
+    if queue_source.startswith("core_roadmap_queue_layer"):
+        queued_task_ids = _dedupe_nonempty_strings(running_task_ids + ready_task_ids + blocked_task_ids)
+        queued_roles = _dedupe_nonempty_strings(running_roles + ready_roles + blocked_roles)
+
+    queue_projection_fail_closed = bool(queue_projection_parity.get("fail_closed_required") is True)
+    if queue_projection_fail_closed:
+        mismatch_reasons = _dedupe_nonempty_strings(queue_projection_parity.get("mismatches") or ["queue_projection_parity_mismatch"])
+        fail_closed_generated_at = str(core_queue_layer_raw.get("generated_at") or now_iso()).strip() or now_iso()
+        fail_closed_candidate = {
+            "task_id": "core_roadmap:wave0:queue_projection_parity_mismatch",
+            "role_required": "a2_executor",
+            "wave": 0,
+            "state": "dependency_blocked",
+            "blocked_by": [f"projection_parity:{reason}" for reason in mismatch_reasons][:12],
+            "created_at": fail_closed_generated_at,
+            "updated_at": fail_closed_generated_at,
+        }
+        queue_source = "core_roadmap_queue_layer_fail_closed"
+        running_task_ids = []
+        running_roles = []
+        ready_candidates = []
+        blocked_candidates = [fail_closed_candidate]
+        ready_task_ids = []
+        ready_roles = []
+        blocked_task_ids = [fail_closed_candidate["task_id"]]
+        blocked_roles = ["a2_executor"]
+        queued_task_ids = [fail_closed_candidate["task_id"]]
+        queued_roles = ["a2_executor"]
+        core_queue_layer_contract["contract_status"] = "degraded"
+        core_queue_layer_contract["authoritative"] = False
+        core_queue_layer_contract["issues"] = _dedupe_nonempty_strings(
+            list(core_queue_layer_contract.get("issues") or [])
+            + ["queue_projection_parity_mismatch"]
+            + [f"projection_parity:{reason}" for reason in mismatch_reasons]
+        )
+        transaction_runtime_projection["masking_applied"] = False
+        transaction_runtime_projection["masked_candidates"] = []
+        transaction_runtime_projection["masked_ready_count"] = 0
+        transaction_runtime_projection["eligible_ready"] = []
+        transaction_runtime_projection["eligible_ready_count"] = 0
+        transaction_runtime_projection["queue_source"] = queue_source
+        queue_projection_parity["fail_closed_applied"] = True
+        queue_projection_parity["effective_queue_source"] = queue_source
+    else:
+        transaction_runtime_projection["queue_source"] = queue_source
+        queue_projection_parity["fail_closed_applied"] = False
+        queue_projection_parity["effective_queue_source"] = queue_source
+
+    transaction_runtime_handoff_soak_projection["queue_source"] = queue_source
+
+    active_worker_count = max(
+        _to_int(queue.get("effective_running_count"), 0),
+        _to_int(in_flight.get("running_tasks"), 0),
+        len(running_task_ids),
+    )
+
+    dispatch_status = str(dispatch_context.get("status") or "idle").strip() or "idle"
+    if queue_projection_fail_closed:
+        queue_ready_count = 0
+        queue_dependency_blocked_count = max(1, len(blocked_candidates))
+    elif queue_source.startswith("core_roadmap_queue_layer"):
+        queue_ready_count = max(0, len(ready_task_ids))
+        queue_dependency_blocked_count = max(0, len(blocked_candidates))
+    else:
+        queue_ready_count = max(
+            0,
+            _to_int(queue.get("ready_count"), len(ready_task_ids) if ready_task_ids else 0),
+            len(ready_task_ids),
+        )
+        queue_dependency_blocked_count = max(
+            0,
+            _to_int(queue.get("dependency_blocked_count"), len(blocked_candidates) if blocked_candidates else 0),
+            len(blocked_candidates),
+        )
+    paused = bool(autopilot.get("paused") is True)
+    mutation_gate_status = str(execution_context.get("mutation_gate_status") or "unknown").strip() or "unknown"
+
+    role_required_counts = queue.get("role_required_counts") if isinstance(queue.get("role_required_counts"), dict) else {}
+    dominant_role = ""
+    if role_required_counts:
+        ranked_roles: List[tuple[int, str]] = []
+        for role_name, raw_count in role_required_counts.items():
+            role = str(role_name or "").strip()
+            if not role:
+                continue
+            ranked_roles.append((max(0, _to_int(raw_count, 0)), role))
+        if ranked_roles:
+            ranked_roles.sort(key=lambda item: (-item[0], item[1]))
+            dominant_role = ranked_roles[0][1]
+
+    frontier_lane = (
+        (running_roles[0] if running_roles else None)
+        or (ready_roles[0] if ready_roles else None)
+        or (queued_roles[0] if queued_roles else None)
+        or str(latest_handoff_packet.get("to_role") or "").strip()
+        or str(last_transition_event.get("actor_role") or "").strip()
+        or dominant_role
+        or None
+    )
+
+    autopilot_active_step = str(autopilot.get("active_step") or "").strip() or None
+    dispatch_target_step = str(dispatch_context.get("target_step_id") or "").strip() or None
+    dispatch_launched_step = str(dispatch_context.get("launched_step_id") or "").strip() or None
+
+    current_focus = (
+        (running_task_ids[0] if running_task_ids else None)
+        or autopilot_active_step
+        or dispatch_target_step
+        or dispatch_launched_step
+        or (ready_task_ids[0] if ready_task_ids else None)
+        or (queued_task_ids[0] if queued_task_ids else None)
+        or (str(latest_handoff_packet.get("task_id") or "").strip() or None)
+        or (str(last_transition_event.get("task_id") or "").strip() or None)
+    )
+
+    if (
+        queue_source.startswith("core_roadmap_queue_layer")
+        and active_worker_count <= 0
+        and not running_task_ids
+        and not dispatch_target_step
+        and not dispatch_launched_step
+        and not ready_task_ids
+        and not queued_task_ids
+        and queue_ready_count <= 0
+        and queue_dependency_blocked_count <= 0
+    ):
+        current_focus = None
+
+    core_runtime_mask_active = bool(
+        queue_source == "core_roadmap_queue_layer"
+        and transaction_runtime_projection.get("masking_applied") is True
+    )
+
+    next_candidate_source = "none"
+    next_candidate = None
+    if queue_projection_fail_closed and blocked_candidates:
+        next_candidate = str(blocked_candidates[0].get("task_id") or "").strip() or None
+        next_candidate_source = "queue_projection_parity_fail_closed"
+    elif ready_task_ids:
+        next_candidate = ready_task_ids[0]
+        next_candidate_source = "frontier_queue_ready_candidate"
+    elif queue_source.startswith("core_roadmap_queue_layer") and queue_ready_count <= 0 and queue_dependency_blocked_count <= 0:
+        next_candidate = None
+        next_candidate_source = "none"
+    elif core_runtime_mask_active:
+        next_candidate = None
+        next_candidate_source = "none"
+    elif dispatch_target_step:
+        next_candidate = dispatch_target_step
+        next_candidate_source = "dispatch_target"
+    elif dispatch_launched_step:
+        next_candidate = dispatch_launched_step
+        next_candidate_source = "dispatch_launched"
+    elif autopilot_active_step:
+        next_candidate = autopilot_active_step
+        next_candidate_source = "autopilot_active_step"
+    elif current_focus:
+        next_candidate = current_focus
+        next_candidate_source = "current_focus"
+
+    next_candidates = []
+    if not queue_projection_fail_closed:
+        next_candidates = _dedupe_nonempty_strings([row.get("task_id") for row in ready_candidates])[:5]
+
+    cycle_transition = queue_activity.get("last_cycle_transition") if isinstance(queue_activity.get("last_cycle_transition"), dict) else {}
+    current_wave = _parse_cycle_value(autopilot.get("cycle"))
+    if current_wave is None:
+        current_wave = _parse_cycle_value(last_transition_event.get("reason"))
+    if current_wave is None:
+        current_wave = _parse_cycle_value(cycle_transition.get("reason"))
+
+    last_completed_wave = _parse_cycle_value(cycle_transition.get("reason"))
+    if last_completed_wave is None and isinstance(current_wave, int):
+        if active_worker_count > 0:
+            last_completed_wave = max(0, current_wave - 1)
+        else:
+            last_completed_wave = current_wave
+
+    latest_successful_autonomous_dispatch_at = _latest_successful_transition_attempt_at(
+        execution_frontier_transition_attempt_history_path,
+        action="supervisor-autonomous-dispatch",
+    )
+
+    last_progress_at = _latest_iso(
+        [
+            queue.get("last_transition_at"),
+            latest_handoff_packet.get("created_at"),
+            cycle_transition.get("created_at"),
+            dispatch_context.get("updated_at"),
+            idle_lane.get("last_launch_at"),
+            idle_lane.get("last_attempt_at"),
+            autopilot.get("last_tick_iso"),
+            latest_successful_autonomous_dispatch_at,
+        ]
+    )
+
+    generated_dt = parse_iso(generated_at) or clock_now_dt()
+    progress_dt = parse_iso(last_progress_at)
+    idle_for_sec = None
+    if progress_dt is not None:
+        idle_for_sec = max(0, int((generated_dt - progress_dt).total_seconds()))
+
+    program_state = _derive_execution_program_state(
+        readiness=readiness,
+        active_worker_count=active_worker_count,
+        queue_ready_count=queue_ready_count,
+        queue_dependency_blocked_count=queue_dependency_blocked_count,
+        dispatch_status=dispatch_status,
+        paused=paused,
+        mutation_gate_status=mutation_gate_status,
+    )
+
+    blocked_reason = _derive_execution_blocked_reason(
+        program_state=program_state,
+        dispatch_context=dispatch_context,
+        mutation_gate=mutation_gate,
+        queue_dependency_blocked_count=queue_dependency_blocked_count,
+        readiness=readiness,
+    )
+
+    soak_guard_block_reasons = _dedupe_nonempty_strings(
+        transaction_runtime_handoff_soak_projection.get("guard_block_reasons") or []
+    )
+    blocked_reasons = _dedupe_nonempty_strings(
+        ([blocked_reason] if blocked_reason else []) + soak_guard_block_reasons
+    )
+    if soak_guard_block_reasons and not blocked_reason:
+        blocked_reason = soak_guard_block_reasons[0]
+
+    next_candidate_wave = _extract_wave_number(next_candidate)
+
+    active_labels = _dedupe_nonempty_strings(
+        running_task_ids
+        + ([f"step:{autopilot_active_step}"] if autopilot_active_step else [])
+        + ([f"focus:{current_focus}"] if current_focus else [])
+        + ([f"dispatch:{dispatch_status}"] if dispatch_status and dispatch_status != "idle" else [])
+        + ([f"ready:{ready_task_ids[0]}"] if (queue_ready_count > 0 and ready_task_ids) else [])
+    )[:16]
+
+    stalled_after_sec = int(execution_program_stalled_after_sec)
+    stalled = bool(
+        idle_for_sec is not None
+        and idle_for_sec >= stalled_after_sec
+        and program_state in {"running", "waiting", "blocked"}
+    )
+    liveness_state = _derive_execution_liveness_state(
+        program_state=program_state,
+        active_worker_count=active_worker_count,
+        queue_ready_count=queue_ready_count,
+        dispatch_status=dispatch_status,
+        stalled=stalled,
+    )
+
+    queue_recovery_counters = build_queue_recovery_counters(
+        queue_obj=queue,
+        orphaned_auto=(queue.get("orphaned_running_auto_remediation") if isinstance(queue.get("orphaned_running_auto_remediation"), dict) else {}),
+        stale_wave_auto=(queue.get("stale_wave_auto_remediation") if isinstance(queue.get("stale_wave_auto_remediation"), dict) else {}),
+    )
+
+    frontier_queue = {
+        "schema": "clawd.execution_frontier_queue.v1",
+        "selection_policy": (
+            "status=core_roadmap_state;order=recommended_order_then_slice_id"
+            if queue_source.startswith("core_roadmap_queue_layer")
+            else "status=QUEUED;dependencies=SATISFIED;order=created_at_asc_then_task_id"
+        ),
+        "queue_source": queue_source,
+        "dependency_model_available": bool(queue_activity.get("dependency_model_available") is True),
+        "ready_count": queue_ready_count,
+        "dependency_blocked_count": queue_dependency_blocked_count,
+        "ready_candidates": ready_candidates,
+        "dependency_blocked_candidates": blocked_candidates,
+        "next_candidates": next_candidates,
+        "frontier_queue_backpressure": frontier_queue_backpressure,
+    }
+
+    return {
+        "schema": "clawd.execution_program_status.v1",
+        "generated_at": generated_at,
+        "program_state": program_state,
+        "current_wave": current_wave,
+        "active_worker_count": active_worker_count,
+        "active_labels": active_labels,
+        "frontier_lane": frontier_lane,
+        "current_focus": current_focus,
+        "last_transition_task_id": str(last_transition_event.get("task_id") or "").strip() or None,
+        "last_transition_reason": str(last_transition_event.get("reason") or "").strip() or None,
+        "next_candidate": next_candidate,
+        "next_candidates": next_candidates,
+        "next_candidate_source": next_candidate_source,
+        "next_candidate_wave": next_candidate_wave,
+        "blocked_reason": blocked_reason,
+        "blocked_reasons": blocked_reasons,
+        "last_completed_wave": last_completed_wave,
+        "last_progress_at": last_progress_at,
+        "stalled_after_sec": stalled_after_sec,
+        "idle_for_sec": idle_for_sec,
+        "stalled": stalled,
+        "liveness_state": liveness_state,
+        "readiness": readiness,
+        "dispatch_status": dispatch_status,
+        "queue_source": queue_source,
+        "queue_recovery_counters": queue_recovery_counters,
+        "core_roadmap_queue_layer": core_queue_layer_contract,
+        "transaction_runtime": transaction_runtime_projection,
+        "transaction_runtime_handoff_soak": transaction_runtime_handoff_soak_projection,
+        "queue_truth_projection_parity": queue_projection_parity,
+        "queue_ready_count": queue_ready_count,
+        "queue_dependency_blocked_count": queue_dependency_blocked_count,
+        "frontier_queue": frontier_queue,
+        "source_refs": {
+            "continuity_current": "state/continuity/current.json",
+            "continuity_now": to_rel(continuity_now_latest_path),
+            "queue_db": str(queue_activity.get("queue_db_path") or "state/continuity/continuity_os.sqlite"),
+            "core_roadmap_queue_layer": to_rel(core_roadmap_queue_layer_path),
+            "core_roadmap_queue_layer_schema": to_rel(core_roadmap_queue_layer_schema_path),
+            "core_roadmap_queue_transaction_runtime": to_rel(core_roadmap_queue_transaction_runtime_path),
+            "core_roadmap_queue_transaction_handoff_soak": to_rel(core_roadmap_queue_txn_handoff_soak_path),
+            "execution_meaningful_event_reporting": to_rel(execution_meaningful_event_reporting_path),
+            "execution_meaningful_event_reporting_status": to_rel(execution_meaningful_event_reporting_status_path),
+            "execution_frontier_transition_attempt_history": to_rel(
+                execution_frontier_transition_attempt_history_path
+            ),
+        },
+    }
+
+
+def _derive_execution_frontier_supervisor_state(
+    *,
+    selector_state: str,
+    close_condition_met: bool,
+    next_candidate: Optional[str],
+    active_worker_count: int,
+    dispatch_status: str,
+    program_state: str,
+    stalled: bool,
+    idle_for_sec: Optional[int],
+    stalled_after_sec: int,
+    transition_reason: Optional[str],
+    frontier_queue_ready_count: int,
+    frontier_queue_dependency_blocked_count: int,
+    next_candidate_in_frontier_ready: Optional[bool],
+    next_candidate_dependency_blocked: bool,
+) -> Dict[str, Any]:
+    idle_phase = "unknown"
+    if active_worker_count > 0:
+        idle_phase = "active"
+    elif idle_for_sec is None:
+        idle_phase = "unknown"
+    elif idle_for_sec >= stalled_after_sec:
+        idle_phase = "stalled"
+    elif idle_for_sec >= max(60, min(300, stalled_after_sec)):
+        idle_phase = "monitoring"
+    else:
+        idle_phase = "grace"
+
+    guard_reasons: List[str] = []
+    if selector_state != "ready_for_dispatch":
+        guard_reasons.append("selector_state_not_ready_for_dispatch")
+    if close_condition_met is not True:
+        guard_reasons.append("close_condition_not_met")
+    if not next_candidate:
+        guard_reasons.append("next_candidate_missing")
+    if active_worker_count > 0:
+        guard_reasons.append("active_workers_present")
+    if dispatch_status == "launched":
+        guard_reasons.append("dispatch_already_launched")
+    if program_state == "running":
+        guard_reasons.append("program_state_running")
+    if stalled:
+        guard_reasons.append("stalled_detection_active")
+
+    if close_condition_met and next_candidate:
+        if next_candidate_in_frontier_ready is False:
+            guard_reasons.append("next_candidate_not_ready_in_frontier_queue")
+        if next_candidate_dependency_blocked:
+            guard_reasons.append("next_candidate_dependency_blocked")
+    if close_condition_met and frontier_queue_ready_count <= 0 and frontier_queue_dependency_blocked_count > 0:
+        guard_reasons.append("frontier_queue_only_dependency_blocked_candidates")
+
+    autonomous_dispatch_eligible = len(guard_reasons) == 0
+
+    state = "unknown"
+    if selector_state == "wave_open":
+        state = "wave_open_active" if active_worker_count > 0 else "wave_open_inactive"
+    elif selector_state == "ready_for_dispatch":
+        if stalled:
+            state = "ready_for_dispatch_stalled"
+        elif autonomous_dispatch_eligible:
+            state = "ready_for_dispatch"
+        else:
+            state = "ready_for_dispatch_guarded"
+    elif selector_state == "closed_blocked":
+        state = "closed_blocked_stalled" if stalled else "closed_blocked"
+    elif selector_state == "idle_no_candidate":
+        if idle_phase == "stalled":
+            state = "idle_no_candidate_stalled"
+        elif idle_phase == "monitoring":
+            state = "idle_no_candidate_monitoring"
+        else:
+            state = "idle_no_candidate_grace"
+    elif selector_state == "advanced_wave_closed":
+        state = "advanced_wave_closed"
+
+    reason = transition_reason or (guard_reasons[0] if guard_reasons else None)
+
+    return {
+        "state_version": "execution_frontier_supervisor_state.v1",
+        "state": state,
+        "reason": reason,
+        "idle_phase": idle_phase,
+        "autonomous_dispatch_eligible": autonomous_dispatch_eligible,
+        "autonomous_dispatch_block_reasons": guard_reasons,
+        "selector_state": selector_state,
+        "dispatch_status": dispatch_status,
+        "close_condition_met": bool(close_condition_met),
+    }
+
+
+def build_execution_frontier_ledger(
+    *,
+    execution_status: Dict[str, Any],
+    dispatch_context: Dict[str, Any],
+    queue: Dict[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    status_obj = execution_status if isinstance(execution_status, dict) else {}
+    queue_obj = queue if isinstance(queue, dict) else {}
+    dispatch_obj = dispatch_context if isinstance(dispatch_context, dict) else {}
+
+    current_wave = _extract_wave_number(status_obj.get("current_wave"))
+    last_completed_wave = _extract_wave_number(status_obj.get("last_completed_wave"))
+    active_worker_count = max(0, _to_int(status_obj.get("active_worker_count"), 0))
+    program_state = str(status_obj.get("program_state") or "idle").strip().lower()
+    if program_state not in {"running", "blocked", "idle", "waiting"}:
+        program_state = "idle"
+
+    frontier_queue_obj = status_obj.get("frontier_queue") if isinstance(status_obj.get("frontier_queue"), dict) else {}
+    queue_source = (
+        str(status_obj.get("queue_source") or frontier_queue_obj.get("queue_source") or "continuity_os_queue_db").strip()
+        or "continuity_os_queue_db"
+    )
+    core_queue_layer_contract = (
+        status_obj.get("core_roadmap_queue_layer")
+        if isinstance(status_obj.get("core_roadmap_queue_layer"), dict)
+        else {}
+    )
+    core_queue_layer_for_parity = core_queue_layer_contract
+    if queue_source.startswith("core_roadmap_queue_layer"):
+        core_queue_layer_payload = load_json_if_exists(core_roadmap_queue_layer_path)
+        if isinstance(core_queue_layer_payload, dict) and core_queue_layer_payload:
+            core_queue_layer_for_parity = core_queue_layer_payload
+    transaction_runtime_obj = (
+        status_obj.get("transaction_runtime")
+        if isinstance(status_obj.get("transaction_runtime"), dict)
+        else {
+            "schema": core_roadmap_queue_transaction_runtime_projection_schema,
+            "runtime_schema": core_roadmap_queue_transaction_runtime_schema,
+            "runtime_path": to_rel(core_roadmap_queue_transaction_runtime_path),
+            "lock_path": to_rel(core_roadmap_queue_transaction_runtime_lock_path),
+            "present": False,
+            "contract_status": "missing",
+            "issues": [],
+            "generated_at": None,
+            "fencing_epoch": 0,
+            "active_claim": None,
+            "task_state_counts": {"claimed": 0, "running": 0, "done": 0, "blocked": 0, "retry": 0},
+            "cooldown_active": [],
+            "retry_ready": [],
+            "history_size": 0,
+            "masking_applied": False,
+            "masking_policy": "state=done|blocked|claimed|running|retry(cooldown_active)",
+            "eligible_ready": [],
+            "masked_candidates": [],
+            "ready_candidate_count": 0,
+            "eligible_ready_count": 0,
+            "masked_ready_count": 0,
+        }
+    )
+    transaction_runtime_handoff_soak_obj = (
+        status_obj.get("transaction_runtime_handoff_soak")
+        if isinstance(status_obj.get("transaction_runtime_handoff_soak"), dict)
+        else _normalize_core_roadmap_txn_handoff_soak()
+    )
+    queue_recovery_counters = (
+        status_obj.get("queue_recovery_counters")
+        if isinstance(status_obj.get("queue_recovery_counters"), dict)
+        else {
+            "schema_version": "continuity.queue_stale_task_recovery_counters_projection.v1",
+            "source": "missing",
+            "attempts_total": 0,
+            "recovered_total": 0,
+            "failed_total": 0,
+            "stale_processing_recovered_total": 0,
+            "stale_running_recovered_total": 0,
+            "attempts_last_tick": 0,
+            "recovered_last_tick": 0,
+            "failed_last_tick": 0,
+            "updated_at": None,
+            "last_recovery": None,
+            "last_recovery_at": None,
+        }
+    )
+    status_queue_projection_parity = (
+        status_obj.get("queue_truth_projection_parity")
+        if isinstance(status_obj.get("queue_truth_projection_parity"), dict)
+        else {}
+    )
+
+    ready_candidates_raw = frontier_queue_obj.get("ready_candidates") if isinstance(frontier_queue_obj.get("ready_candidates"), list) else []
+    blocked_candidates_raw = (
+        frontier_queue_obj.get("dependency_blocked_candidates")
+        if isinstance(frontier_queue_obj.get("dependency_blocked_candidates"), list)
+        else []
+    )
+
+    ready_candidates: List[Dict[str, Any]] = []
+    ready_candidate_ids: List[str] = []
+    seen_ready = set()
+    for raw in ready_candidates_raw:
+        if not isinstance(raw, dict):
+            continue
+        task_id = str(raw.get("task_id") or "").strip()
+        if not task_id or task_id in seen_ready:
+            continue
+        seen_ready.add(task_id)
+        ready_candidate_ids.append(task_id)
+        ready_candidates.append(
+            {
+                "task_id": task_id,
+                "role_required": str(raw.get("role_required") or "").strip() or None,
+                "wave": _extract_wave_number(raw.get("wave") if raw.get("wave") is not None else task_id),
+                "state": "ready",
+                "created_at": str(raw.get("created_at") or "").strip() or None,
+                "updated_at": str(raw.get("updated_at") or "").strip() or None,
+            }
+        )
+
+    blocked_candidates: List[Dict[str, Any]] = []
+    blocked_candidate_ids: List[str] = []
+    seen_blocked = set()
+    for raw in blocked_candidates_raw:
+        if not isinstance(raw, dict):
+            continue
+        task_id = str(raw.get("task_id") or "").strip()
+        if not task_id or task_id in seen_blocked:
+            continue
+        seen_blocked.add(task_id)
+        blocked_candidate_ids.append(task_id)
+        blocked_candidates.append(
+            {
+                "task_id": task_id,
+                "role_required": str(raw.get("role_required") or "").strip() or None,
+                "wave": _extract_wave_number(raw.get("wave") if raw.get("wave") is not None else task_id),
+                "state": "dependency_blocked",
+                "blocked_by": _dedupe_nonempty_strings(raw.get("blocked_by") or []),
+                "created_at": str(raw.get("created_at") or "").strip() or None,
+                "updated_at": str(raw.get("updated_at") or "").strip() or None,
+            }
+        )
+
+    if queue_source.startswith("core_roadmap_queue_layer"):
+        queue_ready_count = max(
+            0,
+            _to_int(status_obj.get("queue_ready_count"), 0),
+            _to_int(frontier_queue_obj.get("ready_count"), 0),
+            len(ready_candidate_ids),
+        )
+        queue_dependency_blocked_count = max(
+            0,
+            _to_int(status_obj.get("queue_dependency_blocked_count"), 0),
+            _to_int(frontier_queue_obj.get("dependency_blocked_count"), 0),
+            len(blocked_candidate_ids),
+        )
+    else:
+        queue_ready_count = max(
+            0,
+            _to_int(status_obj.get("queue_ready_count"), 0),
+            _to_int(queue_obj.get("ready_count"), 0),
+            _to_int(frontier_queue_obj.get("ready_count"), 0),
+            len(ready_candidate_ids),
+        )
+        queue_dependency_blocked_count = max(
+            0,
+            _to_int(status_obj.get("queue_dependency_blocked_count"), 0),
+            _to_int(queue_obj.get("dependency_blocked_count"), 0),
+            _to_int(frontier_queue_obj.get("dependency_blocked_count"), 0),
+            len(blocked_candidate_ids),
+        )
+
+    status_next_candidate = str(status_obj.get("next_candidate") or "").strip() or None
+    next_candidate_source = str(status_obj.get("next_candidate_source") or "").strip() or "none"
+
+    if ready_candidate_ids:
+        if status_next_candidate and status_next_candidate in ready_candidate_ids:
+            next_candidate = status_next_candidate
+            if next_candidate_source in {"none", ""}:
+                next_candidate_source = "frontier_queue_ready_candidate"
+        else:
+            next_candidate = ready_candidate_ids[0]
+            next_candidate_source = "frontier_queue_ready_candidate"
+    else:
+        next_candidate = status_next_candidate
+
+    next_candidates = _dedupe_nonempty_strings(
+        (frontier_queue_obj.get("next_candidates") if isinstance(frontier_queue_obj.get("next_candidates"), list) else [])
+        + ready_candidate_ids
+    )[:5]
+
+    queue_projection_parity = _build_core_roadmap_queue_projection_parity(
+        surface="execution_frontier_ledger",
+        queue_source=queue_source,
+        core_queue_layer=core_queue_layer_for_parity,
+        projected_ready_count=queue_ready_count,
+        projected_dependency_blocked_count=queue_dependency_blocked_count,
+        projected_next_candidate=next_candidate,
+        projected_ready_candidates=ready_candidates,
+        projected_dependency_blocked_candidates=blocked_candidates,
+        projected_next_candidates=next_candidates,
+        runtime_queue=None,
+        backpressure_profile=frontier_queue_obj.get("frontier_queue_backpressure") if isinstance(
+            frontier_queue_obj.get("frontier_queue_backpressure"), dict
+        ) else {},
+    )
+    if str(status_queue_projection_parity.get("status") or "").strip().lower() == "mismatch":
+        queue_projection_parity["status"] = "mismatch"
+        queue_projection_parity["mismatches"] = _dedupe_nonempty_strings(
+            list(queue_projection_parity.get("mismatches") or [])
+            + ["upstream_execution_program_status_queue_projection_mismatch"]
+        )
+        if bool(queue_projection_parity.get("authoritative_contract") is True):
+            queue_projection_parity["fail_closed_required"] = True
+    queue_projection_parity["upstream_status"] = str(status_queue_projection_parity.get("status") or "").strip() or None
+
+    next_candidate_wave = _extract_wave_number(status_obj.get("next_candidate_wave"))
+    if next_candidate_wave is None:
+        next_candidate_wave = _extract_wave_number(next_candidate)
+
+    next_candidate_in_frontier_ready: Optional[bool] = None
+    if ready_candidate_ids:
+        next_candidate_in_frontier_ready = bool(next_candidate and next_candidate in ready_candidate_ids)
+    next_candidate_dependency_blocked = bool(next_candidate and next_candidate in blocked_candidate_ids)
+
+    soak_guard_block_reasons = _dedupe_nonempty_strings(
+        transaction_runtime_handoff_soak_obj.get("guard_block_reasons") or []
+    )
+
+    transition_reason: Optional[str] = None
+    selector_state = "wave_open"
+    close_condition_met = active_worker_count <= 0
+
+    if close_condition_met and next_candidate:
+        if next_candidate_dependency_blocked:
+            selector_state = "closed_blocked"
+            transition_reason = "next_candidate_dependency_blocked"
+        elif ready_candidate_ids and next_candidate not in ready_candidate_ids:
+            selector_state = "closed_blocked"
+            transition_reason = "next_candidate_not_ready_in_frontier_queue"
+        else:
+            selector_state = "ready_for_dispatch"
+            transition_reason = "wave_closed_next_candidate_selected"
+    elif close_condition_met and program_state == "blocked":
+        selector_state = "closed_blocked"
+        transition_reason = str(status_obj.get("blocked_reason") or "").strip() or "wave_closed_blocked"
+    elif close_condition_met and queue_dependency_blocked_count > 0 and not next_candidate:
+        selector_state = "closed_blocked"
+        transition_reason = "wave_closed_dependency_blocked_no_ready_candidate"
+    elif close_condition_met and not next_candidate:
+        selector_state = "idle_no_candidate"
+        transition_reason = "wave_closed_no_next_candidate"
+
+    proposed_next_wave = next_candidate_wave
+    if proposed_next_wave is None and isinstance(current_wave, int) and next_candidate:
+        proposed_next_wave = max(0, current_wave + 1)
+
+    stale_sec = status_obj.get("idle_for_sec")
+    stalled_after_sec = _to_int(status_obj.get("stalled_after_sec"), int(execution_program_stalled_after_sec))
+    stalled = bool(status_obj.get("stalled") is True)
+    stalled_reason = None
+    if stalled:
+        stalled_reason = str(status_obj.get("blocked_reason") or "").strip() or "progress_stalled"
+
+    dispatch_status = str(dispatch_obj.get("status") or "missing").strip() or "missing"
+    supervisor_state = _derive_execution_frontier_supervisor_state(
+        selector_state=selector_state,
+        close_condition_met=close_condition_met,
+        next_candidate=next_candidate,
+        active_worker_count=active_worker_count,
+        dispatch_status=dispatch_status,
+        program_state=program_state,
+        stalled=stalled,
+        idle_for_sec=_to_int(stale_sec) if stale_sec is not None else None,
+        stalled_after_sec=stalled_after_sec,
+        transition_reason=transition_reason,
+        frontier_queue_ready_count=queue_ready_count,
+        frontier_queue_dependency_blocked_count=queue_dependency_blocked_count,
+        next_candidate_in_frontier_ready=next_candidate_in_frontier_ready,
+        next_candidate_dependency_blocked=next_candidate_dependency_blocked,
+    )
+    if bool(queue_projection_parity.get("fail_closed_required") is True):
+        supervisor_block_reasons = _dedupe_nonempty_strings(
+            list(supervisor_state.get("autonomous_dispatch_block_reasons") or []) + ["queue_projection_parity_mismatch"]
+        )
+        supervisor_state["autonomous_dispatch_eligible"] = False
+        supervisor_state["autonomous_dispatch_block_reasons"] = supervisor_block_reasons
+        if str(supervisor_state.get("state") or "").startswith("ready_for_dispatch"):
+            supervisor_state["state"] = "ready_for_dispatch_guarded"
+        if not str(supervisor_state.get("reason") or "").strip():
+            supervisor_state["reason"] = "queue_projection_parity_mismatch"
+
+    if queue_source.startswith("core_roadmap_queue_layer") and soak_guard_block_reasons:
+        supervisor_block_reasons = _dedupe_nonempty_strings(
+            list(supervisor_state.get("autonomous_dispatch_block_reasons") or [])
+            + soak_guard_block_reasons
+        )
+        supervisor_state["autonomous_dispatch_eligible"] = False
+        supervisor_state["autonomous_dispatch_block_reasons"] = supervisor_block_reasons
+        if str(supervisor_state.get("state") or "").startswith("ready_for_dispatch"):
+            supervisor_state["state"] = "ready_for_dispatch_guarded"
+        reason_text = str(supervisor_state.get("reason") or "").strip()
+        if not reason_text or reason_text == "wave_closed_next_candidate_selected":
+            supervisor_state["reason"] = soak_guard_block_reasons[0]
+
+    frontier_queue = {
+        "schema": "clawd.execution_frontier_queue.v1",
+        "selection_policy": str(
+            frontier_queue_obj.get("selection_policy")
+            or (
+                "status=core_roadmap_state;order=recommended_order_then_slice_id"
+                if queue_source.startswith("core_roadmap_queue_layer")
+                else "status=QUEUED;dependencies=SATISFIED;order=created_at_asc_then_task_id"
+            )
+        ),
+        "queue_source": queue_source,
+        "dependency_model_available": bool(frontier_queue_obj.get("dependency_model_available") is True),
+        "ready_count": queue_ready_count,
+        "dependency_blocked_count": queue_dependency_blocked_count,
+        "ready_candidates": ready_candidates,
+        "dependency_blocked_candidates": blocked_candidates,
+        "next_candidates": next_candidates,
+        "frontier_queue_backpressure": frontier_queue_obj.get("frontier_queue_backpressure")
+        if isinstance(frontier_queue_obj.get("frontier_queue_backpressure"), dict)
+        else {},
+    }
+
+    return {
+        "schema": "clawd.execution_frontier_ledger.v1",
+        "generated_at": generated_at,
+        "program_state": program_state,
+        "current_wave": current_wave,
+        "last_completed_wave": last_completed_wave,
+        "active_worker_count": active_worker_count,
+        "active_labels": _dedupe_nonempty_strings(status_obj.get("active_labels") or []),
+        "frontier_lane": str(status_obj.get("frontier_lane") or "").strip() or None,
+        "current_focus": str(status_obj.get("current_focus") or "").strip() or None,
+        "next_candidate": next_candidate,
+        "next_candidates": next_candidates,
+        "next_candidate_wave": proposed_next_wave,
+        "next_candidate_source": next_candidate_source,
+        "last_progress_at": str(status_obj.get("last_progress_at") or "").strip() or None,
+        "blocked_reason": str(status_obj.get("blocked_reason") or "").strip() or None,
+        "queue_source": queue_source,
+        "queue_recovery_counters": queue_recovery_counters,
+        "core_roadmap_queue_layer": core_queue_layer_contract,
+        "transaction_runtime": transaction_runtime_obj,
+        "transaction_runtime_handoff_soak": transaction_runtime_handoff_soak_obj,
+        "queue_truth_projection_parity": queue_projection_parity,
+        "frontier_queue": frontier_queue,
+        "transition": {
+            "selector_version": "execution_frontier_selector.v1",
+            "selector_state": selector_state,
+            "close_condition_met": close_condition_met,
+            "proposed_next_wave": proposed_next_wave,
+            "reason": transition_reason,
+            "queue_ready_count": queue_ready_count,
+            "queue_dependency_blocked_count": queue_dependency_blocked_count,
+            "dispatch_status": dispatch_status,
+        },
+        "stalled_detection": {
+            "stalled": stalled,
+            "idle_for_sec": _to_int(stale_sec, 0) if stale_sec is not None else None,
+            "stalled_after_sec": stalled_after_sec,
+            "reason": stalled_reason,
+        },
+        "supervisor_state": supervisor_state,
+        "source_refs": {
+            "execution_program_status": to_rel(execution_program_status_path),
+            "continuity_current": "state/continuity/current.json",
+            "core_roadmap_queue_layer": to_rel(core_roadmap_queue_layer_path),
+            "core_roadmap_queue_layer_schema": to_rel(core_roadmap_queue_layer_schema_path),
+            "core_roadmap_queue_transaction_runtime": to_rel(core_roadmap_queue_transaction_runtime_path),
+            "core_roadmap_queue_transaction_handoff_soak": to_rel(core_roadmap_queue_txn_handoff_soak_path),
+            "execution_meaningful_event_reporting": to_rel(execution_meaningful_event_reporting_path),
+            "execution_meaningful_event_reporting_status": to_rel(execution_meaningful_event_reporting_status_path),
+            "execution_frontier_transition_attempt_history": to_rel(
+                execution_frontier_transition_attempt_history_path
+            ),
+        },
+    }
+
+
+def _execution_queue_reporting_state(
+    *,
+    status_payload: Dict[str, Any],
+    frontier_payload: Dict[str, Any],
+) -> str:
+    status_obj = status_payload if isinstance(status_payload, dict) else {}
+    frontier_obj = frontier_payload if isinstance(frontier_payload, dict) else {}
+
+    queue_source = str(status_obj.get("queue_source") or frontier_obj.get("queue_source") or "").strip()
+    parity_obj = status_obj.get("queue_truth_projection_parity") if isinstance(status_obj.get("queue_truth_projection_parity"), dict) else {}
+    parity_status = str(parity_obj.get("status") or "").strip().lower()
+
+    ready_count = max(
+        0,
+        _to_int(status_obj.get("queue_ready_count"), 0),
+        _to_int((((status_obj.get("frontier_queue") or {}) if isinstance(status_obj.get("frontier_queue"), dict) else {}).get("ready_count")), 0),
+    )
+    blocked_count = max(
+        0,
+        _to_int(status_obj.get("queue_dependency_blocked_count"), 0),
+        _to_int((((status_obj.get("frontier_queue") or {}) if isinstance(status_obj.get("frontier_queue"), dict) else {}).get("dependency_blocked_count")), 0),
+    )
+
+    if queue_source == "core_roadmap_queue_layer_fail_closed" or parity_status == "mismatch":
+        return "fail_closed"
+    if ready_count > 0:
+        return "dispatchable_ready"
+    if blocked_count > 0:
+        return "dependency_blocked_only"
+    return "idle_no_ready"
+
+
+def _event_signature(event: Dict[str, Any]) -> str:
+    basis = "|".join(
+        [
+            str(event.get("event_code") or ""),
+            str(event.get("event_at") or ""),
+            str(event.get("work_unit_ref") or ""),
+            str(event.get("from_state") or ""),
+            str(event.get("to_state") or ""),
+            str(event.get("decision_taken") or ""),
+            str(event.get("decision_reason") or ""),
+        ]
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:24]
+
+
+def _build_meaningful_event_entry(
+    *,
+    event_code: str,
+    event_at: Optional[str],
+    detected_at: str,
+    lane: Optional[str],
+    work_unit_ref: Optional[str],
+    from_state: Optional[str],
+    to_state: Optional[str],
+    decision_taken: str,
+    decision_reason: str,
+    next_action: Optional[str],
+    evidence_refs: List[str],
+    queue_source: Optional[str],
+    queue_parity_status: Optional[str],
+    next_candidate: Optional[str],
+) -> Dict[str, Any]:
+    event_payload: Dict[str, Any] = {
+        "event_code": str(event_code or "").strip(),
+        "event_at": str(event_at or detected_at).strip() or detected_at,
+        "detected_at": str(detected_at or "").strip() or now_iso(),
+        "lane": str(lane or "").strip() or None,
+        "work_unit_ref": str(work_unit_ref or "").strip() or None,
+        "from_state": str(from_state or "").strip() or None,
+        "to_state": str(to_state or "").strip() or None,
+        "decision_taken": str(decision_taken or "continue").strip() or "continue",
+        "decision_reason": str(decision_reason or "unspecified").strip() or "unspecified",
+        "evidence_refs": _dedupe_nonempty_strings(evidence_refs),
+        "next_action": str(next_action or "").strip() or "none",
+    }
+
+    if event_payload.get("event_code") in {
+        "QUEUE_BLOCKED",
+        "QUEUE_UNBLOCKED",
+        "QUEUE_RELAUNCHED",
+        "EXECUTOR_IDLE_TO_RELAUNCHED",
+        "QUEUE_RUNTIME_DELTA_ATTENTION",
+        "QUEUE_RUNTIME_DELTA_CLEARED",
+        "QUEUE_RUNTIME_DELTA_SUSTAINED",
+    }:
+        event_payload["queue_source"] = str(queue_source or "").strip() or None
+        event_payload["queue_truth_projection_parity"] = {
+            "status": str(queue_parity_status or "unknown").strip() or "unknown"
+        }
+        event_payload["next_candidate"] = str(next_candidate or "").strip() or None
+
+    event_payload["event_signature"] = _event_signature(event_payload)
+    return event_payload
+
+
+def _select_execution_supervisor_failure_signal(
+    *,
+    supervisor_ledger: Dict[str, Any],
+    queue_transition_task: Optional[str],
+    detected_at: str,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(supervisor_ledger, dict):
+        return None
+
+    task_rows = supervisor_ledger.get("tasks") if isinstance(supervisor_ledger.get("tasks"), list) else []
+    if not task_rows:
+        return None
+
+    queue_summary = (
+        supervisor_ledger.get("queue_summary")
+        if isinstance(supervisor_ledger.get("queue_summary"), dict)
+        else {}
+    )
+    reroute_required_count = max(0, _to_int(queue_summary.get("reroute_required_count"), 0))
+
+    failure_codes = {"FAILED_NO_ARTIFACT", "FAILED_PROVIDER_QUOTA", "FAILED_OTHER"}
+    detected_dt = parse_iso(detected_at)
+
+    candidates: List[Dict[str, Any]] = []
+    for row in task_rows:
+        if not isinstance(row, dict):
+            continue
+
+        latest_attempt = row.get("latest_attempt") if isinstance(row.get("latest_attempt"), dict) else {}
+        failure_obj = row.get("failure_classification") if isinstance(row.get("failure_classification"), dict) else {}
+
+        classification = str(
+            latest_attempt.get("classification")
+            or failure_obj.get("code")
+            or row.get("status")
+            or ""
+        ).strip().upper()
+        if classification not in failure_codes:
+            continue
+
+        completed_at = str(
+            latest_attempt.get("completed_at")
+            or failure_obj.get("detected_at")
+            or supervisor_ledger.get("generated_at")
+            or ""
+        ).strip() or None
+        completed_dt = parse_iso(completed_at)
+
+        age_sec: Optional[int] = None
+        if detected_dt is not None and completed_dt is not None:
+            age_sec = max(0, int((detected_dt - completed_dt).total_seconds()))
+
+        terminal_signal = latest_attempt.get("terminal_signal") if isinstance(latest_attempt.get("terminal_signal"), dict) else {}
+        stop_reason = str(terminal_signal.get("stop_reason") or "").strip().lower()
+        empty_content = bool(terminal_signal.get("empty_content") is True)
+        upstream_failure_code = _extract_memory_consolidation_failure_code_from_signal(terminal_signal)
+        if not upstream_failure_code:
+            upstream_failure_code = str(failure_obj.get("upstream_failure_code") or "").strip().upper() or None
+        upstream_bridge = _memory_consolidation_failure_bridge(upstream_failure_code)
+
+        if classification == "FAILED_PROVIDER_QUOTA":
+            outcome_class = "INVALID_OUTPUT"
+        elif classification == "FAILED_NO_ARTIFACT":
+            outcome_class = "INVALID_OUTPUT"
+        elif isinstance(upstream_bridge, dict) and str(upstream_bridge.get("classification") or "") == "FAILED_NO_ARTIFACT":
+            outcome_class = "INVALID_OUTPUT"
+        elif empty_content or stop_reason in {"error", "failed", "aborted"}:
+            outcome_class = "INVALID_OUTPUT"
+        else:
+            outcome_class = "FAILED"
+
+        reroute_obj = row.get("reroute") if isinstance(row.get("reroute"), dict) else {}
+        reroute_required = bool(reroute_obj.get("required") is True)
+
+        candidates.append(
+            {
+                "task_id": str(row.get("task_id") or "").strip() or None,
+                "classification": classification,
+                "outcome_class": outcome_class,
+                "completed_at": completed_at,
+                "age_sec": age_sec,
+                "reroute_required": reroute_required,
+                "upstream_failure_code": upstream_failure_code,
+                "classification_bridge": (
+                    {
+                        "surface": "memory_consolidation",
+                        "classification": str(upstream_bridge.get("classification") or "FAILED_OTHER").strip() or "FAILED_OTHER",
+                        "reason": str(upstream_bridge.get("reason") or "memory_consolidation_failure").strip() or "memory_consolidation_failure",
+                    }
+                    if isinstance(upstream_bridge, dict)
+                    else None
+                ),
+            }
+        )
+
+    if not candidates:
+        return None
+
+    task_token = str(queue_transition_task or "").strip() or None
+    if task_token:
+        matched = [row for row in candidates if str(row.get("task_id") or "").strip() == task_token]
+        if matched:
+            matched.sort(key=lambda row: row.get("age_sec") if isinstance(row.get("age_sec"), int) else 10**9)
+            return matched[0]
+
+    fresh_candidates = [
+        row
+        for row in candidates
+        if isinstance(row.get("age_sec"), int) and 0 <= int(row.get("age_sec") or 0) <= 1800
+    ]
+    if fresh_candidates:
+        fresh_candidates.sort(key=lambda row: int(row.get("age_sec") or 0))
+        return fresh_candidates[0]
+
+    if reroute_required_count <= 0:
+        return None
+
+    reroute_candidates = [row for row in candidates if bool(row.get("reroute_required") is True)]
+    fallback_candidates = reroute_candidates or candidates
+    if not fallback_candidates:
+        return {
+            "task_id": task_token,
+            "classification": "FAILED_OTHER",
+            "outcome_class": "INVALID_OUTPUT",
+            "completed_at": None,
+            "age_sec": None,
+            "reroute_required": True,
+            "selection_mode": "reroute_required_without_failure_row",
+        }
+
+    def _fallback_key(row: Dict[str, Any]) -> Tuple[int, int]:
+        age = row.get("age_sec")
+        age_key = int(age) if isinstance(age, int) and age >= 0 else 10**9
+        completed_dt = parse_iso(row.get("completed_at"))
+        completed_key = -int(completed_dt.timestamp()) if completed_dt is not None else 0
+        return (age_key, completed_key)
+
+    fallback_candidates.sort(key=_fallback_key)
+    selected = dict(fallback_candidates[0])
+    selected["selection_mode"] = "reroute_fail_closed_fallback"
+    return selected
+
+
+def _build_execution_supervisor_relaunch_recovery_accounting(
+    *,
+    supervisor_ledger: Dict[str, Any],
+) -> Dict[str, Any]:
+    if not isinstance(supervisor_ledger, dict):
+        supervisor_ledger = {}
+
+    queue_summary = (
+        supervisor_ledger.get("queue_summary")
+        if isinstance(supervisor_ledger.get("queue_summary"), dict)
+        else {}
+    )
+    task_rows = supervisor_ledger.get("tasks") if isinstance(supervisor_ledger.get("tasks"), list) else []
+
+    reroute_ready_task_ids = _dedupe_nonempty_strings(queue_summary.get("reroute_ready_task_ids") or [])
+    reroute_required_count = max(0, _to_int(queue_summary.get("reroute_required_count"), 0))
+    reroute_dispatch_ready_count = max(0, _to_int(queue_summary.get("reroute_dispatch_ready_count"), 0))
+    reroute_blocked_count = max(0, _to_int(queue_summary.get("reroute_blocked_count"), 0))
+    reroute_required_count_raw = max(
+        reroute_required_count,
+        _to_int(queue_summary.get("reroute_required_count_raw"), reroute_required_count),
+    )
+    reroute_dispatch_ready_count_raw = max(
+        reroute_dispatch_ready_count,
+        _to_int(queue_summary.get("reroute_dispatch_ready_count_raw"), reroute_dispatch_ready_count),
+    )
+    reroute_blocked_count_raw = max(
+        reroute_blocked_count,
+        _to_int(queue_summary.get("reroute_blocked_count_raw"), reroute_blocked_count),
+    )
+    reroute_residue_suppressed = bool(queue_summary.get("reroute_residue_suppressed") is True)
+    reroute_residue_task_ids = _dedupe_nonempty_strings(queue_summary.get("reroute_residue_task_ids") or [])
+    reroute_residue_task_id_set = set(reroute_residue_task_ids)
+    reroute_residue_suppression_reason = (
+        str(queue_summary.get("reroute_residue_suppression_reason") or "").strip() or None
+    )
+
+    blocked_task_ids: List[str] = []
+    for row in task_rows:
+        if not isinstance(row, dict):
+            continue
+        task_id = str(row.get("task_id") or "").strip()
+        if not task_id:
+            continue
+        if reroute_residue_suppressed and task_id in reroute_residue_task_id_set:
+            continue
+        reroute = row.get("reroute") if isinstance(row.get("reroute"), dict) else {}
+        if bool(reroute.get("required") is not True):
+            continue
+        status = str(reroute.get("status") or "").strip().upper()
+        target_worker = str(reroute.get("target_worker") or "").strip()
+        if status == "BLOCKED" or (status == "REROUTE_QUEUED" and not target_worker):
+            blocked_task_ids.append(task_id)
+
+    blocked_task_ids = _dedupe_nonempty_strings(blocked_task_ids)
+
+    return {
+        "schema": "clawd.execution_supervisor_relaunch_recovery_accounting.v1",
+        "source": "execution_supervisor_task_ledger",
+        "generated_at": str(supervisor_ledger.get("generated_at") or "").strip() or None,
+        "invalid_output_reroute": {
+            "required_count": reroute_required_count,
+            "dispatch_ready_count": reroute_dispatch_ready_count,
+            "blocked_count": max(reroute_blocked_count, len(blocked_task_ids)),
+            "ready_task_ids": reroute_ready_task_ids,
+            "blocked_task_ids": blocked_task_ids,
+            "active": bool(reroute_required_count > 0),
+            "required_count_raw": reroute_required_count_raw,
+            "dispatch_ready_count_raw": reroute_dispatch_ready_count_raw,
+            "blocked_count_raw": max(reroute_blocked_count_raw, len(blocked_task_ids) + len(reroute_residue_task_ids)),
+            "residue_suppressed": reroute_residue_suppressed,
+            "residue_task_ids": reroute_residue_task_ids,
+            "residue_suppression_reason": reroute_residue_suppression_reason,
+        },
+    }
+
+
+def build_execution_meaningful_event_reporting(
+    *,
+    previous_execution_status: Dict[str, Any],
+    previous_frontier_ledger: Dict[str, Any],
+    previous_event_reporting: Dict[str, Any],
+    execution_status: Dict[str, Any],
+    frontier_ledger: Dict[str, Any],
+    queue_runtime: Dict[str, Any],
+    supervisor_ledger: Optional[Dict[str, Any]] = None,
+    generated_at: str,
+) -> Dict[str, Any]:
+    prev_status = previous_execution_status if isinstance(previous_execution_status, dict) else {}
+    prev_frontier = previous_frontier_ledger if isinstance(previous_frontier_ledger, dict) else {}
+    prev_reporting = previous_event_reporting if isinstance(previous_event_reporting, dict) else {}
+    curr_status = execution_status if isinstance(execution_status, dict) else {}
+    curr_frontier = frontier_ledger if isinstance(frontier_ledger, dict) else {}
+    queue_obj = queue_runtime if isinstance(queue_runtime, dict) else {}
+    supervisor_obj = supervisor_ledger if isinstance(supervisor_ledger, dict) else {}
+
+    detected_at = str(generated_at or now_iso()).strip() or now_iso()
+    now_dt = parse_iso(detected_at) or clock_now_dt()
+    carry_window_sec = max(300, _read_nonnegative_int_env("OPENCLAW_MEANINGFUL_EVENT_CARRY_WINDOW_SEC", default=1800))
+    runtime_delta_churn_window_sec = max(
+        300,
+        _read_nonnegative_int_env(
+            "OPENCLAW_RUNTIME_DELTA_CHURN_WINDOW_SEC",
+            default=carry_window_sec,
+        ),
+    )
+    runtime_delta_churn_threshold = max(
+        2,
+        _read_nonnegative_int_env("OPENCLAW_RUNTIME_DELTA_CHURN_THRESHOLD", default=3),
+    )
+
+    prior_recent = prev_reporting.get("recent_events") if isinstance(prev_reporting.get("recent_events"), list) else []
+    prior_runtime_delta_attention_count = 0
+    recent_runtime_delta_sustained_present = False
+    for raw in prior_recent:
+        if not isinstance(raw, dict):
+            continue
+        raw_detected = parse_iso(raw.get("detected_at"))
+        if raw_detected is None:
+            continue
+        age_sec = max(0, int((now_dt - raw_detected).total_seconds()))
+        if age_sec > runtime_delta_churn_window_sec:
+            continue
+        event_code = str(raw.get("event_code") or "").strip()
+        if event_code == "QUEUE_RUNTIME_DELTA_ATTENTION":
+            prior_runtime_delta_attention_count += 1
+        elif event_code == "QUEUE_RUNTIME_DELTA_SUSTAINED":
+            recent_runtime_delta_sustained_present = True
+
+    queue_source = str(curr_status.get("queue_source") or curr_frontier.get("queue_source") or "").strip() or None
+    prev_parity_obj = prev_status.get("queue_truth_projection_parity") if isinstance(prev_status.get("queue_truth_projection_parity"), dict) else {}
+    parity_obj = curr_status.get("queue_truth_projection_parity") if isinstance(curr_status.get("queue_truth_projection_parity"), dict) else {}
+    prev_queue_parity_status = str(prev_parity_obj.get("status") or "unknown").strip() or "unknown"
+    queue_parity_status = str(parity_obj.get("status") or "unknown").strip() or "unknown"
+    prev_runtime_delta_attention_reasons = _dedupe_nonempty_strings(
+        prev_parity_obj.get("runtime_delta_attention_reasons")
+        if isinstance(prev_parity_obj.get("runtime_delta_attention_reasons"), list)
+        else []
+    )
+    curr_runtime_delta_attention_reasons = _dedupe_nonempty_strings(
+        parity_obj.get("runtime_delta_attention_reasons")
+        if isinstance(parity_obj.get("runtime_delta_attention_reasons"), list)
+        else []
+    )
+    prev_runtime_delta_requires_attention = bool(
+        prev_parity_obj.get("runtime_delta_requires_attention") is True
+        or prev_queue_parity_status == "runtime_delta"
+    )
+    curr_runtime_delta_requires_attention = bool(
+        parity_obj.get("runtime_delta_requires_attention") is True
+        or queue_parity_status == "runtime_delta"
+    )
+    runtime_delta_reasons_changed = (
+        curr_runtime_delta_attention_reasons != prev_runtime_delta_attention_reasons
+    )
+    lane = str(curr_status.get("frontier_lane") or curr_frontier.get("frontier_lane") or "a2_executor").strip() or "a2_executor"
+    next_candidate = str(curr_status.get("next_candidate") or curr_frontier.get("next_candidate") or "").strip() or None
+
+    prev_worker_count = max(0, _to_int(prev_status.get("active_worker_count"), 0))
+    curr_worker_count = max(0, _to_int(curr_status.get("active_worker_count"), 0))
+    prev_dispatch_status = str(prev_status.get("dispatch_status") or "").strip().lower()
+    curr_dispatch_status = str(curr_status.get("dispatch_status") or "").strip().lower()
+    prev_last_completed_wave = _extract_wave_number(prev_status.get("last_completed_wave"))
+    curr_last_completed_wave = _extract_wave_number(curr_status.get("last_completed_wave"))
+
+    prev_queue_state = _execution_queue_reporting_state(status_payload=prev_status, frontier_payload=prev_frontier)
+    curr_queue_state = _execution_queue_reporting_state(status_payload=curr_status, frontier_payload=curr_frontier)
+
+    queue_transition_event = queue_obj.get("last_transition_event") if isinstance(queue_obj.get("last_transition_event"), dict) else {}
+    queue_transition_reason = str(queue_transition_event.get("reason") or curr_status.get("blocked_reason") or "").strip()
+    queue_transition_task = str(queue_transition_event.get("task_id") or next_candidate or "").strip() or None
+
+    supervisor_failure_signal = _select_execution_supervisor_failure_signal(
+        supervisor_ledger=supervisor_obj,
+        queue_transition_task=queue_transition_task,
+        detected_at=detected_at,
+    )
+    relaunch_recovery_accounting = _build_execution_supervisor_relaunch_recovery_accounting(
+        supervisor_ledger=supervisor_obj,
+    )
+    invalid_output_reroute = (
+        relaunch_recovery_accounting.get("invalid_output_reroute")
+        if isinstance(relaunch_recovery_accounting.get("invalid_output_reroute"), dict)
+        else {}
+    )
+    reroute_required_count = max(0, _to_int(invalid_output_reroute.get("required_count"), 0))
+    reroute_required_task_id_set = set(
+        _dedupe_nonempty_strings(
+            (invalid_output_reroute.get("ready_task_ids") if isinstance(invalid_output_reroute.get("ready_task_ids"), list) else [])
+            + (
+                invalid_output_reroute.get("blocked_task_ids")
+                if isinstance(invalid_output_reroute.get("blocked_task_ids"), list)
+                else []
+            )
+        )
+    )
+
+    failure_reason_hint = queue_transition_reason.lower()
+    has_invalid_hint = any(token in failure_reason_hint for token in ["invalid", "junk"])
+    has_failure_hint = has_invalid_hint or any(token in failure_reason_hint for token in ["fail", "error", "timeout", "crash"])
+
+    if isinstance(supervisor_failure_signal, dict):
+        has_failure_hint = True
+        if str(supervisor_failure_signal.get("outcome_class") or "").strip() == "INVALID_OUTPUT":
+            has_invalid_hint = True
+
+    event_at_fallback = (
+        str(curr_status.get("last_progress_at") or "").strip()
+        or str(queue_obj.get("last_transition_at") or "").strip()
+        or detected_at
+    )
+
+    evidence_refs_base = [
+        "state/continuity/latest/execution_program_status.json",
+        "state/continuity/latest/execution_frontier_ledger.json",
+        "state/continuity/latest/core_roadmap_queue_layer.json",
+        "state/continuity/latest/continuity_now_latest.json",
+    ]
+
+    new_events: List[Dict[str, Any]] = []
+
+    if prev_worker_count > 0 and curr_worker_count == 0:
+        outcome_class = "SUCCESS"
+        if isinstance(supervisor_failure_signal, dict):
+            outcome_class = str(supervisor_failure_signal.get("outcome_class") or "FAILED").strip() or "FAILED"
+        elif reroute_required_count > 0 and (
+            queue_transition_task is None or queue_transition_task in reroute_required_task_id_set
+        ):
+            outcome_class = "INVALID_OUTPUT"
+        elif has_invalid_hint:
+            outcome_class = "INVALID_OUTPUT"
+        elif has_failure_hint:
+            outcome_class = "FAILED"
+
+        subagent_finished_event = _build_meaningful_event_entry(
+            event_code="SUBAGENT_FINISHED",
+            event_at=event_at_fallback,
+            detected_at=detected_at,
+            lane=lane,
+            work_unit_ref=queue_transition_task or next_candidate,
+            from_state="running_active",
+            to_state="completed",
+            decision_taken="continue" if outcome_class == "SUCCESS" else "relaunch" if curr_dispatch_status == "launched" else "blocked",
+            decision_reason=f"worker_outcome:{outcome_class.lower()}",
+            next_action=("continue_next_candidate" if outcome_class == "SUCCESS" else "relaunch_branch" if curr_dispatch_status == "launched" else "mark_blocked"),
+            evidence_refs=evidence_refs_base,
+            queue_source=queue_source,
+            queue_parity_status=queue_parity_status,
+            next_candidate=next_candidate,
+        )
+        subagent_finished_event["outcome_class"] = outcome_class
+        if isinstance(supervisor_failure_signal, dict):
+            subagent_finished_event["failure_classification_code"] = str(
+                supervisor_failure_signal.get("classification") or ""
+            ).strip() or None
+            subagent_finished_event["failure_upstream_code"] = str(
+                supervisor_failure_signal.get("upstream_failure_code") or ""
+            ).strip() or None
+            if isinstance(supervisor_failure_signal.get("classification_bridge"), dict):
+                subagent_finished_event["failure_classification_bridge"] = supervisor_failure_signal.get("classification_bridge")
+            subagent_finished_event["failure_source"] = "execution_supervisor_task_ledger"
+        new_events.append(subagent_finished_event)
+
+        if outcome_class in {"FAILED", "INVALID_OUTPUT"}:
+            failed_event = _build_meaningful_event_entry(
+                event_code="WORKER_FAILED_OR_JUNK",
+                event_at=event_at_fallback,
+                detected_at=detected_at,
+                lane=lane,
+                work_unit_ref=queue_transition_task or next_candidate,
+                from_state="running_active",
+                to_state="failure_classified",
+                decision_taken="relaunch" if curr_dispatch_status == "launched" else "blocked",
+                decision_reason=f"failure_class:{outcome_class.lower()}",
+                next_action="relaunch_branch" if curr_dispatch_status == "launched" else "mark_blocked",
+                evidence_refs=evidence_refs_base,
+                queue_source=queue_source,
+                queue_parity_status=queue_parity_status,
+                next_candidate=next_candidate,
+            )
+            if isinstance(supervisor_failure_signal, dict):
+                failed_event["failure_classification_code"] = str(
+                    supervisor_failure_signal.get("classification") or ""
+                ).strip() or None
+                failed_event["failure_upstream_code"] = str(
+                    supervisor_failure_signal.get("upstream_failure_code") or ""
+                ).strip() or None
+                if isinstance(supervisor_failure_signal.get("classification_bridge"), dict):
+                    failed_event["failure_classification_bridge"] = supervisor_failure_signal.get("classification_bridge")
+                failed_event["failure_task_id"] = str(supervisor_failure_signal.get("task_id") or "").strip() or None
+            new_events.append(failed_event)
+
+    if (
+        prev_last_completed_wave is not None
+        and curr_last_completed_wave is not None
+        and curr_last_completed_wave > prev_last_completed_wave
+    ):
+        new_events.append(
+            _build_meaningful_event_entry(
+                event_code="PHASE_LANDED",
+                event_at=event_at_fallback,
+                detected_at=detected_at,
+                lane=lane,
+                work_unit_ref=f"wave:{curr_last_completed_wave}",
+                from_state=f"wave:{prev_last_completed_wave}",
+                to_state=f"wave:{curr_last_completed_wave}",
+                decision_taken="continue" if next_candidate else "blocked",
+                decision_reason="wave_close_detected",
+                next_action="dispatch_next_candidate" if next_candidate else "none",
+                evidence_refs=evidence_refs_base,
+                queue_source=queue_source,
+                queue_parity_status=queue_parity_status,
+                next_candidate=next_candidate,
+            )
+        )
+
+    if prev_queue_state != curr_queue_state:
+        if curr_queue_state in {"fail_closed", "dependency_blocked_only"}:
+            new_events.append(
+                _build_meaningful_event_entry(
+                    event_code="QUEUE_BLOCKED",
+                    event_at=event_at_fallback,
+                    detected_at=detected_at,
+                    lane=lane,
+                    work_unit_ref=next_candidate,
+                    from_state=prev_queue_state,
+                    to_state=curr_queue_state,
+                    decision_taken="blocked",
+                    decision_reason=str(curr_status.get("blocked_reason") or "queue_blocked_transition").strip() or "queue_blocked_transition",
+                    next_action="wait_for_unblock_or_relaunch",
+                    evidence_refs=evidence_refs_base,
+                    queue_source=queue_source,
+                    queue_parity_status=queue_parity_status,
+                    next_candidate=next_candidate,
+                )
+            )
+        if prev_queue_state in {"fail_closed", "dependency_blocked_only"} and curr_queue_state == "dispatchable_ready":
+            new_events.append(
+                _build_meaningful_event_entry(
+                    event_code="QUEUE_UNBLOCKED",
+                    event_at=event_at_fallback,
+                    detected_at=detected_at,
+                    lane=lane,
+                    work_unit_ref=next_candidate,
+                    from_state=prev_queue_state,
+                    to_state=curr_queue_state,
+                    decision_taken="continue",
+                    decision_reason="dispatchable_ready_candidates_restored",
+                    next_action="dispatch_next_candidate",
+                    evidence_refs=evidence_refs_base,
+                    queue_source=queue_source,
+                    queue_parity_status=queue_parity_status,
+                    next_candidate=next_candidate,
+                )
+            )
+
+    runtime_delta_attention_event_emitted = False
+    if curr_runtime_delta_requires_attention and (
+        (not prev_runtime_delta_requires_attention) or runtime_delta_reasons_changed
+    ):
+        runtime_delta_event = _build_meaningful_event_entry(
+            event_code="QUEUE_RUNTIME_DELTA_ATTENTION",
+            event_at=event_at_fallback,
+            detected_at=detected_at,
+            lane=lane,
+            work_unit_ref=next_candidate,
+            from_state="runtime_delta_clear" if not prev_runtime_delta_requires_attention else "runtime_delta_attention",
+            to_state="runtime_delta_attention",
+            decision_taken="continue",
+            decision_reason="queue_projection_runtime_delta_attention",
+            next_action="inspect_queue_projection_runtime_delta",
+            evidence_refs=evidence_refs_base,
+            queue_source=queue_source,
+            queue_parity_status=queue_parity_status,
+            next_candidate=next_candidate,
+        )
+        runtime_delta_event["runtime_delta_requires_attention"] = True
+        runtime_delta_event["runtime_delta_attention_reasons"] = curr_runtime_delta_attention_reasons
+        new_events.append(runtime_delta_event)
+        runtime_delta_attention_event_emitted = True
+
+    if prev_runtime_delta_requires_attention and not curr_runtime_delta_requires_attention:
+        runtime_delta_cleared_event = _build_meaningful_event_entry(
+            event_code="QUEUE_RUNTIME_DELTA_CLEARED",
+            event_at=event_at_fallback,
+            detected_at=detected_at,
+            lane=lane,
+            work_unit_ref=next_candidate,
+            from_state="runtime_delta_attention",
+            to_state="runtime_delta_clear",
+            decision_taken="continue",
+            decision_reason="queue_projection_runtime_delta_cleared",
+            next_action="continue_dispatchable_frontier",
+            evidence_refs=evidence_refs_base,
+            queue_source=queue_source,
+            queue_parity_status=queue_parity_status,
+            next_candidate=next_candidate,
+        )
+        runtime_delta_cleared_event["runtime_delta_requires_attention"] = False
+        runtime_delta_cleared_event["runtime_delta_attention_reasons"] = []
+        new_events.append(runtime_delta_cleared_event)
+
+    runtime_delta_attention_count_window = (
+        prior_runtime_delta_attention_count + (1 if runtime_delta_attention_event_emitted else 0)
+    )
+    if (
+        curr_runtime_delta_requires_attention
+        and runtime_delta_attention_event_emitted
+        and runtime_delta_attention_count_window >= runtime_delta_churn_threshold
+        and not recent_runtime_delta_sustained_present
+    ):
+        runtime_delta_sustained_event = _build_meaningful_event_entry(
+            event_code="QUEUE_RUNTIME_DELTA_SUSTAINED",
+            event_at=event_at_fallback,
+            detected_at=detected_at,
+            lane=lane,
+            work_unit_ref=next_candidate,
+            from_state="runtime_delta_attention",
+            to_state="runtime_delta_attention_sustained",
+            decision_taken="continue",
+            decision_reason="queue_projection_runtime_delta_sustained_churn",
+            next_action="escalate_runtime_delta_churn",
+            evidence_refs=evidence_refs_base,
+            queue_source=queue_source,
+            queue_parity_status=queue_parity_status,
+            next_candidate=next_candidate,
+        )
+        runtime_delta_sustained_event["runtime_delta_requires_attention"] = True
+        runtime_delta_sustained_event["runtime_delta_attention_reasons"] = curr_runtime_delta_attention_reasons
+        runtime_delta_sustained_event["runtime_delta_attention_event_count_window"] = runtime_delta_attention_count_window
+        runtime_delta_sustained_event["runtime_delta_attention_window_sec"] = runtime_delta_churn_window_sec
+        runtime_delta_sustained_event["runtime_delta_churn_threshold"] = runtime_delta_churn_threshold
+        new_events.append(runtime_delta_sustained_event)
+
+    if curr_dispatch_status == "launched" and prev_dispatch_status != "launched":
+        new_events.append(
+            _build_meaningful_event_entry(
+                event_code="QUEUE_RELAUNCHED",
+                event_at=event_at_fallback,
+                detected_at=detected_at,
+                lane=lane,
+                work_unit_ref=next_candidate,
+                from_state=prev_queue_state,
+                to_state="dispatched",
+                decision_taken="relaunch",
+                decision_reason="dispatch_status_transition_to_launched",
+                next_action="monitor_active_worker",
+                evidence_refs=evidence_refs_base,
+                queue_source=queue_source,
+                queue_parity_status=queue_parity_status,
+                next_candidate=next_candidate,
+            )
+        )
+        if prev_worker_count == 0:
+            idle_for_sec = _to_int(prev_status.get("idle_for_sec"), 0)
+            new_events.append(
+                _build_meaningful_event_entry(
+                    event_code="EXECUTOR_IDLE_TO_RELAUNCHED",
+                    event_at=event_at_fallback,
+                    detected_at=detected_at,
+                    lane=lane,
+                    work_unit_ref=next_candidate,
+                    from_state=f"idle:{idle_for_sec}s",
+                    to_state="relaunch_applied",
+                    decision_taken="relaunch",
+                    decision_reason="idle_executor_received_dispatch_launch",
+                    next_action="track_launch_completion",
+                    evidence_refs=evidence_refs_base,
+                    queue_source=queue_source,
+                    queue_parity_status=queue_parity_status,
+                    next_candidate=next_candidate,
+                )
+            )
+
+    carried_recent: List[Dict[str, Any]] = []
+    for raw in prior_recent:
+        if not isinstance(raw, dict):
+            continue
+        raw_detected = parse_iso(raw.get("detected_at"))
+        if raw_detected is None:
+            continue
+        age_sec = max(0, int((now_dt - raw_detected).total_seconds()))
+        if age_sec <= carry_window_sec:
+            carried_recent.append(dict(raw))
+
+    merged_by_sig: Dict[str, Dict[str, Any]] = {}
+    for item in carried_recent + new_events:
+        sig = str(item.get("event_signature") or "").strip() or _event_signature(item)
+        item["event_signature"] = sig
+        merged_by_sig[sig] = item
+
+    recent_events = sorted(
+        merged_by_sig.values(),
+        key=lambda row: str(row.get("detected_at") or ""),
+    )[-20:]
+
+    new_event_signatures = _dedupe_nonempty_strings([row.get("event_signature") for row in new_events])
+    new_event_codes = _dedupe_nonempty_strings([row.get("event_code") for row in new_events])
+    pending_required_event_codes = _dedupe_nonempty_strings([row.get("event_code") for row in recent_events])
+
+    mandatory_trigger_codes = [
+        "SUBAGENT_FINISHED",
+        "SLICE_LANDED",
+        "PHASE_LANDED",
+        "WORKER_FAILED_OR_JUNK",
+        "QUEUE_BLOCKED",
+        "QUEUE_UNBLOCKED",
+        "QUEUE_RELAUNCHED",
+        "EXECUTOR_IDLE_TO_RELAUNCHED",
+        "QUEUE_RUNTIME_DELTA_ATTENTION",
+        "QUEUE_RUNTIME_DELTA_CLEARED",
+        "QUEUE_RUNTIME_DELTA_SUSTAINED",
+    ]
+
+    detector_coverage = {
+        "SUBAGENT_FINISHED": "heuristic",
+        "SLICE_LANDED": "manual_only",
+        "PHASE_LANDED": "heuristic",
+        "WORKER_FAILED_OR_JUNK": "heuristic",
+        "QUEUE_BLOCKED": "deterministic",
+        "QUEUE_UNBLOCKED": "deterministic",
+        "QUEUE_RELAUNCHED": "deterministic",
+        "EXECUTOR_IDLE_TO_RELAUNCHED": "deterministic",
+        "QUEUE_RUNTIME_DELTA_ATTENTION": "deterministic",
+        "QUEUE_RUNTIME_DELTA_CLEARED": "deterministic",
+        "QUEUE_RUNTIME_DELTA_SUSTAINED": "deterministic",
+    }
+
+    checklist_fields = [
+        "event_code",
+        "event_at",
+        "detected_at",
+        "lane",
+        "work_unit_ref",
+        "from_state",
+        "to_state",
+        "decision_taken",
+        "decision_reason",
+        "evidence_refs",
+        "next_action",
+    ]
+    queue_extra_fields = ["queue_source", "queue_truth_projection_parity", "next_candidate"]
+    packet_field_gaps: List[Dict[str, Any]] = []
+    for row in new_events:
+        missing = []
+        for field in checklist_fields:
+            value = row.get(field)
+            if field == "evidence_refs":
+                if not isinstance(value, list) or not value:
+                    missing.append(field)
+                continue
+            if value is None or str(value).strip() == "":
+                missing.append(field)
+        if row.get("event_code") in {
+            "QUEUE_BLOCKED",
+            "QUEUE_UNBLOCKED",
+            "QUEUE_RELAUNCHED",
+            "EXECUTOR_IDLE_TO_RELAUNCHED",
+            "QUEUE_RUNTIME_DELTA_ATTENTION",
+            "QUEUE_RUNTIME_DELTA_CLEARED",
+            "QUEUE_RUNTIME_DELTA_SUSTAINED",
+        }:
+            for field in queue_extra_fields:
+                if row.get(field) in (None, ""):
+                    missing.append(field)
+        if missing:
+            packet_field_gaps.append(
+                {
+                    "event_signature": row.get("event_signature"),
+                    "event_code": row.get("event_code"),
+                    "missing_fields": _dedupe_nonempty_strings(missing),
+                }
+            )
+
+    checklist_status = {
+        "trigger_detection": {
+            "mandatory_trigger_codes": mandatory_trigger_codes,
+            "fired_trigger_codes": new_event_codes,
+            "none_fired": len(new_event_codes) == 0,
+        },
+        "action_before_narration_guard": {
+            "failure_or_junk_decision_recorded": any(
+                code in {"WORKER_FAILED_OR_JUNK", "QUEUE_BLOCKED", "EXECUTOR_IDLE_TO_RELAUNCHED"}
+                for code in new_event_codes
+            )
+            and all(
+                str(row.get("decision_taken") or "").strip() in {"relaunch", "blocked"}
+                for row in new_events
+                if str(row.get("event_code") or "") in {"WORKER_FAILED_OR_JUNK", "QUEUE_BLOCKED", "EXECUTOR_IDLE_TO_RELAUNCHED"}
+            ),
+        },
+        "event_packet_minimum_fields": {
+            "ok": len(packet_field_gaps) == 0,
+            "gaps": packet_field_gaps,
+        },
+        "delivery_contract": {
+            "event_packet_surface_written": True,
+            "pending_required_event_codes": pending_required_event_codes,
+        },
+        "missed_trigger_recovery": {
+            "required": False,
+            "reason": None,
+        },
+    }
+
+    return {
+        "schema": "clawd.execution_meaningful_event_reporting.v1",
+        "generated_at": detected_at,
+        "detector_version": "execution_meaningful_event_reporting.detector.v1",
+        "queue_state_transition": {
+            "from_state": prev_queue_state,
+            "to_state": curr_queue_state,
+        },
+        "detector_coverage": detector_coverage,
+        "new_events": new_events,
+        "new_event_count": len(new_events),
+        "new_event_signatures": new_event_signatures,
+        "recent_events": recent_events,
+        "pending_required_event_codes": pending_required_event_codes,
+        "pending_required_event_count": len(pending_required_event_codes),
+        "relaunch_recovery_accounting": relaunch_recovery_accounting,
+        "checklist_status": checklist_status,
+        "source_refs": {
+            "execution_program_status": to_rel(execution_program_status_path),
+            "execution_frontier_ledger": to_rel(execution_frontier_ledger_path),
+            "core_roadmap_queue_layer": to_rel(core_roadmap_queue_layer_path),
+            "continuity_now": to_rel(continuity_now_latest_path),
+        },
+    }
+
+
+def build_execution_meaningful_event_reporting_status(
+    *,
+    event_reporting: Dict[str, Any],
+    generated_at: str,
+) -> Dict[str, Any]:
+    reporting = event_reporting if isinstance(event_reporting, dict) else {}
+    detected_at = str(generated_at or now_iso()).strip() or now_iso()
+
+    pending_required_event_codes = _dedupe_nonempty_strings(
+        reporting.get("pending_required_event_codes") if isinstance(reporting.get("pending_required_event_codes"), list) else []
+    )
+    new_events = reporting.get("new_events") if isinstance(reporting.get("new_events"), list) else []
+    new_event_codes = _dedupe_nonempty_strings(
+        [row.get("event_code") for row in new_events if isinstance(row, dict)]
+    )
+    relaunch_recovery_accounting = (
+        reporting.get("relaunch_recovery_accounting")
+        if isinstance(reporting.get("relaunch_recovery_accounting"), dict)
+        else {}
+    )
+    invalid_output_reroute = (
+        relaunch_recovery_accounting.get("invalid_output_reroute")
+        if isinstance(relaunch_recovery_accounting.get("invalid_output_reroute"), dict)
+        else {}
+    )
+    reroute_required_count = max(0, _to_int(invalid_output_reroute.get("required_count"), 0))
+    reroute_dispatch_ready_count = max(0, _to_int(invalid_output_reroute.get("dispatch_ready_count"), 0))
+    reroute_blocked_count = max(0, _to_int(invalid_output_reroute.get("blocked_count"), 0))
+
+    recent_events = reporting.get("recent_events") if isinstance(reporting.get("recent_events"), list) else []
+    latest_event_code = None
+    latest_event_detected_at = None
+    latest_sort_key = ""
+    for row in recent_events:
+        if not isinstance(row, dict):
+            continue
+        sort_key = str(row.get("detected_at") or row.get("event_at") or "").strip()
+        if not sort_key:
+            continue
+        if sort_key >= latest_sort_key:
+            latest_sort_key = sort_key
+            latest_event_code = str(row.get("event_code") or "").strip() or None
+            latest_event_detected_at = sort_key
+
+    critical_transition_codes = [
+        "WORKER_FAILED_OR_JUNK",
+        "QUEUE_BLOCKED",
+        "QUEUE_RELAUNCHED",
+        "EXECUTOR_IDLE_TO_RELAUNCHED",
+    ]
+    critical_transition_code_set = set(critical_transition_codes)
+    critical_pending_event_codes = [
+        code for code in pending_required_event_codes if code in critical_transition_code_set
+    ]
+
+    checklist = reporting.get("checklist_status") if isinstance(reporting.get("checklist_status"), dict) else {}
+    packet_fields = checklist.get("event_packet_minimum_fields") if isinstance(checklist.get("event_packet_minimum_fields"), dict) else {}
+    missed_trigger = checklist.get("missed_trigger_recovery") if isinstance(checklist.get("missed_trigger_recovery"), dict) else {}
+    action_guard = checklist.get("action_before_narration_guard") if isinstance(checklist.get("action_before_narration_guard"), dict) else {}
+
+    packet_fields_ok = bool(packet_fields.get("ok") is True)
+    packet_field_gaps = packet_fields.get("gaps") if isinstance(packet_fields.get("gaps"), list) else []
+    missed_trigger_required = bool(missed_trigger.get("required") is True)
+    failure_or_junk_decision_recorded = bool(action_guard.get("failure_or_junk_decision_recorded") is True)
+    action_before_narration_guard_required = len(critical_pending_event_codes) > 0
+    action_before_narration_guard_ok = (
+        failure_or_junk_decision_recorded if action_before_narration_guard_required else True
+    )
+    reroute_accounting_missing_failure_event = bool(
+        reroute_required_count > 0 and "WORKER_FAILED_OR_JUNK" not in pending_required_event_codes
+    )
+
+    attention_reasons: List[str] = []
+    if pending_required_event_codes:
+        attention_reasons.append("pending_required_event_codes_present")
+    if critical_pending_event_codes:
+        attention_reasons.append("critical_transition_pending")
+    if not packet_fields_ok:
+        attention_reasons.append("event_packet_field_gap")
+    if missed_trigger_required:
+        attention_reasons.append("missed_trigger_recovery_required")
+    if not action_before_narration_guard_ok:
+        attention_reasons.append("action_before_narration_guard_failed")
+    if reroute_accounting_missing_failure_event:
+        attention_reasons.append("invalid_output_reroute_accounting_missing_failure_event")
+
+    status = "clear"
+    if attention_reasons:
+        if (
+            critical_pending_event_codes
+            or not packet_fields_ok
+            or missed_trigger_required
+            or not action_before_narration_guard_ok
+            or reroute_accounting_missing_failure_event
+        ):
+            status = "critical"
+        else:
+            status = "warning"
+
+    return {
+        "schema": "clawd.execution_meaningful_event_reporting_status.v1",
+        "generated_at": detected_at,
+        "status": status,
+        "operator_attention_required": bool(attention_reasons),
+        "attention_reasons": attention_reasons,
+        "summary": (
+            f"status={status} pending={len(pending_required_event_codes)} "
+            f"critical_pending={len(critical_pending_event_codes)} new={len(new_event_codes)}"
+        ),
+        "pending_required_event_count": len(pending_required_event_codes),
+        "pending_required_event_codes": pending_required_event_codes,
+        "critical_transition_codes": critical_transition_codes,
+        "critical_pending_event_count": len(critical_pending_event_codes),
+        "critical_pending_event_codes": critical_pending_event_codes,
+        "new_event_count": max(0, _to_int(reporting.get("new_event_count"), len(new_event_codes))),
+        "new_event_codes": new_event_codes,
+        "latest_event_code": latest_event_code,
+        "latest_event_detected_at": latest_event_detected_at,
+        "relaunch_recovery_accounting": relaunch_recovery_accounting,
+        "relaunch_recovery_summary": {
+            "invalid_output_reroute_required_count": reroute_required_count,
+            "invalid_output_reroute_dispatch_ready_count": reroute_dispatch_ready_count,
+            "invalid_output_reroute_blocked_count": reroute_blocked_count,
+            "invalid_output_reroute_active": bool(reroute_required_count > 0),
+        },
+        "checklist_projection": {
+            "event_packet_minimum_fields_ok": packet_fields_ok,
+            "event_packet_field_gap_count": len(packet_field_gaps),
+            "missed_trigger_recovery_required": missed_trigger_required,
+            "action_before_narration_guard_required": action_before_narration_guard_required,
+            "action_before_narration_guard_ok": action_before_narration_guard_ok,
+            "invalid_output_reroute_accounting_missing_failure_event": reroute_accounting_missing_failure_event,
+        },
+        "recommended_actions": (
+            [
+                "cat state/continuity/latest/execution_meaningful_event_reporting_latest.json",
+                "bash ops/openclaw/continuity.sh mission-control --refresh --json",
+            ]
+            if attention_reasons
+            else ["none"]
+        ),
+        "source_refs": {
+            "execution_meaningful_event_reporting": to_rel(execution_meaningful_event_reporting_path),
+            "execution_program_status": to_rel(execution_program_status_path),
+            "execution_frontier_ledger": to_rel(execution_frontier_ledger_path),
+            "core_roadmap_queue_layer": to_rel(core_roadmap_queue_layer_path),
+            "continuity_now": to_rel(continuity_now_latest_path),
+        },
+    }
+
+
+def emit_failclosed_current(reason: str, *, drift_code: str, detail: str) -> None:
+    reason_text = str(reason or "continuity_current_failed").strip() or "continuity_current_failed"
+    detail_text = str(detail or reason_text).strip() or reason_text
+    out = {
+        "schema": "clawd.continuity.current.v1",
+        "generated_at": now_iso(),
+        "workspace_id": "clawd-architect",
+        "readiness": "UNKNOWN",
+        "mutation_gate": {
+            "status": "forbidden",
+            "reason": [reason_text],
+            "blocking_reasons": [reason_text],
+            "concurrency_reasons": [],
+            "posture": "blocker",
+            "expected_in_flight_guard": False,
+        },
+        "operator_working_doctrine": build_operator_working_doctrine(),
+        "drifts": [{"code": drift_code, "detail": detail_text[:400]}],
+    }
+    atomic_write(current_path, out)
+    if json_out:
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+    else:
+        print("CONTINUITY CURRENT: readiness=UNKNOWN mutation_gate=forbidden gate_posture=blocker")
+    raise SystemExit(1)
+
+
+
+def _build_continuity_now_missing_runtime_fallback(reason: str) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {}
+    latest_obj = load_json_if_exists(continuity_now_latest_path)
+    if isinstance(latest_obj, dict):
+        payload = dict(latest_obj)
+
+    generated_at = str(payload.get("generated_at") or "").strip() or now_iso()
+    queue_obj = payload.get("queue") if isinstance(payload.get("queue"), dict) else {}
+    autopilot_obj = payload.get("autopilot") if isinstance(payload.get("autopilot"), dict) else {}
+
+    if not isinstance(autopilot_obj.get("idle_lane_autospawn"), dict):
+        autopilot_obj["idle_lane_autospawn"] = {
+            "status": "missing_runtime",
+            "updated_at": generated_at,
+            "idle_sec": 0,
+        }
+
+    warnings_existing = payload.get("warning_reasons") if isinstance(payload.get("warning_reasons"), list) else []
+    warning_reasons = _dedupe_nonempty_strings(list(warnings_existing) + [str(reason or "continuity_now_runtime_missing")])
+
+    payload["generated_at"] = generated_at
+    payload["ready"] = bool(payload.get("ready", True))
+    payload["queue"] = queue_obj
+    payload["autopilot"] = autopilot_obj
+    payload["warning_reasons"] = warning_reasons
+    payload["continuity_now_fallback"] = {
+        "schema": "clawd.continuity_now_fallback.v1",
+        "reason": str(reason or "continuity_now_runtime_missing")[:120],
+        "source_path": to_rel(continuity_now_latest_path),
+        "source_present": bool(continuity_now_latest_path.exists()),
+    }
+    return payload
+
+
+
+def run_continuity_now(*, refresh_flag: bool) -> Dict[str, Any]:
+    now_cmd = [str(root / "ops" / "openclaw" / "continuity" / "continuity_now.sh"), "--json"]
+    if refresh_flag:
+        now_cmd.insert(1, "--refresh")
+    try:
+        cp = subprocess.run(
+            now_cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return _build_continuity_now_missing_runtime_fallback("continuity_now_runtime_missing")
+
+    if cp.returncode != 0:
+        err = (cp.stderr or cp.stdout or "continuity_now_failed").strip()
+        emit_failclosed_current(
+            "continuity_now_failed",
+            drift_code="CONTINUITY_NOW_FAILED",
+            detail=err,
+        )
+
+    try:
+        now_obj = json.loads(cp.stdout or "{}")
+    except Exception as exc:
+        emit_failclosed_current(
+            "continuity_now_invalid_json",
+            drift_code="CONTINUITY_NOW_INVALID_JSON",
+            detail=f"continuity_now_invalid_json:{exc}",
+        )
+    if not isinstance(now_obj, dict):
+        emit_failclosed_current(
+            "continuity_now_invalid_json",
+            drift_code="CONTINUITY_NOW_INVALID_JSON",
+            detail="continuity_now_invalid_json:not_object",
+        )
+
+    return now_obj
+
+
+def sync_blocker_registry_from_current() -> None:
+    if not blocker_registry_script_path.exists():
+        return
+
+    cp = subprocess.run(
+        [
+            str(blocker_registry_script_path),
+            "--current",
+            str(current_path),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if cp.returncode != 0:
+        err = (cp.stderr or cp.stdout or "blocker_registry_sync_failed").strip()
+        raise RuntimeError(f"blocker_registry_sync_failed:{err[:240]}")
+
+
+def detect_current_staleness(existing: Dict[str, Any]) -> List[str]:
+    reasons: List[str] = []
+    anchor = existing.get("truth_anchor") or {}
+
+    latest_pointer: Dict[str, Any] = {}
+    if legacy_pointer_path.exists():
+        try:
+            latest_pointer = load_json(legacy_pointer_path)
+        except Exception:
+            reasons.append("latest_pointer_parse_failed")
+    else:
+        reasons.append("latest_pointer_missing")
+
+    expected_checkpoint = str(latest_pointer.get("checkpoint_id") or "").strip()
+    expected_pointer_hash = str(latest_pointer.get("json_sha256") or "").strip()
+
+    checkpoint_rel = str(latest_pointer.get("json_path") or "").strip() if latest_pointer else ""
+    checkpoint_created = None
+    checkpoint_abs = None
+    if checkpoint_rel:
+        checkpoint_abs = (root / checkpoint_rel).resolve()
+        if checkpoint_abs.exists():
+            try:
+                checkpoint_obj = load_json(checkpoint_abs)
+                checkpoint_created = parse_iso(((checkpoint_obj.get("metadata") or {}).get("created_at")))
+            except Exception:
+                pass
+    if checkpoint_created is None and latest_pointer:
+        checkpoint_created = parse_iso(latest_pointer.get("updated_at"))
+    if checkpoint_created is None and checkpoint_abs is not None and checkpoint_abs.exists():
+        try:
+            checkpoint_created = dt.datetime.fromtimestamp(checkpoint_abs.stat().st_mtime, tz=dt.timezone.utc)
+        except Exception:
+            checkpoint_created = None
+    if checkpoint_created is not None and checkpoint_freshness_max_age_sec > 0:
+        checkpoint_age_sec = max(0, int((clock_now_dt() - checkpoint_created).total_seconds()))
+        if checkpoint_age_sec > checkpoint_freshness_max_age_sec:
+            reasons.append("checkpoint_freshness_age_breach")
+
+    gt_latest: Dict[str, Any] = {}
+    if gt_latest_path.exists():
+        try:
+            gt_latest = load_json(gt_latest_path)
+        except Exception:
+            reasons.append("ground_truth_latest_parse_failed")
+    else:
+        reasons.append("ground_truth_latest_missing")
+    expected_snapshot = str(gt_latest.get("snapshot_id") or "").strip()
+
+    got_checkpoint = str(anchor.get("journal_offset") or "").strip()
+    got_pointer_hash = str(anchor.get("pointer_hash") or "").strip()
+    got_snapshot = str(anchor.get("snapshot_id") or "").strip()
+
+    if expected_checkpoint and got_checkpoint != expected_checkpoint:
+        reasons.append("truth_anchor_journal_offset_stale")
+    if expected_pointer_hash and got_pointer_hash != expected_pointer_hash:
+        reasons.append("truth_anchor_pointer_hash_stale")
+    if expected_snapshot and got_snapshot != expected_snapshot:
+        reasons.append("truth_anchor_snapshot_id_stale")
+
+    continuity_now_contract = extract_continuity_now_contract(existing)
+    contract_now_rel = str(continuity_now_contract.get("path") or "").strip()
+    contract_now_sha = str(continuity_now_contract.get("sha256") or "").strip()
+    contract_now_path = (root / contract_now_rel).resolve() if contract_now_rel else None
+
+    src_now = str(((existing.get("source_refs") or {}).get("continuity_now")) or "").strip()
+    if src_now:
+        src_now_path = (root / src_now).resolve()
+        if not src_now_path.exists():
+            reasons.append("continuity_now_source_ref_missing")
+    elif not continuity_now_latest_path.exists():
+        reasons.append("continuity_now_latest_missing")
+
+    if contract_now_path is not None:
+        if not contract_now_path.exists():
+            reasons.append("continuity_now_contract_source_missing")
+        elif contract_now_sha:
+            try:
+                if sha256_file(contract_now_path) != contract_now_sha:
+                    reasons.append("continuity_now_contract_source_sha_mismatch")
+            except Exception:
+                reasons.append("continuity_now_contract_source_unreadable")
+
+    src_bundle = str(((existing.get("source_refs") or {}).get("coherence_bundle")) or "").strip()
+    if src_bundle:
+        src_bundle_path = (root / src_bundle).resolve()
+        if not src_bundle_path.exists():
+            reasons.append("coherence_bundle_source_ref_missing")
+    elif not coherence_bundle_path.exists():
+        reasons.append("coherence_bundle_missing")
+
+    current_generated = parse_iso(existing.get("generated_at"))
+    if current_generated is None:
+        reasons.append("current_generated_at_invalid")
+
+    current_readiness = str(existing.get("readiness") or "UNKNOWN")
+    if current_generated is not None and current_readiness in {"READY", "READY_WITH_DEBT"}:
+        age_s = max(0, int((clock_now_dt() - current_generated).total_seconds()))
+        if age_s > current_cache_ttl_sec:
+            reasons.append("current_cache_ttl_exceeded")
+
+    pointer_updated = parse_iso(latest_pointer.get("updated_at")) if latest_pointer else None
+    if current_generated is not None and pointer_updated is not None and current_generated < pointer_updated:
+        reasons.append("current_generated_before_latest_pointer")
+
+    if verify_last_path.exists() and current_generated is not None:
+        try:
+            verify_last = load_json(verify_last_path)
+            verify_ts = parse_iso(verify_last.get("timestamp"))
+            if verify_ts is not None and current_generated < verify_ts:
+                reasons.append("verify_report_newer_than_current")
+        except Exception:
+            reasons.append("verify_report_parse_failed")
+
+    contract_pins_latest_surface = contract_now_path is None or contract_now_path == continuity_now_latest_path.resolve()
+    if continuity_now_latest_path.exists() and current_generated is not None and contract_pins_latest_surface:
+        try:
+            now_latest = load_json(continuity_now_latest_path)
+            now_generated = parse_iso(now_latest.get("generated_at"))
+            if now_generated is not None and current_generated < now_generated:
+                reasons.append("continuity_now_newer_than_current")
+        except Exception:
+            reasons.append("continuity_now_latest_parse_failed")
+
+    reset_ready_refresh_obj = existing.get("reset_ready_refresh") if isinstance(existing.get("reset_ready_refresh"), dict) else {}
+    src_reset = str(
+        ((existing.get("source_refs") or {}).get("reset_ready_refresh"))
+        or reset_ready_refresh_obj.get("path")
+        or RESET_READY_REFRESH_LATEST_REL
+    ).strip()
+    if src_reset:
+        src_reset_path = pathlib.Path(src_reset)
+        if not src_reset_path.is_absolute():
+            src_reset_path = (root / src_reset_path).resolve()
+        else:
+            src_reset_path = src_reset_path.resolve()
+
+        reset_ready_refresh_present = reset_ready_refresh_obj.get("present") is True
+        reset_ready_refresh_expected = bool(
+            reset_ready_refresh_present
+            or str(reset_ready_refresh_obj.get("sha256") or "").strip()
+            or parse_iso(reset_ready_refresh_obj.get("generated_at")) is not None
+        )
+
+        if not src_reset_path.exists():
+            if reset_ready_refresh_expected:
+                reasons.append("reset_ready_refresh_source_ref_missing")
+        else:
+            try:
+                live_reset_payload = load_json(src_reset_path)
+                if not isinstance(live_reset_payload, dict):
+                    raise RuntimeError("reset_ready_refresh_latest_not_object")
+                live_reset_sha = sha256_file(src_reset_path)
+                existing_reset_sha = str(
+                    reset_ready_refresh_obj.get("sha256")
+                    or ((existing.get("source_refs") or {}).get("reset_ready_refresh_sha256"))
+                    or ""
+                ).strip()
+                if existing_reset_sha:
+                    if live_reset_sha != existing_reset_sha:
+                        reasons.append("reset_ready_refresh_source_sha_mismatch")
+                else:
+                    live_reset_generated = parse_iso(live_reset_payload.get("generated_at"))
+                    existing_reset_generated = parse_iso(reset_ready_refresh_obj.get("generated_at"))
+                    if existing_reset_generated is not None and live_reset_generated is not None and existing_reset_generated < live_reset_generated:
+                        reasons.append("reset_ready_refresh_newer_than_current")
+                    elif not reset_ready_refresh_obj and current_generated is not None and live_reset_generated is not None and current_generated < live_reset_generated:
+                        reasons.append("reset_ready_refresh_newer_than_current")
+            except Exception:
+                reasons.append("reset_ready_refresh_source_unreadable")
+
+    if gtc_gateboard_path.exists() and current_generated is not None:
+        try:
+            gateboard = load_json(gtc_gateboard_path)
+            gate_generated = parse_iso(gateboard.get("generated_at"))
+            if gate_generated is not None and current_generated < gate_generated:
+                reasons.append("gtc_gateboard_newer_than_current")
+        except Exception:
+            reasons.append("gtc_gateboard_parse_failed")
+
+    existing_coherence = existing.get("coherence") or {}
+    existing_tuple_hash = str(existing_coherence.get("tuple_hash") or "").strip()
+    existing_generation = str(existing_coherence.get("build_generation_id") or "").strip()
+    existing_action_token = str(existing.get("action_token") or "").strip()
+    existing_action_token_missing = existing.get("action_token_missing_fields")
+    if not existing_tuple_hash:
+        reasons.append("coherence_metadata_missing")
+    if existing_tuple_hash and not existing_action_token:
+        reasons.append("action_token_missing")
+    if isinstance(existing_action_token_missing, list) and any(str(x).strip() for x in existing_action_token_missing):
+        reasons.append("action_token_incomplete")
+
+    if coherence_bundle_path.exists():
+        try:
+            bundle = load_json(coherence_bundle_path)
+            bundle_generation = str(
+                bundle.get("build_generation_id")
+                or (((bundle.get("continuity_now") or {}).get("coherence") or {}).get("build_generation_id"))
+                or ""
+            ).strip()
+            if existing_generation and bundle_generation and existing_generation != bundle_generation:
+                reasons.append("coherence_generation_stale")
+            bundle_valid_until = parse_iso(bundle.get("valid_until") or (((bundle.get("continuity_now") or {}).get("coherence") or {}).get("valid_until")))
+            if bundle_valid_until is not None and clock_now_dt() > bundle_valid_until:
+                reasons.append("coherence_bundle_ttl_expired")
+        except Exception:
+            reasons.append("coherence_bundle_parse_failed")
+
+    if build_coherence_tuple is not None:
+        try:
+            live_coherence = build_coherence_tuple(root, update_policy_epoch=False)
+            live_tuple_hash = str(live_coherence.get("tuple_hash") or "").strip()
+            live_policy_sig = str(((live_coherence.get("policy") or {}).get("signature") or "")).strip()
+            existing_policy_sig = str((((existing_coherence.get("policy") or {}).get("signature")) or "")).strip()
+            if existing_tuple_hash and live_tuple_hash and existing_tuple_hash != live_tuple_hash:
+                reasons.append("coherence_tuple_stale")
+            if existing_policy_sig and live_policy_sig and existing_policy_sig != live_policy_sig:
+                reasons.append("policy_signature_stale")
+
+            live_connector_blocking = sorted(
+                {
+                    str(x).strip()
+                    for x in ((live_coherence.get("connectors") or {}).get("blocking_reasons") or [])
+                    if str(x).strip()
+                }
+            )
+            live_connector_warning = sorted(
+                {
+                    str(x).strip()
+                    for x in ((live_coherence.get("connectors") or {}).get("warning_reasons") or [])
+                    if str(x).strip()
+                }
+            )
+            existing_connector_blocking = sorted(
+                {
+                    str(x).strip()
+                    for x in (existing_coherence.get("connector_blocking_reasons") or [])
+                    if str(x).strip()
+                }
+            )
+            existing_connector_warning = sorted(
+                {
+                    str(x).strip()
+                    for x in (existing_coherence.get("connector_warning_reasons") or [])
+                    if str(x).strip()
+                }
+            )
+            if live_connector_blocking != existing_connector_blocking:
+                reasons.append("connector_freshness_stale")
+            if live_connector_warning != existing_connector_warning:
+                reasons.append("connector_warning_freshness_stale")
+
+            latest_verify_sig = ""
+            if verify_last_path.exists():
+                verify_last = load_json(verify_last_path)
+                latest_verify_sig = str((((verify_last.get("freshness") or {}).get("policy") or {}).get("signature") or "")).strip()
+            existing_verify_sig = str(existing_coherence.get("policy_verify_signature") or "").strip()
+            if latest_verify_sig != existing_verify_sig:
+                reasons.append("policy_verify_signature_stale")
+        except Exception:
+            reasons.append("coherence_tuple_compute_failed")
+    elif coherence_stamp_path.exists():
+        try:
+            stamp = load_json(coherence_stamp_path)
+            stamp_hash = str(stamp.get("tuple_hash") or "").strip()
+            if existing_tuple_hash and stamp_hash and existing_tuple_hash != stamp_hash:
+                reasons.append("coherence_tuple_stale")
+        except Exception:
+            reasons.append("coherence_stamp_parse_failed")
+
+    seen = set()
+    ordered = []
+    for item in reasons:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+auto_refresh_reasons: List[str] = []
+if current_path.exists() and not refresh:
+    try:
+        existing = load_json(current_path)
+    except Exception:
+        auto_refresh_reasons = ["current_parse_failed"]
+        refresh = True
+    else:
+        auto_refresh_reasons = detect_current_staleness(existing)
+        if not auto_refresh_reasons:
+            sync_generation_pointer_from_current(existing)
+            sync_blocker_registry_from_current()
+            if json_out:
+                print(json.dumps(existing, ensure_ascii=False, indent=2))
+            else:
+                readiness = str(existing.get("readiness") or "UNKNOWN")
+                gate_obj = (existing.get("mutation_gate") or {}) if isinstance(existing.get("mutation_gate"), dict) else {}
+                gate = gate_obj.get("status")
+                gate_posture = str(gate_obj.get("posture") or "unknown")
+                print(f"CONTINUITY CURRENT: readiness={readiness} mutation_gate={gate} gate_posture={gate_posture}")
+            raise SystemExit(0)
+        refresh = True
+
+now_obj = run_continuity_now(refresh_flag=refresh)
+queue = now_obj.get("queue") or {}
+verify = now_obj.get("verify") or {}
+parity = now_obj.get("parity") or {}
+bridge = now_obj.get("bridge") or {}
+coherence = now_obj.get("coherence") or {}
+not_ready_reasons = [str(x) for x in (now_obj.get("not_ready_reasons") or []) if str(x).strip()]
+reconcile_only_reasons = [str(x) for x in (now_obj.get("reconcile_only_reasons") or []) if str(x).strip()]
+warning_reasons = [str(x) for x in (now_obj.get("warning_reasons") or []) if str(x).strip()]
+now_generated_at = (
+    str(now_obj.get("generated_at") or "").strip()
+    or str(verify.get("timestamp") or "").strip()
+    or str(parity.get("last_done_at") or "").strip()
+    or now_iso()
+)
+
+auto_reconcile: Dict[str, Any] = {
+    "enabled": refresh_auto_reconcile_drift,
+    "disabled": refresh_auto_reconcile_disabled,
+    "attempted": False,
+    "triggered": False,
+    "ok": None,
+    "reason": None,
+}
+auto_reconcile_drift_reasons = set(_AUTO_RECONCILE_DRIFT_REASON_SET)
+auto_reconcile_trigger_reasons = not_ready_reasons if not_ready_reasons else reconcile_only_reasons
+if (
+    refresh
+    and refresh_auto_reconcile_drift
+    and auto_reconcile_trigger_reasons
+    and all(reason in auto_reconcile_drift_reasons for reason in auto_reconcile_trigger_reasons)
+):
+    if refresh_auto_reconcile_disabled:
+        auto_reconcile["reason"] = "disabled_by_env"
+    else:
+        auto_reconcile["attempted"] = True
+        auto_reconcile["triggered"] = True
+        reconcile_env = os.environ.copy()
+        reconcile_env["OPENCLAW_CONTINUITY_CURRENT_DISABLE_AUTO_RECONCILE"] = "1"
+
+        # Do not recurse into continuity_current.sh while this process still holds
+        # current_publish.lock; probing self here can deadlock until lock timeout.
+        # Dispatch reconcile directly through guarded internal-mutation ingress.
+        reconcile_cmd = [
+            str(root / "ops" / "openclaw" / "continuity" / "reconcile.sh"),
+            "--json",
+        ]
+        reconcile_env_direct = reconcile_env.copy()
+        reconcile_env_direct["OPENCLAW_INTERNAL_MUTATION"] = "1"
+        reconcile_env_direct["OPENCLAW_INTERNAL_MUTATION_CALLSITE"] = "continuity_current.sh:auto_reconcile"
+        reconcile_cp = subprocess.run(
+            reconcile_cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=reconcile_env_direct,
+        )
+        if reconcile_cp.returncode != 0:
+            auto_reconcile["ok"] = False
+            auto_reconcile["reason"] = "reconcile_command_failed"
+            auto_reconcile["detail"] = (reconcile_cp.stderr or reconcile_cp.stdout or "").strip()[:240]
+        else:
+            try:
+                reconcile_obj = json.loads(reconcile_cp.stdout or "{}")
+            except Exception:
+                reconcile_obj = {}
+            auto_reconcile["ok"] = bool(reconcile_obj.get("ok", True))
+            if auto_reconcile["ok"]:
+                now_obj = run_continuity_now(refresh_flag=False)
+                queue = now_obj.get("queue") or {}
+                verify = now_obj.get("verify") or {}
+                parity = now_obj.get("parity") or {}
+                bridge = now_obj.get("bridge") or {}
+                coherence = now_obj.get("coherence") or {}
+                not_ready_reasons = [str(x) for x in (now_obj.get("not_ready_reasons") or []) if str(x).strip()]
+                reconcile_only_reasons = [str(x) for x in (now_obj.get("reconcile_only_reasons") or []) if str(x).strip()]
+                warning_reasons = [str(x) for x in (now_obj.get("warning_reasons") or []) if str(x).strip()]
+                now_generated_at = (
+                    str(now_obj.get("generated_at") or "").strip()
+                    or str(verify.get("timestamp") or "").strip()
+                    or str(parity.get("last_done_at") or "").strip()
+                    or now_iso()
+                )
+                auto_reconcile["reason"] = "reconcile_succeeded"
+            else:
+                auto_reconcile["reason"] = "reconcile_payload_not_ok"
+
+stall_trigger_incident_sync = sync_stall_trigger_incidents(
+    path=doctrine_drift_registry_path,
+    warning_reasons=warning_reasons,
+    generated_at=now_generated_at,
+)
+
+doctrine_drift = load_doctrine_drift_surface(doctrine_drift_registry_path)
+doctrine_drift["stall_trigger_sync"] = stall_trigger_incident_sync
+for doctrine_warning in doctrine_drift.get("projected_warning_reasons") or []:
+    reason_text = str(doctrine_warning or "").strip()
+    if not reason_text:
+        continue
+    if reason_text not in warning_reasons:
+        warning_reasons.append(reason_text)
+
+legacy_pointer: Dict[str, Any] = {}
+pointer_errors: List[str] = []
+pointer_rel = None
+pointer_sha = None
+if legacy_pointer_path.exists():
+    try:
+        legacy_pointer = load_json(legacy_pointer_path)
+        pointer_rel = str(legacy_pointer.get("json_path") or "")
+        pointer_sha = str(legacy_pointer.get("json_sha256") or "")
+        if pointer_rel:
+            p = (root / pointer_rel).resolve()
+            if not p.exists():
+                pointer_errors.append("pointer_target_missing")
+            elif pointer_sha:
+                actual = sha256_file(p)
+                if actual != pointer_sha:
+                    pointer_errors.append("pointer_sha_mismatch")
+        else:
+            pointer_errors.append("pointer_missing_json_path")
+    except Exception as exc:
+        pointer_errors.append(f"pointer_parse_failed:{exc}")
+else:
+    pointer_errors.append("pointer_missing")
+
+gt_latest = load_json(gt_latest_path) if gt_latest_path.exists() else {}
+snapshot_id = str(gt_latest.get("snapshot_id") or (now_obj.get("ground_truth") or {}).get("snapshot_id") or "")
+
+truth_anchor = {
+    "snapshot_id": snapshot_id or None,
+    "journal_offset": legacy_pointer.get("checkpoint_id") if legacy_pointer else None,
+    "pointer_hash": pointer_sha or None,
+    "pointer_source": to_rel(legacy_pointer_path),
+}
+
+in_flight = derive_in_flight_from_queue(queue)
+now_generated_at = str(now_obj.get("generated_at") or "").strip() or now_generated_at
+
+queue_orphaned_auto = queue.get("orphaned_running_auto_remediation")
+queue_orphaned_auto_contract = queue.get("orphaned_running_auto_remediation_contract")
+queue_orphaned_auto_projection_present = bool(isinstance(queue_orphaned_auto, dict) and queue_orphaned_auto)
+queue_orphaned_auto_contract_healthy_raw = (
+    queue_orphaned_auto_contract.get("healthy")
+    if isinstance(queue_orphaned_auto_contract, dict)
+    else None
+)
+queue_orphaned_auto_contract_healthy_explicit = queue_orphaned_auto_contract_healthy_raw is True
+
+orphaned_auto_degraded_reason_override: Optional[str] = None
+orphaned_auto_degraded_path_override: Optional[str] = None
+
+if queue_orphaned_auto_projection_present and queue_orphaned_auto_contract_healthy_explicit:
+    orphaned_auto_raw = queue_orphaned_auto
+    orphaned_auto_source = ORPHANED_AUTO_REMEDIATION_CANONICAL_SOURCE
+elif queue_orphaned_auto_projection_present:
+    orphaned_auto_candidate = load_canonical_orphaned_auto_remediation_state()
+    fallback_rejection_reason = fallback_state_contract_rejection_reason(
+        orphaned_auto_candidate,
+        now_generated_at=now_generated_at,
+    ) if orphaned_auto_candidate else None
+    if orphaned_auto_candidate and not fallback_rejection_reason:
+        orphaned_auto_raw = orphaned_auto_candidate
+        orphaned_auto_source = "continuity_now_state_file"
+        orphaned_auto_degraded_reason_override = (
+            "queue_projection_contract_unhealthy"
+            if queue_orphaned_auto_contract_healthy_raw is False
+            else "queue_projection_contract_health_missing"
+        )
+        orphaned_auto_degraded_path_override = ORPHANED_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH
+    else:
+        orphaned_auto_raw = {}
+        orphaned_auto_source = "unavailable"
+        orphaned_auto_degraded_reason_override = fallback_rejection_reason or (
+            "queue_projection_contract_unhealthy"
+            if queue_orphaned_auto_contract_healthy_raw is False
+            else "queue_projection_contract_health_missing"
+        )
+        orphaned_auto_degraded_path_override = (
+            to_rel(orphaned_auto_remediation_state_path)
+            if fallback_rejection_reason
+            else ORPHANED_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH
+        )
+else:
+    orphaned_auto_candidate = load_canonical_orphaned_auto_remediation_state()
+    fallback_rejection_reason = fallback_state_contract_rejection_reason(
+        orphaned_auto_candidate,
+        now_generated_at=now_generated_at,
+    ) if orphaned_auto_candidate else None
+    if orphaned_auto_candidate and not fallback_rejection_reason:
+        orphaned_auto_raw = orphaned_auto_candidate
+        orphaned_auto_source = "continuity_now_state_file"
+    else:
+        orphaned_auto_raw = {}
+        orphaned_auto_source = "unavailable"
+        orphaned_auto_degraded_reason_override = fallback_rejection_reason
+        orphaned_auto_degraded_path_override = (
+            to_rel(orphaned_auto_remediation_state_path)
+            if fallback_rejection_reason
+            else None
+        )
+
+orphaned_auto_remediation = normalize_orphaned_auto_remediation(
+    orphaned_auto_raw,
+    source=orphaned_auto_source,
+    in_flight=in_flight,
+    degraded_reason=orphaned_auto_degraded_reason_override,
+    degraded_path=orphaned_auto_degraded_path_override,
+    contract_health_explicit_healthy=(
+        bool(queue_orphaned_auto_contract_healthy_raw)
+        if isinstance(queue_orphaned_auto_contract_healthy_raw, bool)
+        else None
+    ),
+)
+
+if orphaned_auto_source == "unavailable":
+    orphaned_fallback_reason = str(orphaned_auto_remediation.get("contract_source_degraded_reason") or "").strip()
+    orphaned_auto_remediation["reason"] = (
+        "continuity_now_orphaned_auto_remediation_fallback_rejected"
+        if orphaned_fallback_reason.startswith("fallback_state_")
+        else "continuity_now_orphaned_auto_remediation_missing"
+    )
+    orphaned_auto_remediation["ok"] = None
+
+if orphaned_auto_remediation.get("attempted") and orphaned_auto_remediation.get("ok") is False:
+    if "orphaned_running_auto_remediation_failed" not in warning_reasons:
+        warning_reasons.append("orphaned_running_auto_remediation_failed")
+
+if bool(orphaned_auto_remediation.get("contract_source_degraded")):
+    if "orphaned_running_auto_remediation_source_degraded" not in warning_reasons:
+        warning_reasons.append("orphaned_running_auto_remediation_source_degraded")
+    source_warning = ORPHANED_AUTO_REMEDIATION_DEGRADED_WARNING_MAP.get(orphaned_auto_source)
+    if source_warning and source_warning not in warning_reasons:
+        warning_reasons.append(source_warning)
+    degraded_reason_warning = ORPHANED_AUTO_REMEDIATION_DEGRADED_REASON_WARNING_MAP.get(
+        str(orphaned_auto_remediation.get("contract_source_degraded_reason") or "").strip()
+    )
+    if degraded_reason_warning and degraded_reason_warning not in warning_reasons:
+        warning_reasons.append(degraded_reason_warning)
+
+queue_stale_wave_auto = queue.get("stale_wave_auto_remediation")
+queue_stale_wave_auto_contract = queue.get("stale_wave_auto_remediation_contract")
+queue_stale_wave_auto_projection_present = bool(isinstance(queue_stale_wave_auto, dict) and queue_stale_wave_auto)
+queue_stale_wave_auto_contract_healthy_raw = (
+    queue_stale_wave_auto_contract.get("healthy")
+    if isinstance(queue_stale_wave_auto_contract, dict)
+    else None
+)
+queue_stale_wave_auto_contract_healthy_explicit = queue_stale_wave_auto_contract_healthy_raw is True
+
+stale_wave_auto_degraded_reason_override: Optional[str] = None
+stale_wave_auto_degraded_path_override: Optional[str] = None
+
+if queue_stale_wave_auto_projection_present and queue_stale_wave_auto_contract_healthy_explicit:
+    stale_wave_auto_raw = queue_stale_wave_auto
+    stale_wave_auto_source = STALE_WAVE_AUTO_REMEDIATION_CANONICAL_SOURCE
+elif queue_stale_wave_auto_projection_present:
+    stale_wave_auto_candidate = load_canonical_stale_wave_auto_remediation_state()
+    fallback_rejection_reason = fallback_state_contract_rejection_reason(
+        stale_wave_auto_candidate,
+        now_generated_at=now_generated_at,
+    ) if stale_wave_auto_candidate else None
+    if stale_wave_auto_candidate and not fallback_rejection_reason:
+        stale_wave_auto_raw = stale_wave_auto_candidate
+        stale_wave_auto_source = "continuity_now_state_file"
+        stale_wave_auto_degraded_reason_override = (
+            "queue_projection_contract_unhealthy"
+            if queue_stale_wave_auto_contract_healthy_raw is False
+            else "queue_projection_contract_health_missing"
+        )
+        stale_wave_auto_degraded_path_override = STALE_WAVE_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH
+    else:
+        stale_wave_auto_raw = {}
+        stale_wave_auto_source = "unavailable"
+        stale_wave_auto_degraded_reason_override = fallback_rejection_reason or (
+            "queue_projection_contract_unhealthy"
+            if queue_stale_wave_auto_contract_healthy_raw is False
+            else "queue_projection_contract_health_missing"
+        )
+        stale_wave_auto_degraded_path_override = (
+            to_rel(stale_wave_auto_remediation_state_path)
+            if fallback_rejection_reason
+            else STALE_WAVE_AUTO_REMEDIATION_CONTRACT_HEALTH_PATH
+        )
+else:
+    stale_wave_auto_candidate = load_canonical_stale_wave_auto_remediation_state()
+    fallback_rejection_reason = fallback_state_contract_rejection_reason(
+        stale_wave_auto_candidate,
+        now_generated_at=now_generated_at,
+    ) if stale_wave_auto_candidate else None
+    if stale_wave_auto_candidate and not fallback_rejection_reason:
+        stale_wave_auto_raw = stale_wave_auto_candidate
+        stale_wave_auto_source = "continuity_now_state_file"
+    else:
+        stale_wave_auto_raw = {}
+        stale_wave_auto_source = "unavailable"
+        stale_wave_auto_degraded_reason_override = fallback_rejection_reason
+        stale_wave_auto_degraded_path_override = (
+            to_rel(stale_wave_auto_remediation_state_path)
+            if fallback_rejection_reason
+            else None
+        )
+
+stale_wave_auto_remediation = normalize_stale_wave_auto_remediation(
+    stale_wave_auto_raw,
+    source=stale_wave_auto_source,
+    in_flight=in_flight,
+    degraded_reason=stale_wave_auto_degraded_reason_override,
+    degraded_path=stale_wave_auto_degraded_path_override,
+    contract_health_explicit_healthy=(
+        bool(queue_stale_wave_auto_contract_healthy_raw)
+        if isinstance(queue_stale_wave_auto_contract_healthy_raw, bool)
+        else None
+    ),
+)
+
+if stale_wave_auto_source == "unavailable":
+    stale_fallback_reason = str(stale_wave_auto_remediation.get("contract_source_degraded_reason") or "").strip()
+    stale_wave_auto_remediation["reason"] = (
+        "continuity_now_stale_wave_auto_remediation_fallback_rejected"
+        if stale_fallback_reason.startswith("fallback_state_")
+        else "continuity_now_stale_wave_auto_remediation_missing"
+    )
+    stale_wave_auto_remediation["ok"] = None
+
+queue_stale_wave_signal = queue.get("stale_wave_signal") if isinstance(queue.get("stale_wave_signal"), dict) else {}
+stale_wave_auto_failure_present = bool(
+    stale_wave_auto_remediation.get("attempted")
+    and stale_wave_auto_remediation.get("ok") is False
+)
+stale_wave_auto_failure_live = bool(
+    stale_wave_auto_failure_present
+    and (
+        queue_stale_wave_signal.get("active") is True
+        or stale_wave_auto_remediation.get("queue_stale_wave_active_after") is True
+    )
+)
+stale_wave_auto_failure_residue_suppressed = bool(
+    stale_wave_auto_failure_present
+    and not stale_wave_auto_failure_live
+)
+if stale_wave_auto_failure_live:
+    stale_wave_auto_failure_signal_state = "live_failure_signal"
+elif stale_wave_auto_failure_residue_suppressed:
+    stale_wave_auto_failure_signal_state = "historical_residue_suppressed"
+else:
+    stale_wave_auto_failure_signal_state = "none"
+
+stale_wave_failure_evidence = (
+    stale_wave_auto_remediation.get("failure_evidence")
+    if isinstance(stale_wave_auto_remediation.get("failure_evidence"), dict)
+    else {}
+)
+stale_wave_failure_observed_at = (
+    str(stale_wave_failure_evidence.get("captured_at") or "").strip()
+    or str(stale_wave_auto_remediation.get("last_failure_at") or "").strip()
+    or str(stale_wave_failure_evidence.get("attempt_at") or "").strip()
+    or str(stale_wave_auto_remediation.get("last_attempt_at") or "").strip()
+    or None
+)
+stale_wave_failure_observed_age_sec = None
+if stale_wave_failure_observed_at:
+    observed_dt = parse_iso(stale_wave_failure_observed_at)
+    now_dt = parse_iso(now_generated_at)
+    if observed_dt is not None and now_dt is not None:
+        stale_wave_failure_observed_age_sec = max(0, int((now_dt - observed_dt).total_seconds()))
+
+stale_wave_auto_remediation["failure_present"] = stale_wave_auto_failure_present
+stale_wave_auto_remediation["failure_signal_live"] = stale_wave_auto_failure_live
+stale_wave_auto_remediation["failure_signal_state"] = stale_wave_auto_failure_signal_state
+stale_wave_auto_remediation["failure_residue_suppressed"] = stale_wave_auto_failure_residue_suppressed
+stale_wave_auto_remediation["failure_residue_reason"] = (
+    "historical_failure_no_active_stale_wave"
+    if stale_wave_auto_failure_residue_suppressed
+    else None
+)
+stale_wave_auto_remediation["failure_observed_at"] = stale_wave_failure_observed_at
+stale_wave_auto_remediation["failure_observed_age_sec"] = stale_wave_failure_observed_age_sec
+
+if stale_wave_auto_failure_live:
+    if "queue_stale_wave_auto_remediation_failed" not in warning_reasons:
+        warning_reasons.append("queue_stale_wave_auto_remediation_failed")
+else:
+    warning_reasons = [
+        str(reason)
+        for reason in warning_reasons
+        if str(reason or "").strip() != "queue_stale_wave_auto_remediation_failed"
+    ]
+
+if bool(stale_wave_auto_remediation.get("contract_source_degraded")):
+    if "queue_stale_wave_auto_remediation_source_degraded" not in warning_reasons:
+        warning_reasons.append("queue_stale_wave_auto_remediation_source_degraded")
+    source_warning = STALE_WAVE_AUTO_REMEDIATION_DEGRADED_WARNING_MAP.get(stale_wave_auto_source)
+    if source_warning and source_warning not in warning_reasons:
+        warning_reasons.append(source_warning)
+    degraded_reason_warning = STALE_WAVE_AUTO_REMEDIATION_DEGRADED_REASON_WARNING_MAP.get(
+        str(stale_wave_auto_remediation.get("contract_source_degraded_reason") or "").strip()
+    )
+    if degraded_reason_warning and degraded_reason_warning not in warning_reasons:
+        warning_reasons.append(degraded_reason_warning)
+
+reset_ready_refresh = materialize_reset_ready_refresh_posture(now_obj)
+if reset_ready_refresh.get("fresh") is False and "reset_ready_refresh_stale" not in warning_reasons:
+    warning_reasons.append("reset_ready_refresh_stale")
+reset_ready_refresh_blocker_reason = _project_reset_ready_refresh_escalation_reason(
+    posture=reset_ready_refresh,
+)
+if reset_ready_refresh_blocker_reason and reset_ready_refresh_blocker_reason not in not_ready_reasons:
+    not_ready_reasons.append(reset_ready_refresh_blocker_reason)
+
+readiness = "READY"
+if not bool(now_obj.get("ready")):
+    readiness = "RECONCILE_REQUIRED" if any("reconcile" in r.lower() or "drift" in r.lower() for r in not_ready_reasons) else "NOT_READY"
+elif str(verify.get("status") or "").upper() != "READY":
+    readiness = "RECONCILE_REQUIRED"
+elif bool(parity.get("due")) or not bool(parity.get("fresh", True)):
+    readiness = "READY_WITH_DEBT"
+
+if pointer_errors and readiness == "READY":
+    readiness = "RECONCILE_REQUIRED"
+
+mutation_reasons: List[str] = []
+if readiness != "READY":
+    mutation_reasons.append(f"readiness:{readiness}")
+if in_flight["value"]:
+    mutation_reasons.append("in_flight_work_present")
+mutation_reasons.extend(pointer_errors)
+if reset_ready_refresh_blocker_reason and reset_ready_refresh_blocker_reason in not_ready_reasons:
+    mutation_reasons.append(reset_ready_refresh_blocker_reason)
+
+mutation_reasons = sorted(set(mutation_reasons))
+concurrency_reasons = [reason for reason in mutation_reasons if reason == "in_flight_work_present"]
+blocking_reasons = [reason for reason in mutation_reasons if reason != "in_flight_work_present"]
+expected_in_flight_guard = bool(readiness == "READY" and concurrency_reasons and not blocking_reasons)
+
+if not mutation_reasons:
+    mutation_gate = {
+        "status": "allowed",
+        "reason": ["all_resume_gates_green"],
+        "blocking_reasons": [],
+        "concurrency_reasons": [],
+        "posture": "open",
+        "expected_in_flight_guard": False,
+    }
+else:
+    mutation_gate = {
+        "status": "forbidden",
+        "reason": mutation_reasons,
+        "blocking_reasons": blocking_reasons,
+        "concurrency_reasons": concurrency_reasons,
+        "posture": "concurrency_guard" if expected_in_flight_guard else "blocker",
+        "expected_in_flight_guard": expected_in_flight_guard,
+    }
+
+coherence_tuple_hash = str((coherence.get("tuple_hash") if isinstance(coherence, dict) else "") or "").strip()
+policy_signature = str(((((coherence or {}).get("policy") or {}).get("signature") if isinstance(coherence, dict) else "") or "")).strip()
+coherence_build_generation_id = str((coherence.get("build_generation_id") if isinstance(coherence, dict) else "") or "").strip()
+coherence_valid_until = str((coherence.get("valid_until") if isinstance(coherence, dict) else "") or "").strip()
+
+action_token_parts = {
+    "snapshot_id": truth_anchor.get("snapshot_id"),
+    "journal_offset": truth_anchor.get("journal_offset"),
+    "pointer_hash": truth_anchor.get("pointer_hash"),
+    "coherence_tuple_hash": coherence_tuple_hash,
+    "policy_signature": policy_signature,
+    "coherence_build_generation_id": coherence_build_generation_id,
+    "coherence_valid_until": coherence_valid_until,
+}
+action_token_missing_fields = [k for k, v in action_token_parts.items() if not str(v or "").strip()]
+action_token = None if action_token_missing_fields else encode_action_token(action_token_parts)
+
+continuity_now_contract = materialize_continuity_now_contract(now_obj)
+load_shedding_projection = build_load_shedding_projection(now_obj)
+dispatch_context = build_dispatch_context(now_obj)
+dispatch_post_completion_required = bool(
+    dispatch_context.get("autonomous_dispatch_post_completion_enforcement_required") is True
+)
+dispatch_autonomous_status = str(dispatch_context.get("autonomous_dispatch_status") or "missing")
+if dispatch_post_completion_required:
+    if bool(dispatch_context.get("autonomous_dispatch_post_completion_enforcement_latched") is True):
+        if "execution_frontier_post_completion_enforcement_latched" not in warning_reasons:
+            warning_reasons.append("execution_frontier_post_completion_enforcement_latched")
+    if dispatch_autonomous_status == "blocked":
+        if "execution_frontier_post_completion_enforcement_blocked" not in warning_reasons:
+            warning_reasons.append("execution_frontier_post_completion_enforcement_blocked")
+    elif dispatch_autonomous_status in {"error", "missing", "skipped"}:
+        if "execution_frontier_post_completion_enforcement_stalled" not in warning_reasons:
+            warning_reasons.append("execution_frontier_post_completion_enforcement_stalled")
+if bool(dispatch_context.get("execution_frontier_closed_blocked_stagnation_signal") is True):
+    if "execution_frontier_closed_blocked_stagnation" not in warning_reasons:
+        warning_reasons.append("execution_frontier_closed_blocked_stagnation")
+if bool(dispatch_context.get("execution_supervisor_probe_due_now_idle_no_dispatch_candidate_signal") is True):
+    if "execution_supervisor_probe_execution_due_now_idle_no_dispatch_candidate" not in warning_reasons:
+        warning_reasons.append("execution_supervisor_probe_execution_due_now_idle_no_dispatch_candidate")
+if bool(
+    dispatch_context.get(
+        "execution_supervisor_probe_due_now_idle_no_dispatch_candidate_warning_projection_missing"
+    )
+    is True
+):
+    if "execution_supervisor_probe_due_now_signal_projection_missing" not in warning_reasons:
+        warning_reasons.append("execution_supervisor_probe_due_now_signal_projection_missing")
+if bool(dispatch_context.get("execution_supervisor_provider_quota_lane_exhausted_signal") is True):
+    if "execution_supervisor_provider_quota_lane_exhausted" not in warning_reasons:
+        warning_reasons.append("execution_supervisor_provider_quota_lane_exhausted")
+warning_reasons = _dedupe_nonempty_strings(warning_reasons)
+
+execution_context = build_execution_context(
+    readiness=readiness,
+    in_flight=in_flight,
+    mutation_gate=mutation_gate,
+    dispatch_context=dispatch_context,
+)
+transaction_runtime_handoff_soak = _normalize_core_roadmap_txn_handoff_soak()
+
+
+out = {
+    "schema": "clawd.continuity.current.v1",
+    "generated_at": now_generated_at,
+    "workspace_id": "clawd-architect",
+    "truth_anchor": truth_anchor,
+    "action_token": action_token,
+    "action_token_missing_fields": action_token_missing_fields,
+    "readiness": readiness,
+    "in_flight": in_flight,
+    "mutation_gate": mutation_gate,
+    "operator_working_doctrine": build_operator_working_doctrine(),
+    "doctrine_drift": doctrine_drift,
+    "execution_context": execution_context,
+    "dispatch_context": dispatch_context,
+    "transaction_runtime_handoff_soak": transaction_runtime_handoff_soak,
+    "validators": {
+        "status": verify.get("status"),
+        "timestamp": verify.get("timestamp"),
+        "age_sec": verify.get("age_sec"),
+    },
+    "parity": {
+        "status": parity.get("status"),
+        "fresh": parity.get("fresh"),
+        "due": parity.get("due"),
+        "last_done_at": parity.get("last_done_at"),
+        "last_done_age_sec": parity.get("last_done_age_sec"),
+    },
+    "drifts": [
+        {"code": "CONTINUITY_NOT_READY", "detail": reason}
+        for reason in not_ready_reasons
+    ] + [
+        {"code": "CONTINUITY_WARNING", "detail": reason}
+        for reason in warning_reasons
+    ] + [
+        {"code": "POINTER_VERIFICATION", "detail": reason}
+        for reason in pointer_errors
+    ],
+    "bridge": {
+        "pointer_matches_checkpoint": bridge.get("pointer_matches_checkpoint"),
+        "pointer_sha_match": bridge.get("pointer_sha_match"),
+        "ground_truth_matches_checkpoint_capture": bridge.get("ground_truth_matches_checkpoint_capture"),
+        "stale_vs_live": bridge.get("stale_vs_live"),
+        "updated_at": bridge.get("updated_at"),
+    },
+    "coherence": {
+        "tuple_hash": (coherence.get("tuple_hash") if isinstance(coherence, dict) else None),
+        "policy": (coherence.get("policy") if isinstance(coherence, dict) else None),
+        "connector_blocking_reasons": (coherence.get("connector_blocking_reasons") if isinstance(coherence, dict) else None),
+        "connector_warning_reasons": (coherence.get("connector_warning_reasons") if isinstance(coherence, dict) else None),
+        "policy_verify_signature": (coherence.get("policy_verify_signature") if isinstance(coherence, dict) else None),
+        "policy_verify_signature_match": (coherence.get("policy_verify_signature_match") if isinstance(coherence, dict) else None),
+        "build_generation_id": (coherence.get("build_generation_id") if isinstance(coherence, dict) else None),
+        "published_at": (coherence.get("published_at") if isinstance(coherence, dict) else None),
+        "valid_until": (coherence.get("valid_until") if isinstance(coherence, dict) else None),
+        "hard_ttl_sec": (coherence.get("hard_ttl_sec") if isinstance(coherence, dict) else None),
+        "action_token_ready": len(action_token_missing_fields) == 0,
+    },
+    "refresh_auto_reconcile": auto_reconcile,
+    "orphaned_running_auto_remediation": orphaned_auto_remediation,
+    "stale_wave_auto_remediation": stale_wave_auto_remediation,
+    "load_shedding": load_shedding_projection,
+    "reset_ready_refresh": reset_ready_refresh,
+    "continuity_now_contract": continuity_now_contract,
+    "source_refs": {
+        "continuity_now": continuity_now_contract.get("path") or "state/continuity/latest/continuity_now_latest.json",
+        "continuity_now_sha256": continuity_now_contract.get("sha256"),
+        "continuity_current": to_rel(current_path),
+        "continuity_current_latest": to_rel(latest_current_path),
+        "execution_program_status": to_rel(execution_program_status_path),
+        "execution_frontier_ledger": to_rel(execution_frontier_ledger_path),
+        "execution_supervisor_task_ledger_latest": to_rel(execution_supervisor_task_ledger_latest_path),
+        "execution_supervisor_task_ledger_history": to_rel(execution_supervisor_task_ledger_history_path),
+        "execution_supervisor_dispatch_intent_latest": to_rel(execution_supervisor_dispatch_intent_latest_path),
+        "execution_supervisor_dispatch_intent_history": to_rel(execution_supervisor_dispatch_intent_history_path),
+        "execution_supervisor_dispatch_qualification_latest": to_rel(execution_supervisor_dispatch_qualification_latest_path),
+        "execution_supervisor_dispatch_qualification_history": to_rel(execution_supervisor_dispatch_qualification_history_path),
+        "execution_supervisor_canary_probe_schedule_latest": to_rel(execution_supervisor_canary_probe_schedule_latest_path),
+        "execution_supervisor_canary_probe_schedule_history": to_rel(execution_supervisor_canary_probe_schedule_history_path),
+        "execution_supervisor_probe_execution_plan_latest": to_rel(execution_supervisor_probe_execution_plan_latest_path),
+        "execution_supervisor_probe_execution_plan_history": to_rel(execution_supervisor_probe_execution_plan_history_path),
+        "execution_meaningful_event_reporting": to_rel(execution_meaningful_event_reporting_path),
+        "execution_meaningful_event_reporting_status": to_rel(execution_meaningful_event_reporting_status_path),
+        "core_roadmap_queue_layer": to_rel(core_roadmap_queue_layer_path),
+        "core_roadmap_queue_transaction_runtime": to_rel(core_roadmap_queue_transaction_runtime_path),
+        "core_roadmap_queue_transaction_handoff_soak": to_rel(core_roadmap_queue_txn_handoff_soak_path),
+        "execution_frontier_controller_trace": dispatch_context.get("autonomous_dispatch_trace_path"),
+        "execution_frontier_controller_history": dispatch_context.get("autonomous_dispatch_history_path"),
+        "reset_ready_refresh": reset_ready_refresh.get("path") or RESET_READY_REFRESH_LATEST_REL,
+        "reset_ready_refresh_sha256": reset_ready_refresh.get("sha256"),
+        "doctrine_drift_registry": doctrine_drift.get("source") or to_rel(doctrine_drift_registry_path),
+        "coherence_stamp": "state/continuity/latest/coherence_stamp.json",
+        "coherence_bundle": "state/continuity/latest/coherence_bundle_latest.json",
+        "latest_pointer": to_rel(legacy_pointer_path),
+        "continuity_read_pointer": to_rel(canonical_pointer_out_path),
+        "ground_truth_latest": "state/ground_truth/latest.json",
+        "orphaned_running_auto_remediation_state": to_rel(orphaned_auto_remediation_state_path),
+        "orphaned_running_auto_remediation_latest": to_rel(orphaned_auto_remediation_state_path),
+        "queue_stale_wave_auto_remediation_state": to_rel(stale_wave_auto_remediation_state_path),
+        "queue_stale_wave_auto_remediation_latest": to_rel(stale_wave_auto_remediation_state_path),
+        "load_shedding_decision": to_rel(load_shedding_decision_path),
+        "load_shedding_signal_snapshot": to_rel(load_shedding_signal_snapshot_path),
+    },
+}
+
+pointer_out = {
+    "schema": "clawd.continuity.pointer.v1",
+    "generated_at": out["generated_at"],
+    "workspace_id": out["workspace_id"],
+    "snapshot_id": truth_anchor.get("snapshot_id"),
+    "journal_offset": truth_anchor.get("journal_offset"),
+    "pointer_hash": truth_anchor.get("pointer_hash"),
+    "coherence_tuple_hash": coherence_tuple_hash or None,
+    "policy_signature": policy_signature or None,
+    "coherence_build_generation_id": coherence_build_generation_id or None,
+    "coherence_valid_until": coherence_valid_until or None,
+    "action_token": action_token,
+    "action_token_missing_fields": action_token_missing_fields,
+    "derived_from": {
+        "legacy_pointer": to_rel(legacy_pointer_path),
+        "ground_truth_latest": "state/ground_truth/latest.json",
+        "coherence_stamp": "state/continuity/latest/coherence_stamp.json",
+        "coherence_bundle": "state/continuity/latest/coherence_bundle_latest.json",
+    },
+}
+
+atomic_write(current_path, out)
+atomic_write(latest_current_path, out)
+current_sha = sha256_file(current_path)
+source_current_ref = {
+    "path": to_rel(current_path),
+    "latest_path": to_rel(latest_current_path),
+    "sha256": current_sha,
+    "generated_at": out.get("generated_at"),
+}
+pointer_out["source_current"] = source_current_ref
+pointer_out["continuity_read_contract"] = {
+    "schema_version": "clawd.continuity.read_contract.v1",
+    "continuity_current_path": to_rel(current_path),
+    "continuity_current_latest_path": to_rel(latest_current_path),
+    "continuity_current_sha256": current_sha,
+    "continuity_current_generated_at": out.get("generated_at"),
+    "coherence_build_generation_id": coherence_build_generation_id or None,
+    "coherence_valid_until": coherence_valid_until or None,
+    "continuity_now_path": continuity_now_contract.get("path"),
+    "continuity_now_sha256": continuity_now_contract.get("sha256"),
+    "continuity_now_generated_at": continuity_now_contract.get("generated_at"),
+    "continuity_now_build_generation_id": continuity_now_contract.get("coherence_build_generation_id"),
+}
+
+atomic_write(pointer_out_path, pointer_out)
+atomic_write(canonical_pointer_out_path, pointer_out)
+
+previous_execution_program_status = load_json_if_exists(execution_program_status_path) or {}
+previous_execution_frontier_ledger = load_json_if_exists(execution_frontier_ledger_path) or {}
+previous_execution_meaningful_event_reporting = load_json_if_exists(execution_meaningful_event_reporting_path) or {}
+
+execution_program_status_payload = build_execution_program_status(
+    now_obj=now_obj,
+    queue=queue if isinstance(queue, dict) else {},
+    in_flight=in_flight,
+    dispatch_context=dispatch_context,
+    execution_context=execution_context,
+    mutation_gate=mutation_gate,
+    readiness=readiness,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+atomic_write(execution_program_status_path, execution_program_status_payload)
+
+execution_frontier_ledger_payload = build_execution_frontier_ledger(
+    execution_status=execution_program_status_payload,
+    dispatch_context=dispatch_context,
+    queue=queue if isinstance(queue, dict) else {},
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+atomic_write(execution_frontier_ledger_path, execution_frontier_ledger_payload)
+
+execution_supervisor_task_ledger_payload = build_execution_supervisor_task_ledger(
+    execution_status=execution_program_status_payload,
+    frontier_ledger=execution_frontier_ledger_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+
+execution_relaunch_recovery_accounting_payload = _build_execution_supervisor_relaunch_recovery_accounting(
+    supervisor_ledger=execution_supervisor_task_ledger_payload,
+)
+execution_program_status_payload["queue_recovery_counters"] = _augment_queue_recovery_with_relaunch_accounting(
+    queue_recovery_counters=(
+        execution_program_status_payload.get("queue_recovery_counters")
+        if isinstance(execution_program_status_payload.get("queue_recovery_counters"), dict)
+        else {}
+    ),
+    relaunch_recovery_accounting=execution_relaunch_recovery_accounting_payload,
+)
+execution_frontier_ledger_payload["queue_recovery_counters"] = _augment_queue_recovery_with_relaunch_accounting(
+    queue_recovery_counters=(
+        execution_frontier_ledger_payload.get("queue_recovery_counters")
+        if isinstance(execution_frontier_ledger_payload.get("queue_recovery_counters"), dict)
+        else {}
+    ),
+    relaunch_recovery_accounting=execution_relaunch_recovery_accounting_payload,
+)
+
+atomic_write(execution_program_status_path, execution_program_status_payload)
+atomic_write(execution_frontier_ledger_path, execution_frontier_ledger_payload)
+
+atomic_write(execution_supervisor_task_ledger_latest_path, execution_supervisor_task_ledger_payload)
+append_jsonl(execution_supervisor_task_ledger_history_path, execution_supervisor_task_ledger_payload)
+
+execution_supervisor_dispatch_intent_seed_payload = build_execution_supervisor_dispatch_intent(
+    supervisor_ledger=execution_supervisor_task_ledger_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+execution_supervisor_dispatch_qualification_payload = build_execution_supervisor_dispatch_qualification(
+    supervisor_ledger=execution_supervisor_task_ledger_payload,
+    dispatch_intent=execution_supervisor_dispatch_intent_seed_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+
+execution_supervisor_dispatch_intent_payload = build_execution_supervisor_dispatch_intent(
+    supervisor_ledger=execution_supervisor_task_ledger_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+    qualification_snapshot=execution_supervisor_dispatch_qualification_payload,
+)
+atomic_write(execution_supervisor_dispatch_intent_latest_path, execution_supervisor_dispatch_intent_payload)
+append_jsonl(execution_supervisor_dispatch_intent_history_path, execution_supervisor_dispatch_intent_payload)
+
+atomic_write(execution_supervisor_dispatch_qualification_latest_path, execution_supervisor_dispatch_qualification_payload)
+append_jsonl(
+    execution_supervisor_dispatch_qualification_history_path,
+    execution_supervisor_dispatch_qualification_payload,
+)
+
+execution_supervisor_canary_probe_schedule_payload = (
+    execution_supervisor_dispatch_qualification_payload.get("canary_probe_schedule")
+    if isinstance(execution_supervisor_dispatch_qualification_payload.get("canary_probe_schedule"), dict)
+    else {}
+)
+if execution_supervisor_canary_probe_schedule_payload:
+    atomic_write(
+        execution_supervisor_canary_probe_schedule_latest_path,
+        execution_supervisor_canary_probe_schedule_payload,
+    )
+    append_jsonl(
+        execution_supervisor_canary_probe_schedule_history_path,
+        execution_supervisor_canary_probe_schedule_payload,
+    )
+
+execution_supervisor_probe_execution_plan_payload = (
+    execution_supervisor_dispatch_qualification_payload.get("probe_execution_plan")
+    if isinstance(execution_supervisor_dispatch_qualification_payload.get("probe_execution_plan"), dict)
+    else {}
+)
+if execution_supervisor_probe_execution_plan_payload:
+    atomic_write(
+        execution_supervisor_probe_execution_plan_latest_path,
+        execution_supervisor_probe_execution_plan_payload,
+    )
+    append_jsonl(
+        execution_supervisor_probe_execution_plan_history_path,
+        execution_supervisor_probe_execution_plan_payload,
+    )
+
+execution_meaningful_event_reporting_payload = build_execution_meaningful_event_reporting(
+    previous_execution_status=previous_execution_program_status,
+    previous_frontier_ledger=previous_execution_frontier_ledger,
+    previous_event_reporting=previous_execution_meaningful_event_reporting,
+    execution_status=execution_program_status_payload,
+    frontier_ledger=execution_frontier_ledger_payload,
+    queue_runtime=queue if isinstance(queue, dict) else {},
+    supervisor_ledger=execution_supervisor_task_ledger_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+atomic_write(execution_meaningful_event_reporting_path, execution_meaningful_event_reporting_payload)
+
+execution_meaningful_event_reporting_status_payload = build_execution_meaningful_event_reporting_status(
+    event_reporting=execution_meaningful_event_reporting_payload,
+    generated_at=str(out.get("generated_at") or now_iso()),
+)
+atomic_write(
+    execution_meaningful_event_reporting_status_path,
+    execution_meaningful_event_reporting_status_payload,
+)
+
+sync_blocker_registry_from_current()
+
+if json_out:
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+else:
+    print(
+        f"CONTINUITY CURRENT: readiness={readiness} mutation_gate={mutation_gate['status']} "
+        f"gate_posture={mutation_gate.get('posture') or 'unknown'} "
+        f"in_flight={in_flight['value']}"
+    )
+
+
+def classify_child_session_terminal_signal(session_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Inspect child session terminal signal and classify failure mode.
+    
+    Returns classification with:
+    - classification: FAILED_PROVIDER_QUOTA | FAILED_NO_ARTIFACT | FAILED_OTHER | SUCCESS
+    - terminal_stop_reason: extracted stop reason
+    - terminal_content: final assistant content
+    - terminal_error_message: extracted error if present
+    - provider: provider name if available
+    - model: model name if available
+    """
+    messages = session_payload.get("messages", [])
+    if not messages:
+        return {"classification": "FAILED_OTHER", "reason": "no_messages"}
+    
+    # Find last assistant message
+    last_assistant = None
+    for msg in reversed(messages):
+        if msg.get("role") == "assistant":
+            last_assistant = msg
+            break
+    
+    if not last_assistant:
+        return {"classification": "FAILED_OTHER", "reason": "no_assistant_message"}
+    
+    stop_reason = last_assistant.get("stopReason")
+    content = last_assistant.get("content", "")
+    metadata = last_assistant.get("metadata", {})
+    error_msg = metadata.get("error", "") if isinstance(metadata, dict) else ""
+    
+    # Check for provider quota errors
+    if stop_reason == "error" and error_msg:
+        quota_indicators = [
+            "usage limit",
+            "rate limit",
+            "quota exceeded",
+            "try again in",
+            "hit your limit"
+        ]
+        if any(indicator in error_msg.lower() for indicator in quota_indicators):
+            return {
+                "classification": "FAILED_PROVIDER_QUOTA",
+                "terminal_stop_reason": stop_reason,
+                "terminal_content": content,
+                "terminal_error_message": error_msg,
+                "provider": metadata.get("provider") if isinstance(metadata, dict) else None,
+                "model": metadata.get("model") if isinstance(metadata, dict) else None,
+                "reason": "provider_quota_exhausted"
+            }
+        else:
+            return {
+                "classification": "FAILED_OTHER",
+                "terminal_stop_reason": stop_reason,
+                "terminal_error_message": error_msg,
+                "reason": "terminal_error_not_quota"
+            }
+    
+    # Check for empty content (potential artifact failure)
+    if not content or not content.strip():
+        return {
+            "classification": "FAILED_NO_ARTIFACT",
+            "terminal_stop_reason": stop_reason,
+            "terminal_content": content,
+            "reason": "empty_content"
+        }
+    
+    # Default to success
+    return {
+        "classification": "SUCCESS",
+        "terminal_stop_reason": stop_reason,
+        "terminal_content": content,
+        "reason": "valid_artifact"
+    }
+
+
+def check_child_artifact_exists_and_nonempty(artifact_path: str, heading_check: bool = True) -> Dict[str, Any]:
+    """
+    Check if child artifact exists and has valid content.
+    
+    Returns:
+    - exists: bool
+    - nonempty: bool
+    - has_heading: bool (if heading_check=True)
+    - size_bytes: int
+    """
+    path = Path(artifact_path)
+    result = {
+        "exists": path.exists(),
+        "nonempty": False,
+        "has_heading": False,
+        "size_bytes": 0
+    }
+    
+    if not path.exists():
+        return result
+    
+    try:
+        content = path.read_text(encoding='utf-8')
+        result["size_bytes"] = len(content.encode('utf-8'))
+        result["nonempty"] = bool(content and content.strip())
+        
+        if heading_check and result["nonempty"]:
+            # Check for markdown heading
+            lines = content.split('\n')
+            result["has_heading"] = any(
+                line.strip().startswith('#') and len(line.strip()) > 1
+                for line in lines[:10]  # Check first 10 lines
+            )
+        
+        return result
+    except Exception as e:
+        return {**result, "error": str(e)}
+PY

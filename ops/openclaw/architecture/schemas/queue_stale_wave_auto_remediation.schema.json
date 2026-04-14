@@ -1,0 +1,283 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "continuity.queue_stale_wave_auto_remediation.v1",
+  "title": "Queue Stale-Wave Auto-Remediation State",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "enabled",
+    "state_path",
+    "status",
+    "reason",
+    "eligible",
+    "triggered",
+    "attempted",
+    "recovered",
+    "cooldown_sec",
+    "cooldown_remaining_sec",
+    "next_attempt_after_ts",
+    "next_attempt_after_iso",
+    "last_eval_at",
+    "last_attempt_at",
+    "last_attempt_status",
+    "last_success_at",
+    "last_failure_at",
+    "queue_stale_wave_active_before",
+    "queue_stale_wave_active_after",
+    "ready_count_before",
+    "ready_count_after",
+    "ready_oldest_age_sec_before",
+    "ready_oldest_age_sec_after",
+    "in_flight_effective_before",
+    "in_flight_effective_after",
+    "ready_idle_threshold_sec",
+    "command",
+    "command_rc",
+    "command_ok",
+    "payload_ok",
+    "payload_parse_error",
+    "progress_detected",
+    "progress_reasons",
+    "last_transition_at_before",
+    "last_transition_at_after",
+    "last_handoff_at_before",
+    "last_handoff_at_after",
+    "failure_taxonomy_version",
+    "failure_category",
+    "failure_code",
+    "failure_retryable",
+    "attempt_sequence",
+    "consecutive_failures",
+    "retry_contract",
+    "failure_evidence"
+  ],
+  "properties": {
+    "schema_version": { "const": "continuity.queue_stale_wave_auto_remediation.v1" },
+    "enabled": { "type": "boolean" },
+    "state_path": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "disabled",
+        "not_eligible",
+        "cooldown_active",
+        "remediator_missing",
+        "command_failed",
+        "payload_not_ok",
+        "queue_sync_applied",
+        "remediation_degraded",
+        "remediated"
+      ]
+    },
+    "reason": { "type": ["string", "null"] },
+    "eligible": { "type": "boolean" },
+    "triggered": { "type": "boolean" },
+    "attempted": { "type": "boolean" },
+    "recovered": { "type": "boolean" },
+    "cooldown_sec": { "type": "integer", "minimum": 0 },
+    "cooldown_remaining_sec": { "type": "integer", "minimum": 0 },
+    "next_attempt_after_ts": { "type": "integer", "minimum": 0 },
+    "next_attempt_after_iso": { "type": ["string", "null"] },
+    "last_eval_at": { "type": ["string", "null"] },
+    "last_attempt_at": { "type": ["string", "null"] },
+    "last_attempt_status": { "type": ["string", "null"] },
+    "last_success_at": { "type": ["string", "null"] },
+    "last_failure_at": { "type": ["string", "null"] },
+    "queue_stale_wave_active_before": { "type": "boolean" },
+    "queue_stale_wave_active_after": { "type": "boolean" },
+    "ready_count_before": { "type": "integer", "minimum": 0 },
+    "ready_count_after": { "type": "integer", "minimum": 0 },
+    "ready_oldest_age_sec_before": { "type": ["integer", "null"], "minimum": 0 },
+    "ready_oldest_age_sec_after": { "type": ["integer", "null"], "minimum": 0 },
+    "in_flight_effective_before": { "type": "boolean" },
+    "in_flight_effective_after": { "type": "boolean" },
+    "ready_idle_threshold_sec": { "type": "integer", "minimum": 0 },
+    "command": { "type": "string", "minLength": 1 },
+    "command_rc": { "type": ["integer", "null"] },
+    "command_ok": { "type": ["boolean", "null"] },
+    "payload_ok": { "type": ["boolean", "null"] },
+    "payload_parse_error": { "type": ["string", "null"] },
+    "progress_detected": { "type": ["boolean", "null"] },
+    "progress_reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "last_transition_at_before": { "type": ["string", "null"] },
+    "last_transition_at_after": { "type": ["string", "null"] },
+    "last_handoff_at_before": { "type": ["string", "null"] },
+    "last_handoff_at_after": { "type": ["string", "null"] },
+    "failure_taxonomy_version": { "const": "continuity.queue_stale_wave_auto_remediation_failure.v1" },
+    "failure_category": {
+      "type": ["string", "null"],
+      "enum": [
+        "dependency_missing",
+        "command_execution_failed",
+        "command_payload_invalid",
+        "post_check_failed",
+        "unknown_failure",
+        null
+      ]
+    },
+    "failure_code": { "type": ["string", "null"] },
+    "failure_retryable": { "type": ["boolean", "null"] },
+    "attempt_sequence": { "type": "integer", "minimum": 0 },
+    "consecutive_failures": { "type": "integer", "minimum": 0 },
+    "retry_contract": { "$ref": "#/$defs/retryContract" },
+    "failure_evidence": { "$ref": "#/$defs/failureEvidence" },
+    "stdout_tail": { "type": ["string", "null"] },
+    "stderr_tail": { "type": ["string", "null"] }
+  },
+  "$defs": {
+    "retryContract": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "policy",
+        "deterministic_key",
+        "eligible_now",
+        "retry_scheduled",
+        "retry_due",
+        "retry_blocked_reason",
+        "cooldown_sec",
+        "cooldown_remaining_sec",
+        "next_attempt_after_ts",
+        "next_attempt_after_iso"
+      ],
+      "properties": {
+        "schema_version": { "const": "continuity.queue_stale_wave_auto_remediation_retry_contract.v1" },
+        "policy": { "const": "fixed_cooldown" },
+        "deterministic_key": { "const": "queue_stale_wave_auto_remediation" },
+        "eligible_now": { "type": "boolean" },
+        "retry_scheduled": { "type": "boolean" },
+        "retry_due": { "type": "boolean" },
+        "retry_blocked_reason": { "type": ["string", "null"] },
+        "cooldown_sec": { "type": "integer", "minimum": 0 },
+        "cooldown_remaining_sec": { "type": "integer", "minimum": 0 },
+        "next_attempt_after_ts": { "type": "integer", "minimum": 0 },
+        "next_attempt_after_iso": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "failureEvidence": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "present",
+        "captured_at",
+        "attempt_at",
+        "attempt_sequence",
+        "status",
+        "reason",
+        "category",
+        "code",
+        "retryable",
+        "command",
+        "command_rc",
+        "command_ok",
+        "payload_ok",
+        "payload_parse_error",
+        "stdout_tail",
+        "stderr_tail",
+        "queue_stale_wave_active_before",
+        "queue_stale_wave_active_after",
+        "ready_count_before",
+        "ready_count_after",
+        "ready_oldest_age_sec_before",
+        "ready_oldest_age_sec_after",
+        "in_flight_effective_before",
+        "in_flight_effective_after",
+        "progress_detected",
+        "progress_reasons",
+        "next_retry_after_ts",
+        "next_retry_after_iso",
+        "retry_cooldown_sec"
+      ],
+      "properties": {
+        "schema_version": { "const": "continuity.queue_stale_wave_auto_remediation_failure_evidence.v1" },
+        "present": { "type": "boolean" },
+        "captured_at": { "type": ["string", "null"] },
+        "attempt_at": { "type": ["string", "null"] },
+        "attempt_sequence": { "type": "integer", "minimum": 0 },
+        "status": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "category": {
+          "type": ["string", "null"],
+          "enum": [
+            "dependency_missing",
+            "command_execution_failed",
+            "command_payload_invalid",
+            "post_check_failed",
+            "unknown_failure",
+            null
+          ]
+        },
+        "code": { "type": ["string", "null"] },
+        "retryable": { "type": ["boolean", "null"] },
+        "command": { "type": ["string", "null"] },
+        "command_rc": { "type": ["integer", "null"] },
+        "command_ok": { "type": ["boolean", "null"] },
+        "payload_ok": { "type": ["boolean", "null"] },
+        "payload_parse_error": { "type": ["string", "null"] },
+        "stdout_tail": { "type": ["string", "null"] },
+        "stderr_tail": { "type": ["string", "null"] },
+        "queue_stale_wave_active_before": { "type": "boolean" },
+        "queue_stale_wave_active_after": { "type": "boolean" },
+        "ready_count_before": { "type": "integer", "minimum": 0 },
+        "ready_count_after": { "type": "integer", "minimum": 0 },
+        "ready_oldest_age_sec_before": { "type": ["integer", "null"], "minimum": 0 },
+        "ready_oldest_age_sec_after": { "type": ["integer", "null"], "minimum": 0 },
+        "in_flight_effective_before": { "type": "boolean" },
+        "in_flight_effective_after": { "type": "boolean" },
+        "progress_detected": { "type": ["boolean", "null"] },
+        "progress_reasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "next_retry_after_ts": { "type": "integer", "minimum": 0 },
+        "next_retry_after_iso": { "type": ["string", "null"] },
+        "retry_cooldown_sec": { "type": "integer", "minimum": 0 }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "present": { "const": true }
+            }
+          },
+          "then": {
+            "properties": {
+              "category": { "type": "string" },
+              "code": { "type": "string", "minLength": 1 },
+              "retryable": { "type": "boolean" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "failure_evidence": {
+            "type": "object",
+            "properties": {
+              "present": { "const": true }
+            },
+            "required": ["present"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "failure_category": { "type": "string" },
+          "failure_code": { "type": "string", "minLength": 1 },
+          "failure_retryable": { "type": "boolean" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,90 @@
+{
+  "version": 2,
+  "provider": "openai-codex",
+  "codingModel": "openai-codex/gpt-5.3-codex",
+  "orchestrator": {
+    "agent": "codex-orchestrator-pro",
+    "role": "orchestrator",
+    "model": "openai-codex/gpt-5.4",
+    "desiredProfileId": "openai-codex:codex-orchestrator-pro",
+    "notes": [
+      "Keep the live Telegram/control-plane lane distinct from worker-pool identities.",
+      "The active orchestrator lane is codex-orchestrator-pro; codex-orchestrator-plus is the prepared backup orchestrator lane.",
+      "Retired legacy lanes codex-worker and codex-executioner are no longer part of the active pool."
+    ]
+  },
+  "workers": [
+    {
+      "agent": "codex-worker-pro",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-pro"
+    },
+    {
+      "agent": "codex-worker-plus-1",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-1"
+    },
+    {
+      "agent": "codex-worker-plus-2",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-2"
+    },
+    {
+      "agent": "codex-worker-plus-3",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-3"
+    },
+    {
+      "agent": "codex-worker-plus-4",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-4"
+    },
+    {
+      "agent": "codex-worker-plus-5",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-5"
+    },
+    {
+      "agent": "codex-worker-plus-6",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-6"
+    },
+    {
+      "agent": "codex-worker-plus-7",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-7"
+    },
+    {
+      "agent": "codex-worker-plus-8",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-8"
+    },
+    {
+      "agent": "codex-worker-plus-9",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-9"
+    },
+    {
+      "agent": "codex-worker-plus-10",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-10"
+    },
+    {
+      "agent": "codex-worker-plus-11",
+      "role": "worker",
+      "model": "openai-codex/gpt-5.3-codex",
+      "desiredProfileId": "openai-codex:codex-worker-plus-11"
+    }
+  ]
+}

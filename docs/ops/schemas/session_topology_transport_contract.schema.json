@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/session_topology_transport_contract.schema.json",
+  "title": "Session Topology Transport Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "updated_at",
+    "default_agent_id",
+    "telegram"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "session.topology.transport_contract.v1"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "default_agent_id": {
+      "$ref": "#/$defs/agentId"
+    },
+    "telegram": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "groups",
+        "direct"
+      ],
+      "properties": {
+        "groups": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/chatBinding"
+          }
+        },
+        "direct": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/chatBinding"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "agentId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "laneName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "threadId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "chatBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_agent_id",
+        "default_lane_name",
+        "topics_enabled",
+        "topics"
+      ],
+      "properties": {
+        "default_agent_id": {
+          "$ref": "#/$defs/agentId"
+        },
+        "default_lane_name": {
+          "$ref": "#/$defs/laneName"
+        },
+        "topics_enabled": {
+          "type": "boolean"
+        },
+        "general_topic_thread_id": {
+          "$ref": "#/$defs/threadId",
+          "default": 1
+        },
+        "reaction_fallback_to_general": {
+          "type": "boolean",
+          "default": true
+        },
+        "send_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "omit_general_topic_thread_id_1": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        },
+        "topics": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/topicBinding"
+          }
+        }
+      }
+    },
+    "topicBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane_name"
+      ],
+      "properties": {
+        "lane_name": {
+          "$ref": "#/$defs/laneName"
+        },
+        "agent_id": {
+          "$ref": "#/$defs/agentId"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    }
+  }
+}

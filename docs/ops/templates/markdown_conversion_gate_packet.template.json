@@ -1,0 +1,37 @@
+{
+  "schema_version": "clawd.markdown_conversion_gate.packet.v1",
+  "conversion_id": "mdconv_20260320_pdf_batch4_doc01",
+  "source_artifact": {
+    "path": "memory/inbound_pdfs/sample_batch/doc01.pdf",
+    "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "kind": "pdf"
+  },
+  "markdown_artifact": {
+    "path": "memory/knowledge_ingestion/staging/doc01.md",
+    "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+    "kind": "markdown"
+  },
+  "source_text_artifact": {
+    "path": "memory/knowledge_ingestion/staging/doc01.txt",
+    "sha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "kind": "plain_text"
+  },
+  "quality_policy": {
+    "min_markdown_bytes": 256,
+    "min_nonempty_lines": 8,
+    "min_heading_count": 1,
+    "require_fence_balance": true,
+    "max_control_char_ratio": 0.01,
+    "max_repeated_line_ratio": 0.35,
+    "min_alpha_char_ratio": 0.45,
+    "min_word_coverage_ratio": 0.55,
+    "min_reference_words": 80
+  },
+  "source_refs": [
+    {
+      "ref_id": "r1",
+      "path": "reports/batch3_second_brain_architecture_synthesis_2026-03-09.md",
+      "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+    }
+  ]
+}

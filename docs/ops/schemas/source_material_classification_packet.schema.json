@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/source_material_classification_packet.schema.json",
+  "title": "Source Material Classification Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "classification_id",
+    "material_artifact"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.source_material_classification.packet.v1"
+    },
+    "classification_id": {
+      "type": "string",
+      "pattern": "^smc_[a-z0-9._-]+$"
+    },
+    "material_artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "hints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "declared_type": {
+          "type": "string",
+          "enum": [
+            "architecture_spec",
+            "runbook",
+            "policy_doctrine",
+            "research_report",
+            "runtime_evidence",
+            "source_document",
+            "unknown"
+          ]
+        },
+        "origin": {
+          "type": "string",
+          "enum": [
+            "inbound",
+            "manual",
+            "generated",
+            "runtime",
+            "unknown"
+          ]
+        },
+        "producer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "classification_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture_spec",
+              "runbook",
+              "policy_doctrine",
+              "research_report",
+              "runtime_evidence",
+              "source_document",
+              "unknown"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "block_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture_spec",
+              "runbook",
+              "policy_doctrine",
+              "research_report",
+              "runtime_evidence",
+              "source_document",
+              "unknown"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "min_confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "allow_generated": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "kind"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "markdown",
+            "plain_text",
+            "pdf",
+            "epub",
+            "json",
+            "jsonl",
+            "log",
+            "other"
+          ]
+        },
+        "media_type": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,266 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/core_roadmap_dependency_unblock_policy_pack.schema.json",
+  "title": "Core Roadmap Dependency Unblock Policy Pack",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "policy_pack_id",
+    "scope",
+    "status",
+    "slices",
+    "source_refs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.core_roadmap_dependency_unblock_policy_pack.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_pack_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "review", "approved", "deprecated"]
+    },
+    "slices": {
+      "type": "object",
+      "required": ["12", "22", "30"],
+      "properties": {
+        "12": {
+          "type": "object",
+          "required": [
+            "slice_title",
+            "policy_id",
+            "default_cross_lane_policy",
+            "fast_path_constraints",
+            "fast_path_map",
+            "denylist_targets",
+            "approval_evidence"
+          ],
+          "properties": {
+            "slice_title": { "type": "string", "minLength": 1 },
+            "policy_id": { "type": "string", "minLength": 1 },
+            "default_cross_lane_policy": {
+              "type": "string",
+              "enum": ["ticket_required"]
+            },
+            "fast_path_constraints": {
+              "type": "object",
+              "required": [
+                "allowed_without_full_ticket_lease",
+                "allowed_risk_tiers",
+                "forbidden_risk_tiers",
+                "max_fast_path_ttl_seconds",
+                "requires_fencing_term_match",
+                "requires_attestation",
+                "deny_unknown_callsites"
+              ],
+              "properties": {
+                "allowed_without_full_ticket_lease": { "type": "boolean" },
+                "allowed_risk_tiers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "enum": ["low", "medium"] }
+                },
+                "forbidden_risk_tiers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "enum": ["high", "critical"] }
+                },
+                "max_fast_path_ttl_seconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 120
+                },
+                "requires_fencing_term_match": { "type": "boolean" },
+                "requires_attestation": { "type": "boolean" },
+                "deny_unknown_callsites": { "type": "boolean" }
+              },
+              "additionalProperties": true
+            },
+            "fast_path_map": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": ["from_lane", "to_lane", "operation", "risk_tier", "reason", "mode"],
+                "properties": {
+                  "from_lane": { "type": "string", "minLength": 1 },
+                  "to_lane": { "type": "string", "minLength": 1 },
+                  "operation": { "type": "string", "minLength": 1 },
+                  "risk_tier": { "type": "string", "enum": ["low", "medium"] },
+                  "reason": { "type": "string", "minLength": 1 },
+                  "mode": { "type": "string", "enum": ["fast_path_allowed"] }
+                },
+                "additionalProperties": true
+              }
+            },
+            "denylist_targets": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "approval_evidence": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "22": {
+          "type": "object",
+          "required": [
+            "slice_title",
+            "policy_id",
+            "scheduler_policy",
+            "starvation_policy",
+            "approval_evidence"
+          ],
+          "properties": {
+            "slice_title": { "type": "string", "minLength": 1 },
+            "policy_id": { "type": "string", "minLength": 1 },
+            "scheduler_policy": {
+              "type": "object",
+              "required": [
+                "algorithm",
+                "global_hard_cap_active_cases",
+                "per_node_class_max_active_cases",
+                "per_node_class_max_parallel_batch_replays",
+                "node_class_rules"
+              ],
+              "properties": {
+                "algorithm": {
+                  "type": "string",
+                  "enum": ["weighted_round_robin_with_aging"]
+                },
+                "global_hard_cap_active_cases": { "type": "integer", "minimum": 1 },
+                "per_node_class_max_active_cases": {
+                  "type": "object",
+                  "required": ["small", "medium", "large"],
+                  "properties": {
+                    "small": { "type": "integer", "minimum": 1 },
+                    "medium": { "type": "integer", "minimum": 1 },
+                    "large": { "type": "integer", "minimum": 1 }
+                  },
+                  "additionalProperties": false
+                },
+                "per_node_class_max_parallel_batch_replays": {
+                  "type": "object",
+                  "required": ["small", "medium", "large"],
+                  "properties": {
+                    "small": { "type": "integer", "minimum": 1 },
+                    "medium": { "type": "integer", "minimum": 1 },
+                    "large": { "type": "integer", "minimum": 1 }
+                  },
+                  "additionalProperties": false
+                },
+                "node_class_rules": {
+                  "type": "object",
+                  "required": ["small", "medium", "large"],
+                  "properties": {
+                    "small": { "type": "string", "minLength": 1 },
+                    "medium": { "type": "string", "minLength": 1 },
+                    "large": { "type": "string", "minLength": 1 }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": true
+            },
+            "starvation_policy": {
+              "type": "object",
+              "required": [
+                "max_runnable_wait_seconds",
+                "starvation_incident_wait_seconds",
+                "max_consecutive_scheduler_skips",
+                "preemption_trigger_runtime_seconds",
+                "required_fairness_metric",
+                "required_alerts"
+              ],
+              "properties": {
+                "max_runnable_wait_seconds": { "type": "integer", "minimum": 1 },
+                "starvation_incident_wait_seconds": { "type": "integer", "minimum": 1 },
+                "max_consecutive_scheduler_skips": { "type": "integer", "minimum": 1 },
+                "preemption_trigger_runtime_seconds": { "type": "integer", "minimum": 1 },
+                "required_fairness_metric": { "type": "string", "minLength": 1 },
+                "required_alerts": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": { "type": "string", "minLength": 1 }
+                }
+              },
+              "additionalProperties": true
+            },
+            "approval_evidence": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "30": {
+          "type": "object",
+          "required": [
+            "slice_title",
+            "policy_id",
+            "evaluation_window",
+            "graduation_thresholds",
+            "cockpit_governance",
+            "approval_evidence"
+          ],
+          "properties": {
+            "slice_title": { "type": "string", "minLength": 1 },
+            "policy_id": { "type": "string", "minLength": 1 },
+            "evaluation_window": {
+              "type": "object",
+              "required": ["min_eval_samples", "required_consecutive_pass_windows", "window_duration_hours"],
+              "properties": {
+                "min_eval_samples": { "type": "integer", "minimum": 1 },
+                "required_consecutive_pass_windows": { "type": "integer", "minimum": 1 },
+                "window_duration_hours": { "type": "integer", "minimum": 1 }
+              },
+              "additionalProperties": true
+            },
+            "graduation_thresholds": {
+              "type": "object",
+              "required": ["accuracy", "latency", "cost", "safety"],
+              "properties": {
+                "accuracy": { "type": "object" },
+                "latency": { "type": "object" },
+                "cost": { "type": "object" },
+                "safety": { "type": "object" }
+              },
+              "additionalProperties": true
+            },
+            "cockpit_governance": {
+              "type": "object",
+              "required": [
+                "promotion_requires_operator_action_card_approval",
+                "auto_reject_when_any_threshold_fails",
+                "must_attach_bakeoff_scorecard"
+              ],
+              "properties": {
+                "promotion_requires_operator_action_card_approval": { "type": "boolean" },
+                "auto_reject_when_any_threshold_fails": { "type": "boolean" },
+                "must_attach_bakeoff_scorecard": { "type": "boolean" }
+              },
+              "additionalProperties": true
+            },
+            "approval_evidence": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": true
+}

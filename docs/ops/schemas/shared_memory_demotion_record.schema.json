@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/shared_memory_demotion_record.schema.json",
+  "title": "Shared Memory Demotion Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "demotion_id",
+    "created_at",
+    "object_id",
+    "demotion_kind",
+    "reason",
+    "owner_id",
+    "owner_role",
+    "previous_state",
+    "new_state"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.shared_memory_demotion_record.v1"
+    },
+    "demotion_id": {
+      "type": "string",
+      "pattern": "^smd_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "object_id": {
+      "type": "string",
+      "pattern": "^smo_[a-z0-9._-]+$"
+    },
+    "demotion_kind": {
+      "type": "string",
+      "enum": [
+        "stale",
+        "superseded",
+        "invalidated",
+        "manual"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 3
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 2
+    },
+    "owner_role": {
+      "type": "string",
+      "enum": [
+        "PLANNER",
+        "EXECUTOR",
+        "VALIDATOR",
+        "RESEARCHER",
+        "SRE",
+        "LIBRARIAN"
+      ]
+    },
+    "previous_state": {
+      "type": "string",
+      "enum": [
+        "PROMOTED_CANONICAL",
+        "CONFLICTED",
+        "DEMOTED_STALE",
+        "DEMOTED_SUPERSEDED",
+        "DEMOTED_INVALIDATED",
+        "ARCHIVED"
+      ]
+    },
+    "new_state": {
+      "type": "string",
+      "enum": [
+        "DEMOTED_STALE",
+        "DEMOTED_SUPERSEDED",
+        "DEMOTED_INVALIDATED"
+      ]
+    }
+  }
+}

@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/lane_crossover_packet.schema.json",
+  "title": "Lane Crossover Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "packet_id",
+    "packet_type",
+    "from_lane_id",
+    "from_lane_epoch",
+    "to_lane_id",
+    "to_lane_epoch",
+    "created_at",
+    "work_item_id",
+    "summary",
+    "payload",
+    "contamination_guard"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "lane.crossover_packet.v1"
+    },
+    "packet_id": {
+      "type": "string",
+      "pattern": "^lxp_[a-z0-9._-]+$"
+    },
+    "packet_type": {
+      "type": "string",
+      "enum": [
+        "signal",
+        "ticket",
+        "deep_review"
+      ]
+    },
+    "from_lane_id": {
+      "$ref": "#/$defs/laneId"
+    },
+    "from_lane_epoch": {
+      "$ref": "#/$defs/laneEpoch"
+    },
+    "to_lane_id": {
+      "$ref": "#/$defs/laneId"
+    },
+    "to_lane_epoch": {
+      "$ref": "#/$defs/laneEpoch"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "normal",
+        "high",
+        "urgent"
+      ],
+      "default": "normal"
+    },
+    "work_item_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "assumption_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "payload": {
+      "type": "object"
+    },
+    "contamination_guard": {
+      "$ref": "#/$defs/contaminationGuard"
+    },
+    "ack_required": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "packet_type": {
+            "const": "signal"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/signalPayload"
+          },
+          "evidence_refs": {
+            "type": "array"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "packet_type": {
+            "const": "ticket"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/ticketPayload"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "packet_type": {
+            "const": "deep_review"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/deepReviewPayload"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "laneId": {
+      "type": "string",
+      "pattern": "^lane\\.column_[abc]\\.[a-z0-9][a-z0-9_.-]*$"
+    },
+    "laneEpoch": {
+      "type": "string",
+      "pattern": "^epoch_[a-z0-9._:-]+$"
+    },
+    "contaminationGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_memory_scope",
+        "contains_unverified_content",
+        "cross_lane_write_requested",
+        "promotion_gate",
+        "max_inline_context_bytes",
+        "redaction_applied"
+      ],
+      "properties": {
+        "source_memory_scope": {
+          "type": "string",
+          "enum": [
+            "lane_local_only",
+            "shared_contract_only",
+            "mixed"
+          ]
+        },
+        "contains_unverified_content": {
+          "type": "boolean"
+        },
+        "cross_lane_write_requested": {
+          "type": "boolean"
+        },
+        "promotion_gate": {
+          "type": "string",
+          "enum": [
+            "none",
+            "validator_required",
+            "human_required"
+          ]
+        },
+        "max_inline_context_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2048
+        },
+        "redaction_applied": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "signalPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signal_id",
+        "signal_code",
+        "severity",
+        "status",
+        "observed_at"
+      ],
+      "properties": {
+        "signal_id": {
+          "type": "string",
+          "pattern": "^sig_[a-z0-9._-]+$"
+        },
+        "signal_code": {
+          "type": "string",
+          "minLength": 3
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warn",
+            "blocker"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "new",
+            "ongoing",
+            "resolved"
+          ]
+        },
+        "observed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "suggested_action": {
+          "type": "string",
+          "maxLength": 200
+        }
+      }
+    },
+    "ticketPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ticket_id",
+        "operation_id",
+        "lease_mode",
+        "risk_tier",
+        "fencing_term",
+        "attestation_refs",
+        "requested_outcome",
+        "definition_of_done",
+        "allowed_write_paths",
+        "verification_commands",
+        "due_at"
+      ],
+      "properties": {
+        "ticket_id": {
+          "type": "string",
+          "pattern": "^tkt_[a-z0-9._-]+$"
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "lease_mode": {
+          "type": "string",
+          "enum": [
+            "full_ticket",
+            "fast_path"
+          ]
+        },
+        "risk_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "fencing_term": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attestation_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "requested_outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "definition_of_done": {
+          "type": "string",
+          "minLength": 1
+        },
+        "allowed_write_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verification_commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "due_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "deepReviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review_id",
+        "question",
+        "decision_type",
+        "required_artifacts",
+        "response_deadline"
+      ],
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "pattern": "^drv_[a-z0-9._-]+$"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_type": {
+          "type": "string",
+          "enum": [
+            "approve_reject",
+            "risk_assessment",
+            "design_review"
+          ]
+        },
+        "required_artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "response_deadline": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

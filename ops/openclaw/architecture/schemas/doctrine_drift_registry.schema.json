@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.continuity.doctrine_drift_registry.v1",
+  "title": "Doctrine Drift Registry",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "incidents"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.continuity.doctrine_drift_registry.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "incidents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "incident_id",
+          "reason",
+          "severity",
+          "status"
+        ],
+        "properties": {
+          "incident_id": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "severity": {
+            "type": "string",
+            "enum": ["blocker", "warn", "info"]
+          },
+          "status": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string" },
+          "reported_at": { "type": "string", "format": "date-time" },
+          "detected_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

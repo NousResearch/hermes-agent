@@ -1,0 +1,78 @@
+{
+  "schema_version": "clawd.trading_journal_entry.v1",
+  "entry_id": "xtj_btc_breakout_001_r1",
+  "journal_id": "journal_btc_breakout_001",
+  "revision": 1,
+  "created_at": "2026-03-29T00:20:00Z",
+  "supersedes_entry_id": null,
+  "previous_entry_hash": null,
+  "entry_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "thesis": {
+    "direction": "long",
+    "hypothesis": "BTC trend continuation after reclaiming prior daily resistance.",
+    "invalidation": "Close back below reclaimed level with rising sell pressure.",
+    "confidence": 0.64
+  },
+  "entry": {
+    "planned_at": "2026-03-29T00:22:00Z",
+    "trigger_type": "breakout",
+    "trigger_detail": "5m close above resistance with volume expansion",
+    "planned_size_pct_risk": 0.8,
+    "entry_price": 67850.5,
+    "stop_loss": 67190.0
+  },
+  "exit": {
+    "status": "open",
+    "planned_exit": 68900.0,
+    "executed_exit": null,
+    "closed_at": null
+  },
+  "context": {
+    "asset": "BTCUSDT",
+    "venue": "hyperliquid",
+    "timeframe": "5m",
+    "market_regime": "trend",
+    "tags": [
+      "breakout",
+      "asia-session"
+    ]
+  },
+  "evidence": [
+    {
+      "evidence_id": "evid_btc_chart_001",
+      "kind": "chart",
+      "source_ref": "s3://journal-evidence/btc/2026-03-29/chart_001.png",
+      "captured_at": "2026-03-29T00:19:55Z",
+      "content_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "outcome": {
+    "status": "pending",
+    "r_multiple": 0.0,
+    "pnl_quote": 0.0,
+    "notes": "Trade is active; no realized outcome yet."
+  },
+  "review": {
+    "review_status": "pending",
+    "checklisted_at": null,
+    "lessons": [
+      "Entry respected predefined trigger and risk budget."
+    ],
+    "follow_up_actions": [
+      "Re-evaluate thesis after NY session open."
+    ],
+    "review_refs": [
+      "state/continuity/latest/xt_trade_review_queue.jsonl"
+    ]
+  },
+  "governance": {
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "advisory_only": true
+  },
+  "metadata": {
+    "created_by": "xt_lane_operator",
+    "source_system": "xt_journal_cli"
+  }
+}

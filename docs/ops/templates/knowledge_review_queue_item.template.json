@@ -1,0 +1,69 @@
+{
+  "queue_item_id": "krq_20260320_example_promotion_candidate",
+  "enqueued_at": "2026-03-20T11:00:00+07:00",
+  "last_transition_at": null,
+  "queue_state": "PENDING_REVIEW",
+  "knowledge_object": {
+    "object_class": "promotion_candidate",
+    "object_path": "memory/research_cases/example_case/CANDIDATE/candidates/cand_example/promotion_candidate.json",
+    "schema_ref": "docs/ops/schemas/promotion_candidate.schema.json",
+    "object_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "promotion_id": "prom_20260320_example_lane_insight",
+    "doctrine_id": null
+  },
+  "ownership": {
+    "owner_id": "executor:example",
+    "owner_role": "EXECUTOR",
+    "lane_id": "lane_wave5_slice3",
+    "work_item_id": "wi_wave5_slice3_knowledge_queue"
+  },
+  "review": {
+    "required": true,
+    "state": "pending",
+    "reviewer_id": null,
+    "reviewer_role": null,
+    "reviewed_at": null,
+    "notes": "Awaiting reviewer triage",
+    "evidence_ok": false
+  },
+  "approval": {
+    "approval_required": true,
+    "decision": "pending",
+    "approver_id": null,
+    "approver_role": null,
+    "approved_at": null,
+    "notes": "Approver not assigned"
+  },
+  "trust": {
+    "tier": "t2_verified",
+    "rationale": "Validated candidate with provenance and promotion gate evidence"
+  },
+  "evidence_requirements": {
+    "min_source_refs": 1,
+    "require_provenance_hashes": true,
+    "required_gate_decisions": [
+      "promotion_gate:PASS"
+    ],
+    "require_redaction_for_restricted": true
+  },
+  "evidence_refs": [
+    {
+      "ref_id": "ev_source_contract",
+      "kind": "source",
+      "path": "docs/ops/promotion_protocol_contract_v1.md",
+      "locator": "# Gate sequence",
+      "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "ref_id": "ev_promotion_gate_decision",
+      "kind": "gate_decision",
+      "path": "memory/research_cases/example_case/CANDIDATE/candidates/cand_example/promotion_gate_decision.json",
+      "locator": "$.decision",
+      "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "decision_refs": [
+    "promotion_gate:PASS",
+    "review_queue:created"
+  ]
+}

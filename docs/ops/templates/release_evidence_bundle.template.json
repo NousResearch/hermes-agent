@@ -1,0 +1,79 @@
+{
+  "schema_version": "clawd.release_evidence_bundle.v1",
+  "release_id": "rel_20260321_wave6_closeout",
+  "generated_at": "2026-03-21T09:00:00Z",
+  "activation_mode": "canary",
+  "lane_context": {
+    "lane_id": "lane.upgrade.release.substrate",
+    "wave": "wave_6"
+  },
+  "health_requirement": {
+    "mode": "strict",
+    "required_lanes": [
+      "A1_CONTROL_PLANE",
+      "A2_RUNTIME_CONTINUITY",
+      "A3_MODEL_ROUTING",
+      "A6_OPS_OBSERVABILITY",
+      "C1_OPERATOR_SURFACE",
+      "C2_RELEASE_SUBSTRATE"
+    ],
+    "min_health_layer": "truthful",
+    "require_restore_evidence": true
+  },
+  "stages": [
+    {
+      "stage": "local_determinism",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/wave6_local_determinism_checks_2026-03-21.md"
+      ],
+      "evaluated_at": "2026-03-21T07:30:00Z"
+    },
+    {
+      "stage": "presubmit",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/wave6_presubmit_checks_2026-03-21.md"
+      ],
+      "evaluated_at": "2026-03-21T07:45:00Z"
+    },
+    {
+      "stage": "integration_replay",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/wave6_integration_replay_2026-03-21.md"
+      ],
+      "evaluated_at": "2026-03-21T08:10:00Z"
+    },
+    {
+      "stage": "shadow",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/wave6_shadow_validation_2026-03-21.md"
+      ],
+      "evaluated_at": "2026-03-21T08:25:00Z"
+    },
+    {
+      "stage": "canary",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/wave6_canary_validation_2026-03-21.md"
+      ],
+      "evaluated_at": "2026-03-21T08:40:00Z"
+    }
+  ],
+  "rollback_proof": {
+    "artifact_rollback_ref": "reports/wave6_release_artifact_rollback_proof_2026-03-21.md",
+    "state_rollback_ref": "reports/wave6_release_state_rollback_proof_2026-03-21.md",
+    "drill_ref": "reports/wave6_release_rollback_drill_2026-03-21.md",
+    "drilled_at": "2026-03-21T05:30:00Z",
+    "max_age_hours": 24
+  },
+  "compatibility_lifecycle": {
+    "register_ref": "docs/ops/templates/compatibility_path_register.template.json",
+    "active_exceptions": 1,
+    "removal_rfc_refs": [
+      "docs/ops/templates/compatibility_path_removal_rfc.template.json"
+    ]
+  }
+}

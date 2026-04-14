@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_plan.schema.json",
+  "title": "Orchestrator Artifact Plan Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_id",
+    "generated_at",
+    "snapshot_ref",
+    "artifacts",
+    "determinism",
+    "admission",
+    "response"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.plan.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:_\\.-]{7,127}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "snapshot_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "manifest_id"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^snapshot:[a-zA-Z0-9._:-]+$"
+        },
+        "manifest_id": {
+          "type": "string",
+          "pattern": "^manifest:[a-zA-Z0-9._:-]+$"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_kind",
+          "artifact_version"
+        ],
+        "properties": {
+          "artifact_kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "artifact_version": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parameters": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "determinism": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_json",
+        "hash_algorithm"
+      ],
+      "properties": {
+        "canonical_json": {
+          "type": "boolean",
+          "const": true
+        },
+        "hash_algorithm": {
+          "type": "string",
+          "enum": [
+            "sha256"
+          ]
+        }
+      }
+    },
+    "admission": {
+      "$ref": "#/$defs/admission"
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "plan_id",
+        "declared_inputs_hash",
+        "expected_outputs",
+        "plan_hash"
+      ],
+      "properties": {
+        "plan_id": {
+          "type": "string",
+          "pattern": "^plan:[a-zA-Z0-9._:-]+$"
+        },
+        "declared_inputs_hash": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "expected_outputs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_kind",
+              "artifact_version",
+              "output_slot"
+            ],
+            "properties": {
+              "artifact_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifact_version": {
+                "type": "string",
+                "minLength": 1
+              },
+              "output_slot": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "plan_hash": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "expires_in_sec": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "decision",
+        "reason_codes"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "degraded",
+            "read_only"
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "deferred",
+            "rejected"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

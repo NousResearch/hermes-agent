@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_rollout_cost_governance_snapshot.schema.json",
+  "title": "Model Rollout Cost Governance Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generated_at",
+    "window_hours",
+    "window_start",
+    "policy",
+    "counts",
+    "route_classes",
+    "models",
+    "budget_breaches",
+    "provider_normalized_cost",
+    "status"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "clawd.model_rollout_cost_governance_snapshot.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "window_hours": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "window_start": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "policy_path",
+        "policy_schema_path"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "policy_schema_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_decisions_total",
+        "gate_pass",
+        "gate_block",
+        "routing_decisions_total",
+        "routing_pass",
+        "routing_block",
+        "ledger_events_total",
+        "ledger_event_type_counts"
+      ],
+      "properties": {
+        "gate_decisions_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gate_pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gate_block": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "routing_decisions_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "routing_pass": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "routing_block": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ledger_events_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ledger_event_type_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "route_classes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "route_class",
+          "gate_pass_count",
+          "gate_block_count",
+          "routing_pass_count",
+          "routing_block_count",
+          "estimated_spend_usd",
+          "budget_usd",
+          "budget_remaining_usd",
+          "budget_state"
+        ],
+        "properties": {
+          "route_class": {
+            "type": "string"
+          },
+          "gate_pass_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "gate_block_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "routing_pass_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "routing_block_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "estimated_spend_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "budget_usd": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "budget_remaining_usd": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "budget_state": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "model_key",
+          "route_class",
+          "unit_cost_usd",
+          "gate_pass_count",
+          "gate_block_count",
+          "routing_pass_count",
+          "estimated_spend_usd"
+        ],
+        "properties": {
+          "model_key": {
+            "type": "string"
+          },
+          "route_class": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "unit_cost_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "gate_pass_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "gate_block_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "routing_pass_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "estimated_spend_usd": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "budget_breaches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "route_class",
+          "budget_usd",
+          "estimated_spend_usd",
+          "overrun_usd"
+        ],
+        "properties": {
+          "route_class": {
+            "type": "string"
+          },
+          "budget_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "estimated_spend_usd": {
+            "type": "number",
+            "minimum": 0
+          },
+          "overrun_usd": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "budget_exceeded"
+      ]
+    },
+    "provider_normalized_cost": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

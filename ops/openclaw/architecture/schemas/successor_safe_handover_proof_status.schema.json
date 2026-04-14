@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.successor_safe_handover_proof.status.v1",
+  "title": "Successor Safe Handover Proof Status Projection",
+  "type": "object",
+  "required": [
+    "$id",
+    "proof_state",
+    "proof_id",
+    "evaluated_at",
+    "reset_allowed",
+    "resume_allowed",
+    "top_blocker"
+  ],
+  "properties": {
+    "$id": { "const": "clawd.successor_safe_handover_proof.status.v1" },
+    "proof_state": {
+      "type": "string",
+      "enum": [
+        "PROOF_MISSING",
+        "PROOF_REFUSED",
+        "PROOF_INVALID",
+        "PROOF_EXPIRED",
+        "PROOF_VALID_BLOCKED",
+        "PROOF_VALID_PASS"
+      ]
+    },
+    "proof_id": { "type": ["string", "null"] },
+    "evaluated_at": { "type": "string" },
+    "reset_allowed": { "type": "boolean" },
+    "resume_allowed": { "type": "boolean" },
+    "top_blocker": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

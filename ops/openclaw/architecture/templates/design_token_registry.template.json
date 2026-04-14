@@ -1,0 +1,38 @@
+{
+  "schema": "openclaw.design_token_registry.foundation.v1",
+  "id": "design_token_registry_foundation_v1",
+  "status": "active",
+  "lane": "XD",
+  "updated_at": "2026-03-28T00:00:00Z",
+  "source_refs": [
+    "ops/openclaw/architecture/ui_design_edd.v1.yaml",
+    "ops/openclaw/architecture/trading_terminal_design_language.v1.yaml"
+  ],
+  "token_sets": [
+    {
+      "set_id": "core_density_modes",
+      "mode": "clean_guided",
+      "tokens": [
+        {
+          "id": "spacing.panel.padding",
+          "category": "spacing",
+          "mode": "clean_guided",
+          "value": 16,
+          "semantic_role": "panel_padding"
+        },
+        {
+          "id": "ui.divider.visibility",
+          "category": "layout",
+          "mode": "clean_guided",
+          "value": "medium",
+          "semantic_role": "divider_visibility"
+        }
+      ]
+    }
+  ],
+  "policy": {
+    "mutation_mode": "append_only_versioned",
+    "raw_hex_in_component_code": "forbidden",
+    "undeclared_token_usage": "fail_close"
+  }
+}

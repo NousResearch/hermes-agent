@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/proposal_archive_packet.v1.schema.json",
+  "title": "OpenClaw Proposal Archive Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "task_id",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "proposal_archive_packet.v1"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "task_class": {
+      "type": "string",
+      "enum": [
+        "code:generate",
+        "code:edit",
+        "code:review",
+        "code:test",
+        "code:docs"
+      ]
+    },
+    "phase": {
+      "type": "string",
+      "const": "archive"
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "allOf": [
+        {
+          "contains": {
+            "const": "proposal_packet"
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "const": "approval_records"
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "const": "delta_spec"
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "const": "code_delta"
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "const": "validation_results"
+          },
+          "minContains": 1
+        },
+        {
+          "contains": {
+            "const": "routing_audit"
+          },
+          "minContains": 1
+        }
+      ]
+    },
+    "artifact_refs": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "archive_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

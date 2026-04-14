@@ -1,0 +1,64 @@
+{
+  "schema": "clawd.xb_402.domain_capability_registry_runtime.v1",
+  "slice_id": "XB-402",
+  "generated_at": "2026-03-29T00:00:00Z",
+  "queue_source": "state/continuity/latest/true_expanded_roadmap_queue_layer.json",
+  "risk_matrix_source": "state/continuity/latest/xg_801_c3_activation_risk_matrix_2026-03-28.json",
+  "owner_registry_source": "state/continuity/latest/xg_801_c3_activation_owner_registry_2026-03-28.json",
+  "queue_summary": {
+    "total_slices": 47,
+    "required_slices": 41,
+    "optional_slices": 6,
+    "done_count": 0,
+    "ready_count": 0,
+    "dependency_blocked_count": 0,
+    "queued_optional_count": 6,
+    "required_open_count": 41,
+    "first_launch_recommendation": []
+  },
+  "lane_registry": [
+    {
+      "lane_id": "XB",
+      "lane_name": "Downstream backend capability fabric lane",
+      "risk_class": "RG2_HIGH",
+      "activation_posture": "up_to_canary_only",
+      "owners": {
+        "governance_owner": "XG_lane_governor",
+        "lane_owner": "XB_lane_owner",
+        "release_owner": "C2_release_governance_owner",
+        "incident_owner": "A6_incident_response_owner"
+      },
+      "capability_inventory": [
+        {
+          "slice_id": "XB-402",
+          "title": "domain_capability_registry_runtime",
+          "state": "READY",
+          "objective": "Implement machine-readable domain capability registry runtime with health/state projection.",
+          "dependencies": [
+            "XB-401"
+          ],
+          "dependency_states": {
+            "XB-401": "DONE"
+          },
+          "unresolved_dependencies": [],
+          "health_status": "ready"
+        }
+      ],
+      "health_projection": {
+        "overall_status": "ready",
+        "done_count": 0,
+        "ready_count": 1,
+        "blocked_count": 0,
+        "attention_count": 0,
+        "next_ready_slice": "XB-402"
+      }
+    }
+  ],
+  "generated_packets": {
+    "registry_schema_validation": "state/continuity/latest/xb_402_registry_schema_validation_2026-03-29.json",
+    "health_projection_snapshot": "state/continuity/latest/xb_402_health_projection_snapshot_2026-03-29.json",
+    "weekly_project_posture_packet_samples": "state/continuity/latest/xb_402_weekly_project_posture_packet_samples_2026-03-29.json",
+    "blocker_owner_rollup_artifacts": "state/continuity/latest/xb_402_blocker_owner_rollup_artifacts_2026-03-29.json",
+    "history_projection_parity_check": "state/continuity/latest/xb_402_history_projection_parity_check_2026-03-29.json"
+  }
+}

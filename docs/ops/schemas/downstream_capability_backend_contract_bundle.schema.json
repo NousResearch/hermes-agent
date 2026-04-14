@@ -1,0 +1,224 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/downstream_capability_backend_contract_bundle.schema.json",
+  "title": "Downstream Capability Backend Contract Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "connector_contract",
+    "adapter_contract",
+    "domain_event_envelope",
+    "policy_envelope"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.downstream_backend_contract_bundle.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "connector_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "connector_id",
+        "domain_lane_id",
+        "auth_tier",
+        "route_class",
+        "sensitivity",
+        "allowed_event_types"
+      ],
+      "properties": {
+        "connector_id": {
+          "type": "string",
+          "pattern": "^conn_[a-z0-9._-]+$"
+        },
+        "domain_lane_id": {
+          "type": "string",
+          "pattern": "^X[A-Z]$"
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": ["ADMIN", "OBSERVABILITY", "INTERNAL", "PUBLIC"]
+        },
+        "route_class": {
+          "type": "string",
+          "enum": ["advisory", "state_mutation", "sensitive_action"]
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": ["standard", "privileged"]
+        },
+        "allowed_event_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "adapter_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter_id",
+        "inference_proxy_required",
+        "credential_source",
+        "worker_credential_access",
+        "idempotency_key",
+        "retry_policy",
+        "timeout_seconds"
+      ],
+      "properties": {
+        "adapter_id": {
+          "type": "string",
+          "pattern": "^adp_[a-z0-9._-]+$"
+        },
+        "inference_proxy_required": {
+          "type": "boolean",
+          "const": true
+        },
+        "credential_source": {
+          "type": "string",
+          "const": "isolated_secret_store"
+        },
+        "worker_credential_access": {
+          "type": "boolean",
+          "const": false
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 8
+        },
+        "retry_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["max_attempts", "backoff_seconds"],
+          "properties": {
+            "max_attempts": { "type": "integer", "minimum": 1, "maximum": 5 },
+            "backoff_seconds": { "type": "integer", "minimum": 1, "maximum": 120 }
+          }
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 120
+        }
+      }
+    },
+    "domain_event_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "source_connector_id",
+        "producer_id",
+        "risk_class",
+        "route_class",
+        "auth_tier",
+        "payload_sha256"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^evt_[a-z0-9._-]+$"
+        },
+        "event_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_connector_id": {
+          "type": "string",
+          "pattern": "^conn_[a-z0-9._-]+$"
+        },
+        "producer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "risk_class": {
+          "type": "string",
+          "enum": ["RG0_LOW", "RG1_MODERATE", "RG2_HIGH", "RG3_CRITICAL"]
+        },
+        "route_class": {
+          "type": "string",
+          "enum": ["advisory", "state_mutation", "sensitive_action"]
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": ["ADMIN", "OBSERVABILITY", "INTERNAL", "PUBLIC"]
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "policy_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "deny_by_default_egress",
+        "allowed_egress_destinations",
+        "approval_ladder",
+        "policy_log_ref"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "pattern": "^pol_[a-z0-9._-]+$"
+        },
+        "deny_by_default_egress": {
+          "type": "boolean",
+          "const": true
+        },
+        "allowed_egress_destinations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "approval_ladder": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["step", "required_for_sensitivity", "owner_role"],
+            "properties": {
+              "step": { "type": "string", "minLength": 1 },
+              "required_for_sensitivity": {
+                "type": "string",
+                "enum": ["privileged"]
+              },
+              "owner_role": {
+                "type": "string",
+                "enum": ["governance_owner", "release_owner"]
+              }
+            }
+          }
+        },
+        "policy_log_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.evidence.v2",
+  "title": "Ground Truth Connector Evidence v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "connector_type",
+    "connector_id",
+    "observed_at",
+    "monotonic_seq",
+    "subject",
+    "facts",
+    "refs",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": { "const": "gtc.evidence.v2" },
+    "evidence_id": { "type": "string", "minLength": 8 },
+    "connector_type": { "type": "string", "minLength": 3 },
+    "connector_id": { "type": "string", "minLength": 1 },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "monotonic_seq": { "type": "integer", "minimum": 1 },
+    "subject": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 2 },
+        "id": { "type": "string", "minLength": 1 },
+        "workspace": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "facts": { "type": "object" },
+    "refs": {
+      "type": "object",
+      "properties": {
+        "checkpoint_id": { "type": ["string", "null"] },
+        "queue_trace_id": { "type": ["string", "null"] },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sha256"],
+            "properties": {
+              "sha256": { "type": "string", "minLength": 32 },
+              "media_type": { "type": "string" },
+              "role": { "type": "string" },
+              "path": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["payload_sha256", "producer"],
+      "properties": {
+        "payload_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "producer": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

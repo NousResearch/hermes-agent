@@ -1,0 +1,14 @@
+{
+  "object_type": "clawd.load_shedding.escape_worker_report.v1",
+  "worker_id": "cw_20260320T102105Z_01",
+  "started_at": "2026-03-20T10:21:05Z",
+  "completed_at": "2026-03-20T10:22:11Z",
+  "result": "PASS",
+  "actions": ["checkpoint_refresh", "handover_refresh", "proof_refresh_request"],
+  "artifacts": {
+    "checkpoint_ref": "chk_20260320_001",
+    "handover_ref": "state/handover/latest.json",
+    "proof_status_ref": "state/continuity/latest/proof_status.json"
+  },
+  "next_trigger": "TR_FAILOVER_PREP_STARTED"
+}

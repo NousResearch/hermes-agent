@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_supervisor_probe_execution_plan.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "plan_path",
+    "plan_history_path",
+    "mode",
+    "fail_closed",
+    "launch_mutation_allowed",
+    "status",
+    "decision",
+    "active",
+    "reason",
+    "pending_worker_count",
+    "workers"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.execution_supervisor_probe_execution_plan.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "plan_path": {
+      "type": "string"
+    },
+    "plan_history_path": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "plan_only_fail_closed"
+      ]
+    },
+    "fail_closed": {
+      "const": true
+    },
+    "launch_mutation_allowed": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "idle",
+        "plan_ready",
+        "attention_required"
+      ]
+    },
+    "decision": {
+      "enum": [
+        "NO_ACTION",
+        "PLAN_ONLY"
+      ]
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "action_priority": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "p1",
+        "p2",
+        null
+      ]
+    },
+    "pending_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "canary_required_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "probe_required_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "due_now_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "due_now_cohort_workers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "due_now_cohort_signature": {
+      "type": ["string", "null"]
+    },
+    "due_now_cohort_signature_first_seen_at": {
+      "type": ["string", "null"]
+    },
+    "due_now_cohort_signature_consecutive_ticks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "oldest_due_now_started_at": {
+      "type": ["string", "null"]
+    },
+    "oldest_due_now_worker": {
+      "type": ["string", "null"]
+    },
+    "oldest_due_now_age_sec": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "scheduled_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "overdue_worker_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "overdue_cohort_workers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "overdue_cohort_signature": {
+      "type": ["string", "null"]
+    },
+    "overdue_cohort_signature_first_seen_at": {
+      "type": ["string", "null"]
+    },
+    "overdue_cohort_signature_consecutive_ticks": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "oldest_overdue_started_at": {
+      "type": ["string", "null"]
+    },
+    "oldest_overdue_worker": {
+      "type": ["string", "null"]
+    },
+    "oldest_overdue_age_sec": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "workers": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
+  },
+  "additionalProperties": true
+}

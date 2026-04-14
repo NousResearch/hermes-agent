@@ -1,0 +1,214 @@
+{
+  "schema_version": "clawd.handover_bundle.v1",
+  "bundle_id": "handover_bundle_20260330T121200Z",
+  "generated_at": "2026-03-30T12:12:00Z",
+  "status": "active",
+  "integration_contract": {
+    "contract_id": "continuity_integration_contract_v1",
+    "contract_path": "docs/ops/continuity_integration_contract_v1.md",
+    "schema_path": "docs/ops/schemas/continuity_integration_contract.schema.json",
+    "template_path": "docs/ops/templates/continuity_integration_contract.template.json",
+    "clause_refs": [
+      "C1",
+      "C3",
+      "C4",
+      "C5",
+      "C6"
+    ]
+  },
+  "source_input_map": [
+    {
+      "source_id": "src_pdf_4d1ba541",
+      "artifact_path_or_ref": "sha256:4d1ba5414fe314e580191a51d137932b7efacfffde38a4edc773c8872ed53b9f",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "resume_safety",
+        "overflow_trigger"
+      ],
+      "notes": "Checkpoint/reset OS doctrine and hybrid trigger boundaries."
+    },
+    {
+      "source_id": "src_pdf_c34f592e",
+      "artifact_path_or_ref": "sha256:c34f592e30a08559f043e07a90de3cc81c8d8f52809865bef203805ecc00da45",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "lineage",
+        "pending_work"
+      ],
+      "notes": "Append-oriented lineage and durable queue posture."
+    },
+    {
+      "source_id": "src_pdf_f1fc25fc",
+      "artifact_path_or_ref": "sha256:f1fc25fce940b647ddb182551a947fa0c11f5ebb13dd8475028b919022db0dc0",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "ground_truth",
+        "resume_safety"
+      ],
+      "notes": "Ground-truth capture gates before mutation/resume."
+    },
+    {
+      "source_id": "src_rpt_checkpoint_blueprint_20260308",
+      "artifact_path_or_ref": "reports/continuity_checkpoint_os_blueprint_2026-03-08.md",
+      "classification": "historical",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "resume_safety",
+        "lineage"
+      ]
+    },
+    {
+      "source_id": "src_rpt_handover_proof_20260320",
+      "artifact_path_or_ref": "reports/successor_safe_handover_proof_contract_roadmap_integration_2026-03-20.md",
+      "classification": "support",
+      "continuity_dimensions": [
+        "proof_gate",
+        "resume_safety"
+      ]
+    },
+    {
+      "source_id": "src_rpt_exec_queue_20260330",
+      "artifact_path_or_ref": "reports/openclaw_system_execution_queue_full_buildout_2026-03-30.md",
+      "classification": "canonical",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "proof_gate",
+        "pending_work",
+        "resume_safety"
+      ],
+      "notes": "Program A / Slice A2 normalization directive."
+    }
+  ],
+  "handover": {
+    "handover_id": "ho_template_20260330_a2",
+    "workspace_id": "clawd-architect",
+    "generated_at": "2026-03-30T12:12:00Z",
+    "checkpoint_id": "chk_20260329T024522Z_bd2238",
+    "objective": {
+      "mission": "Maintain deterministic continuity handoff with proof-backed safe resume posture.",
+      "success_criteria": "safe_to_resume=true and proof_state=PROOF_VALID_PASS",
+      "status": "READY",
+      "blocker_reason": null
+    },
+    "truth_anchor": {
+      "snapshot_id": "gt_20260329T024516Z",
+      "journal_offset": "chk_20260329T024522Z_bd2238",
+      "pointer_source": "state/continuity/latest/latest_pointer.json",
+      "pointer_hash": "f14f4d8a7570145057a1ffd3776fe29768c76a2e4d4ba63c0e5bd246844caaf2"
+    },
+    "queue_state": {
+      "ready_count": 0,
+      "running_count": 0,
+      "dependency_blocked_count": 1,
+      "status_counts": {
+        "DONE": 5,
+        "QUEUED": 1,
+        "REVIEW": 6
+      }
+    },
+    "blockers": [
+      {
+        "owner": "sre_watchdog",
+        "reason": "reset_ready_refresh_stale",
+        "severity": "warn",
+        "next_check": "next_cycle"
+      }
+    ],
+    "recommended_next_actions": [
+      {
+        "step": 1,
+        "command": "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/continuity/continuity_now.sh --strict",
+        "precondition": "proof_state_is_fresh"
+      },
+      {
+        "step": 2,
+        "command": "cat /home/yeqiuqiu/clawd-architect/state/continuity/latest/successor_safe_handover_proof_status.json",
+        "precondition": "previous_step_done"
+      }
+    ],
+    "notes": "Template includes normalized checkpoint/proof/pending-work/safe-resume surfaces."
+  },
+  "proof": {
+    "proof_state": "PROOF_VALID_PASS",
+    "proof_id": "proof_dbb6e35e79d4c507",
+    "evaluated_at": "2026-03-29T02:45:22Z",
+    "expires_at": "2026-03-29T02:50:22Z",
+    "reset_allowed": true,
+    "resume_allowed": true,
+    "top_blocker": null,
+    "proof_source_path": "state/continuity/latest/successor_safe_handover_proof.json",
+    "status_source_path": "state/continuity/latest/successor_safe_handover_proof_status.json"
+  },
+  "pending_work": {
+    "summary": {
+      "pending_total": 8,
+      "queued": 1,
+      "review": 6,
+      "blocked": 1,
+      "running": 0
+    },
+    "items": [
+      {
+        "task_id": "core_roadmap:queued:sample",
+        "title": "Queued lane item awaiting dispatch",
+        "status": "QUEUED",
+        "owner": "subagent_default",
+        "resume_hint": "reconcile queue state then dispatch from execution frontier"
+      },
+      {
+        "task_id": "reset_ready_refresh_stale",
+        "title": "Refresh reset-ready contract outputs",
+        "status": "BLOCKED",
+        "owner": "sre_watchdog",
+        "resume_hint": "run reset_ready_refresh and verify proof parity fields"
+      }
+    ]
+  },
+  "safe_resume": {
+    "safe_to_resume": true,
+    "safe_to_reset": true,
+    "mutation_gate_status": "allowed",
+    "mutation_gate_posture": "open",
+    "verify_gate_ready": true,
+    "required_preflight_commands": [
+      "openclaw gateway status --json",
+      "openclaw cron list --json",
+      "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/continuity/verify_then_resume.sh --dry-run"
+    ],
+    "blockers": [],
+    "notes": "Fail closed if proof is stale, missing, or contradictory to handover safe signals."
+  },
+  "markdown_form": {
+    "format_version": "clawd.handover_markdown.v1",
+    "markdown_path": "state/continuity/examples/handover_bundle_example_2026-03-30.md",
+    "frontmatter": {
+      "handover_id": "ho_template_20260330_a2",
+      "generated_at": "2026-03-30T12:12:00Z",
+      "checkpoint_id": "chk_20260329T024522Z_bd2238",
+      "proof_state": "PROOF_VALID_PASS",
+      "safe_to_resume": true,
+      "safe_to_reset": true
+    },
+    "required_sections": [
+      "Objective",
+      "Current truth anchor",
+      "Pending work",
+      "Safe resume",
+      "Successor proof gate",
+      "Verification checklist",
+      "Rollback plan",
+      "Next actions",
+      "Blockers",
+      "Notes"
+    ]
+  },
+  "generated_artifacts": {
+    "schema_json": "docs/ops/schemas/handover_bundle.schema.json",
+    "template_json": "docs/ops/templates/handover_bundle.template.json",
+    "example_json": "state/continuity/examples/handover_bundle_example_2026-03-30.json",
+    "example_md": "state/continuity/examples/handover_bundle_example_2026-03-30.md",
+    "execution_report": "reports/execution_A2_handover_checkpoint_normalization_2026-03-30.md"
+  }
+}

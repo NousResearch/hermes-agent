@@ -1,0 +1,480 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/doctrine_object.schema.json",
+  "title": "Doctrine Object v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "doctrine_id",
+    "version",
+    "title",
+    "principle_text",
+    "status",
+    "doctrine_type",
+    "domain_tags",
+    "lane_scope",
+    "precedence",
+    "optionality",
+    "confidence",
+    "source_refs",
+    "contradictions",
+    "examples",
+    "anti_patterns",
+    "governance",
+    "review",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "doctrine_id": {
+      "type": "string",
+      "pattern": "^doc_[a-z0-9._-]+$"
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "principle_text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "active",
+        "superseded",
+        "archived"
+      ]
+    },
+    "doctrine_type": {
+      "type": "string",
+      "enum": [
+        "principle",
+        "policy",
+        "rubric",
+        "heuristic",
+        "anti_pattern"
+      ]
+    },
+    "domain_tags": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "lane_scope": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "precedence": {
+      "$ref": "#/$defs/precedence"
+    },
+    "optionality": {
+      "$ref": "#/$defs/optionality"
+    },
+    "confidence": {
+      "$ref": "#/$defs/confidence"
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/sourceRef"
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/contradiction"
+      },
+      "default": []
+    },
+    "examples": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/example"
+      },
+      "default": []
+    },
+    "anti_patterns": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/antiPattern"
+      },
+      "default": []
+    },
+    "governance": {
+      "$ref": "#/$defs/governance"
+    },
+    "review": {
+      "$ref": "#/$defs/review"
+    },
+    "supersedes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "superseded_by": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "uri_or_path",
+        "source_type",
+        "locator",
+        "citation_text"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uri_or_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "report",
+            "book",
+            "note",
+            "conversation",
+            "other"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "description": "Page/chapter/section pointer"
+        },
+        "citation_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "evidence_quality",
+        "last_calibrated_at"
+      ],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "evidence_quality": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "last_calibrated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "calibrated_by": {
+          "type": "string"
+        },
+        "uncertainty_notes": {
+          "type": "string"
+        }
+      }
+    },
+    "precedence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "level",
+        "rank",
+        "overridable",
+        "override_requires_review"
+      ],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "constitutional",
+            "default",
+            "situational",
+            "advisory"
+          ]
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "overridable": {
+          "type": "boolean"
+        },
+        "override_requires_review": {
+          "type": "boolean"
+        },
+        "override_review_queue": {
+          "type": "string"
+        }
+      }
+    },
+    "optionality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "mandatory",
+            "default_on",
+            "contextual",
+            "optional"
+          ]
+        },
+        "activation_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "disable_conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "contradiction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "doctrine_id",
+        "relation",
+        "severity",
+        "resolution_state"
+      ],
+      "properties": {
+        "doctrine_id": {
+          "type": "string",
+          "pattern": "^doc_[a-z0-9._-]+$"
+        },
+        "relation": {
+          "type": "string",
+          "enum": [
+            "contradicts",
+            "tensions_with",
+            "reframes"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "resolution_state": {
+          "type": "string",
+          "enum": [
+            "unresolved",
+            "in_review",
+            "resolved",
+            "accepted_tradeoff"
+          ]
+        },
+        "resolution_note": {
+          "type": "string"
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "example": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "example_id",
+        "context",
+        "recommended_action",
+        "expected_outcome"
+      ],
+      "properties": {
+        "example_id": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "recommended_action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "antiPattern": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anti_pattern_id",
+        "description",
+        "failure_mode"
+      ],
+      "properties": {
+        "anti_pattern_id": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failure_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trigger_signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "mitigations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner",
+        "promotion_state"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promotion_state": {
+          "type": "string",
+          "enum": [
+            "draft",
+            "review",
+            "approved",
+            "rejected"
+          ]
+        },
+        "approved_by": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "decision_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cadence",
+        "next_review_at"
+      ],
+      "properties": {
+        "cadence": {
+          "type": "string",
+          "enum": [
+            "weekly",
+            "monthly",
+            "quarterly",
+            "event_driven"
+          ]
+        },
+        "next_review_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_review_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

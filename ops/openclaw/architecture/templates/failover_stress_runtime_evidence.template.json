@@ -1,0 +1,101 @@
+{
+  "object_type": "clawd.a3_failover_stress_runtime_evidence.v1",
+  "run_id": "a3runtime_3d4f5a6b7c8d9e0f",
+  "generated_at": "2026-03-27T05:10:00Z",
+  "source_lane": "A3",
+  "harness": {
+    "component": "continuity.failover_stress_runtime_evidence",
+    "version": "v1",
+    "stress_runner": "continuity.failover_stress_soak"
+  },
+  "config": {
+    "cycles_per_profile": 2,
+    "stress_timeout_sec": 120,
+    "refresh_timeout_sec": 120,
+    "refresh_enabled": true,
+    "require_live_assertions": false
+  },
+  "summary": {
+    "overall_verdict": "PASS",
+    "stress_verdict": "PASS",
+    "refresh_verdict": "PASS",
+    "publish_chain_verdict": "PASS",
+    "active_top_blocker": "BLK_PROOF_GENERATION_MISMATCH",
+    "publish_assertions_checked": 8,
+    "publish_assertions_failed": 0,
+    "blocked_reasons": []
+  },
+  "phases": {
+    "stress_soak": {
+      "status": "PASS",
+      "duration_ms": 942,
+      "returncode": 0,
+      "command": "python3 ops/openclaw/continuity/failover_stress_soak.py --json",
+      "run_id": "a3stress_7c5eddd64d22a016",
+      "latest_ref": "state/continuity/latest/failover_stress_soak_evidence.json"
+    },
+    "refresh_publish_chain": {
+      "status": "PASS",
+      "duration_ms": 515,
+      "returncode": 0,
+      "command": "bash ops/openclaw/continuity/reset_ready_refresh.sh --json",
+      "skipped": false,
+      "latest_surface_ref": "state/continuity/latest/reset_ready_refresh_latest.json"
+    },
+    "publish_assertion_verification": {
+      "status": "PASS",
+      "verdict": "PASS",
+      "reason": "projected_live_assertions_verified",
+      "assertions_checked": 8,
+      "assertions_failed": 0,
+      "active_top_blocker": "BLK_PROOF_GENERATION_MISMATCH",
+      "checks": [
+        {
+          "index": 1,
+          "ok": true,
+          "surface_path": "state/handover/latest.json",
+          "field_path": "proof_status.top_blocker",
+          "expected": "BLK_PROOF_GENERATION_MISMATCH",
+          "actual": "BLK_PROOF_GENERATION_MISMATCH"
+        }
+      ],
+      "failures": []
+    }
+  },
+  "stress_evidence": {
+    "run_id": "a3stress_7c5eddd64d22a016",
+    "summary": {
+      "overall_verdict": "PASS",
+      "profile_count": 5,
+      "total_cycles": 10,
+      "convergence_fail_count": 0,
+      "stress_drift_detected": false
+    },
+    "live_surface_linkage": {
+      "schema": "clawd.a3_failover_stress_soak.live_surface_linkage.v1",
+      "focus": "blocked_reset_successor_failures"
+    }
+  },
+  "artifacts": {
+    "run_dir": "state/continuity/a3_failover_runtime_evidence/runs/a3runtime_3d4f5a6b7c8d9e0f",
+    "evidence_ref": "state/continuity/a3_failover_runtime_evidence/runs/a3runtime_3d4f5a6b7c8d9e0f/evidence.json",
+    "decision_log_ref": "state/continuity/a3_failover_runtime_evidence/decisions.jsonl",
+    "latest_ref": "state/continuity/latest/failover_stress_runtime_evidence.json",
+    "stress_latest_ref": "state/continuity/latest/failover_stress_soak_evidence.json",
+    "refresh_latest_ref": "state/continuity/latest/reset_ready_refresh_latest.json"
+  },
+  "source_refs": [
+    {
+      "path": "ops/openclaw/continuity/failover_stress_soak.py",
+      "sha256": "f1f8b8c0f8f3d2c4f4c9d7df46e9a7beedf8f7151c29a6e5956d2c98a7a50110"
+    },
+    {
+      "path": "ops/openclaw/continuity/failover_stress_runtime_evidence.py",
+      "sha256": "2d2c14ae1f8b8cce8f78633f890ce2de4d2f17c9a2fa88f53217fda04f4f0dd5"
+    },
+    {
+      "path": "ops/openclaw/continuity/reset_ready_refresh.sh",
+      "sha256": "3b19ca90f0ff77086f997f4eea21434deece92c145d4d98ec5dce31b812d53c0"
+    }
+  ]
+}

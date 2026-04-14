@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/b8_component_consistency_audit_overlay.schema.json",
+  "title": "B8 Component Consistency Audit Overlay",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "overlay_id",
+    "generated_at",
+    "status",
+    "source_scope",
+    "rule_ids_evaluated",
+    "finding_count",
+    "critical_finding_count",
+    "findings"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "clawd.component_consistency_audit_overlay.v1"
+    },
+    "overlay_id": {
+      "type": "string",
+      "const": "component_consistency_audit_overlay.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "clean",
+        "skipped",
+        "invalid"
+      ]
+    },
+    "bundle_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "bundle_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ui_state_source": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "ui_state_artifact_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "artifact_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source_scope": {
+      "type": "string",
+      "enum": [
+        "runtime_execution_snapshot",
+        "ui_evidence_bundle"
+      ]
+    },
+    "runtime_execution_snapshot_overlay": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "finding_count",
+        "critical_finding_count"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "applied",
+            "clean",
+            "skipped",
+            "invalid"
+          ]
+        },
+        "finding_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "critical_finding_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "policy": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "show_stale": {
+          "type": "boolean"
+        },
+        "show_redundant": {
+          "type": "boolean"
+        },
+        "show_chatter": {
+          "type": "boolean"
+        },
+        "include_suppressed_items": {
+          "type": "boolean"
+        },
+        "suppressed_by_policy_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rule_ids_evaluated": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "finding_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "critical_finding_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_id",
+        "author_id",
+        "created_at",
+        "finding_text",
+        "severity",
+        "audit_rule_id",
+        "inconsistent_paths"
+      ],
+      "properties": {
+        "finding_id": {
+          "type": "string",
+          "pattern": "^cf_[a-z0-9._-]+$"
+        },
+        "author_id": {
+          "type": "string",
+          "const": "component_consistency_audit_overlay.v1"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finding_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low"
+          ]
+        },
+        "audit_rule_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "inconsistent_paths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          }
+        },
+        "expected_value": {
+          "type": "string"
+        },
+        "actual_value": {
+          "type": "string"
+        },
+        "context_task_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

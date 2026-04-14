@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Layered Health Snapshot Contract",
+  "description": "Defines layered health status for key OpenClaw lanes and aggregate readiness.",
+  "type": "object",
+  "required": [
+    "timestamp",
+    "lane",
+    "health_layer",
+    "status",
+    "issues"
+  ],
+  "properties": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lane": {
+      "type": "string",
+      "description": "Primary compatibility lane id (legacy compatibility surface)."
+    },
+    "health_layer": {
+      "type": "string",
+      "enum": ["alive", "ready", "safe-to-act", "truthful"],
+      "description": "Aggregate achieved layer across the evaluated lane set."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "degraded", "failing"],
+      "description": "Aggregate status of the snapshot."
+    },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/issue" }
+    },
+    "lanes": {
+      "type": "array",
+      "description": "Per-lane layered health status rows.",
+      "items": { "$ref": "#/$defs/lane_status" }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "target_lanes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "lane_count": { "type": "integer", "minimum": 0 },
+        "pass_count": { "type": "integer", "minimum": 0 },
+        "degraded_count": { "type": "integer", "minimum": 0 },
+        "failing_count": { "type": "integer", "minimum": 0 },
+        "degraded_lanes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "failing_lanes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Supporting counters and integration signals used by lane evaluation.",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "issue": {
+      "type": "object",
+      "required": ["severity", "message", "layer_failed"],
+      "properties": {
+        "lane": { "type": "string" },
+        "severity": { "type": "string", "enum": ["warning", "critical"] },
+        "message": { "type": "string" },
+        "layer_failed": { "type": "string", "enum": ["alive", "ready", "safe-to-act", "truthful"] },
+        "remediation_hint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "lane_status": {
+      "type": "object",
+      "required": ["lane", "health_layer", "status", "issues"],
+      "properties": {
+        "lane": { "type": "string", "minLength": 1 },
+        "health_layer": { "type": "string", "enum": ["alive", "ready", "safe-to-act", "truthful"] },
+        "status": { "type": "string", "enum": ["pass", "degraded", "failing"] },
+        "issues": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/issue" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "clawd.xb_403_downstream_eval_gate_pack.v1",
+  "slice_id": "XB-403",
+  "generated_at": "2026-03-29T00:20:00+07:00",
+  "expected_release_id": "rel_xb403_domain_canary_20260329",
+  "release_bundle_ref": "state/continuity/latest/xb_403_domain_release_bundle_2026-03-29.json",
+  "deterministic_replay_fixture_results_ref": "state/continuity/latest/xb_403_deterministic_replay_fixture_results_2026-03-29.json",
+  "domain_benchmark_scorecard_ref": "state/continuity/latest/xb_403_domain_benchmark_scorecard_2026-03-29.json",
+  "rollback_simulation_report_ref": "state/continuity/latest/xb_403_rollback_simulation_report_2026-03-29.json",
+  "notes": "Wave2 fixture families + Batch1 negative regressions + C2/XG release coupling"
+}

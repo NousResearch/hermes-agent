@@ -1,0 +1,89 @@
+{
+  "schema_version": "clawd.noise_signal_heuristic_pack.v1",
+  "pack_id": "lt01_noise_signal_heuristics_20260404",
+  "generated_at": "2026-04-04T06:00:00Z",
+  "status": "active",
+  "heuristics": [
+    {
+      "heuristic_id": "H1",
+      "title": "Stale-wave remediation residue",
+      "classifier": "queue_stale_wave_auto_remediation_failed is set while active stale-wave signal is false",
+      "signal_indicator": "queue_stale_wave_auto_failure_signal == true",
+      "noise_indicator": "queue_stale_wave_auto_failure_residue_suppressed == true",
+      "evidence_source": {
+        "source_id": "obs02",
+        "source_kind": "report",
+        "source_path": "reports/openclaw_obs02_stale_residue_suppression_slice_2026-04-03.md"
+      },
+      "suppression": {
+        "primary_stream_action": "suppress",
+        "forensic_annotation_fields": [
+          "failure_residue_reason",
+          "failure_observed_age_sec"
+        ],
+        "suppression_counter": "h1_suppressed"
+      },
+      "tags": [
+        "staleness",
+        "residue",
+        "false_positive"
+      ]
+    }
+  ],
+  "scoring_rubric": {
+    "score_scale": {
+      "min": 0,
+      "max": 4
+    },
+    "bands": [
+      {
+        "score": 0,
+        "label": "critical",
+        "definition": "Noise is misclassified as signal or true signal is suppressed."
+      },
+      {
+        "score": 1,
+        "label": "weak",
+        "definition": "Noise is still visible in primary stream and signal remains hard to see."
+      },
+      {
+        "score": 2,
+        "label": "mixed",
+        "definition": "Suppression is partial; signal/noise separation is inconsistent."
+      },
+      {
+        "score": 3,
+        "label": "good",
+        "definition": "Noise is mostly suppressed and signal is surfaced with rationale."
+      },
+      {
+        "score": 4,
+        "label": "excellent",
+        "definition": "Noise suppression is robust and forensic visibility remains complete."
+      }
+    ]
+  },
+  "suppression_policy": {
+    "primary_alert_stream": "operator_warning_stream",
+    "forensic_stream": "operator_forensic_stream",
+    "default_counter_suffix": "_suppressed",
+    "notes": "Suppress low-signal items from primary stream while retaining audit evidence."
+  },
+  "integration_targets": [
+    {
+      "target_id": "a6.layered_health",
+      "target_surface": "A6 layered health",
+      "heuristic_ids": [
+        "H1"
+      ],
+      "integration_mode": "runtime"
+    }
+  ],
+  "provenance": {
+    "generated_by": "lt01-reentry-contract-slice-2026-04-04",
+    "source_report_paths": [
+      "reports/openclaw_lt01_noise_signal_heuristic_slice_2026-04-03.md"
+    ],
+    "notes": "Template skeleton for reusable LT-01 heuristic packs."
+  }
+}

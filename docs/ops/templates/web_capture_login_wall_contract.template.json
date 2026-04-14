@@ -1,0 +1,58 @@
+{
+  "schema_version": "openclaw.web_capture.login_wall_contract.v1",
+  "domain": "example.com",
+  "domain_slug": "example.com",
+  "macro_slug": "example_domain_capture",
+  "target_url": "https://example.com/protected",
+  "opened_at": "2026-03-28T10:00:00Z",
+  "updated_at": "2026-03-28T10:01:00Z",
+  "status": "open",
+  "last_run_id": "wc_loginwall_001",
+  "gate_class": "login_wall",
+  "signals": [
+    "requires_login",
+    "captcha_detected"
+  ],
+  "state_path": "state/continuity/latest/web_capture_domain_example.com.json",
+  "evidence_ref": "ops/web_capture/artifacts/latest_run.json",
+  "operator_actions": [
+    "Open the target URL in Chrome and complete required authentication/captcha manually.",
+    "Click the OpenClaw Browser Relay toolbar button on the authenticated tab (badge ON).",
+    "Re-run the macro with force in browser mode to continue deterministic capture."
+  ],
+  "resume_command": "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/run_web_capture_macro.sh --macro /home/yeqiuqiu/clawd-architect/ops/web_capture/macros/example_domain_capture.yaml --mode browser --force",
+  "incident_actionability": {
+    "schema_version": "openclaw.web_capture.login_wall_incident_actionability.v1",
+    "incident_id": "web_login_wall::example.com::example_domain_capture",
+    "reason": "login_wall_operator_required",
+    "severity": "action_required",
+    "status": "open",
+    "action_required": true,
+    "recommended_commands": [
+      "cat /home/yeqiuqiu/clawd-architect/state/continuity/latest/web_capture_login_contract_example.com.md",
+      "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/run_web_capture_macro.sh --macro /home/yeqiuqiu/clawd-architect/ops/web_capture/macros/example_domain_capture.yaml --mode browser --force",
+      "cat /home/yeqiuqiu/clawd-architect/ops/web_capture/artifacts/latest_run.json"
+    ],
+    "recommended_steps": [
+      {
+        "step_id": "inspect_login_operator_contract",
+        "summary": "Read the login-wall operator contract for exact bounded actions.",
+        "command": "cat /home/yeqiuqiu/clawd-architect/state/continuity/latest/web_capture_login_contract_example.com.md"
+      },
+      {
+        "step_id": "resume_web_capture_after_manual_login",
+        "summary": "Resume deterministic capture after completing login/captcha in browser.",
+        "command": "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/run_web_capture_macro.sh --macro /home/yeqiuqiu/clawd-architect/ops/web_capture/macros/example_domain_capture.yaml --mode browser --force"
+      },
+      {
+        "step_id": "inspect_latest_web_capture_packet",
+        "summary": "Inspect latest web-capture packet/evidence for residual blockers.",
+        "command": "cat /home/yeqiuqiu/clawd-architect/ops/web_capture/artifacts/latest_run.json"
+      }
+    ],
+    "evidence": [
+      "ops/web_capture/artifacts/latest_run.json",
+      "state/continuity/latest/web_capture_domain_example.com.json"
+    ]
+  }
+}

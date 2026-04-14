@@ -1,0 +1,33 @@
+{
+  "schema_version": "source.material.classification.v1",
+  "material_id": "sm_20260320_wave6_slice2_contract_packet",
+  "captured_at": "2026-03-20T11:30:00+07:00",
+  "source_ref": {
+    "ref_type": "path",
+    "locator": "docs/ops/source_material_classification_layer_v1.md",
+    "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "bytes": 4200
+  },
+  "primary_lane_class": "lane.column_b.swarm_orchestration",
+  "trust_tier": "t3_canonical",
+  "source_kind": "contract_schema",
+  "intent_class": "governance_decision",
+  "sensitivity": "internal",
+  "contamination_guard": {
+    "source_memory_scope": "shared_contract_only",
+    "contains_unverified_content": false,
+    "cross_lane_write_requested": false,
+    "allow_inline_excerpt": false,
+    "max_inline_context_bytes": 0,
+    "ingestion_mode": "reference_only",
+    "redaction_applied": false,
+    "provenance_complete": true
+  },
+  "quarantine": {
+    "status": "none",
+    "reason_codes": [],
+    "release_requirements": [],
+    "hold_owner_role": "none"
+  },
+  "notes": "Canonical contract input; no quarantine required."
+}

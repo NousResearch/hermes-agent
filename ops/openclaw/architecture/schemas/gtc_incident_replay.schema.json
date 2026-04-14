@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.incident_replay.v1",
+  "title": "Ground Truth Connector Incident Replay v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "build_generation_id",
+    "valid_until",
+    "open_incidents",
+    "recommended_commands"
+  ],
+  "properties": {
+    "schema_version": { "const": "gtc.incident_replay.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "build_generation_id": { "type": "string", "minLength": 8 },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "open_incidents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["route_key", "severity", "status", "latest_event_id"],
+        "properties": {
+          "route_key": { "type": "string" },
+          "severity": { "type": "string" },
+          "status": { "type": "string", "enum": ["open", "closed"] },
+          "latest_event_id": { "type": "string" },
+          "latest_summary": { "type": ["string", "null"] },
+          "open_age_sec": { "type": ["integer", "null"], "minimum": 0 }
+        },
+        "additionalProperties": true
+      }
+    },
+    "recommended_commands": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": true
+}

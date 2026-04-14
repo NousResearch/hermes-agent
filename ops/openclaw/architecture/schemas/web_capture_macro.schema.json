@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.web_capture_macro.v1",
+  "title": "WebCaptureMacro",
+  "type": "object",
+  "required": [
+    "macro_id",
+    "domain",
+    "target_url",
+    "viewport",
+    "anti_bot_policy",
+    "steps"
+  ],
+  "properties": {
+    "macro_id": { "type": "string", "minLength": 3 },
+    "domain": { "type": "string", "minLength": 3 },
+    "target_url": { "type": "string", "format": "uri" },
+    "viewport": {
+      "type": "object",
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 320 },
+        "height": { "type": "integer", "minimum": 240 }
+      },
+      "additionalProperties": false
+    },
+    "anti_bot_policy": {
+      "type": "object",
+      "required": ["rate_limit", "retry_backoff"],
+      "properties": {
+        "rate_limit": { "type": "string" },
+        "retry_backoff": { "type": "string" },
+        "session_reuse": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "navigate",
+              "wait_for_settle",
+              "dismiss_overlays",
+              "waitForSelector",
+              "click",
+              "type",
+              "extract_dom",
+              "extract_css_tokens",
+              "capture_screenshot"
+            ]
+          },
+          "selector": { "type": "string" },
+          "fallback": { "type": "array", "items": { "type": "string" } },
+          "timeout_ms": { "type": "integer", "minimum": 1 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": false
+}

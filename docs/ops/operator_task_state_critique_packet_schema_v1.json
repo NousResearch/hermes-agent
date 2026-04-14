@@ -1,0 +1,236 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openclaw.dev/schemas/operator_task_state_critique_packet_v1.json",
+  "title": "Operator Task-State Critique Packet Schema v1",
+  "description": "Schema for evidence-linked operator task-state critique packets that provide actionable guidance without canon mutation.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "packet_id",
+    "generated_at",
+    "task_context",
+    "critique_findings",
+    "operator_guidance"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "openclaw.operator_task_state_critique_packet.v1",
+      "description": "Schema version identifier"
+    },
+    "packet_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+:[a-z0-9_]+:[0-9]{8}T[0-9]{6}Z$",
+      "description": "Unique packet identifier (source:task_type:timestamp)"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when packet was generated"
+    },
+    "task_context": {
+      "type": "object",
+      "required": ["task_id", "task_type", "current_state", "evidence_refs"],
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "Unique task identifier"
+        },
+        "task_type": {
+          "type": "string",
+          "enum": ["continuity_check", "worker_health", "queue_arbitration", "verification", "failover", "restore"],
+          "description": "Type of task being critiqued"
+        },
+        "current_state": {
+          "type": "string",
+          "enum": ["READY", "BLOCKER", "PROGRESS", "WARNING", "UNKNOWN"],
+          "description": "Current system state"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "timestamp", "digest"],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "File path to evidence"
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time",
+                "description": "Evidence timestamp"
+              },
+              "digest": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$",
+                "description": "SHA-256 digest of evidence"
+              }
+            }
+          },
+          "minItems": 1,
+          "description": "References to supporting evidence"
+        }
+      }
+    },
+    "critique_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["finding_id", "severity", "category", "title", "description", "evidence_linkage"],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "pattern": "^[A-Z0-9_]+$",
+            "description": "Unique finding identifier"
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "warning", "info"],
+            "description": "Severity level of the finding"
+          },
+          "category": {
+            "type": "string",
+            "enum": ["continuity", "worker_health", "queue_state", "verification", "policy", "performance"],
+            "description": "Category of the finding"
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Brief title of the finding"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Detailed description of the finding"
+          },
+          "evidence_linkage": {
+            "type": "object",
+            "required": ["source", "field_path", "value"],
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "Source evidence file"
+              },
+              "field_path": {
+                "type": "string",
+                "description": "JSONPath to evidence field"
+              },
+              "value": {
+                "description": "Actual value from evidence"
+              }
+            }
+          }
+        }
+      },
+      "minItems": 1,
+      "description": "Critique findings about task state"
+    },
+    "operator_guidance": {
+      "type": "object",
+      "required": ["summary", "next_actions", "context", "automation_hints"],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "maxLength": 200,
+          "description": "Executive summary for operator"
+        },
+        "next_actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["priority", "action", "rationale", "command"],
+            "properties": {
+              "priority": {
+                "type": "string",
+                "enum": ["immediate", "soon", "when_convenient", "monitor_only"],
+                "description": "Action priority"
+              },
+              "action": {
+                "type": "string",
+                "maxLength": 100,
+                "description": "Specific action to take"
+              },
+              "rationale": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "Why this action is recommended"
+              },
+              "command": {
+                "type": "string",
+                "maxLength": 150,
+                "description": "Specific command to run"
+              }
+            }
+          },
+          "minItems": 1,
+          "description": "Recommended next actions"
+        },
+        "context": {
+          "type": "object",
+          "required": ["normal_posture", "significance", "time_sensitivity"],
+          "properties": {
+            "normal_posture": {
+              "type": "string",
+              "enum": ["expected", "warning", "abnormal", "critical"],
+              "description": "Whether this is expected under normal operation"
+            },
+            "significance": {
+              "type": "string",
+              "maxLength": 200,
+              "description": "Why this finding matters"
+            },
+            "time_sensitivity": {
+              "type": "string",
+              "enum": ["immediate", "minutes", "hours", "days", "not_time_sensitive"],
+              "description": "How quickly action should be taken"
+            }
+          }
+        },
+        "automation_hints": {
+          "type": "object",
+          "required": ["auto_resolvable", "resolution_time_estimate", "escalation_triggers"],
+          "properties": {
+            "auto_resolvable": {
+              "type": "boolean",
+              "description": "Whether system can resolve automatically"
+            },
+            "resolution_time_estimate": {
+              "type": "string",
+              "enum": ["seconds", "minutes", "hours", "days", "unknown"],
+              "description": "Expected time to resolution"
+            },
+            "escalation_triggers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Conditions that should trigger escalation"
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "creator": {
+          "type": "string",
+          "description": "System component that created the packet"
+        },
+        "review_status": {
+          "type": "string",
+          "enum": ["draft", "reviewed", "approved", "rejected"],
+          "description": "Review status of the packet"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tags for categorization"
+        }
+      }
+    }
+  }
+}

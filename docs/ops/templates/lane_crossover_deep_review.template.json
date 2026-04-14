@@ -1,0 +1,39 @@
+{
+  "schema_version": "lane.crossover_packet.v1",
+  "packet_id": "lxp_20260320_wave4_slice1_deep_review",
+  "packet_type": "deep_review",
+  "from_lane_id": "lane.column_c.upgrade_substrate",
+  "from_lane_epoch": "epoch_20260320_c1",
+  "to_lane_id": "lane.column_b.swarm_orchestration",
+  "to_lane_epoch": "epoch_20260320_b1",
+  "created_at": "2026-03-20T10:40:00+07:00",
+  "expires_at": "2026-03-20T18:00:00+07:00",
+  "priority": "high",
+  "work_item_id": "wi_wave4_slice1_lane_boundary",
+  "summary": "Request independent review of lane boundary contract before broader adoption.",
+  "evidence_refs": [
+    "docs/ops/lane_boundary_contract_v1.md",
+    "docs/ops/schemas/lane_crossover_packet.schema.json"
+  ],
+  "payload": {
+    "review_id": "drv_lane_boundary_contract_v1",
+    "question": "Does the new lane boundary contract preserve Column A while preventing cross-lane contamination?",
+    "decision_type": "design_review",
+    "required_artifacts": [
+      "docs/ops/lane_boundary_contract_v1.md",
+      "docs/ops/templates/lane_crossover_ticket.template.json",
+      "docs/ops/templates/lane_crossover_signal.template.json",
+      "docs/ops/templates/lane_crossover_deep_review.template.json"
+    ],
+    "response_deadline": "2026-03-20T19:00:00+07:00"
+  },
+  "contamination_guard": {
+    "source_memory_scope": "shared_contract_only",
+    "contains_unverified_content": false,
+    "cross_lane_write_requested": false,
+    "promotion_gate": "validator_required",
+    "max_inline_context_bytes": 1024,
+    "redaction_applied": false
+  },
+  "ack_required": true
+}

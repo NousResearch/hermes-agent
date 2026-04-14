@@ -1,0 +1,26 @@
+version: "1.0"
+id: "interaction.orderbook.row_focus.v1"
+status: "proposed"
+component: "OrderBook"
+trigger:
+  event: "keydown"
+  input: "ArrowDown"
+selector:
+  scope: "orderbook_grid"
+  target: "[role='row'][data-active='true']"
+expected_state:
+  ui_state: "active_row_moves_to_next_visible_row"
+  data_state: "selection_index_incremented"
+a11y_focus_behavior:
+  focus_target: "active_row"
+  focus_visible: true
+  keyboard_path:
+    - "ArrowDown moves focus"
+    - "Shift+Tab returns to toolbar"
+failure_assertions:
+  - id: "focus_loss"
+    condition: "focus leaves grid without explicit escape key"
+    severity: "high"
+  - id: "silent_state_desync"
+    condition: "active row highlight does not match selected index"
+    severity: "critical"

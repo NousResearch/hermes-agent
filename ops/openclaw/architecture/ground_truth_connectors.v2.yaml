@@ -1,0 +1,70 @@
+version: "2.0"
+id: "openclaw.ground_truth_connectors.v2"
+status: "active"
+updated_at: "2026-03-09T10:20:00+07:00"
+
+purpose: "Standardize local-first connector evidence so continuity/gating/surfaces derive from one append-only substrate."
+
+storage_contract:
+  root: "state/gtc-v2"
+  canonical_evidence: "state/gtc-v2/evidence/**/YYYY-MM-DD.jsonl"
+  canonical_index: "state/continuity/continuity_os.sqlite::gtc_*"
+  latest_pointers:
+    - "state/gtc-v2/latest/continuity_current.json"
+    - "state/gtc-v2/latest/gateboard.json"
+    - "state/gtc-v2/latest/event_projection.json"
+    - "state/gtc-v2/latest/incident_replay.json"
+    - "state/gtc-v2/latest/connectors/*.json"
+  durable_artifacts: "filesystem content-addressed refs via sha256"
+
+connector_registry:
+  - connector_type: "runtime.gateway"
+    connector_id: "gateway-main"
+    freshness_ttl_ms: 300000
+    stale_severity: "critical"
+    subject_kind: "gateway"
+  - connector_type: "queue.task"
+    connector_id: "default-queue"
+    freshness_ttl_ms: 600000
+    stale_severity: "warning"
+    subject_kind: "task"
+  - connector_type: "validation.gates"
+    connector_id: "core"
+    freshness_ttl_ms: 900000
+    stale_severity: "warning"
+    subject_kind: "gate"
+  - connector_type: "operator.actions"
+    connector_id: "local"
+    freshness_ttl_ms: 1800000
+    stale_severity: "warning"
+    subject_kind: "event"
+
+readiness_policy:
+  required_connectors_for_mutation:
+    - "runtime.gateway::gateway-main"
+    - "validation.gates::core"
+  mutation_gate_requirements:
+    - "latest verify status == READY"
+    - "no critical runtime anomalies in latest ground truth snapshot"
+    - "required connectors fresh within TTL"
+  stale_behavior:
+    warning: "degrade readiness to yellow unless mutation attempted"
+    critical: "set mutate_allowed=false"
+
+event_taxonomy:
+  pattern: "gtc.<connector_type>.<signal_group>.<signal_name>"
+  severity_levels:
+    - info
+    - warning
+    - critical
+  dedupe_rules:
+    - "emit first open"
+    - "suppress repeats within cooldown"
+    - "always emit close transitions"
+
+invariants:
+  - "evidence records are append-only and immutable"
+  - "evidence_id is stable and unique"
+  - "monotonic_seq is strictly increasing per connector"
+  - "latest pointers are rebuildable from evidence + index"
+  - "surfaces must include evidence refs or freshness metadata"

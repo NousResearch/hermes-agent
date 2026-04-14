@@ -1,0 +1,80 @@
+{
+  "packet_id": "8cb3f26f-6845-478a-835f-9bd8c1792d04",
+  "version": "1.0",
+  "proposal_id": "cod06-refactor-001",
+  "risk_assessment": {
+    "overall_tier": "high",
+    "dimensions": {
+      "complexity": 4,
+      "blast_radius": 3,
+      "conceptual_clarity": 2
+    },
+    "blast_radius_evidence": {
+      "impacted_components": [
+        "session_topology_router",
+        "router_gate_pipeline"
+      ],
+      "impacted_interfaces": [
+        "request.refactor_risk_packet",
+        "routing_audit.refactor_risk"
+      ],
+      "evidence_refs": [
+        "reports/openclaw_refactor_risk_decomposition_implementation_slice_2026-04-02.md"
+      ]
+    },
+    "rationale": "Refactor touches routing governance gates and requires staged decomposition with explicit review before validation closure."
+  },
+  "decomposition_plan": [
+    {
+      "chunk_id": "rf-01",
+      "description": "Implement refactor-risk packet parser and validation gate in router substrate.",
+      "scope": {
+        "files": [
+          "scripts/session_topology_router.py"
+        ],
+        "lines": "1300-1750"
+      },
+      "task_class": "code:edit"
+    },
+    {
+      "chunk_id": "rf-02",
+      "description": "Add regression tests for strict mode and decomposition contract failures.",
+      "scope": {
+        "files": [
+          "tests/test_session_topology_router.py"
+        ],
+        "lines": "920-1300"
+      },
+      "task_class": "code:test"
+    },
+    {
+      "chunk_id": "rf-03",
+      "description": "Run explicit review of decomposition/risk integration before final pass.",
+      "scope": {
+        "files": [
+          "scripts/session_topology_router.py",
+          "docs/ops/session_topology_contract_v1.md"
+        ],
+        "lines": "n/a"
+      },
+      "task_class": "code:review"
+    }
+  ],
+  "rollback_plan": {
+    "strategy": "revert_commit",
+    "trigger_conditions": [
+      "routing parity regression detected in strict mode",
+      "refactor gate emits unexpected false block"
+    ],
+    "verification_evidence_refs": [
+      "tests/test_session_topology_router.py::test_session_router_refactor_risk_packet_elevates_effective_risk_tier_for_routing",
+      "tests/test_session_topology_router.py::test_session_router_blocks_invalid_refactor_risk_contract_without_rollback_plan"
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "required_approvals": 1,
+    "approvers": [],
+    "approvals": []
+  }
+}

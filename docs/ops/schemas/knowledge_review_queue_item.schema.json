@@ -1,0 +1,353 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/knowledge_review_queue_item.schema.json",
+  "title": "Knowledge Review Queue Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "queue_item_id",
+    "enqueued_at",
+    "queue_state",
+    "knowledge_object",
+    "ownership",
+    "review",
+    "approval",
+    "trust",
+    "evidence_requirements",
+    "evidence_refs",
+    "decision_refs"
+  ],
+  "properties": {
+    "queue_item_id": {
+      "type": "string",
+      "pattern": "^krq_[a-z0-9._-]+$"
+    },
+    "enqueued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "last_transition_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "queue_state": {
+      "type": "string",
+      "enum": [
+        "PENDING_REVIEW",
+        "UNDER_REVIEW",
+        "CHANGES_REQUESTED",
+        "REJECTED",
+        "APPROVAL_PENDING",
+        "APPROVED",
+        "PROMOTION_READY",
+        "PROMOTED",
+        "BLOCKED",
+        "EXPIRED"
+      ]
+    },
+    "knowledge_object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_class",
+        "object_path",
+        "schema_ref",
+        "object_hash"
+      ],
+      "properties": {
+        "object_class": {
+          "type": "string",
+          "enum": [
+            "promotion_candidate",
+            "doctrine_object"
+          ]
+        },
+        "object_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_ref": {
+          "type": "string",
+          "enum": [
+            "docs/ops/schemas/promotion_candidate.schema.json",
+            "docs/ops/schemas/doctrine_object.schema.json"
+          ]
+        },
+        "object_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "promotion_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^prom_[a-z0-9._-]+$"
+        },
+        "doctrine_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^doc_[a-z0-9._-]+$"
+        }
+      }
+    },
+    "ownership": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_id",
+        "owner_role",
+        "lane_id",
+        "work_item_id"
+      ],
+      "properties": {
+        "owner_id": {
+          "type": "string",
+          "minLength": 2
+        },
+        "owner_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "lane_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "work_item_id": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "state",
+        "reviewer_id",
+        "reviewer_role",
+        "reviewed_at",
+        "notes",
+        "evidence_ok"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "in_review",
+            "changes_requested",
+            "approved",
+            "rejected"
+          ]
+        },
+        "reviewer_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewer_role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN",
+            null
+          ]
+        },
+        "reviewed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "evidence_ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_required",
+        "decision",
+        "approver_id",
+        "approver_role",
+        "approved_at",
+        "notes"
+      ],
+      "properties": {
+        "approval_required": {
+          "type": "boolean"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "blocked"
+          ]
+        },
+        "approver_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approver_role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "VALIDATOR",
+            "LIBRARIAN",
+            null
+          ]
+        },
+        "approved_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "rationale"
+      ],
+      "properties": {
+        "tier": {
+          "type": "string",
+          "enum": [
+            "t0_untrusted",
+            "t1_provisional",
+            "t2_verified",
+            "t3_canonical"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "evidence_requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_source_refs",
+        "require_provenance_hashes",
+        "required_gate_decisions",
+        "require_redaction_for_restricted"
+      ],
+      "properties": {
+        "min_source_refs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "require_provenance_hashes": {
+          "type": "boolean"
+        },
+        "required_gate_decisions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          },
+          "uniqueItems": true,
+          "default": []
+        },
+        "require_redaction_for_restricted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "kind",
+          "path",
+          "content_hash"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^ev_[a-zA-Z0-9._-]+$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "source",
+              "gate_decision",
+              "publish_note",
+              "doctrine_lint",
+              "other"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "locator": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2
+      },
+      "default": []
+    }
+  }
+}

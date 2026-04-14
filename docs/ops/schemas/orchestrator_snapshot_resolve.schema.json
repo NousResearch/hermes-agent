@@ -1,0 +1,191 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_snapshot_resolve.schema.json",
+  "title": "Orchestrator Snapshot Resolve Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_id",
+    "generated_at",
+    "request",
+    "response"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.snapshot_resolve.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:_\\.-]{7,127}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "as_known",
+            "as_corrected"
+          ]
+        },
+        "asof_time": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "asof_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "feature_flags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "policy_version": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "as_known"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "asof_time"
+                ],
+                "properties": {
+                  "asof_time": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              },
+              {
+                "required": [
+                  "asof_seq"
+                ],
+                "properties": {
+                  "asof_seq": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "manifest_id",
+        "effective_mode",
+        "effective_asof_time",
+        "effective_asof_seq",
+        "evidence_refs",
+        "readiness"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "pattern": "^snapshot:[a-zA-Z0-9._:-]+$"
+        },
+        "manifest_id": {
+          "type": "string",
+          "pattern": "^manifest:[a-zA-Z0-9._:-]+$"
+        },
+        "effective_mode": {
+          "type": "string",
+          "enum": [
+            "as_known",
+            "as_corrected"
+          ]
+        },
+        "effective_asof_time": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "effective_asof_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "reasons"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "ready",
+                "partial",
+                "blocked"
+              ]
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.publish_manifest.v1",
+  "title": "Ground Truth Connector Publish Manifest v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "build_generation_id",
+    "valid_until",
+    "latest_paths",
+    "latest_sha256",
+    "manifest_auth"
+  ],
+  "properties": {
+    "schema_version": { "const": "gtc.publish_manifest.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "build_generation_id": { "type": "string", "minLength": 8 },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "latest_paths": {
+      "type": "object",
+      "required": [
+        "publish_anchor",
+        "continuity_current",
+        "gateboard",
+        "event_projection",
+        "incident_replay",
+        "connectors_dir"
+      ],
+      "properties": {
+        "publish_anchor": { "type": "string", "minLength": 1 },
+        "continuity_current": { "type": "string", "minLength": 1 },
+        "gateboard": { "type": "string", "minLength": 1 },
+        "event_projection": { "type": "string", "minLength": 1 },
+        "incident_replay": { "type": "string", "minLength": 1 },
+        "connectors_dir": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "latest_sha256": {
+      "type": "object",
+      "required": [
+        "publish_anchor",
+        "continuity_current",
+        "gateboard",
+        "event_projection",
+        "incident_replay",
+        "connectors_dir"
+      ],
+      "properties": {
+        "publish_anchor": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "continuity_current": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "gateboard": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "event_projection": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "incident_replay": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "connectors_dir": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": true
+    },
+    "manifest_auth": {
+      "type": "object",
+      "required": ["scheme", "key_id", "canonical_profile", "payload_sha256", "signature"],
+      "properties": {
+        "scheme": { "enum": ["hmac-sha256", "ed25519-sha256"] },
+        "key_id": { "type": "string", "minLength": 1 },
+        "canonical_profile": { "type": "string", "minLength": 1 },
+        "payload_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "signature": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "scheme": { "const": "hmac-sha256" } }, "required": ["scheme"] },
+          "then": {
+            "properties": {
+              "canonical_profile": { "const": "gtc.publish_manifest.hmac.v1" },
+              "signature": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "scheme": { "const": "ed25519-sha256" } }, "required": ["scheme"] },
+          "then": {
+            "properties": {
+              "canonical_profile": { "const": "gtc.publish_manifest.ed25519.v1" },
+              "signature": { "type": "string", "pattern": "^[a-f0-9]{128}$" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/markdown_conversion_candidate.schema.json",
+  "title": "Markdown Conversion Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "conversion_id",
+    "created_at",
+    "source",
+    "package",
+    "expectations",
+    "profile"
+  ],
+  "properties": {
+    "conversion_id": {
+      "type": "string",
+      "pattern": "^mcg_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_version": {
+      "type": "string",
+      "default": "markdown_conversion_quality_gate_v1"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_type",
+        "source_path",
+        "source_sha256"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "source_type": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "epub",
+            "html",
+            "markdown",
+            "text"
+          ]
+        },
+        "source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-fA-F0-9]{64}$"
+        },
+        "source_locator": {
+          "type": "string"
+        }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_root",
+        "book_path",
+        "chunks_dir",
+        "source_map_path"
+      ],
+      "properties": {
+        "package_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "book_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chunks_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_map_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_path": {
+          "type": "string"
+        }
+      }
+    },
+    "expectations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min_chunks",
+        "max_chunks",
+        "require_source_map_chunk_cover",
+        "require_chunk_heading_alignment"
+      ],
+      "properties": {
+        "min_chunks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50000
+        },
+        "max_chunks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50000
+        },
+        "require_source_map_chunk_cover": {
+          "type": "boolean"
+        },
+        "require_chunk_heading_alignment": {
+          "type": "boolean"
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "markdown_flavor",
+        "require_frontmatter",
+        "required_frontmatter_keys",
+        "disallow_raw_html",
+        "disallow_javascript_links",
+        "max_line_length",
+        "require_heading_hierarchy"
+      ],
+      "properties": {
+        "markdown_flavor": {
+          "type": "string",
+          "enum": [
+            "commonmark",
+            "gfm",
+            "strict_markdown"
+          ]
+        },
+        "require_frontmatter": {
+          "type": "boolean"
+        },
+        "required_frontmatter_keys": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true,
+          "maxItems": 30
+        },
+        "disallow_raw_html": {
+          "type": "boolean"
+        },
+        "disallow_javascript_links": {
+          "type": "boolean"
+        },
+        "max_line_length": {
+          "type": "integer",
+          "minimum": 80,
+          "maximum": 20000
+        },
+        "require_heading_hierarchy": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

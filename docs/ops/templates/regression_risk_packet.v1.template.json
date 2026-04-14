@@ -1,0 +1,47 @@
+{
+  "packet_id": "eecf729f-afec-4f37-83f8-9a74bc6f8dcf",
+  "version": "1.0",
+  "proposal_id": "cod05-direct-001",
+  "change_summary": {
+    "commit_sha": "abc123def456",
+    "pull_request_url": "https://example.com/pr/101"
+  },
+  "risk_assessment": {
+    "overall_tier": "high",
+    "scores": {
+      "blast_radius": 4,
+      "code_churn": 3,
+      "dependency_impact": 2,
+      "test_coverage_delta": 2,
+      "historical_instability": 3,
+      "critical_path_impact": 4
+    },
+    "summary": "Router contract mutation impacts coding dispatch path and requires elevated review depth."
+  },
+  "evidence": {
+    "diff_stats": {
+      "files_changed": 3,
+      "insertions": 124,
+      "deletions": 41
+    },
+    "test_coverage": {
+      "coverage_before_percent": 82.4,
+      "coverage_after_percent": 83.1,
+      "delta": 0.7
+    },
+    "static_analysis": {
+      "critical_violations_added": 0,
+      "code_complexity_increase": 0.3
+    },
+    "dependency_changes": [],
+    "manual_attestations": [
+      "proposal-approved",
+      "manual-routing-validation-complete"
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "required_approvals": 2,
+    "approvals": []
+  }
+}

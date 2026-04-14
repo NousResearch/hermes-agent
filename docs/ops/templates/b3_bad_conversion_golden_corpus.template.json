@@ -1,0 +1,30 @@
+{
+  "schema_version": "clawd.b3.bad_conversion_golden_corpus.v1",
+  "corpus_id": "b3_bad_conversion_template",
+  "cases": [
+    {
+      "case_id": "tiny_markdown_structure_failure",
+      "description": "Minimal markdown payload should fail structure gate.",
+      "source_text": "source token 1 source token 2 source token 3 source token 4 source token 5 source token 6 source token 7 source token 8 source token 9 source token 10 source token 11 source token 12 source token 13 source token 14 source token 15 source token 16 source token 17 source token 18 source token 19 source token 20",
+      "markdown_text": "tiny",
+      "expected_block_gate": "markdown_structure",
+      "expected_block_reason": "markdown_structure_failed"
+    },
+    {
+      "case_id": "repeated_line_noise_failure",
+      "description": "Highly repeated lines should fail noise gate.",
+      "source_text": "source token 1 source token 2 source token 3 source token 4 source token 5 source token 6 source token 7 source token 8 source token 9 source token 10 source token 11 source token 12 source token 13 source token 14 source token 15 source token 16 source token 17 source token 18 source token 19 source token 20 source token 21 source token 22 source token 23 source token 24 source token 25",
+      "markdown_text": "# Heading\n\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks\nrepeat line with enough alphabetic content to pass alpha checks",
+      "expected_block_gate": "markdown_noise",
+      "expected_block_reason": "markdown_noise_failed"
+    },
+    {
+      "case_id": "coverage_ratio_failure",
+      "description": "Markdown that passes structure/noise but under-covers source text should fail reference coverage.",
+      "source_text": "source token 1 source token 2 source token 3 source token 4 source token 5 source token 6 source token 7 source token 8 source token 9 source token 10 source token 11 source token 12 source token 13 source token 14 source token 15 source token 16 source token 17 source token 18 source token 19 source token 20 source token 21 source token 22 source token 23 source token 24 source token 25 source token 26 source token 27 source token 28 source token 29 source token 30 source token 31 source token 32 source token 33 source token 34 source token 35 source token 36 source token 37 source token 38 source token 39 source token 40 source token 41 source token 42 source token 43 source token 44 source token 45 source token 46 source token 47 source token 48 source token 49 source token 50 source token 51 source token 52 source token 53 source token 54 source token 55 source token 56 source token 57 source token 58 source token 59 source token 60 source token 61 source token 62 source token 63 source token 64 source token 65 source token 66 source token 67 source token 68 source token 69 source token 70 source token 71 source token 72 source token 73 source token 74 source token 75 source token 76 source token 77 source token 78 source token 79 source token 80 source token 81 source token 82 source token 83 source token 84 source token 85 source token 86 source token 87 source token 88 source token 89 source token 90 source token 91 source token 92 source token 93 source token 94 source token 95 source token 96 source token 97 source token 98 source token 99 source token 100 source token 101 source token 102 source token 103 source token 104 source token 105 source token 106 source token 107 source token 108 source token 109 source token 110 source token 111 source token 112 source token 113 source token 114 source token 115 source token 116 source token 117 source token 118 source token 119 source token 120 source token 121 source token 122 source token 123 source token 124 source token 125 source token 126 source token 127 source token 128 source token 129 source token 130 source token 131 source token 132 source token 133 source token 134 source token 135 source token 136 source token 137 source token 138 source token 139 source token 140 source token 141 source token 142 source token 143 source token 144 source token 145 source token 146 source token 147 source token 148 source token 149 source token 150 source token 151 source token 152 source token 153 source token 154 source token 155 source token 156 source token 157 source token 158 source token 159 source token 160 source token 161 source token 162 source token 163 source token 164 source token 165 source token 166 source token 167 source token 168 source token 169 source token 170 source token 171 source token 172 source token 173 source token 174 source token 175 source token 176 source token 177 source token 178 source token 179 source token 180",
+      "markdown_text": "# Converted Document\n\n## Summary\nThis conversion summary intentionally captures only a small subset of the source.\n\n- Detail 1: concise summary line\n- Detail 2: concise summary line\n- Detail 3: concise summary line\n- Detail 4: concise summary line\n- Detail 5: concise summary line\n- Detail 6: concise summary line\n- Detail 7: concise summary line\n- Detail 8: concise summary line\n- Detail 9: concise summary line",
+      "expected_block_gate": "reference_coverage",
+      "expected_block_reason": "reference_coverage_failed"
+    }
+  ]
+}

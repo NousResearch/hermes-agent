@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/session_topology_contract.schema.json",
+  "title": "Session Topology Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "topology_id",
+    "generated_at",
+    "default_route_class",
+    "default_required_rollout_stage",
+    "deterministic_key_fields",
+    "rules",
+    "model_pools"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.session_topology_contract.v1"
+    },
+    "topology_id": {
+      "type": "string",
+      "pattern": "^top_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "default_route_class": {
+      "type": "string",
+      "enum": [
+        "NO_LLM",
+        "SPARK",
+        "HEAVY"
+      ]
+    },
+    "default_required_rollout_stage": {
+      "type": "string",
+      "enum": [
+        "canary",
+        "active"
+      ]
+    },
+    "deterministic_key_fields": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "rule_id",
+          "priority",
+          "selector",
+          "route_class",
+          "required_rollout_stage"
+        ],
+        "properties": {
+          "rule_id": {
+            "type": "string",
+            "pattern": "^rule_[a-z0-9._-]+$"
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "selector": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "session_kind",
+              "task_class",
+              "risk_tier"
+            ],
+            "properties": {
+              "session_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "task_class": {
+                "type": "string",
+                "minLength": 1
+              },
+              "risk_tier": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical",
+                  "*"
+                ]
+              }
+            }
+          },
+          "route_class": {
+            "type": "string",
+            "enum": [
+              "NO_LLM",
+              "SPARK",
+              "HEAVY"
+            ]
+          },
+          "required_rollout_stage": {
+            "type": "string",
+            "enum": [
+              "canary",
+              "active"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "model_pools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "SPARK",
+        "HEAVY"
+      ],
+      "properties": {
+        "SPARK": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "HEAVY": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "swarm.operability.check.v1",
+  "title": "Swarm Operability Check Summary",
+  "type": "object",
+  "required": [
+    "ok",
+    "schema_version",
+    "check_count",
+    "critical_failures",
+    "warn_failures",
+    "checks",
+    "evidence_refs",
+    "failure_taxonomy_version",
+    "fail_close_triggered",
+    "failure_category",
+    "failure_code",
+    "failure_retryable",
+    "failure_codes"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "schema_version": { "const": "swarm.operability.check.v1" },
+    "check_count": { "type": "integer", "minimum": 0 },
+    "critical_failures": { "type": "integer", "minimum": 0 },
+    "warn_failures": { "type": "integer", "minimum": 0 },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok", "severity"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 },
+          "ok": { "type": "boolean" },
+          "severity": { "type": "string", "enum": ["critical", "warn", "info"] },
+          "details": {}
+        },
+        "additionalProperties": true
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": ["string", "null"] }
+    },
+    "failure_taxonomy_version": { "const": "swarm_operability.check_failure.v1" },
+    "fail_close_triggered": { "type": "boolean" },
+    "failure_category": {
+      "type": ["string", "null"],
+      "enum": [
+        "operability_contract_fail_close",
+        "operability_warning_boundary",
+        null
+      ]
+    },
+    "failure_code": { "type": ["string", "null"] },
+    "failure_retryable": { "type": ["boolean", "null"] },
+    "failure_codes": {
+      "type": "object",
+      "required": ["critical", "warn"],
+      "properties": {
+        "critical": { "type": "array", "items": { "type": "string" } },
+        "warn": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "contract": {
+      "type": "object",
+      "required": ["schema_path", "state_valid", "validation_errors"],
+      "properties": {
+        "schema_path": { "type": "string", "minLength": 1 },
+        "state_valid": { "type": "boolean" },
+        "validation_errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

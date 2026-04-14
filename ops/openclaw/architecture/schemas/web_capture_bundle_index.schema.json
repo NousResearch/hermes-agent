@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "web_capture.bundle_index.v2",
+  "title": "Web Capture Bundle Index",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "run_id",
+    "bundle_id",
+    "macro_id",
+    "captured_at",
+    "status",
+    "route",
+    "artifacts",
+    "gating_flags"
+  ],
+  "properties": {
+    "schema_version": { "const": "web_capture.bundle_index.v2" },
+    "run_id": { "type": "string", "minLength": 1 },
+    "bundle_id": { "type": "string", "minLength": 1 },
+    "macro_id": { "type": "string", "minLength": 1 },
+    "source_url": { "type": "string" },
+    "captured_at": { "type": "string" },
+    "completed_at": { "type": ["string", "null"] },
+    "status": { "type": "string", "enum": ["ok", "blocked", "failed"] },
+    "route": { "type": "string", "enum": ["fetch", "browser"] },
+    "route_meta": { "type": "object" },
+    "normalization": { "type": "object" },
+    "environment": { "type": "object" },
+    "gating_flags": { "type": "object" },
+    "quality_gates": { "type": ["object", "null"] },
+    "gate_classification": { "type": ["object", "null"] },
+    "manifest_lock": { "type": ["object", "null"] },
+    "failure_packet": { "type": ["string", "null"] },
+    "artifacts": {
+      "type": "object",
+      "required": ["index_json", "screenshot_png", "dom_snapshot_html", "css_tokens_json", "execution_trace_json"],
+      "properties": {
+        "index_json": { "type": "string" },
+        "screenshot_png": { "type": "string" },
+        "dom_snapshot_html": { "type": "string" },
+        "css_tokens_json": { "type": "string" },
+        "execution_trace_json": { "type": "string" },
+        "trace_jsonl": { "type": "string" },
+        "trace_summary_json": { "type": "string" },
+        "manifest_lock_json": { "type": "string" },
+        "gate_classification_json": { "type": "string" },
+        "failure_packet_json": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "errors": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

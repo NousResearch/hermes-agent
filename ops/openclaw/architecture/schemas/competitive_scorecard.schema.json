@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.competitive_scorecard.v1",
+  "title": "CompetitiveScorecard",
+  "type": "object",
+  "required": [
+    "scorecard_id",
+    "competitor",
+    "captured_at",
+    "metrics",
+    "acceptance_tests"
+  ],
+  "properties": {
+    "scorecard_id": { "type": "string" },
+    "competitor": { "type": "string", "enum": ["bybit", "hyperliquid", "hyperdash"] },
+    "captured_at": { "type": "string" },
+    "metrics": {
+      "type": "object",
+      "required": ["information_density", "interaction_latency_ms", "keyboard_operability", "component_modularity", "trust_signaling"],
+      "properties": {
+        "information_density": { "type": "number", "minimum": 0 },
+        "interaction_latency_ms": { "type": "number", "minimum": 0 },
+        "keyboard_operability": { "type": "number", "minimum": 0, "maximum": 1 },
+        "component_modularity": { "type": "number", "minimum": 0, "maximum": 1 },
+        "trust_signaling": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "acceptance_tests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "type": "string", "enum": ["pass", "fail", "na"] },
+          "evidence_ref": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

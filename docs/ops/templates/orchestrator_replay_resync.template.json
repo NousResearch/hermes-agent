@@ -1,0 +1,37 @@
+{
+  "schema_version": "clawd.orchestrator.replay_resync.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "request_id": "req:orchestrator:replay_resync:2026-03-30T18-44-00Z",
+  "generated_at": "2026-03-30T18:44:00+07:00",
+  "request": {
+    "reason": "cursor_gap",
+    "from_event_seq": 1288800,
+    "to_event_seq": 1289000,
+    "last_known_snapshot_id": "snapshot:yq_terminal:2026-03-30T10:59:59Z:1280042",
+    "last_applied_event_seq": 1288799,
+    "max_events": 500
+  },
+  "admission": {
+    "mode": "normal",
+    "decision": "accepted",
+    "reason_codes": []
+  },
+  "response": {
+    "status": "ready",
+    "replay_window": {
+      "start_seq": 1288800,
+      "end_seq": 1289000,
+      "available_count": 201
+    },
+    "resume_cursor": {
+      "next_since_seq": 1289000,
+      "resync_token": "resync_yq_terminal_20260330_184400",
+      "expires_at": "2026-03-30T19:14:00+07:00"
+    },
+    "actions": [
+      "replay_events",
+      "resolve_snapshot"
+    ],
+    "notes": "No retention cliff encountered; consumer can replay then resume stream."
+  }
+}

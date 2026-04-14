@@ -1,0 +1,403 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_supervisor_task_ledger.v1",
+  "title": "Execution Supervisor Task Ledger",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "supervisor_tick_id",
+    "mode",
+    "queue_summary",
+    "routing_policy",
+    "tasks",
+    "source_refs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.execution_supervisor_task_ledger.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "supervisor_tick_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["active", "paused", "blocked"]
+    },
+    "queue_summary": {
+      "type": "object",
+      "required": [
+        "ready_core_count",
+        "ready_support_count",
+        "blocked_count",
+        "active_worker_count",
+        "minimum_worker_floor"
+      ],
+      "properties": {
+        "ready_core_count": { "type": "integer", "minimum": 0 },
+        "ready_support_count": { "type": "integer", "minimum": 0 },
+        "blocked_count": { "type": "integer", "minimum": 0 },
+        "active_worker_count": { "type": "integer", "minimum": 0 },
+        "minimum_worker_floor": {
+          "type": "object",
+          "required": ["core", "support"],
+          "properties": {
+            "core": { "type": "integer", "minimum": 0 },
+            "support": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "worker_floor_enforcement": {
+          "type": ["object", "null"],
+          "properties": {
+            "schema": { "type": ["string", "null"] },
+            "enabled": { "type": ["boolean", "null"] },
+            "global_blocked": { "type": ["boolean", "null"] },
+            "enforceable": { "type": ["boolean", "null"] },
+            "required": { "type": ["boolean", "null"] },
+            "core": {
+              "type": ["object", "null"],
+              "properties": {
+                "ready_count": { "type": ["integer", "null"], "minimum": 0 },
+                "active_count": { "type": ["integer", "null"], "minimum": 0 },
+                "floor": { "type": ["integer", "null"], "minimum": 0 },
+                "deficit": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            },
+            "support": {
+              "type": ["object", "null"],
+              "properties": {
+                "ready_count": { "type": ["integer", "null"], "minimum": 0 },
+                "active_count": { "type": ["integer", "null"], "minimum": 0 },
+                "floor": { "type": ["integer", "null"], "minimum": 0 },
+                "deficit": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            },
+            "planned_launches": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            },
+            "blocked_launches": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "additionalProperties": true
+        },
+        "dispatch_ready_candidate_count": { "type": "integer", "minimum": 0 },
+        "dispatch_ready_post_qualification_count": { "type": "integer", "minimum": 0 },
+        "dispatch_ready_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dispatch_qualification_consumption": {
+          "type": ["object", "null"],
+          "properties": {
+            "schema": {
+              "type": ["string", "null"],
+              "enum": [
+                "clawd.execution_supervisor_dispatch_qualification_consumption.v1",
+                null
+              ]
+            },
+            "source_path": { "type": ["string", "null"] },
+            "source_present": { "type": ["boolean", "null"] },
+            "source_schema": { "type": ["string", "null"] },
+            "source_generated_at": { "type": ["string", "null"] },
+            "status": { "type": ["string", "null"] },
+            "decision": { "type": ["string", "null"] },
+            "fail_closed": { "type": ["boolean", "null"] },
+            "launch_mutation_allowed": { "type": ["boolean", "null"] },
+            "freshness_reference_generated_at": { "type": ["string", "null"] },
+            "freshness_max_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "qualification_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "qualification_fresh": { "type": ["boolean", "null"] },
+            "freshness_reason": { "type": ["string", "null"] },
+            "ready_candidate_count": { "type": ["integer", "null"], "minimum": 0 },
+            "evaluated_ready_candidate_count": { "type": ["integer", "null"], "minimum": 0 },
+            "qualified_candidate_count": { "type": ["integer", "null"], "minimum": 0 },
+            "blocked_candidate_count": { "type": ["integer", "null"], "minimum": 0 },
+            "pending_candidate_count": { "type": ["integer", "null"], "minimum": 0 },
+            "qualified_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "blocked_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "pending_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "retired_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "consumption_state": {
+              "type": ["string", "null"],
+              "enum": [
+                "no_dispatch_required",
+                "qualification_missing",
+                "qualification_contract_invalid",
+                "requalification_required",
+                "qualified_ready",
+                "blocked",
+                "mixed",
+                null
+              ]
+            },
+            "qualification_gate_passed": { "type": ["boolean", "null"] },
+            "gate_reason": { "type": ["string", "null"] },
+            "decision_reasons": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "launch_readiness": {
+              "type": ["object", "null"],
+              "properties": {
+                "schema": { "type": ["string", "null"] },
+                "state": { "type": ["string", "null"] },
+                "reason": { "type": ["string", "null"] },
+                "blocked_reason_counts": { "type": "object", "additionalProperties": true },
+                "demotion_restore_posture": { "type": "object", "additionalProperties": true },
+                "canary_probe_schedule": { "type": "object", "additionalProperties": true }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "routing_policy": {
+      "type": "object",
+      "required": ["policy_version", "task_class_routes", "quota_backoff_sec"],
+      "properties": {
+        "policy_version": { "type": "string" },
+        "quota_backoff_sec": { "type": "integer", "minimum": 0 },
+        "task_class_routes": {
+          "type": "object",
+          "required": ["implementation", "support_spec", "support_synthesis"],
+          "properties": {
+            "implementation": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "support_spec": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "support_synthesis": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": true
+        },
+        "cooldown_state": {
+          "type": ["object", "null"],
+          "properties": {
+            "schema": { "type": ["string", "null"] },
+            "generated_at": { "type": ["string", "null"] },
+            "active_count": { "type": ["integer", "null"], "minimum": 0 },
+            "active_workers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "worker": { "type": ["string", "null"] },
+                  "cooldown_until": { "type": ["string", "null"] },
+                  "cooldown_remaining_sec": { "type": ["integer", "null"], "minimum": 0 },
+                  "reason": { "type": ["string", "null"] },
+                  "source_task_id": { "type": ["string", "null"] }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "task_type",
+          "priority",
+          "status",
+          "expected_artifacts",
+          "attempts"
+        ],
+        "properties": {
+          "task_id": { "type": "string", "minLength": 1 },
+          "task_type": {
+            "type": "string",
+            "enum": ["implementation", "support_spec", "support_synthesis", "other"]
+          },
+          "task_class": {
+            "type": ["string", "null"],
+            "enum": [
+              "reading",
+              "triage",
+              "audit_compression",
+              "research",
+              "planning",
+              "comparison",
+              "implementation",
+              null
+            ]
+          },
+          "priority": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": [
+              "READY",
+              "LAUNCHED",
+              "RUNNING",
+              "LANDING_CHECK",
+              "LANDED",
+              "FAILED_NO_ARTIFACT",
+              "FAILED_PROVIDER_QUOTA",
+              "FAILED_OTHER",
+              "REROUTE_QUEUED",
+              "REROUTED",
+              "BLOCKED"
+            ]
+          },
+          "expected_artifacts": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "failure_classification": {
+            "type": ["object", "null"],
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": ["FAILED_NO_ARTIFACT", "FAILED_PROVIDER_QUOTA", "FAILED_OTHER"]
+              },
+              "reason": { "type": ["string", "null"] },
+              "provider": { "type": ["string", "null"] },
+              "detected_at": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          },
+          "reroute": {
+            "type": ["object", "null"],
+            "properties": {
+              "required": { "type": "boolean" },
+              "status": {
+                "type": "string",
+                "enum": ["none", "REROUTE_QUEUED", "REROUTED", "BLOCKED"]
+              },
+              "task_class": {
+                "type": ["string", "null"],
+                "enum": [
+                  "reading",
+                  "triage",
+                  "audit_compression",
+                  "research",
+                  "planning",
+                  "comparison",
+                  "implementation",
+                  null
+                ]
+              },
+              "reason": { "type": ["string", "null"] },
+              "target_worker": { "type": ["string", "null"] },
+              "cooldown_until": { "type": ["string", "null"] },
+              "cooldown_worker": { "type": ["string", "null"] },
+              "cooldown_blocked_workers": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            },
+            "additionalProperties": true
+          },
+          "latest_attempt": {
+            "$ref": "#/$defs/attempt"
+          },
+          "attempts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/attempt"
+            }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "source_refs": {
+      "type": "object",
+      "required": ["execution_program_status", "execution_frontier_ledger"],
+      "properties": {
+        "execution_program_status": { "type": "string" },
+        "execution_frontier_ledger": { "type": "string" },
+        "supervisor_trace": { "type": ["string", "null"] },
+        "execution_supervisor_dispatch_qualification": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "attempt": {
+      "type": ["object", "null"],
+      "properties": {
+        "attempt_id": { "type": "string" },
+        "session_key": { "type": ["string", "null"] },
+        "worker": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "launched_at": { "type": ["string", "null"] },
+        "completed_at": { "type": ["string", "null"] },
+        "artifact_check": {
+          "type": ["object", "null"],
+          "properties": {
+            "all_expected_present": { "type": ["boolean", "null"] },
+            "missing_paths": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "empty_paths": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "title_check_passed": { "type": ["boolean", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "terminal_signal": {
+          "type": ["object", "null"],
+          "properties": {
+            "stop_reason": { "type": ["string", "null"] },
+            "provider_error": { "type": ["string", "null"] },
+            "empty_content": { "type": ["boolean", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "classification": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "LANDED",
+            "FAILED_NO_ARTIFACT",
+            "FAILED_PROVIDER_QUOTA",
+            "FAILED_OTHER"
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

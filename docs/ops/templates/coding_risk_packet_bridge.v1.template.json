@@ -1,0 +1,65 @@
+{
+  "packet_id": "0f7f58f0-1d9e-4ef4-a6d4-2cc4ad7ad8d5",
+  "schema_version": "coding_risk_packet_bridge.v1",
+  "proposal_id": "cod06-risk-bridge-001",
+  "generated_at": "2026-04-04T13:05:00Z",
+  "regression_risk": {
+    "schema_version": "regression_risk_packet.v2",
+    "packet_id": "a1b2c3d4-1234-5678-9abc-def123456789",
+    "overall_tier": "high",
+    "blocking_classification": "blocking",
+    "replay_checksum": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "evidence_refs": [
+      "docs/ops/templates/regression_risk_packet.v2.template.json"
+    ]
+  },
+  "refactor_risk": {
+    "schema_version": "refactor_risk_packet.v1",
+    "packet_id": "8cb3f26f-6845-478a-835f-9bd8c1792d04",
+    "overall_tier": "high",
+    "blast_radius": 3,
+    "rollback_strategy": "revert_commit",
+    "evidence_refs": [
+      "docs/ops/templates/refactor_risk_packet.v1.template.json"
+    ]
+  },
+  "code_health_rule_governance": {
+    "schema_version": "code_health_rule_governance_packet.v1",
+    "packet_id": "aa27449c-20a8-42cf-8674-13d4cbc79a89",
+    "governance_signal": "action_required",
+    "conflict_count": 1,
+    "duplicate_count": 1,
+    "evidence_refs": [
+      "docs/ops/templates/code_health_rule_governance_packet.v1.template.json"
+    ]
+  },
+  "bridge_decision": {
+    "effective_risk_tier": "high",
+    "merge_blocked": true,
+    "required_approvals": 2,
+    "rationale": "Regression packet is blocking and code-health governance signal is action_required; merge remains blocked until approvals and remediation complete."
+  },
+  "audit_trail": {
+    "events": [
+      {
+        "event_id": "evt-bridge-001",
+        "timestamp": "2026-04-04T13:05:10Z",
+        "actor_type": "worker",
+        "action": "bridge_emitted",
+        "notes": "Bridge packet composed from regression/refactor/code-health packet references."
+      },
+      {
+        "event_id": "evt-bridge-002",
+        "timestamp": "2026-04-04T13:05:20Z",
+        "actor_type": "validator",
+        "action": "bridge_validated",
+        "notes": "Schema checks and bridge invariants passed."
+      }
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "required_approvals": 2,
+    "approvals": []
+  }
+}

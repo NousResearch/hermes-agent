@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.a3_failover_stress_soak_evidence.v1",
+  "title": "A3 Failover Stress-Soak Evidence v1",
+  "type": "object",
+  "required": [
+    "object_type",
+    "run_id",
+    "generated_at",
+    "source_lane",
+    "harness",
+    "config",
+    "summary",
+    "profiles",
+    "determinism",
+    "live_surface_linkage",
+    "artifacts",
+    "source_refs"
+  ],
+  "properties": {
+    "object_type": {
+      "const": "clawd.a3_failover_stress_soak_evidence.v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source_lane": {
+      "const": "A3"
+    },
+    "harness": {
+      "type": "object",
+      "required": ["component", "version", "synthetic_load_model"],
+      "properties": {
+        "component": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "synthetic_load_model": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "config": {
+      "type": "object",
+      "required": ["cycles_per_profile", "profile_count", "freshness_ttl_sec"],
+      "properties": {
+        "cycles_per_profile": { "type": "integer", "minimum": 1 },
+        "profile_count": { "type": "integer", "minimum": 1 },
+        "freshness_ttl_sec": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "overall_verdict",
+        "profile_count",
+        "total_cycles",
+        "total_ticks",
+        "convergence_pass_count",
+        "convergence_fail_count",
+        "blocked_cycle_count",
+        "synthetic_load_units_total",
+        "max_transition_tick_latency",
+        "stress_drift_detected"
+      ],
+      "properties": {
+        "overall_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "profile_count": { "type": "integer", "minimum": 1 },
+        "total_cycles": { "type": "integer", "minimum": 1 },
+        "total_ticks": { "type": "integer", "minimum": 1 },
+        "convergence_pass_count": { "type": "integer", "minimum": 0 },
+        "convergence_fail_count": { "type": "integer", "minimum": 0 },
+        "blocked_cycle_count": { "type": "integer", "minimum": 0 },
+        "synthetic_load_units_total": { "type": "integer", "minimum": 1 },
+        "max_transition_tick_latency": { "type": "integer", "minimum": 0 },
+        "stress_drift_detected": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "profile_id",
+          "description",
+          "cycles",
+          "pass_count",
+          "fail_count",
+          "blocked_cycle_count",
+          "expected_terminal_state",
+          "terminal_state_counts",
+          "max_transition_tick_latency",
+          "synthetic_load_units_total",
+          "representative_signature",
+          "deterministic_signature_count",
+          "drift_detected"
+        ],
+        "properties": {
+          "profile_id": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 },
+          "cycles": { "type": "integer", "minimum": 1 },
+          "pass_count": { "type": "integer", "minimum": 0 },
+          "fail_count": { "type": "integer", "minimum": 0 },
+          "blocked_cycle_count": { "type": "integer", "minimum": 0 },
+          "expected_terminal_state": { "type": ["string", "null"] },
+          "terminal_state_counts": {
+            "type": "object",
+            "additionalProperties": { "type": "integer", "minimum": 0 }
+          },
+          "max_transition_tick_latency": { "type": "integer", "minimum": 0 },
+          "synthetic_load_units_total": { "type": "integer", "minimum": 1 },
+          "representative_signature": { "type": ["string", "null"] },
+          "deterministic_signature_count": { "type": "integer", "minimum": 1 },
+          "drift_detected": { "type": "boolean" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "determinism": {
+      "type": "object",
+      "required": ["workload_signature", "drift_detected", "profile_signatures"],
+      "properties": {
+        "workload_signature": { "type": "string", "minLength": 16 },
+        "drift_detected": { "type": "boolean" },
+        "profile_signatures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["profile_id", "signature_count", "representative_signature"],
+            "properties": {
+              "profile_id": { "type": "string", "minLength": 1 },
+              "signature_count": { "type": "integer", "minimum": 1 },
+              "representative_signature": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "live_surface_linkage": {
+      "type": "object",
+      "required": ["schema", "focus", "surface_refs", "blocked_reset_successor_failures"],
+      "properties": {
+        "schema": { "const": "clawd.a3_failover_stress_soak.live_surface_linkage.v1" },
+        "focus": { "const": "blocked_reset_successor_failures" },
+        "surface_refs": {
+          "type": "object",
+          "required": ["continuity_current", "reset_ready_refresh_latest", "handover_latest", "proof_status_latest"],
+          "properties": {
+            "continuity_current": { "type": "string", "minLength": 1 },
+            "reset_ready_refresh_latest": { "type": "string", "minLength": 1 },
+            "handover_latest": { "type": "string", "minLength": 1 },
+            "proof_status_latest": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "blocked_reset_successor_failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "failure_class",
+              "trigger",
+              "top_blocker",
+              "count",
+              "profiles",
+              "step_labels",
+              "proof_states",
+              "projected_live_assertions"
+            ],
+            "properties": {
+              "failure_class": { "type": "string", "minLength": 1 },
+              "trigger": { "const": "TR_SUCCESSOR_VALIDATION_FAIL" },
+              "top_blocker": { "type": "string", "minLength": 1 },
+              "count": { "type": "integer", "minimum": 1 },
+              "profiles": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "step_labels": {
+                "type": "array",
+                "minItems": 1,
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "proof_states": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "sample_refs": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["profile_id", "cycle_index", "step_label"],
+                  "properties": {
+                    "profile_id": { "type": "string", "minLength": 1 },
+                    "cycle_index": { "type": "integer", "minimum": 1 },
+                    "step_label": { "type": "string", "minLength": 1 }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "projected_live_assertions": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "required": ["surface_path", "field_path", "expected"],
+                  "properties": {
+                    "surface_path": { "type": "string", "minLength": 1 },
+                    "field_path": { "type": "string", "minLength": 1 }
+                  },
+                  "additionalProperties": true
+                }
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["run_dir", "evidence_ref", "cycle_log_ref", "decision_log_ref", "latest_ref"],
+      "properties": {
+        "run_dir": { "type": "string", "minLength": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 },
+        "cycle_log_ref": { "type": "string", "minLength": 1 },
+        "decision_log_ref": { "type": "string", "minLength": 1 },
+        "latest_ref": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

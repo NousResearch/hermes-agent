@@ -1,0 +1,80 @@
+version: "1.0"
+id: "openclaw.ui_design.edd.v1"
+status: "active"
+updated_at: "2026-03-08T22:30:00+07:00"
+
+doc_taxonomy:
+  root: "obsvault_yq_terminal"
+  required_namespaces:
+    - "01_Tokens"
+    - "02_Components"
+    - "03_Contracts"
+    - "04_Guidelines"
+    - "05_Teardowns"
+  planner_context_sources:
+    - "10_Projects/Shared/Research"
+    - "04_Gates"
+    - "02_Specs"
+
+artifact_contracts:
+  design_tokens:
+    source_of_truth: "JSON tokens only"
+    compile_boundary: "generated CSS variables are build artifacts, never edited directly"
+    required_fields:
+      - id
+      - category
+      - mode
+      - value
+      - semantic_role
+  component_spec:
+    frontmatter_schema: "ops/openclaw/architecture/schemas/design_component_spec_frontmatter.schema.json"
+    required_sections:
+      - allowed_props
+      - variant_states
+      - slot_contract
+      - a11y_requirements
+      - gate_requirements
+  interaction_contract:
+    format: "YAML"
+    required_sections:
+      - trigger
+      - selector
+      - expected_state
+      - a11y_focus_behavior
+      - failure_assertions
+
+gate_stack:
+  ordered:
+    - id: G1_SCHEMA
+      purpose: "JSON/YAML/schema validity"
+      fail_mode: "block"
+    - id: G2_STRUCTURE
+      purpose: "component contract compliance"
+      fail_mode: "block"
+    - id: G3_A11Y
+      purpose: "axe + aria + keyboard focus"
+      fail_mode: "block"
+    - id: G4_VISUAL
+      purpose: "visual regression tolerance"
+      fail_mode: "block"
+    - id: G5_RUNTIME
+      purpose: "console/noise/perf sanity"
+      fail_mode: "block"
+    - id: G6_ALIGNMENT
+      purpose: "competitive parity + architectural alignment"
+      fail_mode: "block"
+
+thresholds:
+  a11y_critical_violations_max: 0
+  contrast_normal_min: "4.5:1"
+  contrast_large_min: "3:1"
+  visual_pixel_variance_max: 0.001
+  unhandled_console_errors_max: 0
+  keyboard_focus_loss_max: 0
+
+planner_executor_validator_contract:
+  planner_output: ".plan.md with explicit token/component deltas + acceptance checks"
+  executor_constraints:
+    - "cannot add undeclared tokens"
+    - "cannot bypass interaction contracts"
+  validator_output: "binary decision + machine-readable failed gates"

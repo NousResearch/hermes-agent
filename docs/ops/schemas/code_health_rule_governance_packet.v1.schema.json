@@ -1,0 +1,512 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/code_health_rule_governance_packet.v1.schema.json",
+  "title": "OpenClaw Code-Health + Rule-Governance Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "packet_id",
+    "schema_version",
+    "proposal_id",
+    "generated_at",
+    "code_health_metrics",
+    "rule_findings",
+    "governance_recommendations",
+    "audit_trail",
+    "validation"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "code_health_rule_governance_packet.v1"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "change_scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "task_class",
+        "risk_tier",
+        "paths"
+      ],
+      "properties": {
+        "task_class": {
+          "type": "string",
+          "enum": [
+            "implementation",
+            "code:generate",
+            "code:edit",
+            "code:review",
+            "code:test",
+            "code:docs"
+          ]
+        },
+        "risk_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "code_health_metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "metric_evidence",
+        "summary"
+      ],
+      "properties": {
+        "metric_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "metric_id",
+              "metric_name",
+              "value",
+              "status",
+              "evidence_refs"
+            ],
+            "properties": {
+              "metric_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9_.-]+$"
+              },
+              "metric_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "number"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "threshold": {
+                "type": "object",
+                "additionalProperties": true,
+                "properties": {
+                  "operator": {
+                    "type": "string",
+                    "enum": [
+                      "<=",
+                      ">=",
+                      "<",
+                      ">",
+                      "=="
+                    ]
+                  },
+                  "value": {
+                    "type": "number"
+                  }
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "warn",
+                  "fail",
+                  "not_applicable"
+                ]
+              },
+              "evidence_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "failed_metric_count",
+            "warn_metric_count",
+            "pass_metric_count"
+          ],
+          "properties": {
+            "failed_metric_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "warn_metric_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "pass_metric_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "rule_findings": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "rules_evaluated",
+        "conflicts",
+        "duplicates",
+        "merged_violation_analytics"
+      ],
+      "properties": {
+        "rules_evaluated": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "rule_id",
+              "rule_name",
+              "scope",
+              "status",
+              "violation_count"
+            ],
+            "properties": {
+              "rule_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rule_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "scope": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": [
+                  "paths"
+                ],
+                "properties": {
+                  "paths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "warning",
+                  "violation",
+                  "disabled"
+                ]
+              },
+              "violation_count": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "rule_id_a",
+              "rule_id_b",
+              "reason",
+              "severity"
+            ],
+            "properties": {
+              "rule_id_a": {
+                "type": "string",
+                "minLength": 1
+              },
+              "rule_id_b": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ]
+              }
+            }
+          }
+        },
+        "duplicates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "canonical_rule_id",
+              "duplicate_rule_id",
+              "overlap_ratio",
+              "reason"
+            ],
+            "properties": {
+              "canonical_rule_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "duplicate_rule_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "overlap_ratio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "merged_violation_analytics": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "total_violations",
+            "unique_rules_violated",
+            "conflict_count",
+            "duplicate_count",
+            "governance_signal"
+          ],
+          "properties": {
+            "total_violations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unique_rules_violated": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "conflict_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "duplicate_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "governance_signal": {
+              "type": "string",
+              "enum": [
+                "stable",
+                "watch",
+                "action_required"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "governance_recommendations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "recommendation_id",
+          "action",
+          "priority",
+          "rationale"
+        ],
+        "properties": {
+          "recommendation_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "keep",
+              "merge_rules",
+              "deprecate_rule",
+              "tighten_scope",
+              "loosen_scope",
+              "human_review"
+            ]
+          },
+          "priority": {
+            "type": "string",
+            "enum": [
+              "p0",
+              "p1",
+              "p2"
+            ]
+          },
+          "linked_rule_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "rationale": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "audit_trail": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "event_id",
+              "timestamp",
+              "actor",
+              "action",
+              "notes"
+            ],
+            "properties": {
+              "event_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "actor": {
+                "type": "object",
+                "additionalProperties": true,
+                "required": [
+                  "actor_type",
+                  "actor_id"
+                ],
+                "properties": {
+                  "actor_type": {
+                    "type": "string",
+                    "enum": [
+                      "worker",
+                      "operator",
+                      "validator"
+                    ]
+                  },
+                  "actor_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "packet_generated",
+                  "rule_conflict_detected",
+                  "duplicate_rule_detected",
+                  "recommendation_emitted",
+                  "operator_acknowledged"
+                ]
+              },
+              "notes": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "required_approvals"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "approver_id",
+              "timestamp"
+            ],
+            "properties": {
+              "approver_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

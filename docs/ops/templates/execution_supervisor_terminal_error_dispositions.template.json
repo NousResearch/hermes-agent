@@ -1,0 +1,18 @@
+{
+  "schema": "clawd.execution_supervisor_terminal_error_dispositions.v1",
+  "generated_at": "2026-04-04T00:00:00Z",
+  "dispositions": [
+    {
+      "task_id": "core_roadmap:wave1:persistent_post_completion_enforcement_latch_artifact",
+      "action": "acknowledge_and_park",
+      "approved_by": "operator",
+      "approved_at": "2026-04-04T00:00:00Z",
+      "expires_at": "2026-04-11T00:00:00Z",
+      "classification": "FAILED_OTHER",
+      "failure_reason": "terminal_error_without_artifact_failure",
+      "reroute_reason": "terminal_error_requires_operator_review",
+      "justification": "Legacy DONE slice has no artifact contract; park reroute until explicit relaunch decision.",
+      "source_ref": "reports/execution_supervisor_terminal_error_disposition_closeout_2026-04-04.md"
+    }
+  ]
+}

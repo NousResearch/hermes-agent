@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.continuity.current.v1",
+  "title": "Continuity Current (Successor Surface)",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_id",
+    "truth_anchor",
+    "readiness",
+    "in_flight",
+    "mutation_gate"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.continuity.current.v1" },
+    "generated_at": { "type": "string" },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "truth_anchor": {
+      "type": "object",
+      "required": ["snapshot_id", "journal_offset", "pointer_hash"],
+      "properties": {
+        "snapshot_id": { "type": ["string", "null"] },
+        "journal_offset": { "type": ["string", "null"] },
+        "pointer_hash": { "type": ["string", "null"] },
+        "pointer_source": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "readiness": {
+      "type": "string",
+      "enum": ["READY", "READY_WITH_DEBT", "RECONCILE_REQUIRED", "NOT_READY", "UNKNOWN"]
+    },
+    "in_flight": {
+      "type": "object",
+      "required": ["value"],
+      "properties": {
+        "value": { "type": "boolean" },
+        "running_tasks": { "type": "integer", "minimum": 0 },
+        "active_locks": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "mutation_gate": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "type": "string", "enum": ["allowed", "forbidden"] },
+        "reason": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "operator_working_doctrine": {
+      "type": "object",
+      "properties": {
+        "schema": { "const": "clawd.operator_working_doctrine.v1" },
+        "session_role": { "type": "string", "minLength": 1 },
+        "main_session_default": { "type": "string", "minLength": 1 },
+        "default_worker_lane": { "type": "string", "minLength": 1 },
+        "main_session_exception_path": { "type": "string", "minLength": 1 },
+        "execution_mode": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "allowed_values": { "type": "array", "items": { "type": "string" } },
+            "default_without_action": { "type": "string", "minLength": 1 },
+            "spawn_before_speak_required": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "execution_tuple": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "required_fields": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "dispatch_contract": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "required_fields": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "active_assumptions": { "type": "array", "items": { "type": "string" } },
+        "source_refs": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "execution_context": {
+      "type": "object",
+      "properties": {
+        "posture": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "readiness": { "type": "string", "minLength": 1 },
+        "in_flight": { "type": "boolean" },
+        "running_tasks": { "type": "integer", "minimum": 0 },
+        "active_locks": { "type": "integer", "minimum": 0 },
+        "mutation_gate_status": { "type": "string", "minLength": 1 },
+        "mutation_gate_posture": { "type": "string", "minLength": 1 },
+        "expected_in_flight_guard": { "type": ["boolean", "null"] },
+        "dispatch_status": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "dispatch_context": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "autopilot_status": { "type": "string", "minLength": 1 },
+        "ready_work_exists": { "type": "boolean" },
+        "idle_threshold_exceeded": { "type": "boolean" },
+        "idle_sec": { "type": "integer", "minimum": 0 },
+        "target_step_id": { "type": ["string", "null"] },
+        "launched_step_id": { "type": ["string", "null"] },
+        "skip_reason": { "type": ["string", "null"] },
+        "trace_path": { "type": ["string", "null"] },
+        "updated_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "reset_ready_refresh": {
+      "type": "object",
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": ["string", "null"] },
+        "generated_at": { "type": ["string", "null"] },
+        "present": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["missing", "present", "ok", "degraded"] },
+        "ok": { "type": ["boolean", "null"] },
+        "phase": { "type": ["string", "null"] },
+        "error_code": { "type": ["string", "null"] },
+        "freshness_limit_sec": { "type": "integer", "minimum": 0 },
+        "age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "fresh": { "type": ["boolean", "null"] },
+        "stale": { "type": "boolean" },
+        "partial_refresh": {
+          "type": "object",
+          "properties": {
+            "current_refreshed": { "type": ["boolean", "null"] },
+            "proof_refreshed": { "type": ["boolean", "null"] },
+            "handover_refreshed": { "type": ["boolean", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "degraded": { "type": "boolean" },
+        "partial_failure": { "type": "boolean" },
+        "action_required": { "type": "boolean" },
+        "recommended_action": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

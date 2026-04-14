@@ -1,0 +1,273 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/research_implementation_queue_item.schema.json",
+  "title": "Research Implementation Queue Item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "queue_item_id",
+    "generated_at",
+    "queue_state",
+    "case_id",
+    "candidate_id",
+    "promotion_id",
+    "traceability",
+    "implementation_contract"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.research_case.implementation_queue_item.v1"
+    },
+    "queue_item_id": {
+      "type": "string",
+      "pattern": "^rci_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "queue_state": {
+      "type": "string",
+      "enum": [
+        "READY_FOR_EXECUTION",
+        "IN_EXECUTION",
+        "DONE",
+        "BLOCKED"
+      ]
+    },
+    "case_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "promotion_id": {
+      "type": "string",
+      "pattern": "^prom_[a-z0-9._-]+$"
+    },
+    "traceability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_path",
+        "gatecheck_path",
+        "promotion_candidate_path",
+        "promotion_gate_decision_path",
+        "promotion_gate_decision_log_path",
+        "source_refs"
+      ],
+      "properties": {
+        "candidate_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gatecheck_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promotion_candidate_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promotion_gate_decision_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "promotion_gate_decision_log_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref_id",
+              "path",
+              "content_hash"
+            ],
+            "properties": {
+              "ref_id": {
+                "type": "string",
+                "pattern": "^src_[a-zA-Z0-9._-]+$"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "content_hash": {
+                "type": "string",
+                "pattern": "^(sha256:)?[a-f0-9]{64}$"
+              },
+              "locator": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "implementation_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requirements",
+        "acceptance_criteria",
+        "verification_plan",
+        "risk_assessment"
+      ],
+      "properties": {
+        "requirements": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "req_id",
+              "text",
+              "takeaway_refs",
+              "priority"
+            ],
+            "properties": {
+              "req_id": {
+                "type": "string",
+                "pattern": "^req_[0-9]{3}$"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 3
+              },
+              "takeaway_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^tw_[0-9]{3}$"
+                }
+              },
+              "priority": {
+                "type": "string",
+                "enum": [
+                  "P0",
+                  "P1",
+                  "P2"
+                ]
+              }
+            }
+          }
+        },
+        "acceptance_criteria": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "criterion_id",
+              "statement",
+              "covers_req_ids"
+            ],
+            "properties": {
+              "criterion_id": {
+                "type": "string",
+                "pattern": "^ac_[0-9]{3}$"
+              },
+              "statement": {
+                "type": "string",
+                "minLength": 5
+              },
+              "covers_req_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "pattern": "^req_[0-9]{3}$"
+                }
+              }
+            }
+          }
+        },
+        "verification_plan": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "risk_assessment": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "orchestration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "scheduler_algorithm",
+        "queue_entered_at",
+        "priority_weight",
+        "starvation_controls"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "scheduler_algorithm": {
+          "type": "string",
+          "minLength": 3
+        },
+        "queue_entered_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "priority_weight": {
+          "type": "number",
+          "minimum": 0
+        },
+        "starvation_controls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_runnable_wait_seconds",
+            "starvation_incident_wait_seconds",
+            "max_consecutive_scheduler_skips",
+            "preemption_trigger_runtime_seconds",
+            "required_fairness_metric"
+          ],
+          "properties": {
+            "max_runnable_wait_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "starvation_incident_wait_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_consecutive_scheduler_skips": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "preemption_trigger_runtime_seconds": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "required_fairness_metric": {
+              "type": "string",
+              "minLength": 3
+            }
+          }
+        }
+      }
+    }
+  }
+}

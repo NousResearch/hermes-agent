@@ -1,0 +1,80 @@
+{
+  "schema": "clawd.source_of_truth_map_guard_policy_pack.v1",
+  "generated_at": "2026-04-02T00:00:00Z",
+  "policy_pack_id": "source_of_truth_map_guard_policy_v1",
+  "checker": "source_of_truth_map_guard",
+  "scope": "Bounded anti-drift policy pack for canonical source-of-truth map governance.",
+  "status": "approved",
+  "default_decision": "BLOCK",
+  "checks": [
+    {
+      "check_id": "active_registry_required_docs",
+      "reason_id": "active_registry_missing_required_docs",
+      "category": "registry_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "Required active canonical registry docs must remain present."
+    },
+    {
+      "check_id": "historical_registry_required_docs",
+      "reason_id": "historical_registry_missing_required_docs",
+      "category": "registry_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "Required historical registry docs must remain present."
+    },
+    {
+      "check_id": "canonical_historical_no_overlap",
+      "reason_id": "canonical_historical_overlap",
+      "category": "registry_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "Canonical and historical registries must not overlap."
+    },
+    {
+      "check_id": "historical_docs_not_in_active_registry",
+      "reason_id": "historical_docs_promoted_to_active",
+      "category": "historical_reference_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "Historical steering docs must never appear in the active registry."
+    },
+    {
+      "check_id": "lane_block_extraction_non_empty",
+      "reason_id": "lane_block_extraction_failed",
+      "category": "lane_contract_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "Lane extraction must succeed so marker governance remains enforceable."
+    },
+    {
+      "check_id": "lane_blocks_have_required_markers",
+      "reason_id": "lane_block_marker_drift",
+      "category": "lane_contract_integrity",
+      "severity": "hard_fail",
+      "waivable": true,
+      "summary": "Lane blocks must keep their required canonical markers unless under a bounded migration waiver."
+    },
+    {
+      "check_id": "b6_forbidden_historical_refs_absent",
+      "reason_id": "b6_historical_ref_drift",
+      "category": "historical_reference_integrity",
+      "severity": "blocker",
+      "waivable": false,
+      "summary": "B6 canonical references must not reintroduce forbidden historical routing inputs."
+    },
+    {
+      "check_id": "referenced_paths_resolve",
+      "reason_id": "referenced_path_drift",
+      "category": "path_resolution_integrity",
+      "severity": "hard_fail",
+      "waivable": true,
+      "summary": "Referenced canonical paths must resolve, except during a tightly bounded migration waiver."
+    }
+  ],
+  "source_refs": [
+    "docs/ops/source_of_truth_map_guard_policy_contract_v1.md",
+    "docs/ops/anti_drift_waiver_contract_v1.md",
+    "reports/openclaw_system_source_of_truth_map_2026-03-20.md"
+  ]
+}

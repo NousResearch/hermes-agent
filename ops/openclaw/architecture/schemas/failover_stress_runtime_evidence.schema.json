@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.a3_failover_stress_runtime_evidence.v1",
+  "title": "A3 Failover Stress Runtime Evidence v1",
+  "type": "object",
+  "required": [
+    "object_type",
+    "run_id",
+    "generated_at",
+    "source_lane",
+    "harness",
+    "config",
+    "summary",
+    "phases",
+    "stress_evidence",
+    "artifacts",
+    "source_refs"
+  ],
+  "properties": {
+    "object_type": {
+      "const": "clawd.a3_failover_stress_runtime_evidence.v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source_lane": {
+      "const": "A3"
+    },
+    "harness": {
+      "type": "object",
+      "required": ["component", "version", "stress_runner"],
+      "properties": {
+        "component": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "stress_runner": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "config": {
+      "type": "object",
+      "required": [
+        "cycles_per_profile",
+        "stress_timeout_sec",
+        "refresh_timeout_sec",
+        "refresh_enabled",
+        "require_live_assertions"
+      ],
+      "properties": {
+        "cycles_per_profile": { "type": "integer", "minimum": 1 },
+        "stress_timeout_sec": { "type": "integer", "minimum": 1 },
+        "refresh_timeout_sec": { "type": "integer", "minimum": 1 },
+        "refresh_enabled": { "type": "boolean" },
+        "require_live_assertions": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "overall_verdict",
+        "stress_verdict",
+        "refresh_verdict",
+        "publish_chain_verdict",
+        "active_top_blocker",
+        "publish_assertions_checked",
+        "publish_assertions_failed",
+        "blocked_reasons"
+      ],
+      "properties": {
+        "overall_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "stress_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "refresh_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "publish_chain_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "active_top_blocker": { "type": ["string", "null"] },
+        "publish_assertions_checked": { "type": "integer", "minimum": 0 },
+        "publish_assertions_failed": { "type": "integer", "minimum": 0 },
+        "blocked_reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": true
+    },
+    "phases": {
+      "type": "object",
+      "required": ["stress_soak", "refresh_publish_chain", "publish_assertion_verification"],
+      "properties": {
+        "stress_soak": {
+          "type": "object",
+          "required": ["status", "duration_ms", "run_id"],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "run_id": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "refresh_publish_chain": {
+          "type": "object",
+          "required": ["status", "duration_ms", "latest_surface_ref"],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": ["PASS", "FAIL_BLOCKED", "SKIPPED", "SKIPPED_STRESS_FAIL"]
+            },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "latest_surface_ref": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "publish_assertion_verification": {
+          "type": "object",
+          "required": [
+            "status",
+            "verdict",
+            "reason",
+            "assertions_checked",
+            "assertions_failed",
+            "active_top_blocker",
+            "checks",
+            "failures"
+          ],
+          "properties": {
+            "status": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+            "verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+            "reason": { "type": "string", "minLength": 1 },
+            "assertions_checked": { "type": "integer", "minimum": 0 },
+            "assertions_failed": { "type": "integer", "minimum": 0 },
+            "active_top_blocker": { "type": ["string", "null"] },
+            "checks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["ok"],
+                "properties": {
+                  "ok": { "type": "boolean" }
+                },
+                "additionalProperties": true
+              }
+            },
+            "failures": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "stress_evidence": {
+      "type": "object",
+      "required": ["run_id", "summary", "live_surface_linkage"],
+      "properties": {
+        "run_id": { "type": ["string", "null"] },
+        "summary": { "type": "object" },
+        "live_surface_linkage": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "run_dir",
+        "evidence_ref",
+        "decision_log_ref",
+        "latest_ref",
+        "stress_latest_ref",
+        "refresh_latest_ref"
+      ],
+      "properties": {
+        "run_dir": { "type": "string", "minLength": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 },
+        "decision_log_ref": { "type": "string", "minLength": 1 },
+        "latest_ref": { "type": "string", "minLength": 1 },
+        "stress_latest_ref": { "type": "string", "minLength": 1 },
+        "refresh_latest_ref": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "sha256": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

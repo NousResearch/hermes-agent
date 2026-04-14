@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.wave2_replay.evidence_index.v1",
+  "title": "Wave2 Replay Evidence Index v1",
+  "type": "object",
+  "required": [
+    "object_type",
+    "run_id",
+    "generated_at",
+    "summary",
+    "artifacts"
+  ],
+  "properties": {
+    "object_type": {
+      "const": "clawd.wave2_replay.evidence_index.v1"
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 8
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "source_lane": {
+      "type": "string"
+    },
+    "fixture_family": {
+      "type": "string"
+    },
+    "runner": {
+      "type": "object",
+      "properties": {
+        "component": { "type": "string" },
+        "version": { "type": "string" }
+      },
+      "required": ["component", "version"],
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "scenario_count",
+        "pass_count",
+        "fail_count",
+        "overall_verdict"
+      ],
+      "properties": {
+        "scenario_count": { "type": "integer", "minimum": 1 },
+        "pass_count": { "type": "integer", "minimum": 0 },
+        "fail_count": { "type": "integer", "minimum": 0 },
+        "overall_verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "first_blocking_gate": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "object",
+      "required": [
+        "run_dir",
+        "fixture_manifest_ref",
+        "run_request_ref",
+        "gate_trace_ref",
+        "decision_ref"
+      ],
+      "properties": {
+        "run_dir": { "type": "string" },
+        "fixture_manifest_ref": { "type": "string" },
+        "run_request_ref": { "type": "string" },
+        "gate_trace_ref": { "type": "string" },
+        "decision_ref": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "soak": {
+      "type": "object",
+      "properties": {
+        "runs_total": { "type": "integer", "minimum": 1 },
+        "runs_pass": { "type": "integer", "minimum": 0 },
+        "runs_fail": { "type": "integer", "minimum": 0 },
+        "deterministic_signature_count": { "type": "integer", "minimum": 1 },
+        "drift_detected": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "source_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "sha256": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

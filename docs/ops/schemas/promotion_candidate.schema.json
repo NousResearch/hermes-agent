@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/promotion_candidate.schema.json",
+  "title": "Promotion Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "promotion_id",
+    "created_at",
+    "promotion_state",
+    "source_lane",
+    "insight",
+    "provenance",
+    "confidence",
+    "source_refs",
+    "review",
+    "target",
+    "safety"
+  ],
+  "properties": {
+    "promotion_id": {
+      "type": "string",
+      "pattern": "^prom_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promotion_state": {
+      "type": "string",
+      "enum": [
+        "LOCAL_ONLY",
+        "PENDING_REVIEW",
+        "APPROVED",
+        "PROMOTED",
+        "REJECTED",
+        "BLOCKED"
+      ]
+    },
+    "source_lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane_id",
+        "work_item_id",
+        "producer_role"
+      ],
+      "properties": {
+        "lane_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "work_item_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "producer_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "session_key": {
+          "type": "string"
+        }
+      }
+    },
+    "insight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "statement"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 3
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "fact",
+            "rule",
+            "procedure",
+            "heuristic"
+          ]
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capture_method",
+        "captured_at"
+      ],
+      "properties": {
+        "capture_method": {
+          "type": "string",
+          "minLength": 2
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tool_trace_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "method"
+      ],
+      "properties": {
+        "score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "method": {
+          "type": "string",
+          "minLength": 2
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "path",
+          "content_hash"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^src_[a-zA-Z0-9._-]+$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "locator": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reviewer_role",
+        "reviewer_id",
+        "reviewed_at",
+        "rationale"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "needs_changes"
+          ]
+        },
+        "reviewer_role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN",
+            null
+          ]
+        },
+        "reviewer_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface",
+        "target_path",
+        "merge_mode"
+      ],
+      "properties": {
+        "surface": {
+          "type": "string",
+          "enum": [
+            "doctrine",
+            "memory",
+            "playbook"
+          ]
+        },
+        "target_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "merge_mode": {
+          "type": "string",
+          "enum": [
+            "append",
+            "patch",
+            "replace_section"
+          ]
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "leakage_check",
+        "redaction_applied"
+      ],
+      "properties": {
+        "classification": {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "restricted",
+            "secret"
+          ]
+        },
+        "leakage_check": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "redaction_applied": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.publish_anchor.v1",
+  "title": "Ground Truth Connector Publish Anchor v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "build_generation_id",
+    "valid_until",
+    "issuer_boot_id",
+    "manifest_auth_root"
+  ],
+  "properties": {
+    "schema_version": { "const": "gtc.publish_anchor.v1" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "build_generation_id": { "type": "string", "minLength": 8 },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "issuer_boot_id": { "type": "string", "minLength": 1 },
+    "manifest_auth_root": {
+      "type": "object",
+      "required": ["scheme", "key_id", "canonical_profile", "payload_fields", "payload_fields_sha256"],
+      "properties": {
+        "scheme": { "enum": ["hmac-sha256", "ed25519-sha256"] },
+        "key_id": { "type": "string", "minLength": 1 },
+        "canonical_profile": { "type": "string", "minLength": 1 },
+        "payload_fields": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "payload_fields_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "public_key_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "scheme": { "const": "hmac-sha256" } }, "required": ["scheme"] },
+          "then": {
+            "properties": {
+              "canonical_profile": { "const": "gtc.publish_manifest.hmac.v1" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "scheme": { "const": "ed25519-sha256" } }, "required": ["scheme"] },
+          "then": {
+            "required": ["public_key_sha256"],
+            "properties": {
+              "canonical_profile": { "const": "gtc.publish_manifest.ed25519.v1" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,19 @@
+{
+  "channel": "telegram",
+  "chat": {
+    "scope": "group",
+    "id": "-1002220001111",
+    "is_forum": true
+  },
+  "event": {
+    "kind": "message",
+    "message_thread_id": 42,
+    "text": "operator route probe"
+  },
+  "route_lock": {
+    "agent_id": "codex-dev",
+    "lane_name": "dev",
+    "message_thread_id": 42,
+    "session_key": "agent:codex-dev:telegram:group:-1002220001111:topic:42"
+  }
+}

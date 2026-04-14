@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/source_of_truth_map_guard_policy_pack.schema.json",
+  "title": "Source-of-Truth Map Guard Policy Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "generated_at",
+    "policy_pack_id",
+    "checker",
+    "scope",
+    "status",
+    "default_decision",
+    "checks",
+    "source_refs"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "clawd.source_of_truth_map_guard_policy_pack.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_pack_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checker": {
+      "type": "string",
+      "const": "source_of_truth_map_guard"
+    },
+    "scope": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "draft",
+        "approved",
+        "deprecated"
+      ]
+    },
+    "default_decision": {
+      "type": "string",
+      "const": "BLOCK"
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/check_policy"
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "check_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "reason_id",
+        "category",
+        "severity",
+        "waivable",
+        "summary"
+      ],
+      "properties": {
+        "check_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+$"
+        },
+        "reason_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+$"
+        },
+        "category": {
+          "type": "string",
+          "enum": [
+            "registry_integrity",
+            "lane_contract_integrity",
+            "historical_reference_integrity",
+            "path_resolution_integrity"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "blocker",
+            "hard_fail"
+          ]
+        },
+        "waivable": {
+          "type": "boolean"
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 8
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/document_ingestion_destination_profiles.schema.json",
+  "title": "Document Ingestion Destination Profiles",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profiles"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.document_ingestion.destination_profiles.v1"
+    },
+    "default_profile": {
+      "type": "string",
+      "pattern": "^[a-z0-9._-]+$"
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "root"
+        ],
+        "properties": {
+          "root": {
+            "type": "string",
+            "minLength": 1
+          },
+          "allowed_classes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "architecture_spec",
+                "runbook",
+                "policy_doctrine",
+                "research_report",
+                "runtime_evidence",
+                "source_document",
+                "unknown"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "owner_role": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sla_tier": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "standard",
+              "best_effort"
+            ]
+          },
+          "notes": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

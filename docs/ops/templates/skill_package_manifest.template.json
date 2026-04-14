@@ -1,0 +1,75 @@
+{
+  "schema_version": "openclaw.skill_package_manifest.v1",
+  "skill_id": "example_skill",
+  "version": "0.1.0",
+  "display_name": "Example Skill",
+  "summary": "One-sentence capability summary with explicit operational boundaries.",
+  "owner": "owner@example",
+  "updated_at": "2026-04-02T00:00:00Z",
+  "package": {
+    "root_dir": "memory/skills/example_skill",
+    "skill_doc": "memory/skills/example_skill/SKILL.md",
+    "scripts_dir": "memory/skills/example_skill/scripts",
+    "references_dir": "memory/skills/example_skill/references",
+    "assets": [
+      "memory/skills/example_skill/SKILL.md"
+    ]
+  },
+  "activation": {
+    "intents": [
+      "example capability"
+    ],
+    "keywords": [
+      "example",
+      "skill"
+    ],
+    "requires_explicit_invocation": false,
+    "default_priority": "P2"
+  },
+  "runtime": {
+    "execution_mode": "inline",
+    "offload_policy": "never_offload",
+    "max_runtime_seconds": 300,
+    "preflight": {
+      "min_ram_gb": 1,
+      "min_disk_gb": 1,
+      "requires_gpu": false
+    }
+  },
+  "interoperability": {
+    "import_formats": [
+      "openclaw-native"
+    ],
+    "export_formats": [
+      "openclaw-native"
+    ]
+  },
+  "quality": {
+    "benchmark_suite": "memory/skills/example_skill/references/benchmark_plan.md",
+    "contract_tests": [
+      "tests/test_sys_04_skill_packaging_schema_pack.py"
+    ]
+  },
+  "governance": {
+    "risk_class": "RG1_MODERATE",
+    "advisory_only": true,
+    "approval_policy": "risk_based",
+    "allowed_tools": [
+      "read"
+    ],
+    "requires_human_approval_for": [
+      "file_write",
+      "shell_exec"
+    ]
+  },
+  "provenance": {
+    "source_refs": [
+      {
+        "ref_id": "CLAUDE_SKILLS",
+        "kind": "repo",
+        "location": "reports/deep_dive_claudecode_skills_deepagents_openclaw_foldin_2026-04-02.md",
+        "confidence": 0.89
+      }
+    ]
+  }
+}

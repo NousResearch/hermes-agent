@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/b3_high_volume_ingestion_stress_fixture.schema.json",
+  "title": "B3 High-Volume Ingestion Stress Fixture Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "batch_size",
+    "ingestion_id_prefix",
+    "destination_prefix",
+    "assertions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.b3.high_volume_ingestion_stress_fixture.v1"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^b3_stress_[a-z0-9._-]+$"
+    },
+    "batch_size": {
+      "type": "integer",
+      "minimum": 8,
+      "maximum": 512
+    },
+    "ingestion_id_prefix": {
+      "type": "string",
+      "pattern": "^pki_[a-z0-9._-]+$"
+    },
+    "destination_prefix": {
+      "type": "string",
+      "pattern": "^memory/knowledge_ingestion/production(?:/[A-Za-z0-9._-]+)*$"
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_decision",
+        "max_failures",
+        "require_apply_success",
+        "require_unique_ingestion_ids",
+        "require_ledger_rows_equal_batch"
+      ],
+      "properties": {
+        "expected_decision": {
+          "type": "string",
+          "enum": [
+            "PASS"
+          ]
+        },
+        "max_failures": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_apply_success": {
+          "type": "boolean"
+        },
+        "require_unique_ingestion_ids": {
+          "type": "boolean"
+        },
+        "require_ledger_rows_equal_batch": {
+          "type": "boolean"
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

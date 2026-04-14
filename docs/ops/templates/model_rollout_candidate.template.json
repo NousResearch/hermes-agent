@@ -1,0 +1,112 @@
+{
+  "rollout_id": "mroll_20260320_example_spark_canary",
+  "created_at": "2026-03-20T11:40:00Z",
+  "evaluated_at": "2026-03-20T11:40:00Z",
+  "policy_version": "model_rollout_contract_v1",
+  "scorecard": {
+    "scored_at": "2026-03-20T11:40:00Z",
+    "cost": {
+      "provider_evidence_updated_at": "2026-03-20T11:40:00Z"
+    }
+  },
+  "model": {
+    "model_ref": "openai-codex/gpt-5.3-codex-spark",
+    "provider": "openai-codex",
+    "model_family": "SPARK",
+    "tier": "lightweight"
+  },
+  "lane_context": {
+    "requested_by_lane_id": "lane.column_b.swarm_orchestration",
+    "actor_role": "VALIDATOR",
+    "work_item_id": "wi_wave5_slice1_model_rollout_gate",
+    "session_key": "agent:example:session"
+  },
+  "qualification": {
+    "checklist": [
+      {
+        "check_id": "schema_contract_valid",
+        "status": "pass",
+        "evidence_ref": "ev_schema_001"
+      },
+      {
+        "check_id": "tool_compatibility_validated",
+        "status": "pass",
+        "evidence_ref": "ev_tooling_001"
+      },
+      {
+        "check_id": "evidence_pointer_resolution",
+        "status": "pass",
+        "evidence_ref": "ev_pointer_001"
+      },
+      {
+        "check_id": "abstention_behavior_validated",
+        "status": "pass",
+        "evidence_ref": "ev_abstain_001"
+      },
+      {
+        "check_id": "fallback_route_defined",
+        "status": "pass",
+        "evidence_ref": "ev_fallback_001"
+      },
+      {
+        "check_id": "cost_budget_guard_defined",
+        "status": "pass",
+        "evidence_ref": "ev_cost_001"
+      },
+      {
+        "check_id": "failure_mode_reviewed",
+        "status": "pass",
+        "evidence_ref": "ev_failure_001"
+      },
+      {
+        "check_id": "rollback_playbook_linked",
+        "status": "pass",
+        "evidence_ref": "ev_rollback_001"
+      }
+    ],
+    "benchmark_summary": {
+      "json_valid_rate": 0.998,
+      "evidence_pointer_resolution_rate": 1,
+      "abstain_f1": 0.97,
+      "non_abstain_recall": 0.96,
+      "eval_sample_size": 240
+    }
+  },
+  "rollout": {
+    "current_state": "SHADOW",
+    "requested_action": "promote",
+    "requested_state": "CANARY",
+    "rollout_reason": "Shadow parity checks stable across qualification sample; opening bounded canary.",
+    "canary": {
+      "window_minutes": 180,
+      "exposure_percent": 0.1
+    }
+  },
+  "rollback": {
+    "can_auto_rollback": true,
+    "max_rollback_minutes": 20,
+    "fallback_model_ref": "NO_LLM",
+    "owner_role": "SRE",
+    "reason": "Any benchmark or incident regression reverts to deterministic route."
+  },
+  "kill_switch": {
+    "armed": true,
+    "engage_requested": false,
+    "fallback_route": "NO_LLM"
+  },
+  "replay_evidence": {
+    "index_path": "state/continuity/latest/wave2_replay_evidence_index.json",
+    "max_age_seconds": 21600
+  },
+  "source_refs": [
+    {
+      "ref_id": "src_model_routing_matrix",
+      "path": "docs/ops/model_routing_no_llm_matrix_v1.md",
+      "locator": "# C) LLM hard gates (must-pass)",
+      "content_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "decision_refs": [
+    "runbook:model_rollout_contract_v1"
+  ]
+}

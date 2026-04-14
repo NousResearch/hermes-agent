@@ -1,0 +1,16 @@
+{
+  "schema": "openclaw.health_typed_record_schema_pack.v1",
+  "slice_id": "XH-702",
+  "generated_at": "2026-03-29T01:05:00+07:00",
+  "pack": {
+    "typed_record": {
+      "schema": "docs/ops/schemas/health_typed_record.schema.json",
+      "template": "docs/ops/templates/health_typed_record.template.json",
+      "fixtures": [
+        "tests/fixtures/xh/health_typed_record_fixture_v1.json",
+        "tests/fixtures/xh/health_typed_record_pack_fixture_v1.json",
+        "tests/fixtures/xh/health_privacy_constraint_fixture_v1.json"
+      ]
+    }
+  }
+}

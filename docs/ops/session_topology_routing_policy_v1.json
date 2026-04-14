@@ -1,0 +1,186 @@
+{
+  "schema": "clawd.session_topology.routing_policy.v1",
+  "policy_id": "session_topology_routing_policy_v1_2026-04-04",
+  "generated_at": "2026-04-04T00:00:00Z",
+  "task_class_model_family": {
+    "defaults": {
+      "default_model_family": "Gemini",
+      "fallback_model_families": [
+        "Codex"
+      ]
+    },
+    "task_classes": [
+      {
+        "task_class": "reading",
+        "default_model_family": "DeepSeek",
+        "fallback_model_families": [
+          "Gemini",
+          "Kimi",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "triage",
+        "default_model_family": "DeepSeek",
+        "fallback_model_families": [
+          "Gemini",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "audit_compression",
+        "default_model_family": "DeepSeek",
+        "fallback_model_families": [
+          "Gemini",
+          "Kimi",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "research",
+        "default_model_family": "Gemini",
+        "fallback_model_families": [
+          "Kimi",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "planning",
+        "default_model_family": "Gemini",
+        "fallback_model_families": [
+          "Kimi",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "comparison",
+        "default_model_family": "Kimi",
+        "fallback_model_families": [
+          "Gemini",
+          "Codex"
+        ]
+      },
+      {
+        "task_class": "implementation",
+        "default_model_family": "Codex",
+        "fallback_model_families": [
+          "Gemini",
+          "DeepSeek"
+        ]
+      },
+      {
+        "task_class": "code:generate",
+        "default_model_family": "Codex",
+        "fallback_model_families": [
+          "Gemini",
+          "Kimi",
+          "DeepSeek"
+        ]
+      },
+      {
+        "task_class": "code:edit",
+        "default_model_family": "Codex",
+        "fallback_model_families": [
+          "Gemini",
+          "DeepSeek",
+          "Kimi"
+        ]
+      },
+      {
+        "task_class": "code:review",
+        "default_model_family": "DeepSeek",
+        "fallback_model_families": [
+          "Gemini",
+          "Codex",
+          "Kimi"
+        ]
+      },
+      {
+        "task_class": "code:test",
+        "default_model_family": "Codex",
+        "fallback_model_families": [
+          "Gemini",
+          "DeepSeek",
+          "Kimi"
+        ]
+      },
+      {
+        "task_class": "code:docs",
+        "default_model_family": "DeepSeek",
+        "fallback_model_families": [
+          "Gemini",
+          "Codex",
+          "Kimi"
+        ]
+      }
+    ]
+  },
+  "coding_qualification": {
+    "require_qualification_signal_for_coding": true,
+    "high_risk_min_score_0_100": {
+      "high": 85.0,
+      "critical": 90.0
+    },
+    "readiness_requirements": {
+      "high": [
+        "qualified",
+        "provisional"
+      ],
+      "critical": [
+        "qualified"
+      ]
+    },
+    "strict_readiness_profile": {
+      "trigger_verification_classes": [
+        "validator_plus_human"
+      ],
+      "trigger_complexity_tiers": [
+        "high"
+      ],
+      "allowed_readiness_states": [
+        "qualified",
+        "provisional"
+      ]
+    },
+    "qualification_signal_max_age_seconds": 86400,
+    "qualification_signal_max_age_seconds_by_risk_tier": {
+      "low": 172800,
+      "medium": 86400,
+      "high": 43200,
+      "critical": 21600
+    },
+    "provider_evidence_max_age_seconds": 172800,
+    "provider_evidence_max_age_seconds_by_risk_tier": {
+      "low": 259200,
+      "medium": 172800,
+      "high": 86400,
+      "critical": 43200
+    },
+    "legacy_missing_timestamp_grace_period_seconds": null,
+    "legacy_missing_timestamp_grace_period_seconds_by_risk_tier": {
+      "low": 1209600,
+      "medium": 604800,
+      "high": 259200,
+      "critical": 86400
+    }
+  },
+  "codex_quota_routing": {
+    "routine_dispatch_lane_disable_statuses": [
+      "probationary",
+      "quarantined"
+    ],
+    "quota_exhaustion_reason_prefixes": [
+      "quota_exhausted",
+      "quota_exhausted_additional",
+      "runtime_bodyless_usage_limit"
+    ],
+    "telegram_direct_worker_target_disallowed_lane_tokens": [
+      "inbox",
+      "main",
+      "main_session",
+      "telegram_direct",
+      "direct",
+      "cockpit"
+    ]
+  }
+}

@@ -1,0 +1,49 @@
+{
+  "schema_version": "clawd.shared_memory_object.v1",
+  "object_id": "smo_prom_20260321_example_memory",
+  "created_at": "2026-03-21T12:00:00Z",
+  "updated_at": "2026-03-21T12:00:00Z",
+  "promotion": {
+    "promotion_id": "prom_20260321_example_memory",
+    "queue_entry_id": "kpq_prom_20260321_example_memory",
+    "candidate_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/promotion_candidate.json",
+    "candidate_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "workflow_decision_path": "state/continuity/knowledge_promotion_queue/workflow/kpq_prom_20260321_example_memory.json",
+    "workflow_decision_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "memory": {
+    "object_type": "rule",
+    "title": "Example promoted memory rule",
+    "statement": "Promoted memory objects must remain traceable to deterministic promotion evidence.",
+    "canonical_state": "PROMOTED_CANONICAL",
+    "target_path": "memory/promoted_memory.md",
+    "source_lane_id": "lane.column_b.research_os"
+  },
+  "freshness_policy": {
+    "stale_after_days": 14,
+    "demote_after_days": 30,
+    "owner_role": "LIBRARIAN",
+    "owner_id": "shared_memory_fabric",
+    "last_verified_at": "2026-03-21T12:00:00Z",
+    "staleness_state": "current"
+  },
+  "conflicts": [],
+  "demotions": [],
+  "traceability": {
+    "source_refs": [
+      {
+        "ref_id": "src_case_synth",
+        "path": "memory/research_cases/rc_example/SYNTH/synths/synth_v1.json",
+        "locator": "$.takeaways[0]",
+        "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "decision_refs": [
+      "promotion_gate:PASS",
+      "review:approved"
+    ],
+    "implementation_refs": [
+      "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/implementation_queue_item.json"
+    ]
+  }
+}

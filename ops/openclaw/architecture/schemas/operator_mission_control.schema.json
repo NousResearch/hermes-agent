@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.operator_mission_control.v1",
+  "title": "Operator Mission Control Latest",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "workspace_id",
+    "truth_strip",
+    "headline",
+    "execution_status",
+    "queue",
+    "actions",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.operator_mission_control.v1" },
+    "generated_at": { "type": "string" },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "truth_strip": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "state"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "state": { "type": ["string", "null"] },
+          "freshness": { "type": ["string", "null"] },
+          "owner": { "type": ["string", "null"] },
+          "next_safe_action": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "headline": {
+      "type": "object",
+      "required": [
+        "readiness",
+        "mutation_gate",
+        "mutation_gate_posture",
+        "mutation_gate_expected_in_flight_guard",
+        "mutation_gate_blocking_reason_count",
+        "mutation_gate_concurrency_reason_count",
+        "idle_lane_autospawn_status",
+        "idle_lane_autospawn_stalled"
+      ],
+      "properties": {
+        "readiness": { "type": "string", "minLength": 1 },
+        "mutation_gate": { "type": "string", "enum": ["allowed", "forbidden", "unknown"] },
+        "mutation_gate_posture": { "type": "string", "minLength": 1 },
+        "mutation_gate_expected_in_flight_guard": { "type": ["boolean", "null"] },
+        "mutation_gate_blocking_reason_count": { "type": "integer", "minimum": 0 },
+        "mutation_gate_concurrency_reason_count": { "type": "integer", "minimum": 0 },
+        "idle_lane_autospawn_status": { "type": "string", "minLength": 1 },
+        "idle_lane_autospawn_stalled": { "type": "boolean" },
+        "execution_program_state": { "type": ["string", "null"] },
+        "execution_current_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "execution_frontier_lane": { "type": ["string", "null"] },
+        "execution_current_focus": { "type": ["string", "null"] },
+        "execution_last_progress_at": { "type": ["string", "null"] },
+        "execution_last_progress_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "execution_frontier_selector_state": { "type": ["string", "null"] },
+        "execution_frontier_close_condition_met": { "type": ["boolean", "null"] },
+        "execution_frontier_next_candidate": { "type": ["string", "null"] },
+        "execution_frontier_next_candidate_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "execution_frontier_transition_reason": { "type": ["string", "null"] },
+        "execution_frontier_stalled": { "type": ["boolean", "null"] },
+        "execution_frontier_supervisor_state": { "type": ["string", "null"] },
+        "execution_frontier_autonomous_dispatch_eligible": { "type": ["boolean", "null"] },
+        "dependency_policy_pack_status": { "type": ["string", "null"] },
+        "dependency_policy_pack_schema_ok": { "type": ["boolean", "null"] },
+        "dependency_policy_pack_slice_count": { "type": ["integer", "null"], "minimum": 0 },
+        "dependency_policy_pack_required_slice_coverage": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "execution_status": {
+      "type": "object",
+      "required": [
+        "posture",
+        "readiness",
+        "in_flight",
+        "running_tasks",
+        "active_locks",
+        "dispatch_status"
+      ],
+      "properties": {
+        "posture": { "type": "string", "minLength": 1 },
+        "readiness": { "type": "string", "minLength": 1 },
+        "in_flight": { "type": "boolean" },
+        "running_tasks": { "type": "integer", "minimum": 0 },
+        "active_locks": { "type": "integer", "minimum": 0 },
+        "program_state": { "type": ["string", "null"] },
+        "current_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "frontier_lane": { "type": ["string", "null"] },
+        "current_focus": { "type": ["string", "null"] },
+        "last_progress_at": { "type": ["string", "null"] },
+        "last_progress_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "frontier_selector_state": { "type": ["string", "null"] },
+        "frontier_close_condition_met": { "type": ["boolean", "null"] },
+        "frontier_next_candidate": { "type": ["string", "null"] },
+        "frontier_next_candidate_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "frontier_supervisor_state": { "type": ["string", "null"] },
+        "frontier_autonomous_dispatch_eligible": { "type": ["boolean", "null"] },
+        "dispatch_status": { "type": "string", "minLength": 1 },
+        "target_step_id": { "type": ["string", "null"] },
+        "launched_step_id": { "type": ["string", "null"] },
+        "last_signal_at": { "type": ["string", "null"] },
+        "last_signal_source": { "type": ["string", "null"] },
+        "last_signal_age_sec": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "execution_frontier": {
+      "type": "object",
+      "properties": {
+        "source_path": { "type": ["string", "null"] },
+        "source_present": { "type": ["boolean", "null"] },
+        "generated_at": { "type": ["string", "null"] },
+        "program_state": { "type": ["string", "null"] },
+        "current_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "last_completed_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "selector_state": { "type": ["string", "null"] },
+        "close_condition_met": { "type": ["boolean", "null"] },
+        "transition_reason": { "type": ["string", "null"] },
+        "next_candidate": { "type": ["string", "null"] },
+        "next_candidate_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "active_worker_count": { "type": ["integer", "null"], "minimum": 0 },
+        "blocked_reason": { "type": ["string", "null"] },
+        "stalled": { "type": ["boolean", "null"] },
+        "stalled_reason": { "type": ["string", "null"] },
+        "idle_for_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "stalled_after_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "dispatch_status": { "type": ["string", "null"] },
+        "supervisor_state": { "type": ["string", "null"] },
+        "autonomous_dispatch_eligible": { "type": ["boolean", "null"] },
+        "autonomous_dispatch_block_reasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "dependency_policy_pack": {
+      "type": "object",
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "present": { "type": ["boolean", "null"] },
+        "schema": { "type": ["string", "null"] },
+        "schema_ok": { "type": ["boolean", "null"] },
+        "status": { "type": ["string", "null"] },
+        "generated_at": { "type": ["string", "null"] },
+        "policy_pack_id": { "type": ["string", "null"] },
+        "slice_count": { "type": ["integer", "null"], "minimum": 0 },
+        "slice_ids": { "type": "array", "items": { "type": "string" } },
+        "required_slice_ids": { "type": "array", "items": { "type": "string" } },
+        "required_slice_coverage": { "type": ["boolean", "null"] },
+        "policy_ids": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "queue": { "type": "object" },
+    "actions": { "type": "array" },
+    "evidence_refs": { "type": "array", "items": { "type": ["string", "null"] } }
+  },
+  "additionalProperties": true
+}

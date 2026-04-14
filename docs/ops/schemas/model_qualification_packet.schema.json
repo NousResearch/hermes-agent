@@ -1,0 +1,947 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_qualification_packet.schema.json",
+  "title": "Model Qualification Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "qualification_id",
+    "evaluated_at",
+    "model",
+    "lane_context",
+    "qualification",
+    "scorecard",
+    "rollout",
+    "rollback",
+    "kill_switch",
+    "source_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.model_qualification_packet.v1"
+    },
+    "qualification_id": {
+      "type": "string",
+      "pattern": "^mq_[a-z0-9._-]+$"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_version": {
+      "type": "string",
+      "default": "model_rollout_gate_contract_v1"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_key",
+        "provider",
+        "route_class"
+      ],
+      "properties": {
+        "model_key": {
+          "type": "string",
+          "minLength": 3
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route_class": {
+          "type": "string",
+          "enum": [
+            "NO_LLM",
+            "SPARK",
+            "HEAVY",
+            "EXPERIMENTAL"
+          ]
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "lightweight",
+            "mid",
+            "premium"
+          ]
+        }
+      }
+    },
+    "lane_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_by_lane_id",
+        "actor_role",
+        "work_item_id"
+      ],
+      "properties": {
+        "requested_by_lane_id": {
+          "type": "string",
+          "enum": [
+            "lane.column_a.no_nudge_autonomy",
+            "lane.column_b.swarm_orchestration",
+            "lane.column_c.upgrade_substrate"
+          ]
+        },
+        "actor_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "work_item_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "session_key": {
+          "type": "string"
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checklist",
+        "benchmark_summary"
+      ],
+      "properties": {
+        "checklist": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check_id",
+              "status",
+              "evidence_ref"
+            ],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "enum": [
+                  "schema_contract_valid",
+                  "tool_compatibility_validated",
+                  "evidence_pointer_resolution",
+                  "abstention_behavior_validated",
+                  "fallback_route_defined",
+                  "cost_budget_guard_defined",
+                  "failure_mode_reviewed",
+                  "rollback_playbook_linked"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "waived"
+                ]
+              },
+              "evidence_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "benchmark_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "json_valid_rate",
+            "evidence_pointer_resolution_rate",
+            "abstain_f1",
+            "non_abstain_recall",
+            "eval_sample_size"
+          ],
+          "properties": {
+            "json_valid_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "evidence_pointer_resolution_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "abstain_f1": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "non_abstain_recall": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "eval_sample_size": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "scorecard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scorecard_version",
+        "scored_at",
+        "window",
+        "latency",
+        "cost",
+        "trust",
+        "determinism",
+        "failure_patterns",
+        "summary"
+      ],
+      "properties": {
+        "scorecard_version": {
+          "type": "string",
+          "const": "clawd.model_qualification_scorecard.v1"
+        },
+        "scored_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_at",
+            "end_at",
+            "sample_count"
+          ],
+          "properties": {
+            "start_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "end_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "sample_count": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "latency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "p50_ms",
+            "p95_ms",
+            "p99_ms",
+            "timeout_rate",
+            "score_0_100",
+            "evidence_ref"
+          ],
+          "properties": {
+            "p50_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "p95_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "p99_ms": {
+              "type": "number",
+              "minimum": 0
+            },
+            "timeout_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "score_0_100": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "evidence_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "effective_cost_per_1k_input_usd",
+            "effective_cost_per_1k_output_usd",
+            "daily_projected_cost_usd",
+            "provider_cost_coverage_rate",
+            "score_0_100",
+            "evidence_ref",
+            "provider_evidence_updated_at"
+          ],
+          "properties": {
+            "effective_cost_per_1k_input_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "effective_cost_per_1k_output_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "daily_projected_cost_usd": {
+              "type": "number",
+              "minimum": 0
+            },
+            "provider_cost_coverage_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "score_0_100": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "evidence_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notes": {
+              "type": "string"
+            },
+            "provider_evidence_updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "trust": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "evidence_pointer_resolution_rate",
+            "unsupported_claim_rate",
+            "abstain_f1",
+            "operator_override_rate",
+            "score_0_100",
+            "evidence_ref"
+          ],
+          "properties": {
+            "evidence_pointer_resolution_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "unsupported_claim_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "abstain_f1": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "operator_override_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "score_0_100": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "evidence_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "determinism": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "replay_match_rate",
+            "structured_output_stability_rate",
+            "idempotent_retry_match_rate",
+            "score_0_100",
+            "evidence_ref"
+          ],
+          "properties": {
+            "replay_match_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "structured_output_stability_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "idempotent_retry_match_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "score_0_100": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "evidence_ref": {
+              "type": "string",
+              "minLength": 1
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        },
+        "failure_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "pattern_id",
+              "description",
+              "severity",
+              "observed_rate",
+              "detectability",
+              "mitigation",
+              "status"
+            ],
+            "properties": {
+              "pattern_id": {
+                "type": "string",
+                "pattern": "^fp_[a-z0-9._-]+$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 3
+              },
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "critical"
+                ]
+              },
+              "observed_rate": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "detectability": {
+                "type": "string",
+                "enum": [
+                  "high",
+                  "medium",
+                  "low"
+                ]
+              },
+              "mitigation": {
+                "type": "string",
+                "minLength": 3
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "mitigated",
+                  "accepted"
+                ]
+              },
+              "evidence_ref": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "weights",
+            "weighted_score_0_100",
+            "promotion_recommendation",
+            "guardrail_violations"
+          ],
+          "properties": {
+            "weights": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "latency",
+                "cost",
+                "trust",
+                "determinism",
+                "failure_patterns"
+              ],
+              "properties": {
+                "latency": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "cost": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "trust": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "determinism": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                },
+                "failure_patterns": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
+            "weighted_score_0_100": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "promotion_recommendation": {
+              "type": "string",
+              "enum": [
+                "promote",
+                "hold",
+                "reject"
+              ]
+            },
+            "guardrail_violations": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "notes": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "rollout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_state",
+        "requested_action",
+        "requested_state",
+        "rollout_reason"
+      ],
+      "properties": {
+        "current_state": {
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "QUALIFIED",
+            "SHADOW",
+            "CANARY",
+            "RING_1",
+            "RING_2",
+            "FULL",
+            "KILLED"
+          ]
+        },
+        "requested_action": {
+          "type": "string",
+          "enum": [
+            "promote",
+            "rollback",
+            "kill"
+          ]
+        },
+        "requested_state": {
+          "type": "string",
+          "enum": [
+            "QUALIFIED",
+            "SHADOW",
+            "CANARY",
+            "RING_1",
+            "RING_2",
+            "FULL",
+            "KILLED"
+          ]
+        },
+        "rollout_reason": {
+          "type": "string",
+          "minLength": 3
+        },
+        "canary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "window_minutes",
+            "exposure_percent"
+          ],
+          "properties": {
+            "window_minutes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "exposure_percent": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "ring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ring_index",
+            "exposure_percent"
+          ],
+          "properties": {
+            "ring_index": {
+              "type": "integer",
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "exposure_percent": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "can_auto_rollback",
+        "max_rollback_minutes",
+        "fallback_model_ref",
+        "owner_role",
+        "reason"
+      ],
+      "properties": {
+        "can_auto_rollback": {
+          "type": "boolean"
+        },
+        "max_rollback_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fallback_model_ref": {
+          "type": "string",
+          "minLength": 3
+        },
+        "owner_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "kill_switch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "armed",
+        "engage_requested",
+        "fallback_route"
+      ],
+      "properties": {
+        "armed": {
+          "type": "boolean"
+        },
+        "engage_requested": {
+          "type": "boolean"
+        },
+        "fallback_route": {
+          "type": "string",
+          "enum": [
+            "NO_LLM",
+            "SPARK",
+            "HEAVY"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "path",
+          "content_hash"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^src_[a-zA-Z0-9._-]+$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "locator": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "scorecard": {
+            "properties": {
+              "summary": {
+                "properties": {
+                  "promotion_recommendation": {
+                    "const": "promote"
+                  }
+                },
+                "required": [
+                  "promotion_recommendation"
+                ]
+              }
+            },
+            "required": [
+              "summary"
+            ]
+          }
+        },
+        "required": [
+          "scorecard"
+        ]
+      },
+      "then": {
+        "properties": {
+          "scorecard": {
+            "properties": {
+              "summary": {
+                "properties": {
+                  "guardrail_violations": {
+                    "maxItems": 0
+                  }
+                },
+                "required": [
+                  "guardrail_violations"
+                ]
+              }
+            },
+            "required": [
+              "summary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "enum": [
+                  "CANARY",
+                  "RING_1",
+                  "RING_2",
+                  "FULL"
+                ]
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        },
+        "required": [
+          "rollout"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kill_switch": {
+            "properties": {
+              "armed": {
+                "const": true
+              }
+            },
+            "required": [
+              "armed"
+            ]
+          }
+        },
+        "required": [
+          "kill_switch"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "const": "CANARY"
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "required": [
+              "canary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "enum": [
+                  "RING_1",
+                  "RING_2"
+                ]
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "required": [
+              "ring"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kill_switch": {
+            "properties": {
+              "engage_requested": {
+                "const": true
+              }
+            },
+            "required": [
+              "engage_requested"
+            ]
+          }
+        },
+        "required": [
+          "kill_switch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_action": {
+                "const": "kill"
+              },
+              "requested_state": {
+                "const": "KILLED"
+              }
+            },
+            "required": [
+              "requested_action",
+              "requested_state"
+            ]
+          },
+          "kill_switch": {
+            "required": [
+              "reason"
+            ]
+          }
+        },
+        "required": [
+          "rollout",
+          "kill_switch"
+        ]
+      }
+    }
+  ]
+}

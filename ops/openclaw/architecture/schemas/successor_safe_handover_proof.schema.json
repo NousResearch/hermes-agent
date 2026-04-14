@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.successor_safe_handover_proof.v1",
+  "title": "Successor Safe Handover Proof",
+  "type": "object",
+  "required": [
+    "object_type",
+    "proof_id",
+    "proof_generation_id",
+    "produced_at",
+    "expires_at",
+    "status",
+    "producer",
+    "source_refs",
+    "coherence_tuple_ref",
+    "safety_inputs",
+    "verdicts",
+    "invalidation"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.successor_safe_handover_proof.v1" },
+    "proof_id": { "type": "string", "minLength": 1 },
+    "proof_generation_id": { "type": "string", "minLength": 1 },
+    "produced_at": { "type": "string" },
+    "expires_at": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["ACTIVE", "EXPIRED", "INVALIDATED", "SUPERSEDED", "REFUSED"]
+    },
+    "producer": { "type": "object" },
+    "source_refs": { "type": "object" },
+    "coherence_tuple_ref": { "type": "object" },
+    "safety_inputs": { "type": "object" },
+    "verdicts": {
+      "type": "object",
+      "required": ["reset_safety", "resume_safety", "blockers"],
+      "properties": {
+        "reset_safety": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "resume_safety": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+        "blockers": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "invalidation": {
+      "type": "object",
+      "required": ["invalidated_at", "reason_codes", "superseded_by_proof_id"],
+      "properties": {
+        "invalidated_at": { "type": ["string", "null"] },
+        "reason_codes": { "type": "array", "items": { "type": "string" } },
+        "superseded_by_proof_id": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

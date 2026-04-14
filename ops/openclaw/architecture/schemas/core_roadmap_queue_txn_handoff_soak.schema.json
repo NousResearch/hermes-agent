@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/core_roadmap_queue_txn_handoff_soak.schema.json",
+  "title": "Core Roadmap Queue Txn Handoff Soak",
+  "description": "Fail-closed soak evidence and guard contract for execution-frontier transactional handoff attempts.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "generated_at",
+    "contract_status",
+    "issues",
+    "guard",
+    "counters"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.core_roadmap_queue_txn_handoff_soak.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "contract_status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "invalid",
+        "missing"
+      ]
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "guard": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "enabled",
+        "consecutive_block_threshold",
+        "active"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "consecutive_block_threshold": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "counters": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "attempts_total",
+        "applied_total",
+        "blocked_total",
+        "skipped_total",
+        "consecutive_blocked"
+      ],
+      "properties": {
+        "attempts_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "applied_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "blocked_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "skipped_total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "consecutive_blocked": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "reset": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "schema": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_reset_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "last_reset_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_reset_actor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_reset_action": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_reset_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_reset": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true,
+          "properties": {
+            "reset_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "actor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "action": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "reset_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "previous_consecutive_blocked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "previous_guard_active": {
+              "type": "boolean"
+            },
+            "previous_blocked_total": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "reset_at": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "format": "date-time"
+              },
+              "reason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "actor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "action": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "reset_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previous_consecutive_blocked": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "previous_guard_active": {
+                "type": "boolean"
+              },
+              "previous_blocked_total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

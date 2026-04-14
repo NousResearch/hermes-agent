@@ -1,0 +1,45 @@
+{
+  "schema_version": "clawd.domain_failclose_incident_packet.v1",
+  "incident_id": "inc_xg803_policy_boundary_trip_20260328",
+  "occurred_at": "2026-03-28T16:30:00Z",
+  "detected_at": "2026-03-28T16:31:00Z",
+  "lane_context": {
+    "lane_id": "lane.column_c.domain_governance",
+    "slice_id": "XG-803",
+    "risk_class": "RG2_HIGH",
+    "auth_tier": "ADMIN"
+  },
+  "incident_class": "policy_violation",
+  "severity": "L3_INCIDENT_READINESS_GAP",
+  "failclose_action": {
+    "triggered": true,
+    "mode": "block_activation",
+    "triggered_at": "2026-03-28T16:31:30Z",
+    "operator_surface_ref": "state/continuity/latest/operator_mission_control.json",
+    "notes": "Release activation blocked pending remediation closure verification."
+  },
+  "policy_bindings": [
+    "docs/ops/c3_activation_governance_contract_v1.md",
+    "docs/ops/xg_802_domain_release_evidence_ladder_extension_contract_v1.md",
+    "docs/ops/controlled_cross_lane_bridge_contract_v1.md"
+  ],
+  "evidence_refs": [
+    "state/continuity/latest/xg_803_runtime_incident_simulation_2026-03-28.json",
+    "state/continuity/latest/xg_803_operator_remediation_references_2026-03-28.json"
+  ],
+  "remediation": {
+    "owner": "XG_incident_owner",
+    "due_at": "2026-03-29T04:00:00Z",
+    "status": "verified",
+    "closure_plan_ref": "state/continuity/latest/xg_803_operator_remediation_references_2026-03-28.json",
+    "closure_verified_at": "2026-03-28T17:45:00Z",
+    "closure_verification_ref": "state/continuity/latest/xg_803_remediation_closure_verification_2026-03-28.json"
+  },
+  "lesson_handoff": {
+    "required": true,
+    "incident_to_lesson_handoff_ref": "state/continuity/latest/xg_803_incident_to_lesson_handoff_packet_2026-03-28.json",
+    "knowledge_queue_ingestion_trace_ref": "state/continuity/latest/xg_803_knowledge_queue_ingestion_trace_2026-03-28.json",
+    "promotion_target": "promote_later",
+    "ingestion_status": "ingested"
+  }
+}

@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/promotion_trace_manifest.schema.json",
+  "title": "Promotion Trace Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "manifest_id",
+    "generated_at",
+    "promotion_id",
+    "queue_entry_id",
+    "candidate",
+    "workflow_decision",
+    "source_refs",
+    "decision_refs",
+    "shared_memory_object",
+    "implementation_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.promotion_trace_manifest.v1"
+    },
+    "manifest_id": {
+      "type": "string",
+      "pattern": "^ptm_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "promotion_id": {
+      "type": "string",
+      "pattern": "^prom_[a-z0-9._-]+$"
+    },
+    "queue_entry_id": {
+      "type": "string",
+      "pattern": "^kpq_[a-z0-9._-]+$"
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content_hash"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    },
+    "workflow_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content_hash",
+        "decision",
+        "final_state"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "BLOCK"
+          ]
+        },
+        "final_state": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "path",
+          "declared_content_hash",
+          "observed_content_hash",
+          "hash_match"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^src_[a-zA-Z0-9._-]+$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "declared_content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          },
+          "observed_content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          },
+          "hash_match": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2
+      }
+    },
+    "shared_memory_object": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "content_hash"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    },
+    "implementation_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}

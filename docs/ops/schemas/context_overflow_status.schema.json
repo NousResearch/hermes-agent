@@ -1,0 +1,592 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/context_overflow_status.schema.json",
+  "title": "Context Overflow Runtime Status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status_id",
+    "generated_at",
+    "status",
+    "integration_contracts",
+    "source_input_map",
+    "runtime_measurements",
+    "trigger_evaluation",
+    "action_plan",
+    "execution_results",
+    "gate_posture",
+    "generated_artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.context_overflow_status.v1"
+    },
+    "status_id": {
+      "type": "string",
+      "pattern": "^ovs_[a-zA-Z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "normal",
+        "preventive",
+        "checkpoint_required",
+        "emergency",
+        "fail_closed"
+      ]
+    },
+    "integration_contracts": {
+      "$ref": "#/$defs/integrationContracts"
+    },
+    "source_input_map": {
+      "type": "array",
+      "minItems": 5,
+      "items": {
+        "$ref": "#/$defs/sourceInput"
+      }
+    },
+    "runtime_measurements": {
+      "$ref": "#/$defs/runtimeMeasurements"
+    },
+    "trigger_evaluation": {
+      "$ref": "#/$defs/triggerEvaluation"
+    },
+    "action_plan": {
+      "$ref": "#/$defs/actionPlan"
+    },
+    "execution_results": {
+      "$ref": "#/$defs/executionResults"
+    },
+    "gate_posture": {
+      "$ref": "#/$defs/gatePosture"
+    },
+    "generated_artifacts": {
+      "$ref": "#/$defs/generatedArtifacts"
+    }
+  },
+  "$defs": {
+    "integrationContracts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "continuity_contract_path",
+        "overflow_contract_path",
+        "continuity_clause_refs",
+        "handover_bundle_schema_path",
+        "checkpoint_bundle_schema_path",
+        "overflow_status_schema_path",
+        "overflow_status_template_path"
+      ],
+      "properties": {
+        "continuity_contract_path": {
+          "type": "string",
+          "const": "docs/ops/continuity_integration_contract_v1.md"
+        },
+        "overflow_contract_path": {
+          "type": "string",
+          "const": "docs/ops/context_overflow_prevention_contract_v1.md"
+        },
+        "continuity_clause_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "C1",
+              "C2",
+              "C3",
+              "C4",
+              "C5",
+              "C6"
+            ]
+          }
+        },
+        "handover_bundle_schema_path": {
+          "type": "string",
+          "const": "docs/ops/schemas/handover_bundle.schema.json"
+        },
+        "checkpoint_bundle_schema_path": {
+          "type": "string",
+          "const": "docs/ops/schemas/checkpoint_bundle.schema.json"
+        },
+        "overflow_status_schema_path": {
+          "type": "string",
+          "const": "docs/ops/schemas/context_overflow_status.schema.json"
+        },
+        "overflow_status_template_path": {
+          "type": "string",
+          "const": "docs/ops/templates/context_overflow_status.template.json"
+        }
+      }
+    },
+    "sourceInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "artifact_path_or_ref",
+        "classification",
+        "overflow_dimensions"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^src_[a-zA-Z0-9._-]+$"
+        },
+        "artifact_path_or_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "archive_mined",
+            "historical",
+            "support",
+            "canonical",
+            "canonical_support",
+            "support_runtime"
+          ]
+        },
+        "overflow_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "overflow_trigger",
+              "checkpoint_contract",
+              "compaction",
+              "ground_truth",
+              "resume_gate",
+              "fail_closed",
+              "lineage"
+            ]
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "runtimeMeasurements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_session_key",
+        "target_agent_id",
+        "context_utilization_pct",
+        "warning_threshold_pct",
+        "checkpoint_threshold_pct",
+        "emergency_threshold_pct",
+        "buffer_target_pct",
+        "context_tokens",
+        "total_tokens",
+        "session_file_size_bytes",
+        "session_bloat_threshold_mb",
+        "session_bloat",
+        "runtime_unhealthy",
+        "anomaly_keys",
+        "snapshot_ref"
+      ],
+      "properties": {
+        "target_session_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "target_agent_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "context_utilization_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "warning_threshold_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "checkpoint_threshold_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "emergency_threshold_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "buffer_target_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "context_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "session_file_size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "session_bloat_threshold_mb": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "session_bloat": {
+          "type": "boolean"
+        },
+        "runtime_unhealthy": {
+          "type": "boolean"
+        },
+        "anomaly_keys": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "snapshot_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "triggerEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "triggered_classes",
+        "semantic_boundary",
+        "volumetric_state",
+        "fingerprint_input"
+      ],
+      "properties": {
+        "triggered_classes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/triggerClass"
+          }
+        },
+        "semantic_boundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "boundary_event",
+            "boundary_required",
+            "boundary_reason"
+          ],
+          "properties": {
+            "boundary_event": {
+              "type": "string",
+              "enum": [
+                "pre_execution",
+                "post_mutation",
+                "post_scheduling_change",
+                "failure_boundary",
+                "handover_boundary",
+                "manual_boundary",
+                "none"
+              ]
+            },
+            "boundary_required": {
+              "type": "boolean"
+            },
+            "boundary_reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "volumetric_state": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "band",
+            "observed_buffer_pct",
+            "attention_degradation_tokens"
+          ],
+          "properties": {
+            "band": {
+              "type": "string",
+              "enum": [
+                "normal",
+                "preventive",
+                "checkpoint_required",
+                "emergency",
+                "fail_closed"
+              ]
+            },
+            "observed_buffer_pct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "attention_degradation_tokens": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "fingerprint_input": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "actionPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "matrix_version",
+        "actions"
+      ],
+      "properties": {
+        "matrix_version": {
+          "type": "string",
+          "const": "trigger_action_matrix_v1"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/actionDecision"
+          }
+        }
+      }
+    },
+    "actionDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "required_when_triggered",
+        "priority",
+        "fail_closed_on_error"
+      ],
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/actionId"
+        },
+        "required_when_triggered": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "semantic_boundary",
+              "volumetric_warning",
+              "volumetric_checkpoint",
+              "volumetric_emergency",
+              "session_bloat",
+              "runtime_unhealthy",
+              "checkpoint_write_failure",
+              "handover_render_failure"
+            ]
+          }
+        },
+        "priority": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 99
+        },
+        "fail_closed_on_error": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "executionResults": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_id",
+        "handover_path",
+        "overflow_status_path",
+        "action_outcomes"
+      ],
+      "properties": {
+        "checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "handover_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "overflow_status_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "action_outcomes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/actionOutcome"
+          }
+        }
+      }
+    },
+    "actionOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action_id",
+        "state",
+        "evidence_ref",
+        "updated_at"
+      ],
+      "properties": {
+        "action_id": {
+          "$ref": "#/$defs/actionId"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "skipped",
+            "succeeded",
+            "failed"
+          ]
+        },
+        "evidence_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "error_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "gatePosture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mutation_gate_status",
+        "safe_to_resume",
+        "safe_to_mutate",
+        "verify_then_resume_required",
+        "fail_closed_reasons",
+        "top_blocker"
+      ],
+      "properties": {
+        "mutation_gate_status": {
+          "type": "string",
+          "enum": [
+            "allowed",
+            "caution",
+            "forbidden"
+          ]
+        },
+        "safe_to_resume": {
+          "type": "boolean"
+        },
+        "safe_to_mutate": {
+          "type": "boolean"
+        },
+        "verify_then_resume_required": {
+          "type": "boolean"
+        },
+        "fail_closed_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "top_blocker": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "generatedArtifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_md",
+        "schema_json",
+        "template_json",
+        "execution_report"
+      ],
+      "properties": {
+        "contract_md": {
+          "type": "string",
+          "const": "docs/ops/context_overflow_prevention_contract_v1.md"
+        },
+        "schema_json": {
+          "type": "string",
+          "const": "docs/ops/schemas/context_overflow_status.schema.json"
+        },
+        "template_json": {
+          "type": "string",
+          "const": "docs/ops/templates/context_overflow_status.template.json"
+        },
+        "execution_report": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "triggerClass": {
+      "type": "string",
+      "enum": [
+        "none",
+        "semantic_boundary",
+        "volumetric_warning",
+        "volumetric_checkpoint",
+        "volumetric_emergency",
+        "session_bloat",
+        "runtime_unhealthy",
+        "checkpoint_write_failure",
+        "handover_render_failure"
+      ]
+    },
+    "actionId": {
+      "type": "string",
+      "enum": [
+        "capture_ground_truth",
+        "write_checkpoint",
+        "render_handover_compat",
+        "sync_latest_artifacts",
+        "emit_event_router_signal",
+        "run_anchor_preserving_compaction",
+        "set_mutation_gate_caution",
+        "set_mutation_gate_forbidden",
+        "require_verify_then_resume"
+      ]
+    }
+  }
+}

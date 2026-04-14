@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/production_knowledge_ingestion_packet.schema.json",
+  "title": "Production Knowledge Ingestion Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "ingestion_id",
+    "material_artifact",
+    "markdown_artifact",
+    "markdown_gate_decision",
+    "classification_decision",
+    "destination"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.production_knowledge_ingestion.packet.v1"
+    },
+    "ingestion_id": {
+      "type": "string",
+      "pattern": "^pki_[a-z0-9._-]+$"
+    },
+    "material_artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "markdown_artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "markdown_gate_decision": {
+      "$ref": "#/$defs/decisionRef"
+    },
+    "classification_decision": {
+      "$ref": "#/$defs/decisionRef"
+    },
+    "destination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "profile": {
+          "type": "string",
+          "pattern": "^[a-z0-9._-]+$"
+        }
+      }
+    },
+    "ingestion_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "require_markdown_gate_pass": {
+          "type": "boolean"
+        },
+        "require_classification_pass": {
+          "type": "boolean"
+        },
+        "allowed_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "architecture_spec",
+              "runbook",
+              "policy_doctrine",
+              "research_report",
+              "runtime_evidence",
+              "source_document",
+              "unknown"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "allow_overwrite": {
+          "type": "boolean"
+        }
+      }
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    },
+    "decisionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected_schema": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

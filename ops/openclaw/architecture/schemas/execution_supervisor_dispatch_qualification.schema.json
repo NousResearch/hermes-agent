@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_supervisor_dispatch_qualification.v1",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "mode",
+    "fail_closed",
+    "launch_mutation_allowed",
+    "status",
+    "decision",
+    "active",
+    "decision_reasons",
+    "ready_candidate_count",
+    "qualified_candidate_count",
+    "blocked_candidate_count",
+    "evaluated_candidates",
+    "qualified_candidates",
+    "blocked_candidates",
+    "canary_probe_schedule",
+    "probe_execution_plan",
+    "launch_readiness"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.execution_supervisor_dispatch_qualification.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "qualification_path": {
+      "type": "string"
+    },
+    "qualification_history_path": {
+      "type": "string"
+    },
+    "mode": {
+      "enum": [
+        "plan_only_fail_closed"
+      ]
+    },
+    "fail_closed": {
+      "const": true
+    },
+    "launch_mutation_allowed": {
+      "const": false
+    },
+    "status": {
+      "enum": [
+        "idle",
+        "qualified_ready",
+        "blocked",
+        "degraded"
+      ]
+    },
+    "decision": {
+      "enum": [
+        "NO_ACTION",
+        "PLAN_ONLY",
+        "BLOCKED"
+      ]
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "decision_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ready_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "qualified_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocked_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ready_candidate_task_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "qualified_candidate_task_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "blocked_candidate_task_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evaluated_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "qualified_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "blocked_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "canary_probe_schedule": {
+      "type": "object",
+      "required": [
+        "schema",
+        "generated_at",
+        "schedule_path",
+        "status",
+        "worker_count",
+        "workers"
+      ],
+      "properties": {
+        "schema": {
+          "const": "clawd.execution_supervisor_canary_probe_schedule.v1"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "schedule_path": {
+          "type": "string"
+        },
+        "schedule_history_path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "reason": {
+          "type": ["string", "null"]
+        },
+        "worker_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "probe_execution_plan": {
+      "type": "object",
+      "required": [
+        "schema",
+        "generated_at",
+        "plan_path",
+        "status",
+        "pending_worker_count",
+        "workers"
+      ],
+      "properties": {
+        "schema": {
+          "const": "clawd.execution_supervisor_probe_execution_plan.v1"
+        },
+        "generated_at": {
+          "type": "string"
+        },
+        "plan_path": {
+          "type": "string"
+        },
+        "plan_history_path": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "pending_worker_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "workers": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "launch_readiness": {
+      "type": "object",
+      "required": [
+        "schema",
+        "state",
+        "reason"
+      ],
+      "properties": {
+        "schema": {
+          "const": "clawd.execution_supervisor_launch_readiness.v1"
+        },
+        "state": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "blocked_reason_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "demotion_restore_posture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "canary_probe_schedule": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "probe_execution_plan": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "severity_gate": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,67 @@
+{
+  "schema_version": "clawd.document_intake_batch_integration.v1",
+  "batch_id": "dib_20260321_pdf_batch01",
+  "generated_at": "2026-03-21T08:00:00Z",
+  "synthesis_note": {
+    "path": "reports/pdf_batch_integration_example_2026-03-21.md",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "inbound_materials": [
+    {
+      "material_id": "mat_01",
+      "path": "memory/inbound_zips/batch_1/source_doc_01.pdf",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "kind": "pdf"
+    }
+  ],
+  "recommendations": [
+    {
+      "recommendation_id": "rec_01",
+      "summary": "Promote bounded markdown-conversion quality gate policy updates.",
+      "promotion_tier": "promote_now",
+      "target_lanes": [
+        "lane.capability.document_os"
+      ],
+      "canonical_refs": [
+        "docs/ops/markdown_conversion_quality_gate_v1.md",
+        "docs/ops/schemas/markdown_conversion_gate_packet.schema.json"
+      ]
+    },
+    {
+      "recommendation_id": "rec_02",
+      "summary": "Defer richer OCR heuristics until later wave maturity.",
+      "promotion_tier": "promote_later",
+      "target_lanes": [
+        "lane.capability.document_os"
+      ],
+      "canonical_refs": [
+        "reports/openclaw_full_roadmap_2026-03-20.md"
+      ]
+    },
+    {
+      "recommendation_id": "rec_03",
+      "summary": "Keep deep vendor workflow details as reference-only context.",
+      "promotion_tier": "reference_only",
+      "target_lanes": [
+        "lane.reference.external_patterns"
+      ]
+    }
+  ],
+  "integration_summary": {
+    "counts": {
+      "promote_now": 1,
+      "promote_later": 1,
+      "reference_only": 1
+    },
+    "promote_now_edit_paths": [
+      "docs/ops/markdown_conversion_quality_gate_v1.md",
+      "reports/wave6_slice_document_intake_closeout_2026-03-21.md"
+    ],
+    "deferred_items": [
+      "OCR quality ranking enhancements"
+    ],
+    "reference_items": [
+      "Vendor-specific delivery workflow notes"
+    ]
+  }
+}

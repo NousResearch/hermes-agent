@@ -1,0 +1,164 @@
+{
+  "schema": "clawd.xo_909.execution_backend_adapter_contract_pack.v1",
+  "slice_id": "XO-909",
+  "generated_at": "2026-03-29T00:00:00Z",
+  "runtime_anchor": {
+    "slice_id": "XO-909",
+    "contract_id": "xo_909_execution_backend_adapter_contract_v1",
+    "objective": "Bounded provider/transport selection and bounded retry policy without batch-style queue posture.",
+    "default_transport": "direct",
+    "disallowed_transports": [
+      "batch",
+      "queue_batch"
+    ],
+    "max_fallback_attempts": 3,
+    "default_timeout_seconds": 30,
+    "default_max_retries": 2,
+    "default_backoff_seconds": [2, 4]
+  },
+  "selection_defaults": {
+    "provider_preference": ["provider_chandra_hf", "provider_onyx_worker", "provider_chandra_vllm"],
+    "transport_preference": ["direct", "local", "http"]
+  },
+  "transport_boundary": {
+    "mode": "bounded",
+    "allow_batch_posture": false,
+    "state_boundary": {
+      "runtime_schema_contract": "clawd.xo_909.execution_backend_adapter_contract_pack.v1",
+      "selection_schema_contract": "clawd.xo_909.execution_backend_adapter_selection_packet.v1",
+      "retry_schema_contract": "clawd.xo_909.execution_backend_adapter_retry_regression.v1"
+    }
+  },
+  "profiles": [
+    {
+      "profile_id": "analysis",
+      "provider_preference": ["provider_chandra_hf", "provider_chandra_vllm", "provider_onyx_worker"],
+      "transport_preference": ["streaming", "direct", "http"],
+      "max_retries": 2
+    },
+    {
+      "profile_id": "tooling",
+      "provider_preference": ["provider_onyx_worker", "provider_chandra_hf"],
+      "transport_preference": ["local", "direct", "http"],
+      "max_retries": 2
+    },
+    {
+      "profile_id": "egress",
+      "provider_preference": ["provider_chandra_vllm", "provider_onyx_worker"],
+      "transport_preference": ["http", "direct"],
+      "max_retries": 3
+    }
+  ],
+  "provider_catalog": [
+    {
+      "provider_id": "provider_chandra_hf",
+      "provider_label": "chandra_hf_local",
+      "description": "Chandra-style local analysis path.",
+      "task_classes": ["analysis", "retrieval", "reasoning"],
+      "transport_modes": [
+        {
+          "mode": "direct",
+          "timeout_seconds": 8,
+          "supported": true,
+          "retry": {
+            "max_retries": 1,
+            "backoff_seconds": [2, 4]
+          }
+        },
+        {
+          "mode": "streaming",
+          "timeout_seconds": 15,
+          "supported": true,
+          "retry": {
+            "max_retries": 1,
+            "backoff_seconds": [3, 6]
+          }
+        }
+      ]
+    },
+    {
+      "provider_id": "provider_onyx_worker",
+      "provider_label": "onyx_sync_worker",
+      "description": "Local worker path for tooling/evidence operations.",
+      "task_classes": ["tooling", "egress", "analysis", "retrieval"],
+      "transport_modes": [
+        {
+          "mode": "direct",
+          "timeout_seconds": 10,
+          "supported": true,
+          "retry": {
+            "max_retries": 2,
+            "backoff_seconds": [2, 2, 5]
+          }
+        },
+        {
+          "mode": "local",
+          "timeout_seconds": 6,
+          "supported": true,
+          "retry": {
+            "max_retries": 2,
+            "backoff_seconds": [2, 4]
+          }
+        }
+      ]
+    },
+    {
+      "provider_id": "provider_chandra_vllm",
+      "provider_label": "chandra_vllm_remote",
+      "description": "Remote vLLM-oriented provider for egress and analysis.",
+      "task_classes": ["analysis", "egress"],
+      "transport_modes": [
+        {
+          "mode": "http",
+          "timeout_seconds": 12,
+          "supported": true,
+          "retry": {
+            "max_retries": 2,
+            "backoff_seconds": [2, 3, 5]
+          }
+        },
+        {
+          "mode": "direct",
+          "timeout_seconds": 20,
+          "supported": true,
+          "retry": {
+            "max_retries": 2,
+            "backoff_seconds": [4, 8]
+          }
+        }
+      ]
+    }
+  ],
+  "selection_cases": [
+    {
+      "case_id": "analysis_request_provider_and_transport_override",
+      "task_class": "analysis",
+      "task_profile": "analysis",
+      "request_overrides": {
+        "provider_id": "provider_chandra_vllm",
+        "transport": "direct"
+      }
+    }
+  ],
+  "selection_matrix": {
+    "status": "PASS",
+    "cases": []
+  },
+  "retry_backoff_regression": {
+    "status": "PASS",
+    "cases": []
+  },
+  "queue_precondition": {
+    "observed_slice_state": "QUEUED_OPTIONAL",
+    "dependency_states": {
+      "XO-907": "DONE"
+    },
+    "unresolved_dependencies": []
+  },
+  "schema_contracts": {
+    "pack_schema": "docs/ops/schemas/execution_backend_adapter_contract_bundle.schema.json",
+    "selection_schema": "clawd.xo_909.execution_backend_adapter_selection_packet.v1",
+    "retry_schema": "clawd.xo_909.execution_backend_adapter_retry_regression.v1",
+    "validation_schema": "clawd.validation_packet.v1"
+  }
+}

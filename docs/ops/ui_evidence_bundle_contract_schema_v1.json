@@ -1,0 +1,277 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://openclaw.dev/schemas/ui_evidence_bundle_contract_v1.json",
+  "title": "UI Evidence Bundle Contract Schema v1",
+  "description": "Schema for auditable UI evidence bundle contracts that provide operators with context-rich evidence packages including screenshots, DOM state, findings, and audit trails.",
+  "type": "object",
+  "required": ["schema_version", "bundle_id", "generated_at", "warning_reason", "evidence"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "ui_evidence_bundle_contract.v1",
+      "description": "Schema version identifier"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^bundle_[0-9]{8}T[0-9]{6}Z_[a-z0-9]{6}$",
+      "description": "Unique bundle identifier with timestamp and hash"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when bundle was generated"
+    },
+    "warning_reason": {
+      "type": "string",
+      "description": "The warning reason this bundle provides evidence for"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warning", "critical"],
+      "description": "Overall severity level of the evidence bundle"
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["screenshot", "dom_state", "findings", "context"],
+      "properties": {
+        "screenshot": {
+          "type": "object",
+          "required": ["url", "capture_time", "dimensions", "validation_hash"],
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Path to screenshot file"
+            },
+            "capture_time": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When screenshot was captured"
+            },
+            "dimensions": {
+              "type": "object",
+              "required": ["width", "height"],
+              "properties": {
+                "width": {"type": "integer", "minimum": 1},
+                "height": {"type": "integer", "minimum": 1}
+              }
+            },
+            "validation_hash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "description": "SHA256 hash of screenshot file for integrity validation"
+            },
+            "file_size_bytes": {
+              "type": "integer", 
+              "minimum": 0,
+              "description": "Size of screenshot file in bytes"
+            },
+            "capture_method": {
+              "type": "string",
+              "enum": ["browser_screenshot", "dom_capture", "manual_capture"],
+              "description": "Method used to capture screenshot"
+            }
+          }
+        },
+        "dom_state": {
+          "type": "object",
+          "required": ["url", "capture_time", "elements_captured", "critical_elements"],
+          "properties": {
+            "url": {
+              "type": "string",
+              "format": "uri",
+              "description": "Path to DOM state snapshot file"
+            },
+            "capture_time": {
+              "type": "string",
+              "format": "date-time",
+              "description": "When DOM state was captured"
+            },
+            "elements_captured": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Number of DOM elements captured"
+            },
+            "critical_elements": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["selector", "text_content", "attributes"],
+                "properties": {
+                  "selector": {"type": "string", "description": "CSS selector for element"},
+                  "text_content": {"type": "string", "description": "Text content of element"},
+                  "attributes": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"}
+                  }
+                }
+              },
+              "description": "Critical UI elements that provide context for the warning"
+            },
+            "validation_hash": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "description": "SHA256 hash of DOM state file for integrity validation"
+            }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["severity", "category", "description", "rationale"],
+            "properties": {
+              "severity": {
+                "type": "string",
+                "enum": ["info", "warning", "critical"],
+                "description": "Severity level of this finding"
+              },
+              "category": {
+                "type": "string",
+                "description": "Category of finding (e.g., worker_health, queue_state, drift_detection)"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "Human-readable description of the finding"
+              },
+              "rationale": {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "Explanation of why this finding matters and what it indicates"
+              },
+              "auto_resolvable": {
+                "type": "boolean",
+                "description": "Whether this finding can be automatically resolved by the system"
+              },
+              "metrics": {
+                "type": "object",
+                "additionalProperties": {"type": ["number", "string"]},
+                "description": "Key metrics that support this finding"
+              }
+            }
+          },
+          "description": "Structured findings derived from the evidence"
+        },
+        "context": {
+          "type": "object",
+          "required": ["normal_range", "current_state", "recommended_action"],
+          "properties": {
+            "normal_range": {
+              "type": "string",
+              "description": "Description of what constitutes normal operation for this warning type"
+            },
+            "current_state": {
+              "type": "string",
+              "description": "Description of the current state that triggered the warning"
+            },
+            "recommended_action": {
+              "type": "string",
+              "description": "Specific action the operator should consider taking"
+            },
+            "when_to_escalate": {
+              "type": "string",
+              "description": "Guidance on when this warning should be escalated to higher severity"
+            },
+            "auto_resolution_expected": {
+              "type": "boolean",
+              "description": "Whether the system expects to auto-resolve this condition"
+            },
+            "estimated_resolution_time": {
+              "type": "string",
+              "description": "Estimated time until this condition resolves (if auto-resolvable)"
+            }
+          }
+        }
+      }
+    },
+    "audit_trail": {
+      "type": "object",
+      "required": ["provenance", "validation_chain", "integrity_checks"],
+      "properties": {
+        "provenance": {
+          "type": "object",
+          "required": ["source_system", "capture_method", "operator_context"],
+          "properties": {
+            "source_system": {
+              "type": "string",
+              "description": "System that generated this evidence"
+            },
+            "capture_method": {
+              "type": "string",
+              "description": "Method used to capture the evidence"
+            },
+            "operator_context": {
+              "type": "string",
+              "description": "Context about what the operator was doing when evidence was captured"
+            },
+            "capture_trigger": {
+              "type": "string",
+              "description": "What triggered the evidence capture (e.g., warning_detected, manual_request)"
+            }
+          }
+        },
+        "validation_chain": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["validation_step", "result", "timestamp"],
+            "properties": {
+              "validation_step": {"type": "string", "description": "Name of validation step"},
+              "result": {"type": "string", "enum": ["pass", "fail", "warning"]},
+              "timestamp": {"type": "string", "format": "date-time"},
+              "details": {"type": "string", "description": "Additional details about validation result"}
+            }
+          },
+          "description": "Chain of validation steps performed on this evidence"
+        },
+        "integrity_checks": {
+          "type": "object",
+          "required": ["hash_validation", "completeness_check"],
+          "properties": {
+            "hash_validation": {
+              "type": "object",
+              "required": ["status", "screenshot_hash", "dom_hash"],
+              "properties": {
+                "status": {"type": "string", "enum": ["valid", "invalid"]},
+                "screenshot_hash": {"type": "string", "description": "Validated hash of screenshot"},
+                "dom_hash": {"type": "string", "description": "Validated hash of DOM state"}
+              }
+            },
+            "completeness_check": {
+              "type": "object",
+              "required": ["status", "missing_components"],
+              "properties": {
+                "status": {"type": "string", "enum": ["complete", "incomplete"]},
+                "missing_components": {
+                  "type": "array",
+                  "items": {"type": "string"},
+                  "description": "List of missing components if incomplete"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "operator_facing": {
+          "type": "boolean",
+          "description": "Whether this bundle is intended for operator review"
+        },
+        "retention_policy": {
+          "type": "string",
+          "enum": ["short_term", "medium_term", "long_term", "audit_permanent"],
+          "description": "Retention policy for this evidence bundle"
+        },
+        "access_level": {
+          "type": "string",
+          "enum": ["public", "internal", "restricted"],
+          "description": "Access level required to view this evidence"
+        }
+      }
+    }
+  }
+}

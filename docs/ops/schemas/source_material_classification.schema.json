@@ -1,0 +1,427 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/source_material_classification.schema.json",
+  "title": "Source Material Classification Layer",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "material_id",
+    "captured_at",
+    "source_ref",
+    "primary_lane_class",
+    "trust_tier",
+    "source_kind",
+    "intent_class",
+    "sensitivity",
+    "contamination_guard",
+    "quarantine"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "source.material.classification.v1"
+    },
+    "material_id": {
+      "type": "string",
+      "pattern": "^sm_[a-z0-9._-]+$"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/sourceRef"
+    },
+    "primary_lane_class": {
+      "$ref": "#/$defs/laneClass"
+    },
+    "trust_tier": {
+      "$ref": "#/$defs/trustTier"
+    },
+    "source_kind": {
+      "$ref": "#/$defs/sourceKind"
+    },
+    "intent_class": {
+      "$ref": "#/$defs/intentClass"
+    },
+    "sensitivity": {
+      "$ref": "#/$defs/sensitivity"
+    },
+    "contamination_guard": {
+      "$ref": "#/$defs/contaminationGuard"
+    },
+    "quarantine": {
+      "$ref": "#/$defs/quarantine"
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 500
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "ingestion_mode": {
+                "const": "reference_only"
+              }
+            },
+            "required": [
+              "ingestion_mode"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "max_inline_context_bytes": {
+                "const": 0
+              },
+              "allow_inline_excerpt": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "allow_inline_excerpt": {
+                "const": true
+              }
+            },
+            "required": [
+              "allow_inline_excerpt"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "ingestion_mode": {
+                "const": "bounded_excerpt"
+              },
+              "max_inline_context_bytes": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "sensitivity": {
+            "const": "secret"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "allow_inline_excerpt": {
+                "const": false
+              },
+              "max_inline_context_bytes": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "quarantine": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "const": "none"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "quarantine": {
+            "type": "object",
+            "properties": {
+              "reason_codes": {
+                "maxItems": 0
+              },
+              "release_requirements": {
+                "maxItems": 0
+              },
+              "hold_owner_role": {
+                "const": "none"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "quarantine": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "enum": [
+                  "required",
+                  "active"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "quarantine": {
+            "type": "object",
+            "properties": {
+              "reason_codes": {
+                "minItems": 1
+              },
+              "release_requirements": {
+                "minItems": 1
+              },
+              "hold_owner_role": {
+                "not": {
+                  "const": "none"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "laneClass": {
+      "type": "string",
+      "enum": [
+        "lane.column_a.no_nudge_autonomy",
+        "lane.column_b.swarm_orchestration",
+        "lane.column_c.upgrade_substrate",
+        "lane.quarantine.firewall"
+      ]
+    },
+    "trustTier": {
+      "type": "string",
+      "enum": [
+        "t0_untrusted",
+        "t1_provisional",
+        "t2_verified",
+        "t3_canonical"
+      ]
+    },
+    "sourceKind": {
+      "type": "string",
+      "enum": [
+        "operator_runbook",
+        "contract_schema",
+        "telemetry_event",
+        "external_article",
+        "social_post",
+        "model_output",
+        "human_note",
+        "code_repository"
+      ]
+    },
+    "intentClass": {
+      "type": "string",
+      "enum": [
+        "incident_signal",
+        "factual_claim",
+        "implementation_plan",
+        "governance_decision",
+        "speculative_hypothesis",
+        "execution_request"
+      ]
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted",
+        "secret"
+      ]
+    },
+    "sourceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ref_type",
+        "locator",
+        "content_hash"
+      ],
+      "properties": {
+        "ref_type": {
+          "type": "string",
+          "enum": [
+            "path",
+            "uri",
+            "message",
+            "blob_hash"
+          ]
+        },
+        "locator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "contaminationGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_memory_scope",
+        "contains_unverified_content",
+        "cross_lane_write_requested",
+        "allow_inline_excerpt",
+        "max_inline_context_bytes",
+        "ingestion_mode",
+        "redaction_applied",
+        "provenance_complete"
+      ],
+      "properties": {
+        "source_memory_scope": {
+          "type": "string",
+          "enum": [
+            "lane_local_only",
+            "shared_contract_only",
+            "mixed"
+          ]
+        },
+        "contains_unverified_content": {
+          "type": "boolean"
+        },
+        "cross_lane_write_requested": {
+          "type": "boolean"
+        },
+        "allow_inline_excerpt": {
+          "type": "boolean"
+        },
+        "max_inline_context_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "ingestion_mode": {
+          "type": "string",
+          "enum": [
+            "reference_only",
+            "bounded_excerpt"
+          ]
+        },
+        "redaction_applied": {
+          "type": "boolean"
+        },
+        "provenance_complete": {
+          "type": "boolean"
+        }
+      }
+    },
+    "quarantine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason_codes",
+        "release_requirements",
+        "hold_owner_role"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "none",
+            "required",
+            "active",
+            "released"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "untrusted_tier",
+              "unverified_content",
+              "low_credibility_external_source",
+              "model_output_unverified",
+              "speculative_intent",
+              "secret_sensitivity",
+              "restricted_needs_redaction",
+              "manual_hold"
+            ]
+          }
+        },
+        "release_requirements": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "validator_review",
+              "human_approval",
+              "redaction_required",
+              "provenance_hash",
+              "corroboration_required"
+            ]
+          }
+        },
+        "hold_owner_role": {
+          "type": "string",
+          "enum": [
+            "none",
+            "VALIDATOR",
+            "LIBRARIAN",
+            "SRE",
+            "RESEARCHER"
+          ]
+        }
+      }
+    }
+  }
+}

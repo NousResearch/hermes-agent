@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/execution_supervisor_health_event.schema.json",
+  "title": "Execution Supervisor Health Event Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "event_type",
+    "severity",
+    "entity_ref",
+    "dedupe_key"
+  ],
+  "properties": {
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "execution_supervisor.worker_health.canary_updated",
+        "execution_supervisor.worker_health.status_changed",
+        "execution_supervisor.probe_execution.scheduled",
+        "execution_supervisor.probe_execution.completed"
+      ],
+      "description": "Canonical execution supervisor health event type"
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["info", "warn", "error"],
+      "description": "Event severity based on health status change"
+    },
+    "entity_ref": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:_\\.-]{3,127}$",
+      "description": "Reference to worker/component (e.g., worker:codex-worker-plus-11)"
+    },
+    "payload_ref": {
+      "type": ["string", "null"],
+      "description": "Optional reference to health artifact (e.g., state/continuity/latest/execution_supervisor_worker_health_canary_latest.json)"
+    },
+    "dedupe_key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "description": "Deduplication key for at-least-once delivery semantics"
+    }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "clawd.orchestrator.event_stream.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "stream_id": "stream:yq_terminal:main",
+  "emitted_at": "2026-03-30T18:43:00+07:00",
+  "event": {
+    "event_id": "event:yq_terminal:1289001",
+    "event_seq": 1289001,
+    "available_at": "2026-03-30T11:43:00Z",
+    "available_seq": 1280042,
+    "type": "artifacts.run.accepted",
+    "severity": "info",
+    "entity_ref": "run:yq_terminal:daily_brief:2026-03-30:001",
+    "payload_ref": "state/orchestrator/events/event_yq_terminal_1289001.json",
+    "correlation_id": "corr:yq_terminal:daily_brief:2026-03-30",
+    "idempotency_key": "idem:yq_terminal:daily_brief:2026-03-30:001",
+    "parent_event_id": null,
+    "dedupe_key": "dedupe:yq_terminal:run:yq_terminal:daily_brief:2026-03-30:001:accepted"
+  },
+  "cursor": {
+    "since_seq": 1289000,
+    "next_after_seq": 1289001,
+    "retention": {
+      "min_seq": 1285000,
+      "max_seq": 1289001
+    },
+    "gap_detected": false,
+    "resync_hint": null
+  }
+}

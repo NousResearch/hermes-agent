@@ -1,0 +1,193 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/document_intake_batch_integration.schema.json",
+  "title": "Document Intake Batch Integration Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "batch_id",
+    "generated_at",
+    "synthesis_note",
+    "inbound_materials",
+    "recommendations",
+    "integration_summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.document_intake_batch_integration.v1"
+    },
+    "batch_id": {
+      "type": "string",
+      "pattern": "^dib_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "synthesis_note": {
+      "$ref": "#/$defs/artifactRef"
+    },
+    "inbound_materials": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "material_id",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "material_id": {
+            "type": "string",
+            "pattern": "^mat_[a-z0-9._-]+$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "pdf",
+              "markdown",
+              "text",
+              "json",
+              "other"
+            ]
+          }
+        }
+      }
+    },
+    "recommendations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "recommendation_id",
+          "summary",
+          "promotion_tier",
+          "target_lanes"
+        ],
+        "properties": {
+          "recommendation_id": {
+            "type": "string",
+            "pattern": "^rec_[a-z0-9._-]+$"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "promotion_tier": {
+            "type": "string",
+            "enum": [
+              "promote_now",
+              "promote_later",
+              "reference_only"
+            ]
+          },
+          "target_lanes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "canonical_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "integration_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "counts",
+        "promote_now_edit_paths"
+      ],
+      "properties": {
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "promote_now",
+            "promote_later",
+            "reference_only"
+          ],
+          "properties": {
+            "promote_now": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "promote_later": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "reference_only": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "promote_now_edit_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "deferred_items": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "reference_items": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifactRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        }
+      }
+    }
+  }
+}

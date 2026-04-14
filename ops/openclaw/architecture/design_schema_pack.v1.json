@@ -1,0 +1,26 @@
+{
+  "schema": "openclaw.design_schema_pack.v1",
+  "id": "design_schema_pack_v1",
+  "status": "active",
+  "lane": "XD",
+  "updated_at": "2026-03-28T23:50:00+07:00",
+  "promotion_policy": {
+    "versioning": "append_only",
+    "breaking_changes": "require_new_pack_version",
+    "adoption": "existing_component_frontmatter_v1_remains_supported"
+  },
+  "pack": {
+    "token_registry": {
+      "schema": "ops/openclaw/architecture/schemas/design_token_registry.schema.json",
+      "template": "ops/openclaw/architecture/templates/design_token_registry.template.json"
+    },
+    "component_spec_frontmatter": {
+      "schema": "ops/openclaw/architecture/schemas/design_component_spec_frontmatter.schema.json",
+      "template": "ops/openclaw/architecture/templates/component_spec_template.md"
+    },
+    "interaction_contract": {
+      "schema": "ops/openclaw/architecture/schemas/design_interaction_contract.schema.json",
+      "template": "ops/openclaw/architecture/templates/design_interaction_contract.template.yaml"
+    }
+  }
+}

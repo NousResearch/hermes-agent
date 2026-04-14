@@ -1,0 +1,577 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_rollout_candidate.schema.json",
+  "title": "Model Rollout Candidate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "rollout_id",
+    "created_at",
+    "evaluated_at",
+    "model",
+    "lane_context",
+    "qualification",
+    "rollout",
+    "rollback",
+    "kill_switch",
+    "source_refs"
+  ],
+  "properties": {
+    "rollout_id": {
+      "type": "string",
+      "pattern": "^mroll_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "evaluated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "policy_version": {
+      "type": "string",
+      "default": "model_rollout_contract_v1"
+    },
+    "scorecard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scored_at"
+      ],
+      "properties": {
+        "scored_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "cost": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider_evidence_updated_at"
+          ],
+          "properties": {
+            "provider_evidence_updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_ref",
+        "model_family",
+        "tier"
+      ],
+      "properties": {
+        "model_ref": {
+          "type": "string",
+          "minLength": 3
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_family": {
+          "type": "string",
+          "enum": [
+            "NO_LLM",
+            "SPARK",
+            "HEAVY",
+            "EXPERIMENTAL"
+          ]
+        },
+        "tier": {
+          "type": "string",
+          "enum": [
+            "deterministic",
+            "lightweight",
+            "mid",
+            "premium"
+          ]
+        }
+      }
+    },
+    "lane_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested_by_lane_id",
+        "actor_role",
+        "work_item_id"
+      ],
+      "properties": {
+        "requested_by_lane_id": {
+          "type": "string",
+          "enum": [
+            "lane.column_a.no_nudge_autonomy",
+            "lane.column_b.swarm_orchestration",
+            "lane.column_c.upgrade_substrate"
+          ]
+        },
+        "actor_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "work_item_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "session_key": {
+          "type": "string"
+        }
+      }
+    },
+    "qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checklist",
+        "benchmark_summary"
+      ],
+      "properties": {
+        "checklist": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "check_id",
+              "status",
+              "evidence_ref"
+            ],
+            "properties": {
+              "check_id": {
+                "type": "string",
+                "enum": [
+                  "schema_contract_valid",
+                  "tool_compatibility_validated",
+                  "evidence_pointer_resolution",
+                  "abstention_behavior_validated",
+                  "fallback_route_defined",
+                  "cost_budget_guard_defined",
+                  "failure_mode_reviewed",
+                  "rollback_playbook_linked"
+                ]
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "waived"
+                ]
+              },
+              "evidence_ref": {
+                "type": "string",
+                "minLength": 1
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "benchmark_summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "json_valid_rate",
+            "evidence_pointer_resolution_rate",
+            "abstain_f1",
+            "non_abstain_recall",
+            "eval_sample_size"
+          ],
+          "properties": {
+            "json_valid_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "evidence_pointer_resolution_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "abstain_f1": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "non_abstain_recall": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "eval_sample_size": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "rollout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "current_state",
+        "requested_action",
+        "requested_state",
+        "rollout_reason"
+      ],
+      "properties": {
+        "current_state": {
+          "type": "string",
+          "enum": [
+            "DRAFT",
+            "QUALIFIED",
+            "SHADOW",
+            "CANARY",
+            "RING_1",
+            "RING_2",
+            "FULL",
+            "KILLED"
+          ]
+        },
+        "requested_action": {
+          "type": "string",
+          "enum": [
+            "promote",
+            "rollback",
+            "kill"
+          ]
+        },
+        "requested_state": {
+          "type": "string",
+          "enum": [
+            "QUALIFIED",
+            "SHADOW",
+            "CANARY",
+            "RING_1",
+            "RING_2",
+            "FULL",
+            "KILLED"
+          ]
+        },
+        "rollout_reason": {
+          "type": "string",
+          "minLength": 3
+        },
+        "canary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "window_minutes",
+            "exposure_percent"
+          ],
+          "properties": {
+            "window_minutes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "exposure_percent": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "ring": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ring_index",
+            "exposure_percent"
+          ],
+          "properties": {
+            "ring_index": {
+              "type": "integer",
+              "enum": [
+                1,
+                2
+              ]
+            },
+            "exposure_percent": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "can_auto_rollback",
+        "max_rollback_minutes",
+        "fallback_model_ref",
+        "owner_role",
+        "reason"
+      ],
+      "properties": {
+        "can_auto_rollback": {
+          "type": "boolean"
+        },
+        "max_rollback_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fallback_model_ref": {
+          "type": "string",
+          "minLength": 3
+        },
+        "owner_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 3
+        }
+      }
+    },
+    "kill_switch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "armed",
+        "engage_requested",
+        "fallback_route"
+      ],
+      "properties": {
+        "armed": {
+          "type": "boolean"
+        },
+        "engage_requested": {
+          "type": "boolean"
+        },
+        "fallback_route": {
+          "type": "string",
+          "enum": [
+            "NO_LLM",
+            "SPARK",
+            "HEAVY"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "replay_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "index_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "max_age_seconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "path",
+          "content_hash"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "pattern": "^src_[a-zA-Z0-9._-]+$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "locator": {
+            "type": "string"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "enum": [
+                  "CANARY",
+                  "RING_1",
+                  "RING_2",
+                  "FULL"
+                ]
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        },
+        "required": [
+          "rollout"
+        ]
+      },
+      "then": {
+        "properties": {
+          "kill_switch": {
+            "properties": {
+              "armed": {
+                "const": true
+              }
+            },
+            "required": [
+              "armed"
+            ]
+          }
+        },
+        "required": [
+          "kill_switch"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "const": "CANARY"
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "required": [
+              "canary"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_state": {
+                "enum": [
+                  "RING_1",
+                  "RING_2"
+                ]
+              }
+            },
+            "required": [
+              "requested_state"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "required": [
+              "ring"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kill_switch": {
+            "properties": {
+              "engage_requested": {
+                "const": true
+              }
+            },
+            "required": [
+              "engage_requested"
+            ]
+          }
+        },
+        "required": [
+          "kill_switch"
+        ]
+      },
+      "then": {
+        "properties": {
+          "rollout": {
+            "properties": {
+              "requested_action": {
+                "const": "kill"
+              },
+              "requested_state": {
+                "const": "KILLED"
+              }
+            },
+            "required": [
+              "requested_action",
+              "requested_state"
+            ]
+          },
+          "kill_switch": {
+            "required": [
+              "reason"
+            ]
+          }
+        },
+        "required": [
+          "rollout",
+          "kill_switch"
+        ]
+      }
+    }
+  ]
+}

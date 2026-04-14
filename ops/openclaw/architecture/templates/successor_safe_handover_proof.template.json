@@ -1,0 +1,75 @@
+{
+  "object_type": "clawd.successor_safe_handover_proof.v1",
+  "proof_id": "proof_20260320_abc123",
+  "proof_generation_id": "cohgen_20260320_001",
+  "produced_at": "2026-03-20T10:08:00Z",
+  "expires_at": "2026-03-20T10:18:00Z",
+  "status": "ACTIVE",
+  "producer": {
+    "component": "continuity.successor_safe_handover_proof",
+    "version": "v1",
+    "trigger": "refresh_before_failover_prep"
+  },
+  "source_refs": {
+    "continuity_current": {
+      "path": "state/continuity/current.json",
+      "sha256": "sha_current",
+      "generated_at": "2026-03-20T10:07:50Z",
+      "build_generation_id": "cohgen_20260320_001"
+    },
+    "handover_latest": {
+      "path": "state/handover/latest.json",
+      "sha256": "sha_handover",
+      "generated_at": "2026-03-20T10:07:54Z"
+    },
+    "checkpoint": {
+      "checkpoint_id": "chk_20260320_001",
+      "sha256": "sha_checkpoint"
+    },
+    "continuity_read_pointer": {
+      "path": "state/continuity/latest/continuity_read_pointer.json",
+      "sha256": "sha_pointer",
+      "current_sha256": "sha_current",
+      "generated_at": "2026-03-20T10:07:56Z",
+      "build_generation_id": "cohgen_20260320_001"
+    }
+  },
+  "coherence_tuple_ref": {
+    "world_anchor_id": "wa_20260320_001",
+    "policy_epoch_id": "policy_epoch_42",
+    "connector_snapshot_id": "connsnap_77",
+    "valid_until": "2026-03-20T10:20:00Z",
+    "build_generation_id": "cohgen_20260320_001"
+  },
+  "safety_inputs": {
+    "verify_gate": {
+      "status": "PASS",
+      "report_path": "state/continuity/latest/verify_last.json",
+      "generated_at": "2026-03-20T10:07:57Z"
+    },
+    "mutation_safety": {
+      "unsafe_in_flight_mutation": false,
+      "mutation_gate_posture": "open",
+      "action_token_epoch": "at_298"
+    },
+    "queue_authority": {
+      "status": "CLEAR",
+      "unresolved_conflicts": []
+    },
+    "connector_freshness": {
+      "status": "FRESH",
+      "stale_connectors": []
+    }
+  },
+  "verdicts": {
+    "reset_safety": "PASS",
+    "resume_safety": "PASS",
+    "blockers": [],
+    "required_actions": []
+  },
+  "invalidation": {
+    "invalidated_at": null,
+    "reason_codes": [],
+    "superseded_by_proof_id": null
+  }
+}

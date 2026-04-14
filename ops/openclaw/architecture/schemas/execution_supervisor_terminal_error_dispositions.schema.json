@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_supervisor_terminal_error_dispositions.v1",
+  "title": "Execution Supervisor Terminal Error Dispositions",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "dispositions"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.execution_supervisor_terminal_error_dispositions.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "dispositions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "task_id",
+          "action",
+          "approved_by",
+          "approved_at"
+        ],
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "acknowledge_and_park"
+            ]
+          },
+          "approved_by": {
+            "type": "string",
+            "minLength": 1
+          },
+          "approved_at": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expires_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "FAILED_OTHER"
+            ]
+          },
+          "failure_reason": {
+            "type": "string"
+          },
+          "reroute_reason": {
+            "type": "string"
+          },
+          "justification": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

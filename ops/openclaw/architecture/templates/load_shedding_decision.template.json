@@ -1,0 +1,14 @@
+{
+  "object_type": "clawd.load_shedding.decision.v1",
+  "decided_at": "2026-03-20T10:20:00Z",
+  "lane_tier": "CRITICAL",
+  "derived_lane_tier": "CRITICAL",
+  "trigger_emitted": "TR_CRITICAL_THRESHOLD_REACHED",
+  "thin_mode": true,
+  "suppression_policy": {
+    "inline_char_cap": 1200,
+    "max_inline_bytes": 4096,
+    "max_inline_lines": 120
+  },
+  "required_actions": ["launch_continuity_worker", "refresh_continuity_artifacts", "enter_failover_prep"]
+}

@@ -1,0 +1,60 @@
+version: "1.0"
+id: "openclaw.trading_terminal.design_language.v1"
+status: "active"
+updated_at: "2026-03-08T22:30:00+07:00"
+
+spatial_system:
+  primary_grid: 8
+  micro_grid: 4
+  allowed_density_row_heights: [40, 48, 56]
+  hard_rules:
+    - "all spacing aligns to 8pt grid; 4pt only for micro-spacing"
+    - "panel layout persistence survives hard refresh/restart"
+    - "power density is explicit opt-in"
+
+density_modes:
+  default: clean_guided
+  modes:
+    clean_guided:
+      description: "low-friction onboarding + explicit affordances"
+      token_overrides:
+        panel_padding: 16
+        divider_visibility: medium
+        hint_density: high
+    power_user_density:
+      description: "max throughput with reduced chrome"
+      token_overrides:
+        panel_padding: 8
+        divider_visibility: low
+        hint_density: low
+  invariant: "mode switch must not alter truth data or core capability"
+
+typography:
+  ui_font_family: "sans"
+  data_font_family: "monospace"
+  required_features:
+    - tabular_lining_figures
+  hard_rules:
+    - "numeric columns right-aligned"
+    - "no more than 5 distinct type scales in active route"
+
+color_architecture:
+  tiers:
+    - primitive
+    - semantic
+    - component
+  hard_rules:
+    - "no raw hex usage in route/component code outside token sources"
+    - "semantic colors reserved for state signaling"
+    - "dark-mode surfaces use layered neutral roles"
+
+interaction_heuristics:
+  required:
+    - "search-first market selector"
+    - "inline validation before order submission"
+    - "keyboard-first route navigation and row traversal"
+    - "skeleton loading for data fetch latency"
+    - "explicit stale/degraded/read-only labels"
+  anti_patterns:
+    - "blocking modal for routine order placement in power mode"
+    - "hidden focus indicator without compliant replacement"

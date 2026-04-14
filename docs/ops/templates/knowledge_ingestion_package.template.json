@@ -1,0 +1,70 @@
+{
+  "schema_version": "clawd.knowledge_ingestion.package.v1",
+  "package_id": "kip_wave6_ingestion_example_001",
+  "created_at": "2026-03-20T14:00:00Z",
+  "updated_at": "2026-03-20T14:00:00Z",
+  "ingestion_state": "READY_FOR_QUEUE",
+  "source_lane": {
+    "lane_id": "lane_wave6_ingestion",
+    "work_item_id": "wi_wave6_slice3_ingestion_layer",
+    "producer_role": "EXECUTOR",
+    "session_key": "agent:test:session"
+  },
+  "promotion_candidate_ref": {
+    "promotion_id": "prom_20260320_ingestion_example",
+    "path": "tmp/promotion_candidate.json",
+    "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "preserved_evidence": {
+    "schema_version": "clawd.knowledge_ingestion.evidence_bundle.v1",
+    "bundle_role": "promotion_candidate_supporting_evidence",
+    "item_count": 2,
+    "items": [
+      {
+        "evidence_id": "ev_001",
+        "source_ref_id": "src_contract",
+        "path": "docs/ops/promotion_protocol_contract_v1.md",
+        "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "bytes": 1024,
+        "captured_at": "2026-03-20T14:00:00Z",
+        "media_type": "text/markdown"
+      },
+      {
+        "evidence_id": "ev_002",
+        "source_ref_id": "src_queue_runtime",
+        "path": "scripts/knowledge_promotion_queue.py",
+        "content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+        "bytes": 2048,
+        "captured_at": "2026-03-20T14:00:00Z",
+        "media_type": "text/x-python"
+      }
+    ]
+  },
+  "provenance": {
+    "capture_method": "bounded_runtime_capture",
+    "captured_at": "2026-03-20T14:00:00Z",
+    "collector_role": "EXECUTOR",
+    "tool_trace_refs": [
+      "trace:wave6:ingestion:001"
+    ],
+    "source_ref_ids": [
+      "src_contract",
+      "src_queue_runtime"
+    ]
+  },
+  "fixity": {
+    "algorithm": "sha256",
+    "verification_status": "verified",
+    "verified_at": "2026-03-20T14:00:00Z",
+    "mismatch_count": 0,
+    "checked_item_count": 2
+  },
+  "handoff": {
+    "queue_runtime": "scripts/knowledge_promotion_queue.py",
+    "queue_entry_id": null,
+    "queue_status": null,
+    "enqueued_at": null,
+    "last_event_ref": null
+  },
+  "notes": "Seed template for Wave 6 ingestion package workflow."
+}

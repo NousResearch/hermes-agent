@@ -1,0 +1,278 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.openclaw.dev/ops/session_topology_routing_policy.schema.json",
+  "title": "Session Topology Routing Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "policy_id",
+    "task_class_model_family",
+    "coding_qualification"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.session_topology.routing_policy.v1"
+    },
+    "policy_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "task_class_model_family": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaults",
+        "task_classes"
+      ],
+      "properties": {
+        "defaults": {
+          "$ref": "#/$defs/taskClassFamilyEntryWithoutTaskClass"
+        },
+        "task_classes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/taskClassFamilyEntry"
+          }
+        }
+      }
+    },
+    "coding_qualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "high_risk_min_score_0_100",
+        "readiness_requirements"
+      ],
+      "properties": {
+        "require_qualification_signal_for_coding": {
+          "type": "boolean"
+        },
+        "high_risk_min_score_0_100": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        },
+        "readiness_requirements": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "qualified",
+                "provisional",
+                "unknown",
+                "hold",
+                "stale"
+              ]
+            },
+            "minItems": 1,
+            "uniqueItems": true
+          }
+        },
+        "strict_readiness_profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "trigger_verification_classes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "self_check",
+                  "validator_required",
+                  "validator_plus_human"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "trigger_complexity_tiers": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "low",
+                  "moderate",
+                  "high"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "allowed_readiness_states": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "qualified",
+                  "provisional",
+                  "unknown",
+                  "hold",
+                  "stale"
+                ]
+              },
+              "minItems": 1,
+              "uniqueItems": true
+            }
+          }
+        },
+        "qualification_signal_max_age_seconds": {
+          "type": "integer",
+          "minimum": 3600,
+          "maximum": 604800
+        },
+        "qualification_signal_max_age_seconds_by_risk_tier": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 3600,
+            "maximum": 604800
+          }
+        },
+        "provider_evidence_max_age_seconds": {
+          "type": "integer",
+          "minimum": 3600,
+          "maximum": 604800
+        },
+        "provider_evidence_max_age_seconds_by_risk_tier": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 3600,
+            "maximum": 604800
+          }
+        },
+        "legacy_missing_timestamp_grace_period_seconds": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "maximum": 1209600
+        },
+        "legacy_missing_timestamp_grace_period_seconds_by_risk_tier": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1209600
+          }
+        }
+      }
+    },
+    "codex_quota_routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "routine_dispatch_lane_disable_statuses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "healthy",
+              "probationary",
+              "quarantined"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "quota_exhaustion_reason_prefixes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "telegram_direct_worker_target_disallowed_lane_tokens": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "coding_qualification": {
+            "type": "object",
+            "properties": {
+              "legacy_missing_timestamp_grace_period_seconds": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "legacy_missing_timestamp_grace_period_seconds"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "generated_at"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "taskClassFamilyEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_class",
+        "default_model_family",
+        "fallback_model_families"
+      ],
+      "properties": {
+        "task_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default_model_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback_model_families": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "taskClassFamilyEntryWithoutTaskClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "default_model_family",
+        "fallback_model_families"
+      ],
+      "properties": {
+        "default_model_family": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fallback_model_families": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}

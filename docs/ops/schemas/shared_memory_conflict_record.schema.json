@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/shared_memory_conflict_record.schema.json",
+  "title": "Shared Memory Conflict Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "conflict_id",
+    "created_at",
+    "resolved_at",
+    "object_id",
+    "conflict_with_object_id",
+    "status",
+    "reason",
+    "owner_id",
+    "owner_role",
+    "resolution_notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.shared_memory_conflict_record.v1"
+    },
+    "conflict_id": {
+      "type": "string",
+      "pattern": "^smc_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "resolved_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "object_id": {
+      "type": "string",
+      "pattern": "^smo_[a-z0-9._-]+$"
+    },
+    "conflict_with_object_id": {
+      "type": "string",
+      "pattern": "^smo_[a-z0-9._-]+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "resolved_keep",
+        "resolved_merge",
+        "resolved_demote"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 3
+    },
+    "owner_id": {
+      "type": "string",
+      "minLength": 2
+    },
+    "owner_role": {
+      "type": "string",
+      "enum": [
+        "PLANNER",
+        "EXECUTOR",
+        "VALIDATOR",
+        "RESEARCHER",
+        "SRE",
+        "LIBRARIAN"
+      ]
+    },
+    "resolution_notes": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

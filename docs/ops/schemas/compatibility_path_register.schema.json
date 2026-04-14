@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/compatibility_path_register.schema.json",
+  "title": "Compatibility Path Register",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "register_id",
+    "generated_at",
+    "paths"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.compatibility_path_register.v1"
+    },
+    "register_id": {
+      "type": "string",
+      "pattern": "^cpr_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "paths": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path_id",
+          "status",
+          "owner",
+          "added_at"
+        ],
+        "properties": {
+          "path_id": {
+            "type": "string",
+            "pattern": "^compat_[a-z0-9._-]+$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "deprecated",
+              "removal_in_progress",
+              "removed"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1
+          },
+          "added_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "target_removal_wave": {
+            "type": "string"
+          },
+          "removal_rfc_ref": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

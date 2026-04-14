@@ -1,0 +1,33 @@
+{
+  "schema_version": "clawd.source_material_classification.packet.v1",
+  "classification_id": "smc_20260320_batch4_doc01",
+  "material_artifact": {
+    "path": "reports/batch3_second_brain_architecture_synthesis_2026-03-09.md",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "markdown",
+    "media_type": "text/markdown"
+  },
+  "hints": {
+    "declared_type": "research_report",
+    "origin": "manual",
+    "producer": "wave6_pipeline",
+    "tags": [
+      "pdf-fold-in",
+      "knowledge-ingestion"
+    ]
+  },
+  "classification_policy": {
+    "allow_classes": [
+      "architecture_spec",
+      "runbook",
+      "policy_doctrine",
+      "research_report",
+      "source_document"
+    ],
+    "block_classes": [
+      "unknown"
+    ],
+    "min_confidence": 0.6,
+    "allow_generated": false
+  }
+}

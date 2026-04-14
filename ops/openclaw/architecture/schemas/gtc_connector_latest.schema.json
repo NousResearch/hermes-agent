@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.connector.latest.v1",
+  "title": "Ground Truth Connector Latest Connector Surface",
+  "type": "object",
+  "required": [
+    "connector_type",
+    "connector_id",
+    "display_name",
+    "latest_evidence_id",
+    "observed_at",
+    "valid_until",
+    "freshness_ttl_ms",
+    "stale",
+    "stale_severity",
+    "monotonic_seq",
+    "issuer_boot_id",
+    "subject",
+    "refs",
+    "build_generation_id"
+  ],
+  "properties": {
+    "connector_type": { "type": "string", "minLength": 3 },
+    "connector_id": { "type": "string", "minLength": 1 },
+    "display_name": { "type": "string", "minLength": 1 },
+    "latest_evidence_id": { "type": ["string", "null"] },
+    "observed_at": { "type": ["string", "null"], "format": "date-time" },
+    "valid_until": { "type": ["string", "null"], "format": "date-time" },
+    "freshness_ttl_ms": { "type": "integer", "minimum": 1 },
+    "age_ms": { "type": ["integer", "null"], "minimum": 0 },
+    "stale": { "type": "boolean" },
+    "stale_severity": { "type": "string" },
+    "monotonic_seq": { "type": "integer", "minimum": 0 },
+    "issuer_boot_id": { "type": "string", "minLength": 3 },
+    "severity_max": { "type": "string" },
+    "build_generation_id": { "type": "string", "minLength": 8 },
+    "subject": {
+      "type": "object",
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "refs": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

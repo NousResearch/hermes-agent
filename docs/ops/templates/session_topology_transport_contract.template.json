@@ -1,0 +1,65 @@
+{
+  "schema_version": "session.topology.transport_contract.v1",
+  "updated_at": "2026-03-20T11:25:00+07:00",
+  "default_agent_id": "codex-executioner",
+  "telegram": {
+    "groups": {
+      "-1002220001111": {
+        "default_agent_id": "ops-conductor",
+        "default_lane_name": "inbox",
+        "topics_enabled": true,
+        "general_topic_thread_id": 1,
+        "reaction_fallback_to_general": true,
+        "send_policy": {
+          "omit_general_topic_thread_id_1": true
+        },
+        "topics": {
+          "1": {
+            "lane_name": "inbox",
+            "agent_id": "ops-conductor",
+            "notes": "General / INBOX lane"
+          },
+          "42": {
+            "lane_name": "dev",
+            "agent_id": "codex-dev"
+          },
+          "84": {
+            "lane_name": "research",
+            "agent_id": "claude-research"
+          }
+        }
+      }
+    },
+    "direct": {
+      "5936691533": {
+        "default_agent_id": "codex-executioner",
+        "default_lane_name": "inbox",
+        "topics_enabled": false,
+        "send_policy": {
+          "omit_general_topic_thread_id_1": true
+        },
+        "topics": {}
+      },
+      "7000000001": {
+        "default_agent_id": "codex-executioner",
+        "default_lane_name": "inbox",
+        "topics_enabled": true,
+        "general_topic_thread_id": 1,
+        "reaction_fallback_to_general": true,
+        "send_policy": {
+          "omit_general_topic_thread_id_1": true
+        },
+        "topics": {
+          "1": {
+            "lane_name": "inbox",
+            "agent_id": "codex-executioner"
+          },
+          "9": {
+            "lane_name": "build",
+            "agent_id": "codex-builder"
+          }
+        }
+      }
+    }
+  }
+}

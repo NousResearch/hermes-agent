@@ -1,0 +1,59 @@
+{
+  "schema_version": "clawd.downstream_backend_contract_bundle.v1",
+  "generated_at": "2026-03-28T16:05:00Z",
+  "connector_contract": {
+    "connector_id": "conn_xt_journal_ingest",
+    "domain_lane_id": "XT",
+    "auth_tier": "ADMIN",
+    "route_class": "sensitive_action",
+    "sensitivity": "privileged",
+    "allowed_event_types": [
+      "trade_journal.entry_created",
+      "trade_journal.entry_updated"
+    ]
+  },
+  "adapter_contract": {
+    "adapter_id": "adp_xt_journal_adapter",
+    "inference_proxy_required": true,
+    "credential_source": "isolated_secret_store",
+    "worker_credential_access": false,
+    "idempotency_key": "xt-journal-idem-v1",
+    "retry_policy": {
+      "max_attempts": 3,
+      "backoff_seconds": 5
+    },
+    "timeout_seconds": 30
+  },
+  "domain_event_envelope": {
+    "event_id": "evt_xt_journal_20260328_001",
+    "event_type": "trade_journal.entry_created",
+    "occurred_at": "2026-03-28T16:06:00Z",
+    "source_connector_id": "conn_xt_journal_ingest",
+    "producer_id": "xt_journal_runtime",
+    "risk_class": "RG2_HIGH",
+    "route_class": "sensitive_action",
+    "auth_tier": "ADMIN",
+    "payload_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "policy_envelope": {
+    "policy_id": "pol_xb401_connector_guard_v1",
+    "deny_by_default_egress": true,
+    "allowed_egress_destinations": [
+      "https://gateway.internal.openclaw/api/v1/ingress",
+      "https://audit.internal.openclaw/events"
+    ],
+    "approval_ladder": [
+      {
+        "step": "governance_owner_signoff",
+        "required_for_sensitivity": "privileged",
+        "owner_role": "governance_owner"
+      },
+      {
+        "step": "release_owner_signoff",
+        "required_for_sensitivity": "privileged",
+        "owner_role": "release_owner"
+      }
+    ],
+    "policy_log_ref": "state/continuity/release_governance/release_evidence_ladder_decisions.jsonl"
+  }
+}

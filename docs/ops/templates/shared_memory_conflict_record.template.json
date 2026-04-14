@@ -1,0 +1,13 @@
+{
+  "schema_version": "clawd.shared_memory_conflict_record.v1",
+  "conflict_id": "smc_smo_prom_20260321_example_memory_20260321t120000",
+  "created_at": "2026-03-21T12:00:00Z",
+  "resolved_at": null,
+  "object_id": "smo_prom_20260321_example_memory",
+  "conflict_with_object_id": "smo_prom_20260321_example_memory_v2",
+  "status": "pending",
+  "reason": "Conflicting synthesis conclusions across two promoted memory objects.",
+  "owner_id": "librarian_wave7",
+  "owner_role": "LIBRARIAN",
+  "resolution_notes": null
+}

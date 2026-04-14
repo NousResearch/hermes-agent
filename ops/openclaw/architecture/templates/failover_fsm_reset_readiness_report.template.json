@@ -1,0 +1,20 @@
+{
+  "object_type": "clawd.failover_fsm.reset_readiness_report.v1",
+  "evaluated_at": "2026-03-20T10:05:00Z",
+  "verdict": "PASS",
+  "checks": {
+    "continuity_fresh": "pass",
+    "proof_valid": "pass",
+    "mutation_safe": "pass",
+    "coherence_valid": "pass",
+    "queue_authority_clear": "pass",
+    "connector_fresh": "pass"
+  },
+  "blockers": [],
+  "next_required_actions": [],
+  "proof": {
+    "proof_state": "PROOF_VALID_PASS",
+    "proof_id": "proof_abc123",
+    "expires_at": "2026-03-20T10:15:00Z"
+  }
+}

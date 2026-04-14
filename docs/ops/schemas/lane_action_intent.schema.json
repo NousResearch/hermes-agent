@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/lane_action_intent.schema.json",
+  "title": "Lane Action Intent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "intent_id",
+    "operation_id",
+    "intent_type",
+    "mutation_class",
+    "issued_at",
+    "issuer_lane_id",
+    "requires_ticket",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "lane.action_intent.v1"
+    },
+    "intent_id": {
+      "type": "string",
+      "pattern": "^intent_[a-z0-9][a-z0-9._:-]*$"
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:_\\.-]*$"
+    },
+    "intent_type": {
+      "type": "string",
+      "enum": [
+        "observe",
+        "plan",
+        "mutate",
+        "drain",
+        "takeover_control"
+      ]
+    },
+    "mutation_class": {
+      "type": "string",
+      "enum": [
+        "none",
+        "read_only",
+        "drain",
+        "mutating"
+      ]
+    },
+    "issued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "issuer_lane_id": {
+      "type": "string",
+      "pattern": "^lane\\.column_[abc]\\.[a-z0-9][a-z0-9_.-]*$"
+    },
+    "requested_write_paths": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 400
+      }
+    },
+    "requires_ticket": {
+      "type": "boolean"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 400
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 300
+    }
+  }
+}

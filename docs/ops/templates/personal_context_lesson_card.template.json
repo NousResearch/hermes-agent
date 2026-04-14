@@ -1,0 +1,66 @@
+{
+  "schema_version": "clawd.personal_context_graph_object.v1",
+  "object_id": "pcg_lesson_focus_blocks_001",
+  "object_type": "lesson_card",
+  "title": "Lesson: pre-announce deep-work blocks",
+  "status": "active",
+  "created_at": "2026-03-29T00:17:00Z",
+  "updated_at": "2026-03-29T00:17:00Z",
+  "revision": 1,
+  "supersedes_object_id": null,
+  "previous_object_hash": null,
+  "object_hash": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+  "payload": {
+    "lesson": "Deep-work blocks hold only when they are announced and defended in advance.",
+    "trigger_signals": [
+      "Multiple ad-hoc interruptions within first 30 minutes",
+      "Reactive task switching before noon"
+    ],
+    "anti_patterns": [
+      "Starting day without pre-committed block schedule"
+    ],
+    "recommended_playbook": "Publish next-day deep-work schedule before end-of-day and mute non-critical chats during blocks.",
+    "derived_from_object_ids": [
+      "pcg_decision_weekplan_focus_001",
+      "pcg_aar_weekplan_focus_001"
+    ],
+    "stability": "candidate"
+  },
+  "provenance": {
+    "event_id": "evt_personal_lesson_capture_001",
+    "event_type": "personal_lesson_card_capture",
+    "occurred_at": "2026-03-29T00:16:55Z",
+    "source_connector_id": "conn_personal_os_review",
+    "producer_id": "xp_lane_operator",
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "payload_sha256": "sha256:3434343434343434343434343434343434343434343434343434343434343434"
+  },
+  "governance": {
+    "risk_tier": "PX1_ASSIST",
+    "approval_tier": "AP1_EXPLICIT_USER_CONFIRM",
+    "escalation_level": "E0_NONE",
+    "advisory_only": true
+  },
+  "links": {
+    "related_object_ids": [
+      "pcg_decision_weekplan_focus_001",
+      "pcg_aar_weekplan_focus_001"
+    ],
+    "source_refs": [
+      "memory/2026-03-29.md"
+    ],
+    "evidence_refs": [
+      "state/continuity/latest/xp_301_personal_os_refusal_escalation_matrix_2026-03-28.json"
+    ]
+  },
+  "metadata": {
+    "created_by": "xp_lane_owner",
+    "source_system": "xp_review_capture",
+    "tags": [
+      "lesson",
+      "focus"
+    ]
+  }
+}

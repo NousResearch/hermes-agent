@@ -1,0 +1,219 @@
+{
+  "schema_version": "clawd.checkpoint_bundle.v1",
+  "bundle_id": "checkpoint_bundle_20260330T121500Z",
+  "generated_at": "2026-03-30T12:15:00Z",
+  "status": "active",
+  "integration_contract": {
+    "contract_id": "continuity_integration_contract_v1",
+    "contract_path": "docs/ops/continuity_integration_contract_v1.md",
+    "schema_path": "docs/ops/schemas/continuity_integration_contract.schema.json",
+    "template_path": "docs/ops/templates/continuity_integration_contract.template.json",
+    "clause_refs": [
+      "C1",
+      "C3",
+      "C4",
+      "C5",
+      "C6"
+    ]
+  },
+  "source_input_map": [
+    {
+      "source_id": "src_pdf_4d1ba541",
+      "artifact_path_or_ref": "sha256:4d1ba5414fe314e580191a51d137932b7efacfffde38a4edc773c8872ed53b9f",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "resume_safety",
+        "overflow_trigger"
+      ]
+    },
+    {
+      "source_id": "src_pdf_f1fc25fc",
+      "artifact_path_or_ref": "sha256:f1fc25fce940b647ddb182551a947fa0c11f5ebb13dd8475028b919022db0dc0",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "ground_truth",
+        "resume_safety"
+      ]
+    },
+    {
+      "source_id": "src_rpt_checkpoint_blueprint_20260308",
+      "artifact_path_or_ref": "reports/continuity_checkpoint_os_blueprint_2026-03-08.md",
+      "classification": "historical",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "lineage",
+        "resume_safety"
+      ]
+    },
+    {
+      "source_id": "src_rpt_handover_proof_20260320",
+      "artifact_path_or_ref": "reports/successor_safe_handover_proof_contract_roadmap_integration_2026-03-20.md",
+      "classification": "support",
+      "continuity_dimensions": [
+        "proof_gate",
+        "resume_safety"
+      ]
+    },
+    {
+      "source_id": "src_rpt_archive_mining_20260330",
+      "artifact_path_or_ref": "reports/openclaw_archive_mining_ground_truth_continuity_2026-03-30.md",
+      "classification": "archive_mined",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "proof_gate",
+        "pending_work",
+        "resume_safety",
+        "ground_truth"
+      ]
+    },
+    {
+      "source_id": "src_rpt_exec_queue_20260330",
+      "artifact_path_or_ref": "reports/openclaw_system_execution_queue_full_buildout_2026-03-30.md",
+      "classification": "canonical",
+      "continuity_dimensions": [
+        "checkpoint_contract",
+        "proof_gate",
+        "pending_work",
+        "resume_safety"
+      ]
+    }
+  ],
+  "checkpoint": {
+    "checkpoint_id": "chk_20260329T024522Z_bd2238",
+    "created_at": "2026-03-29T02:45:22Z",
+    "trigger": "drift_reconcile",
+    "parent_checkpoint_id": "chk_20260329T022124Z_859cec",
+    "session_key": "agent:codex-executioner:telegram:direct:5936691533",
+    "objective": {
+      "primary_goal": "Reconcile continuity drift by refreshing checkpoint capture + bridge/handover.",
+      "status": "PROGRESS",
+      "blocker_reason": null
+    },
+    "repo_state": {
+      "repo_path": "/home/yeqiuqiu/clawd-architect",
+      "branch": "master",
+      "head": "9bf113ccca644c5cb603ce51c41bfec4e8657130",
+      "git_status_short": [
+        "## master",
+        " M docs/ops/continuity_integration_contract_v1.md"
+      ]
+    },
+    "state_capture": {
+      "env_snapshot_path": "state/continuity/snapshots/env_20260329T024522Z.json",
+      "ground_truth_snapshot_path": "state/ground_truth/snapshots/gt_20260329T024516Z.json",
+      "active_cron_jobs_count": 7,
+      "active_subagents_count": 9,
+      "open_ports_count": 13,
+      "anomalies_count": 1
+    },
+    "execution_plan": {
+      "next_actions": [
+        {
+          "intent": "next_action",
+          "command": "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/continuity/continuity_now.sh --strict"
+        }
+      ],
+      "verification_commands": [
+        "openclaw gateway status --json >/dev/null",
+        "openclaw cron list --json >/dev/null"
+      ],
+      "rollback_commands": [
+        "/home/yeqiuqiu/clawd-architect/ops/autopilot/bin/hl_autopilot_ctl.sh pause || true"
+      ]
+    },
+    "integrity": {
+      "snapshot_sha256": "107934f410a78f537467ce6868b439499cff5dd9c1271212ec724be1618270b7",
+      "checkpoint_payload_sha256": "be224b6ac324e40f5154276d07cd1359dce435d85e86bcc293a18c5b28f0d7a0",
+      "checkpoint_file_sha256": "c664692b585216b7066bfcee1b6b5a753b3227e2576d5aed6ab27ffdbd8fce28"
+    }
+  },
+  "proof": {
+    "proof_state": "PROOF_VALID_PASS",
+    "proof_id": "proof_dbb6e35e79d4c507",
+    "evaluated_at": "2026-03-29T02:45:22Z",
+    "expires_at": "2026-03-29T02:50:22Z",
+    "reset_allowed": true,
+    "resume_allowed": true,
+    "top_blocker": null,
+    "proof_source_path": "state/continuity/latest/successor_safe_handover_proof.json",
+    "status_source_path": "state/continuity/latest/successor_safe_handover_proof_status.json"
+  },
+  "pending_work": {
+    "summary": {
+      "pending_total": 8,
+      "queued": 1,
+      "review": 6,
+      "blocked": 1,
+      "running": 0
+    },
+    "items": [
+      {
+        "task_id": "queue_pending:core_roadmap",
+        "title": "Resolve pending queue entries before new mutation bursts",
+        "status": "REVIEW",
+        "owner": "queue_arbitrator",
+        "resume_hint": "run queue reconcile + verify parity before dispatch"
+      },
+      {
+        "task_id": "watchdog:blocker:reset_ready_refresh_stale",
+        "title": "Clear stale reset-ready warning",
+        "status": "BLOCKED",
+        "owner": "sre_watchdog",
+        "resume_hint": "refresh reset-ready artifacts and confirm proof parity"
+      }
+    ]
+  },
+  "safe_resume": {
+    "safe_to_resume": true,
+    "safe_to_reset": true,
+    "mutation_gate_status": "allowed",
+    "mutation_gate_posture": "open",
+    "verify_gate_ready": true,
+    "required_preflight_commands": [
+      "openclaw gateway status --json",
+      "openclaw cron list --json",
+      "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/continuity/verify_then_resume.sh --dry-run"
+    ],
+    "blockers": [],
+    "notes": "If proof_state is not PROOF_VALID_PASS, resume must fail closed."
+  },
+  "markdown_form": {
+    "format_version": "clawd.checkpoint_markdown.v1",
+    "markdown_path": "state/continuity/examples/checkpoint_bundle_example_2026-03-30.md",
+    "frontmatter": {
+      "checkpoint_id": "chk_20260329T024522Z_bd2238",
+      "created_at": "2026-03-29T02:45:22Z",
+      "trigger": "drift_reconcile",
+      "status": "PROGRESS",
+      "objective": "Reconcile continuity drift by refreshing checkpoint capture + bridge/handover.",
+      "json_path": "state/continuity/checkpoints/chk_20260329T024522Z_bd2238.json",
+      "env_snapshot_path": "state/continuity/snapshots/env_20260329T024522Z.json",
+      "ground_truth_snapshot_path": "state/ground_truth/snapshots/gt_20260329T024516Z.json"
+    },
+    "required_sections": [
+      "Objective",
+      "Environment State",
+      "Next Actions",
+      "Verification Commands",
+      "Rollback Commands",
+      "Proof Status",
+      "Pending Work",
+      "Safe Resume",
+      "Notes"
+    ]
+  },
+  "lineage": {
+    "append_only": true,
+    "latest_pointer_path": "state/continuity/latest/latest_pointer.json",
+    "pointer_checkpoint_id": "chk_20260329T024522Z_bd2238",
+    "pointer_updated_at": "2026-03-29T02:45:22Z"
+  },
+  "generated_artifacts": {
+    "schema_json": "docs/ops/schemas/checkpoint_bundle.schema.json",
+    "template_json": "docs/ops/templates/checkpoint_bundle.template.json",
+    "example_json": "state/continuity/examples/checkpoint_bundle_example_2026-03-30.json",
+    "example_md": "state/continuity/examples/checkpoint_bundle_example_2026-03-30.md",
+    "execution_report": "reports/execution_A2_handover_checkpoint_normalization_2026-03-30.md"
+  }
+}

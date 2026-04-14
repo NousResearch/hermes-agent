@@ -1,0 +1,53 @@
+{
+  "schema_version": "clawd.orchestrator.plan.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "request_id": "req:orchestrator:plan:2026-03-30T18-41-00Z",
+  "generated_at": "2026-03-30T18:41:00+07:00",
+  "snapshot_ref": {
+    "snapshot_id": "snapshot:yq_terminal:2026-03-30T10:59:59Z:1280042",
+    "manifest_id": "manifest:yq_terminal:2026-03-30:daily_brief:001"
+  },
+  "artifacts": [
+    {
+      "artifact_kind": "why_pack",
+      "artifact_version": "v3",
+      "parameters": {
+        "channel": "daily_brief"
+      }
+    },
+    {
+      "artifact_kind": "outcomes",
+      "artifact_version": "v2",
+      "parameters": {
+        "maturity_only": true
+      }
+    }
+  ],
+  "determinism": {
+    "canonical_json": true,
+    "hash_algorithm": "sha256"
+  },
+  "admission": {
+    "mode": "normal",
+    "decision": "accepted",
+    "reason_codes": []
+  },
+  "response": {
+    "plan_id": "plan:yq_terminal:daily_brief:2026-03-30:001",
+    "declared_inputs_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "expected_outputs": [
+      {
+        "artifact_kind": "why_pack",
+        "artifact_version": "v3",
+        "output_slot": "why_pack.main"
+      },
+      {
+        "artifact_kind": "outcomes",
+        "artifact_version": "v2",
+        "output_slot": "outcomes.maturity"
+      }
+    ],
+    "plan_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "expires_in_sec": 1800
+  }
+}

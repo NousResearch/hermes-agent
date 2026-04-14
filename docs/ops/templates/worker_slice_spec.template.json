@@ -1,0 +1,70 @@
+{
+  "slice_id": "slice_YYYYMMDD_<slug>",
+  "work_item_id": "wi_<id>",
+  "mode": "BLOCKER_BURNDOWN",
+  "objective": "One-sentence outcome",
+  "definition_of_done": "Concrete done condition",
+  "assigned_role": "EXECUTOR",
+  "scope": {
+    "in": [
+      "Exact files/surfaces allowed"
+    ],
+    "out": [
+      "Explicit exclusions"
+    ]
+  },
+  "expected_artifacts": [
+    {
+      "path": "docs/ops/example_artifact.md",
+      "artifact_type": "doc",
+      "required": true
+    }
+  ],
+  "verification": {
+    "required": true,
+    "commands": [
+      "<verification command>"
+    ],
+    "evidence_required": [
+      "artifact_path",
+      "diff_or_hash",
+      "verification_output"
+    ],
+    "independent_validator_required": true
+  },
+  "timing": {
+    "time_budget_min": 30,
+    "review_at_min": 25,
+    "stale_at_min": 45,
+    "max_silent_interval_min": 30
+  },
+  "hard_gates": {
+    "require_work_item_id_on_tool_calls": true,
+    "forbid_new_branch_if_context_fill_ratio_gte": 0.8,
+    "force_reset_if_context_fill_ratio_gte": 0.9,
+    "warn_if_context_fill_ratio_gte": 0.6,
+    "warn_if_handover_age_min_gt": 15,
+    "gate_if_handover_age_min_gt": 30,
+    "force_pause_if_handover_age_min_gt": 60,
+    "main_lane_raw_output_max_lines": 20,
+    "main_lane_raw_output_max_bytes": 2048,
+    "require_branch_result_capsule": true
+  },
+  "model_route": {
+    "default": "NO_LLM",
+    "allowed": [
+      "NO_LLM",
+      "SPARK",
+      "HEAVY"
+    ],
+    "selected": "NO_LLM",
+    "reason": "Deterministic path available",
+    "escalation_trigger": "Schema/pointer gate failure or complexity threshold"
+  },
+  "kill_conditions": [
+    "No meaningful signal for >30m",
+    "Scope drift beyond declared boundary",
+    "Required evidence missing at review point"
+  ],
+  "closeout_schema": "docs/ops/schemas/evidence_closeout.schema.json"
+}

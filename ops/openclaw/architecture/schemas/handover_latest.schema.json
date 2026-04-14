@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "claw.handover.v1",
+  "title": "Successor Handover Latest",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "handover_id",
+    "workspace_id",
+    "producer",
+    "truth_anchor",
+    "objective",
+    "mutation_gate",
+    "queue_state",
+    "autopilot",
+    "blockers",
+    "active_locks",
+    "validators",
+    "parity",
+    "safe_signals",
+    "replay",
+    "recommended_next_actions"
+  ],
+  "properties": {
+    "schema": { "const": "claw.handover.v1" },
+    "generated_at": { "type": "string" },
+    "handover_id": { "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string", "minLength": 1 },
+    "producer": { "type": "object" },
+    "truth_anchor": { "type": "object" },
+    "objective": { "type": "object" },
+    "mutation_gate": {
+      "type": "object",
+      "required": [
+        "status",
+        "posture",
+        "reason",
+        "blocking_reasons",
+        "concurrency_reasons",
+        "expected_in_flight_guard"
+      ],
+      "properties": {
+        "status": { "type": "string", "enum": ["allowed", "forbidden", "unknown"] },
+        "posture": { "type": "string", "minLength": 1 },
+        "reason": { "type": "array", "items": { "type": "string" } },
+        "blocking_reasons": { "type": "array", "items": { "type": "string" } },
+        "concurrency_reasons": { "type": "array", "items": { "type": "string" } },
+        "expected_in_flight_guard": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "operator_working_doctrine": {
+      "type": "object",
+      "properties": {
+        "schema": { "const": "clawd.operator_working_doctrine.v1" },
+        "session_role": { "type": "string", "minLength": 1 },
+        "main_session_default": { "type": "string", "minLength": 1 },
+        "default_worker_lane": { "type": "string", "minLength": 1 },
+        "main_session_exception_path": { "type": "string", "minLength": 1 },
+        "execution_mode": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "allowed_values": { "type": "array", "items": { "type": "string" } },
+            "default_without_action": { "type": "string", "minLength": 1 },
+            "spawn_before_speak_required": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "execution_tuple": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "required_fields": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "dispatch_contract": {
+          "type": "object",
+          "properties": {
+            "required": { "type": "boolean" },
+            "required_fields": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": true
+        },
+        "active_assumptions": { "type": "array", "items": { "type": "string" } },
+        "source_refs": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "execution_context": {
+      "type": "object",
+      "properties": {
+        "posture": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "readiness": { "type": "string", "minLength": 1 },
+        "in_flight": { "type": "boolean" },
+        "running_tasks": { "type": "integer", "minimum": 0 },
+        "active_locks": { "type": "integer", "minimum": 0 },
+        "mutation_gate_status": { "type": "string", "minLength": 1 },
+        "mutation_gate_posture": { "type": "string", "minLength": 1 },
+        "expected_in_flight_guard": { "type": ["boolean", "null"] },
+        "dispatch_status": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    },
+    "dispatch_context": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "autopilot_status": { "type": "string", "minLength": 1 },
+        "ready_work_exists": { "type": "boolean" },
+        "idle_threshold_exceeded": { "type": "boolean" },
+        "idle_sec": { "type": "integer", "minimum": 0 },
+        "target_step_id": { "type": ["string", "null"] },
+        "launched_step_id": { "type": ["string", "null"] },
+        "skip_reason": { "type": ["string", "null"] },
+        "trace_path": { "type": ["string", "null"] },
+        "updated_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "queue_state": { "type": "object" },
+    "autopilot": {
+      "type": "object",
+      "required": ["idle_lane_autospawn"],
+      "properties": {
+        "idle_lane_autospawn": {
+          "type": "object",
+          "required": ["status", "stalled", "ready_work_exists", "idle_threshold_exceeded", "idle_sec", "trace_path"],
+          "properties": {
+            "status": { "type": "string", "minLength": 1 },
+            "stalled": { "type": "boolean" },
+            "ready_work_exists": { "type": "boolean" },
+            "idle_threshold_exceeded": { "type": "boolean" },
+            "idle_sec": { "type": "integer", "minimum": 0 },
+            "target_step_id": { "type": ["string", "null"] },
+            "launched_step_id": { "type": ["string", "null"] },
+            "trace_path": { "type": "string", "minLength": 1 },
+            "updated_at": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "blockers": { "type": "array" },
+    "active_locks": { "type": ["array", "object"] },
+    "validators": { "type": "object" },
+    "parity": { "type": "object" },
+    "safe_signals": {
+      "type": "object",
+      "required": [
+        "safe_to_resume",
+        "safe_to_reset",
+        "forbidden_until",
+        "mutation_gate_posture",
+        "mutation_gate_expected_in_flight_guard",
+        "idle_lane_autospawn_status",
+        "idle_lane_autospawn_stalled"
+      ],
+      "properties": {
+        "safe_to_resume": { "type": "boolean" },
+        "safe_to_reset": { "type": "boolean" },
+        "forbidden_until": { "type": ["string", "null"] },
+        "mutation_gate_posture": { "type": "string", "minLength": 1 },
+        "mutation_gate_expected_in_flight_guard": { "type": ["boolean", "null"] },
+        "idle_lane_autospawn_status": { "type": "string", "minLength": 1 },
+        "idle_lane_autospawn_stalled": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "replay": { "type": "object" },
+    "recommended_next_actions": { "type": "array" },
+    "notes": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

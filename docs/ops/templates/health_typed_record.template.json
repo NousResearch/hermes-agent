@@ -1,0 +1,49 @@
+{
+  "schema_version": "clawd.health_typed_record.v1",
+  "record_id": "xhrec_resting_hr_2026_03_29",
+  "profile_id": "health_profile_primary",
+  "record_type": "measurement",
+  "recorded_at": "2026-03-29T00:10:00Z",
+  "status": "provisional",
+  "confidence": 0.78,
+  "provenance": {
+    "source_kind": "wearable_device",
+    "source_ref": "wearable://apple_watch_series9/resting_heart_rate",
+    "captured_at": "2026-03-29T00:08:00Z",
+    "recorded_by": "system_ingest",
+    "payload_sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "confidentiality": {
+    "classification": "health_standard",
+    "contains_phi": false,
+    "sharing_policy": "deidentified_only",
+    "redaction_required": false,
+    "retention_tier": "standard",
+    "access_roles": [
+      "user_owner",
+      "governance_auditor"
+    ]
+  },
+  "governance": {
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "advisory_only": true,
+    "escalation_code": "HE2_APPROVAL_OR_CONTEXT_REQUIRED"
+  },
+  "payload": {
+    "measurement": {
+      "metric_name": "resting_heart_rate",
+      "value": 58,
+      "unit": "bpm",
+      "aggregation_window": "daily"
+    }
+  },
+  "relationships": [
+    {
+      "relation_type": "derived_from",
+      "target_record_id": "xhrec_wearable_stream_2026_03_29"
+    }
+  ],
+  "notes": "Template starter record for XH-702 typed health schema pack."
+}

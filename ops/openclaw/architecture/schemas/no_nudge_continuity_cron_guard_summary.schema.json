@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.no_nudge_continuity_cron_guard.summary.v2",
+  "title": "No-Nudge Continuity Cron Guard Summary",
+  "type": "object",
+  "required": [
+    "ok",
+    "schema_version",
+    "classification_taxonomy_version",
+    "failure_taxonomy_version",
+    "classification",
+    "classification_bucket",
+    "checked",
+    "checked_jobs",
+    "coverage",
+    "violations",
+    "evidence_refs",
+    "fail_close_triggered",
+    "failure_category",
+    "failure_code",
+    "failure_retryable",
+    "failure_codes"
+  ],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "schema_version": { "const": "openclaw.no_nudge_continuity_cron_guard.summary.v2" },
+    "classification_taxonomy_version": { "const": "openclaw.no_nudge_continuity_cron_guard.classification.v1" },
+    "failure_taxonomy_version": { "const": "openclaw.no_nudge_continuity_cron_guard.failure_taxonomy.v1" },
+    "classification": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "cron_policy_failed",
+        "cron_contract_drift",
+        "gateway_connectivity_failure"
+      ]
+    },
+    "classification_bucket": {
+      "type": "string",
+      "enum": ["none", "policy", "contract", "connectivity"]
+    },
+    "error": { "type": ["string", "null"] },
+    "detail": { "type": ["string", "null"] },
+    "checked": { "type": "integer", "minimum": 0 },
+    "checked_jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string", "minLength": 1 },
+          "sessionTarget": { "type": ["string", "null"] },
+          "payloadKind": { "type": ["string", "null"] },
+          "deliveryMode": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "expected_enabled_reminder_names",
+        "missing_enabled_reminder_names",
+        "duplicate_enabled_reminder_names",
+        "enabled_counts"
+      ],
+      "properties": {
+        "expected_enabled_reminder_names": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "missing_enabled_reminder_names": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "duplicate_enabled_reminder_names": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "enabled_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "additionalProperties": true
+    },
+    "violations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "reasons", "codes", "bucket"],
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "reasons": { "type": "array", "items": { "type": "string" } },
+          "codes": { "type": "array", "items": { "type": "string" } },
+          "bucket": { "type": "string", "enum": ["policy", "contract", "connectivity"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": ["string", "null"] }
+    },
+    "fail_close_triggered": { "type": "boolean" },
+    "failure_category": { "type": ["string", "null"] },
+    "failure_code": { "type": ["string", "null"] },
+    "failure_retryable": { "type": ["boolean", "null"] },
+    "failure_codes": {
+      "type": "object",
+      "required": ["all", "critical", "policy", "contract", "connectivity"],
+      "properties": {
+        "all": { "type": "array", "items": { "type": "string" } },
+        "critical": { "type": "array", "items": { "type": "string" } },
+        "policy": { "type": "array", "items": { "type": "string" } },
+        "contract": { "type": "array", "items": { "type": "string" } },
+        "connectivity": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    },
+    "contract": {
+      "type": "object",
+      "required": ["schema_path", "state_valid", "validation_errors"],
+      "properties": {
+        "schema_path": { "type": "string", "minLength": 1 },
+        "state_valid": { "type": "boolean" },
+        "validation_errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

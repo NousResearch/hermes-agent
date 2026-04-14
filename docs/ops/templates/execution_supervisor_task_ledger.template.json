@@ -1,0 +1,263 @@
+{
+  "schema": "clawd.execution_supervisor_task_ledger.v1",
+  "generated_at": "2026-04-01T00:00:00Z",
+  "supervisor_tick_id": "execution_supervisor_tick_example_001",
+  "mode": "active",
+  "queue_summary": {
+    "ready_core_count": 1,
+    "ready_support_count": 2,
+    "blocked_count": 0,
+    "active_worker_count": 1,
+    "reroute_required_count": 1,
+    "reroute_dispatch_ready_count": 1,
+    "reroute_blocked_count": 0,
+    "reroute_ready_task_ids": [
+      "EX-05-prep-spec"
+    ],
+    "dispatch_ready_candidate_count": 2,
+    "dispatch_ready_task_ids": [
+      "EX-05-prep-spec",
+      "core_roadmap:wave22:a2_followup_executor_slice"
+    ],
+    "dispatch_ready_post_qualification_count": 1,
+    "dispatch_qualification_consumption": {
+      "schema": "clawd.execution_supervisor_dispatch_qualification_consumption.v1",
+      "source_path": "state/continuity/latest/execution_supervisor_dispatch_qualification_latest.json",
+      "source_present": true,
+      "source_schema": "clawd.execution_supervisor_dispatch_qualification.v1",
+      "source_generated_at": "2026-04-01T14:15:00Z",
+      "status": "degraded",
+      "decision": "PLAN_ONLY",
+      "fail_closed": true,
+      "launch_mutation_allowed": false,
+      "freshness_reference_generated_at": "2026-04-01T14:15:20Z",
+      "freshness_max_age_sec": 21600,
+      "qualification_age_sec": 20,
+      "qualification_fresh": true,
+      "freshness_reason": null,
+      "ready_candidate_count": 2,
+      "evaluated_ready_candidate_count": 2,
+      "qualified_candidate_count": 1,
+      "blocked_candidate_count": 1,
+      "pending_candidate_count": 0,
+      "qualified_candidate_task_ids": [
+        "EX-05-prep-spec"
+      ],
+      "blocked_candidate_task_ids": [
+        "core_roadmap:wave22:a2_followup_executor_slice"
+      ],
+      "pending_candidate_task_ids": [],
+      "retired_candidate_task_ids": [],
+      "consumption_state": "mixed",
+      "qualification_gate_passed": false,
+      "gate_reason": "dispatch_candidates_partially_qualified",
+      "decision_reasons": [
+        "dispatch_candidates_partially_qualified",
+        "degraded",
+        "PLAN_ONLY"
+      ],
+      "launch_readiness": {
+        "schema": "clawd.execution_supervisor_launch_readiness.v1",
+        "state": "degraded",
+        "reason": "dispatch_candidates_partially_qualified",
+        "blocked_reason_counts": {
+          "dispatch_target_worker_canary_probe_not_passed": 1
+        },
+        "blocked_canary_candidate_count": 1,
+        "blocked_probe_candidate_count": 1,
+        "demotion_restore_posture": {
+          "schema": "clawd.execution_supervisor_worker_demotion_restore_posture.v1",
+          "automatic_demotion_active": true,
+          "automatic_restore_pending": true,
+          "automatic_restore_ready": false,
+          "demoted_worker_count": 1,
+          "restore_pending_worker_count": 1,
+          "restored_worker_count": 0,
+          "demoted_workers": [
+            "codex-worker-plus-11"
+          ],
+          "restore_pending_workers": [
+            "codex-worker-plus-11"
+          ],
+          "restored_workers": [],
+          "oldest_restore_pending_since": "2026-04-01T19:15:00Z",
+          "oldest_restore_pending_worker": "codex-worker-plus-11",
+          "oldest_restore_pending_age_sec": 300,
+          "oldest_demoted_at": "2026-04-01T19:10:00Z",
+          "oldest_demoted_worker": "codex-worker-plus-11",
+          "oldest_demoted_age_sec": 600,
+          "latest_restored_at": null,
+          "latest_restored_worker": null,
+          "latest_restored_age_sec": null,
+          "action_priority": "p2"
+        },
+        "canary_probe_schedule": {
+          "schema": "clawd.execution_supervisor_canary_probe_schedule.v1",
+          "source_path": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json",
+          "status": "attention_required",
+          "reason": "canary_restore_pending",
+          "worker_count": 1,
+          "demoted_worker_count": 1,
+          "restore_pending_worker_count": 1,
+          "restored_worker_count": 0,
+          "overdue_probe_worker_count": 0,
+          "next_probe_due_at": "2026-04-01T20:15:00Z",
+          "next_probe_due_in_sec": 3580
+        }
+      }
+    },
+    "minimum_worker_floor": {
+      "core": 1,
+      "support": 1
+    },
+    "worker_floor_enforcement": {
+      "schema": "clawd.execution_supervisor_worker_floor_enforcement.v1",
+      "enabled": true,
+      "global_blocked": false,
+      "enforceable": true,
+      "required": true,
+      "core": {
+        "ready_count": 1,
+        "active_count": 0,
+        "floor": 1,
+        "deficit": 1
+      },
+      "support": {
+        "ready_count": 2,
+        "active_count": 1,
+        "floor": 1,
+        "deficit": 0
+      },
+      "planned_launches": [
+        {
+          "task_id": "core_roadmap:wave22:a2_followup_executor_slice",
+          "task_type": "implementation",
+          "task_class": "implementation",
+          "target_worker": "gemini-pro",
+          "reason": "minimum_worker_floor_violation"
+        }
+      ],
+      "blocked_launches": []
+    }
+  },
+  "routing_policy": {
+    "policy_version": "execution_supervisor_reroute_policy.v1",
+    "quota_backoff_sec": 7200,
+    "task_class_routes": {
+      "implementation": [
+        "codex-worker-plus-11",
+        "gemini-pro",
+        "deepseek-reasoner"
+      ],
+      "support_spec": [
+        "gemini-flash-lite",
+        "gemini-flash",
+        "deepseek-chat",
+        "kimi-k2"
+      ],
+      "support_synthesis": [
+        "gemini-flash-lite",
+        "gemini-flash",
+        "deepseek-chat",
+        "kimi-k2"
+      ]
+    },
+    "cooldown_state": {
+      "schema": "clawd.execution_supervisor_worker_cooldown_state.v1",
+      "generated_at": "2026-04-01T00:00:00Z",
+      "active_count": 1,
+      "active_workers": [
+        {
+          "worker": "codex-worker-plus-11",
+          "cooldown_until": "2026-04-01T16:12:00Z",
+          "cooldown_remaining_sec": 3600,
+          "reason": "provider_quota_exhausted",
+          "source_task_id": "EX-05-prep-spec"
+        }
+      ]
+    }
+  },
+  "tasks": [
+    {
+      "task_id": "EX-05-prep-spec",
+      "task_type": "support_spec",
+      "task_class": "planning",
+      "priority": "P0",
+      "status": "FAILED_PROVIDER_QUOTA",
+      "expected_artifacts": [
+        "reports/ex_05_layered_health_and_blocker_coupling_prep_2026-04-01.md"
+      ],
+      "failure_classification": {
+        "code": "FAILED_PROVIDER_QUOTA",
+        "reason": "provider_usage_limit",
+        "provider": "openai",
+        "detected_at": "2026-04-01T14:12:00Z"
+      },
+      "reroute": {
+        "required": true,
+        "status": "REROUTE_QUEUED",
+        "task_class": "planning",
+        "reason": "provider_quota_exhausted",
+        "target_worker": "gemini-flash-lite",
+        "cooldown_worker": "codex-worker-pro",
+        "cooldown_until": "2026-04-01T16:12:00Z",
+        "cooldown_blocked_workers": [
+          "codex-worker-plus-11"
+        ]
+      },
+      "latest_attempt": {
+        "attempt_id": "EX-05-prep-spec-attempt-1",
+        "session_key": "agent:codex-worker-pro:subagent:example",
+        "worker": "codex-worker-pro",
+        "model": "gpt-5.3-codex",
+        "launched_at": "2026-04-01T14:10:00Z",
+        "completed_at": "2026-04-01T14:12:00Z",
+        "artifact_check": {
+          "all_expected_present": false,
+          "missing_paths": [
+            "reports/ex_05_layered_health_and_blocker_coupling_prep_2026-04-01.md"
+          ],
+          "empty_paths": [],
+          "title_check_passed": null
+        },
+        "terminal_signal": {
+          "stop_reason": "error",
+          "provider_error": "usage_limit_exceeded",
+          "empty_content": true
+        },
+        "classification": "FAILED_PROVIDER_QUOTA"
+      },
+      "attempts": [
+        {
+          "attempt_id": "EX-05-prep-spec-attempt-1",
+          "session_key": "agent:codex-worker-pro:subagent:example",
+          "worker": "codex-worker-pro",
+          "model": "gpt-5.3-codex",
+          "launched_at": "2026-04-01T14:10:00Z",
+          "completed_at": "2026-04-01T14:12:00Z",
+          "artifact_check": {
+            "all_expected_present": false,
+            "missing_paths": [
+              "reports/ex_05_layered_health_and_blocker_coupling_prep_2026-04-01.md"
+            ],
+            "empty_paths": [],
+            "title_check_passed": null
+          },
+          "terminal_signal": {
+            "stop_reason": "error",
+            "provider_error": "usage_limit_exceeded",
+            "empty_content": true
+          },
+          "classification": "FAILED_PROVIDER_QUOTA"
+        }
+      ]
+    }
+  ],
+  "source_refs": {
+    "execution_program_status": "state/continuity/latest/execution_program_status.json",
+    "execution_frontier_ledger": "state/continuity/latest/execution_frontier_ledger.json",
+    "supervisor_trace": "state/continuity/latest/execution_supervisor_task_ledger_latest.json",
+    "execution_supervisor_dispatch_qualification": "state/continuity/latest/execution_supervisor_dispatch_qualification_latest.json",
+    "execution_supervisor_canary_probe_schedule": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json"
+  }
+}

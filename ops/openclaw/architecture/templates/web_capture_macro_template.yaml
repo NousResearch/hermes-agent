@@ -1,0 +1,22 @@
+macro_id: bybit_derivatives_capture
+domain: bybit.com
+target_url: https://www.bybit.com/en/trade/usdt/BTCUSDT
+viewport:
+  width: 1920
+  height: 1080
+anti_bot_policy:
+  rate_limit: "serial_per_domain"
+  retry_backoff: "exp_jitter_2_5_10_20"
+  session_reuse: true
+steps:
+  - action: navigate
+  - action: wait_for_settle
+  - action: dismiss_overlays
+    selector: "role=button[name='Close']"
+  - action: waitForSelector
+    selector: "role=region[name='Order Book']"
+    fallback:
+      - "text='Order Book'"
+  - action: extract_dom
+  - action: extract_css_tokens
+  - action: capture_screenshot

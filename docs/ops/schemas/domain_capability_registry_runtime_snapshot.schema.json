@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/domain_capability_registry_runtime_snapshot.schema.json",
+  "title": "Domain Capability Registry Runtime Snapshot",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "slice_id",
+    "generated_at",
+    "queue_source",
+    "risk_matrix_source",
+    "owner_registry_source",
+    "queue_summary",
+    "lane_registry",
+    "generated_packets"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "clawd.xb_402.domain_capability_registry_runtime.v1"
+    },
+    "slice_id": {
+      "type": "string",
+      "const": "XB-402"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "queue_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_matrix_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "owner_registry_source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "queue_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_slices",
+        "required_slices",
+        "optional_slices",
+        "done_count",
+        "ready_count",
+        "dependency_blocked_count",
+        "queued_optional_count",
+        "required_open_count",
+        "first_launch_recommendation"
+      ],
+      "properties": {
+        "total_slices": { "type": "integer", "minimum": 0 },
+        "required_slices": { "type": "integer", "minimum": 0 },
+        "optional_slices": { "type": "integer", "minimum": 0 },
+        "done_count": { "type": "integer", "minimum": 0 },
+        "ready_count": { "type": "integer", "minimum": 0 },
+        "dependency_blocked_count": { "type": "integer", "minimum": 0 },
+        "queued_optional_count": { "type": "integer", "minimum": 0 },
+        "required_open_count": { "type": "integer", "minimum": 0 },
+        "first_launch_recommendation": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "lane_registry": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "lane_id",
+          "lane_name",
+          "risk_class",
+          "activation_posture",
+          "owners",
+          "capability_inventory",
+          "health_projection"
+        ],
+        "properties": {
+          "lane_id": {
+            "type": "string",
+            "pattern": "^X[A-Z]$"
+          },
+          "lane_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "risk_class": {
+            "type": "string",
+            "enum": ["RG0_LOW", "RG1_MODERATE", "RG2_HIGH", "RG3_CRITICAL"]
+          },
+          "activation_posture": {
+            "type": "string",
+            "minLength": 1
+          },
+          "owners": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "governance_owner",
+              "lane_owner",
+              "release_owner",
+              "incident_owner"
+            ],
+            "properties": {
+              "governance_owner": { "type": "string", "minLength": 1 },
+              "lane_owner": { "type": "string", "minLength": 1 },
+              "release_owner": { "type": "string", "minLength": 1 },
+              "incident_owner": { "type": "string", "minLength": 1 }
+            }
+          },
+          "capability_inventory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "slice_id",
+                "title",
+                "state",
+                "objective",
+                "dependencies",
+                "dependency_states",
+                "unresolved_dependencies",
+                "health_status"
+              ],
+              "properties": {
+                "slice_id": {
+                  "type": "string",
+                  "pattern": "^[A-Z]{1,2}-[0-9]{3}$"
+                },
+                "title": { "type": "string" },
+                "state": { "type": "string", "minLength": 1 },
+                "objective": { "type": "string" },
+                "dependencies": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "dependency_states": {
+                  "type": "object",
+                  "additionalProperties": { "type": "string", "minLength": 1 }
+                },
+                "unresolved_dependencies": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "health_status": {
+                  "type": "string",
+                  "enum": ["done", "ready", "blocked", "attention"]
+                }
+              }
+            }
+          },
+          "health_projection": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "overall_status",
+              "done_count",
+              "ready_count",
+              "blocked_count",
+              "attention_count",
+              "next_ready_slice"
+            ],
+            "properties": {
+              "overall_status": {
+                "type": "string",
+                "enum": ["healthy", "ready", "blocked", "attention"]
+              },
+              "done_count": { "type": "integer", "minimum": 0 },
+              "ready_count": { "type": "integer", "minimum": 0 },
+              "blocked_count": { "type": "integer", "minimum": 0 },
+              "attention_count": { "type": "integer", "minimum": 0 },
+              "next_ready_slice": {
+                "type": ["string", "null"],
+                "pattern": "^[A-Z]{1,2}-[0-9]{3}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    "generated_packets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "registry_schema_validation",
+        "health_projection_snapshot",
+        "weekly_project_posture_packet_samples",
+        "blocker_owner_rollup_artifacts",
+        "history_projection_parity_check"
+      ],
+      "properties": {
+        "registry_schema_validation": { "type": "string", "minLength": 1 },
+        "health_projection_snapshot": { "type": "string", "minLength": 1 },
+        "weekly_project_posture_packet_samples": { "type": "string", "minLength": 1 },
+        "blocker_owner_rollup_artifacts": { "type": "string", "minLength": 1 },
+        "history_projection_parity_check": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

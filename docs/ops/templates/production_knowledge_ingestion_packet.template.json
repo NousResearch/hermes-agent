@@ -1,0 +1,42 @@
+{
+  "schema_version": "clawd.production_knowledge_ingestion.packet.v1",
+  "ingestion_id": "pki_20260320_batch4_doc01",
+  "material_artifact": {
+    "path": "reports/batch3_second_brain_architecture_synthesis_2026-03-09.md",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "markdown_artifact": {
+    "path": "memory/knowledge_ingestion/staging/doc01.md",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "markdown_gate_decision": {
+    "path": "state/continuity/knowledge_ingestion/sample/markdown_gate_decision_doc01.json",
+    "expected_schema": "clawd.markdown_conversion_gate.decision.v1"
+  },
+  "classification_decision": {
+    "path": "state/continuity/knowledge_ingestion/sample/classification_decision_doc01.json",
+    "expected_schema": "clawd.source_material_classification.decision.v1"
+  },
+  "destination": {
+    "path": "memory/knowledge_ingestion/production/research/doc01.md",
+    "profile": "research_reports"
+  },
+  "ingestion_policy": {
+    "require_markdown_gate_pass": true,
+    "require_classification_pass": true,
+    "allowed_classes": [
+      "architecture_spec",
+      "runbook",
+      "policy_doctrine",
+      "research_report",
+      "source_document"
+    ],
+    "allow_overwrite": false
+  },
+  "lineage": {
+    "batch_id": "batch_4_2026-03-20",
+    "source_refs": [
+      "memory/inbound_zips/batch_4_2026-03-09/"
+    ]
+  }
+}

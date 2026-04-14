@@ -1,0 +1,12 @@
+{
+  "object_type": "clawd.load_shedding.signal_snapshot.v1",
+  "evaluated_at": "2026-03-20T10:20:00Z",
+  "tick_id": 8842,
+  "signals": {
+    "LS_SIG_CONTEXT_UTIL_RATIO": {"value": 0.88, "band": "WARNING"},
+    "LS_SIG_COMPACTION_TIMEOUTS_30M": {"value": 1, "band": "WARNING"},
+    "LS_SIG_TURN_LATENCY_P95_15M": {"value": 27.0, "band": "WARNING"}
+  },
+  "unknown_signals": [],
+  "derived_tier": "WARNING"
+}

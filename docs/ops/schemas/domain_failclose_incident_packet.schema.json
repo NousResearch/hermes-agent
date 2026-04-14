@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/domain_failclose_incident_packet.schema.json",
+  "title": "Domain Fail-Close Incident Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "incident_id",
+    "occurred_at",
+    "detected_at",
+    "lane_context",
+    "incident_class",
+    "severity",
+    "failclose_action",
+    "policy_bindings",
+    "evidence_refs",
+    "remediation",
+    "lesson_handoff"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.domain_failclose_incident_packet.v1"
+    },
+    "incident_id": {
+      "type": "string",
+      "pattern": "^inc_[a-z0-9._-]+$"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "detected_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "lane_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane_id", "slice_id", "risk_class", "auth_tier"],
+      "properties": {
+        "lane_id": { "type": "string", "minLength": 1 },
+        "slice_id": { "type": "string", "minLength": 1 },
+        "risk_class": {
+          "type": "string",
+          "enum": ["RG0_LOW", "RG1_MODERATE", "RG2_HIGH", "RG3_CRITICAL"]
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": ["ADMIN", "OBSERVABILITY", "INTERNAL", "PUBLIC"]
+        }
+      }
+    },
+    "incident_class": {
+      "type": "string",
+      "enum": [
+        "policy_violation",
+        "boundary_breach",
+        "safety_guard_trip",
+        "release_evidence_gap",
+        "runtime_failure"
+      ]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["L1_BOUNDARY_FAILURE", "L2_RELEASE_GAP", "L3_INCIDENT_READINESS_GAP", "L4_SAFETY_BLOCK"]
+    },
+    "failclose_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["triggered", "mode", "triggered_at", "operator_surface_ref"],
+      "properties": {
+        "triggered": { "type": "boolean" },
+        "mode": {
+          "type": "string",
+          "enum": ["block_activation", "rollback_to_safe_mode", "freeze_mutations", "operator_escalation_only"]
+        },
+        "triggered_at": { "type": "string", "format": "date-time" },
+        "operator_surface_ref": { "type": "string", "minLength": 1 },
+        "notes": { "type": "string" }
+      }
+    },
+    "policy_bindings": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "remediation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "due_at", "status", "closure_plan_ref"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "due_at": { "type": "string", "format": "date-time" },
+        "status": {
+          "type": "string",
+          "enum": ["open", "in_progress", "verified", "expired"]
+        },
+        "closure_plan_ref": { "type": "string", "minLength": 1 },
+        "closure_verified_at": { "type": "string", "format": "date-time" },
+        "closure_verification_ref": { "type": "string", "minLength": 1 }
+      }
+    },
+    "lesson_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "incident_to_lesson_handoff_ref",
+        "knowledge_queue_ingestion_trace_ref",
+        "promotion_target",
+        "ingestion_status"
+      ],
+      "properties": {
+        "required": { "type": "boolean", "const": true },
+        "incident_to_lesson_handoff_ref": { "type": "string", "minLength": 1 },
+        "knowledge_queue_ingestion_trace_ref": { "type": "string", "minLength": 1 },
+        "promotion_target": {
+          "type": "string",
+          "enum": ["promote_now", "promote_later", "reference_only"]
+        },
+        "ingestion_status": {
+          "type": "string",
+          "enum": ["queued", "ingested", "blocked"]
+        }
+      }
+    }
+  }
+}

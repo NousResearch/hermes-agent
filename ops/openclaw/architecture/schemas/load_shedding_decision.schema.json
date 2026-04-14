@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.load_shedding.decision.v1",
+  "title": "Load Shedding Decision",
+  "type": "object",
+  "required": [
+    "object_type",
+    "decided_at",
+    "lane_tier",
+    "trigger_emitted",
+    "thin_mode",
+    "suppression_policy",
+    "required_actions"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.load_shedding.decision.v1" },
+    "decided_at": { "type": "string" },
+    "lane_tier": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL"] },
+    "derived_lane_tier": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL", "UNKNOWN"] },
+    "trigger_emitted": {
+      "type": ["string", "null"],
+      "enum": [
+        "TR_WARN_THRESHOLD_REACHED",
+        "TR_WARN_THRESHOLD_CLEARED_STABLE",
+        "TR_CRITICAL_THRESHOLD_REACHED",
+        "TR_UNKNOWN_OR_INCOMPLETE_SIGNAL",
+        null
+      ]
+    },
+    "thin_mode": { "type": "boolean" },
+    "suppression_policy": { "type": "object" },
+    "required_actions": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,9 @@
+{
+  "$id": "clawd.successor_safe_handover_proof.status.v1",
+  "proof_state": "PROOF_VALID_PASS",
+  "proof_id": "proof_20260320_abc123",
+  "evaluated_at": "2026-03-20T10:09:00Z",
+  "reset_allowed": true,
+  "resume_allowed": true,
+  "top_blocker": null
+}

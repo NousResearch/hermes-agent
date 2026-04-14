@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.load_shedding.signal_snapshot.v1",
+  "title": "Load Shedding Signal Snapshot",
+  "type": "object",
+  "required": [
+    "object_type",
+    "evaluated_at",
+    "tick_id",
+    "signals",
+    "unknown_signals",
+    "derived_tier"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.load_shedding.signal_snapshot.v1" },
+    "evaluated_at": { "type": "string" },
+    "tick_id": { "type": "integer", "minimum": 0 },
+    "signals": { "type": "object" },
+    "unknown_signals": { "type": "array", "items": { "type": "string" } },
+    "derived_tier": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL", "UNKNOWN"] }
+  },
+  "additionalProperties": true
+}

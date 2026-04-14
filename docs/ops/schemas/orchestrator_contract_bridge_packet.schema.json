@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_contract_bridge_packet.schema.json",
+  "title": "EX-06 Orchestrator Contract Bridge Packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "generated_at",
+    "slice_id",
+    "integration_runner",
+    "bridge_rules",
+    "orchestrator_plan_packet",
+    "orchestrator_run_packet",
+    "orchestrator_event_stream_packet",
+    "orchestrator_replay_resync_packet",
+    "invariants"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.contract_bridge_packet.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "slice_id": {
+      "type": "string",
+      "const": "EX-06"
+    },
+    "integration_runner": {
+      "type": "string",
+      "const": "ops/openclaw/continuity/orchestrator_contract_bridge_packet_v1.py"
+    },
+    "bridge_rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "idempotency_key_family",
+        "run_conflict_detector",
+        "event_ordering_semantics",
+        "replay_retention_cliff_action"
+      ],
+      "properties": {
+        "idempotency_key_family": {
+          "type": "string",
+          "const": "shared_retry_key"
+        },
+        "run_conflict_detector": {
+          "type": "string",
+          "const": "canonical_request_hash"
+        },
+        "event_ordering_semantics": {
+          "type": "string",
+          "const": "strict_event_seq"
+        },
+        "replay_retention_cliff_action": {
+          "type": "string",
+          "const": "snapshot_reseed_required"
+        }
+      }
+    },
+    "orchestrator_plan_packet": {
+      "$ref": "#/$defs/orchestrator_plan_packet"
+    },
+    "orchestrator_run_packet": {
+      "$ref": "#/$defs/orchestrator_run_packet"
+    },
+    "orchestrator_event_stream_packet": {
+      "$ref": "#/$defs/orchestrator_event_stream_packet"
+    },
+    "orchestrator_replay_resync_packet": {
+      "$ref": "#/$defs/orchestrator_replay_resync_packet"
+    },
+    "invariants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_event_idempotency_key_match",
+        "event_seq_matches_cursor",
+        "replay_retention_cliff_detected",
+        "replay_requires_snapshot_reseed",
+        "replay_actions_include_reseed"
+      ],
+      "properties": {
+        "run_event_idempotency_key_match": {
+          "type": "boolean",
+          "const": true
+        },
+        "event_seq_matches_cursor": {
+          "type": "boolean",
+          "const": true
+        },
+        "replay_retention_cliff_detected": {
+          "type": "boolean",
+          "const": true
+        },
+        "replay_requires_snapshot_reseed": {
+          "type": "boolean",
+          "const": true
+        },
+        "replay_actions_include_reseed": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "orchestrator_plan_packet": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "contract_version",
+        "response"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "clawd.orchestrator.plan.v1"
+        },
+        "contract_version": {
+          "type": "string",
+          "const": "orchestrator_api_contract_v1"
+        },
+        "response": {
+          "type": "object",
+          "required": [
+            "plan_id",
+            "declared_inputs_hash",
+            "plan_hash"
+          ]
+        }
+      }
+    },
+    "orchestrator_run_packet": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "contract_version",
+        "idempotency_key",
+        "canonical_request_hash",
+        "response"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "clawd.orchestrator.run.v1"
+        },
+        "contract_version": {
+          "type": "string",
+          "const": "orchestrator_api_contract_v1"
+        },
+        "idempotency_key": {
+          "type": "string",
+          "minLength": 8
+        },
+        "canonical_request_hash": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "response": {
+          "type": "object",
+          "required": [
+            "run_id",
+            "status"
+          ]
+        }
+      }
+    },
+    "orchestrator_event_stream_packet": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "contract_version",
+        "event",
+        "cursor"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "clawd.orchestrator.event_stream.v1"
+        },
+        "contract_version": {
+          "type": "string",
+          "const": "orchestrator_api_contract_v1"
+        },
+        "event": {
+          "type": "object",
+          "required": [
+            "event_id",
+            "event_seq",
+            "idempotency_key"
+          ]
+        },
+        "cursor": {
+          "type": "object",
+          "required": [
+            "next_after_seq"
+          ]
+        }
+      }
+    },
+    "orchestrator_replay_resync_packet": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "contract_version",
+        "response"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "clawd.orchestrator.replay_resync.v1"
+        },
+        "contract_version": {
+          "type": "string",
+          "const": "orchestrator_api_contract_v1"
+        },
+        "response": {
+          "type": "object",
+          "required": [
+            "status",
+            "actions"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "snapshot_reseed_required"
+            },
+            "actions": {
+              "type": "array",
+              "allOf": [
+                {
+                  "contains": {
+                    "const": "resolve_snapshot"
+                  }
+                },
+                {
+                  "contains": {
+                    "const": "rebuild_plan"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": "lane.action_intent.v1",
+  "intent_id": "intent_queue_arbitrator_transition_20260331",
+  "operation_id": "queue_arbitrator:transition",
+  "intent_type": "mutate",
+  "mutation_class": "mutating",
+  "issued_at": "2026-03-31T14:00:00+07:00",
+  "expires_at": "2026-03-31T14:30:00+07:00",
+  "issuer_lane_id": "lane.column_c.upgrade_substrate",
+  "requested_write_paths": [
+    "state/continuity/latest/true_expanded_roadmap_queue_layer.json"
+  ],
+  "requires_ticket": true,
+  "evidence_refs": [
+    "state/continuity/latest/verify_before_resume_latest.json",
+    "state/continuity/latest/core_roadmap_dependency_unblock_policy_pack_v1.json"
+  ],
+  "notes": "Action-intent packet consumed by lane_authority_gate override posture enforcement."
+}

@@ -1,0 +1,684 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/handover_bundle.schema.json",
+  "title": "Handover Bundle Normalization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "generated_at",
+    "status",
+    "integration_contract",
+    "source_input_map",
+    "handover",
+    "proof",
+    "pending_work",
+    "safe_resume",
+    "markdown_form",
+    "generated_artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.handover_bundle.v1"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^handover_bundle_[a-zA-Z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "draft",
+        "superseded"
+      ]
+    },
+    "integration_contract": {
+      "$ref": "#/$defs/integrationContract"
+    },
+    "source_input_map": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/sourceInput"
+      }
+    },
+    "handover": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "handover_id",
+        "workspace_id",
+        "generated_at",
+        "objective",
+        "truth_anchor",
+        "queue_state",
+        "blockers",
+        "recommended_next_actions"
+      ],
+      "properties": {
+        "handover_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "checkpoint_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "objective": {
+          "$ref": "#/$defs/objective"
+        },
+        "truth_anchor": {
+          "$ref": "#/$defs/truthAnchor"
+        },
+        "queue_state": {
+          "$ref": "#/$defs/queueState"
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/blocker"
+          }
+        },
+        "recommended_next_actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/actionStep"
+          }
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "proof": {
+      "$ref": "#/$defs/proofStatus"
+    },
+    "pending_work": {
+      "$ref": "#/$defs/pendingWork"
+    },
+    "safe_resume": {
+      "$ref": "#/$defs/safeResume"
+    },
+    "markdown_form": {
+      "$ref": "#/$defs/handoverMarkdownForm"
+    },
+    "generated_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_json",
+        "template_json",
+        "example_json",
+        "example_md",
+        "execution_report"
+      ],
+      "properties": {
+        "schema_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "template_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example_md": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_report": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "integrationContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_id",
+        "contract_path",
+        "schema_path",
+        "template_path",
+        "clause_refs"
+      ],
+      "properties": {
+        "contract_id": {
+          "type": "string",
+          "const": "continuity_integration_contract_v1"
+        },
+        "contract_path": {
+          "type": "string",
+          "const": "docs/ops/continuity_integration_contract_v1.md"
+        },
+        "schema_path": {
+          "type": "string",
+          "const": "docs/ops/schemas/continuity_integration_contract.schema.json"
+        },
+        "template_path": {
+          "type": "string",
+          "const": "docs/ops/templates/continuity_integration_contract.template.json"
+        },
+        "clause_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "C1",
+              "C2",
+              "C3",
+              "C4",
+              "C5",
+              "C6"
+            ]
+          }
+        }
+      }
+    },
+    "sourceInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "artifact_path_or_ref",
+        "classification",
+        "continuity_dimensions"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^src_[a-zA-Z0-9._-]+$"
+        },
+        "artifact_path_or_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "archive_mined",
+            "historical",
+            "support",
+            "canonical"
+          ]
+        },
+        "continuity_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "checkpoint_contract",
+              "proof_gate",
+              "pending_work",
+              "resume_safety",
+              "ground_truth",
+              "overflow_trigger",
+              "lineage"
+            ]
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mission",
+        "success_criteria",
+        "status"
+      ],
+      "properties": {
+        "mission": {
+          "type": "string",
+          "minLength": 1
+        },
+        "success_criteria": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "READY",
+            "PROGRESS",
+            "BLOCKER",
+            "DEGRADED"
+          ]
+        },
+        "blocker_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "truthAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_id",
+        "journal_offset",
+        "pointer_source",
+        "pointer_hash"
+      ],
+      "properties": {
+        "snapshot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "journal_offset": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pointer_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pointer_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "queueState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ready_count",
+        "running_count",
+        "dependency_blocked_count",
+        "status_counts"
+      ],
+      "properties": {
+        "ready_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "running_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dependency_blocked_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status_counts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "severity"
+      ],
+      "properties": {
+        "owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warn",
+            "critical"
+          ]
+        },
+        "next_check": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "actionStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "step",
+        "command",
+        "precondition"
+      ],
+      "properties": {
+        "step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "precondition": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "proofStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_state",
+        "proof_id",
+        "evaluated_at",
+        "expires_at",
+        "reset_allowed",
+        "resume_allowed",
+        "top_blocker",
+        "proof_source_path",
+        "status_source_path"
+      ],
+      "properties": {
+        "proof_state": {
+          "type": "string",
+          "enum": [
+            "PROOF_MISSING",
+            "PROOF_REFUSED",
+            "PROOF_INVALID",
+            "PROOF_EXPIRED",
+            "PROOF_VALID_BLOCKED",
+            "PROOF_VALID_PASS"
+          ]
+        },
+        "proof_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "reset_allowed": {
+          "type": "boolean"
+        },
+        "resume_allowed": {
+          "type": "boolean"
+        },
+        "top_blocker": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proof_source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status_source_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pendingWork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "items"
+      ],
+      "properties": {
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pending_total",
+            "queued",
+            "review",
+            "blocked",
+            "running"
+          ],
+          "properties": {
+            "pending_total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "queued": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "review": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "blocked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "running": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task_id",
+              "title",
+              "status",
+              "resume_hint"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "QUEUED",
+                  "RUNNING",
+                  "REVIEW",
+                  "BLOCKED"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resume_hint": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "safeResume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safe_to_resume",
+        "safe_to_reset",
+        "mutation_gate_status",
+        "mutation_gate_posture",
+        "verify_gate_ready",
+        "required_preflight_commands",
+        "blockers"
+      ],
+      "properties": {
+        "safe_to_resume": {
+          "type": "boolean"
+        },
+        "safe_to_reset": {
+          "type": "boolean"
+        },
+        "mutation_gate_status": {
+          "type": "string",
+          "enum": [
+            "allowed",
+            "forbidden",
+            "caution",
+            "unknown"
+          ]
+        },
+        "mutation_gate_posture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verify_gate_ready": {
+          "type": "boolean"
+        },
+        "required_preflight_commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "handoverMarkdownForm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "markdown_path",
+        "frontmatter",
+        "required_sections"
+      ],
+      "properties": {
+        "format_version": {
+          "type": "string",
+          "const": "clawd.handover_markdown.v1"
+        },
+        "markdown_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frontmatter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "handover_id",
+            "generated_at",
+            "checkpoint_id",
+            "proof_state",
+            "safe_to_resume",
+            "safe_to_reset"
+          ],
+          "properties": {
+            "handover_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "generated_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "checkpoint_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "proof_state": {
+              "type": "string",
+              "minLength": 1
+            },
+            "safe_to_resume": {
+              "type": "boolean"
+            },
+            "safe_to_reset": {
+              "type": "boolean"
+            }
+          }
+        },
+        "required_sections": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "Objective",
+              "Current truth anchor",
+              "Pending work",
+              "Safe resume",
+              "Successor proof gate",
+              "Verification checklist",
+              "Rollback plan",
+              "Next actions",
+              "Blockers",
+              "Notes"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/regression_risk_packet.v1.schema.json",
+  "title": "OpenClaw Regression-Risk Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "packet_id",
+    "version",
+    "proposal_id",
+    "risk_assessment",
+    "evidence",
+    "validation"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "change_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "commit_sha": {
+          "type": "string"
+        },
+        "pull_request_url": {
+          "type": "string",
+          "format": "uri"
+        }
+      }
+    },
+    "risk_assessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "overall_tier",
+        "scores"
+      ],
+      "properties": {
+        "overall_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "scores": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "blast_radius",
+            "code_churn",
+            "dependency_impact",
+            "test_coverage_delta",
+            "historical_instability",
+            "critical_path_impact"
+          ],
+          "properties": {
+            "blast_radius": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "code_churn": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "dependency_impact": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "test_coverage_delta": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "historical_instability": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "critical_path_impact": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            }
+          }
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "diff_stats": {
+          "type": "object",
+          "properties": {
+            "files_changed": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "insertions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "deletions": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "test_coverage": {
+          "type": "object",
+          "properties": {
+            "coverage_before_percent": {
+              "type": "number"
+            },
+            "coverage_after_percent": {
+              "type": "number"
+            },
+            "delta": {
+              "type": "number"
+            }
+          }
+        },
+        "static_analysis": {
+          "type": "object",
+          "properties": {
+            "critical_violations_added": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "code_complexity_increase": {
+              "type": "number"
+            }
+          }
+        },
+        "dependency_changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "package": {
+                "type": "string"
+              },
+              "change_type": {
+                "type": "string",
+                "enum": [
+                  "added",
+                  "removed",
+                  "updated"
+                ]
+              },
+              "from_version": {
+                "type": "string"
+              },
+              "to_version": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "manual_attestations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "required_approvals"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "approver_id": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

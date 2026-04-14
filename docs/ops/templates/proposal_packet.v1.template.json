@@ -1,0 +1,21 @@
+{
+  "schema_version": "proposal_packet.v1",
+  "task_id": "cod05-proposal-001",
+  "task_class": "code:edit",
+  "title": "Bounded router hardening for proposal-first coding flow",
+  "description": "Add proposal-first gate checks and archive telemetry without widening unrelated lanes.",
+  "risk_assessment": {
+    "initial_tier": "high",
+    "justification": "Routing substrate changes affect coding dispatch policy and require explicit approval."
+  },
+  "affected_files": [
+    "scripts/session_topology_router.py",
+    "tests/test_session_topology_router.py",
+    "docs/ops/session_topology_contract_v1.md"
+  ],
+  "acceptance_criteria": [
+    "Proposal packet ingress is routable through session_topology_router",
+    "High/critical proposals require approval hooks before routing pass",
+    "Decision payload emits proposal_flow + archive contract artifacts"
+  ]
+}

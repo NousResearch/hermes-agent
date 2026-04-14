@@ -1,0 +1,77 @@
+{
+  "provider": "openai-codex",
+  "lanes": [
+    {
+      "agent": "codex-worker-pro",
+      "desiredProfileId": "openai-codex:codex-worker-pro",
+      "email": "christianadw50@gmail.com",
+      "allowSharedAccount": true
+    },
+    {
+      "agent": "codex-worker-plus-1",
+      "desiredProfileId": "openai-codex:codex-worker-plus-1",
+      "email": "vanlaninghamritmiller176@outlook.com"
+    },
+    {
+      "agent": "codex-worker-plus-2",
+      "email": "morabyous175@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-2"
+    },
+    {
+      "agent": "codex-worker-plus-3",
+      "email": "pradelaluise364@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-3"
+    },
+    {
+      "agent": "codex-worker-plus-4",
+      "email": "strothborgerding8680@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-4"
+    },
+    {
+      "agent": "codex-worker-plus-5",
+      "email": "shakirbessmer11@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-5"
+    },
+    {
+      "agent": "codex-worker-plus-6",
+      "email": "brianaroghair53@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-6"
+    },
+    {
+      "agent": "codex-worker-plus-7",
+      "email": "wethernbrothen38@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-7"
+    },
+    {
+      "agent": "codex-worker-plus-8",
+      "email": "bistermilliren7969@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-8"
+    },
+    {
+      "agent": "codex-worker-plus-9",
+      "email": "reissmetevier6738@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-9"
+    },
+    {
+      "agent": "codex-orchestrator-pro",
+      "email": "christianadw50@gmail.com",
+      "desiredProfileId": "openai-codex:codex-orchestrator-pro",
+      "allowSharedAccount": true
+    },
+    {
+      "agent": "codex-orchestrator-plus",
+      "email": "parrellawidhalm4816@outlook.com",
+      "desiredProfileId": "openai-codex:codex-orchestrator-plus"
+    },
+    {
+      "agent": "codex-worker-plus-10",
+      "email": "keartetzlaff50@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-10"
+    },
+    {
+      "agent": "codex-worker-plus-11",
+      "email": "grinedibattista26@outlook.com",
+      "desiredProfileId": "openai-codex:codex-worker-plus-11"
+    }
+  ]
+}

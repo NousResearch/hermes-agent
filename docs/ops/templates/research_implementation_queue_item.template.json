@@ -1,0 +1,62 @@
+{
+  "schema_version": "clawd.research_case.implementation_queue_item.v1",
+  "queue_item_id": "rci_rc_example_cand_v1",
+  "generated_at": "2026-03-21T16:00:00Z",
+  "queue_state": "READY_FOR_EXECUTION",
+  "case_id": "rc_example",
+  "candidate_id": "cand_v1",
+  "promotion_id": "prom_cand_v1",
+  "traceability": {
+    "candidate_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/candidate.json",
+    "gatecheck_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/gatecheck.json",
+    "promotion_candidate_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/promotion_candidate.json",
+    "promotion_gate_decision_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/promotion_gate_decision.json",
+    "promotion_gate_decision_log_path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/promotion_gate_decisions.jsonl",
+    "source_refs": [
+      {
+        "ref_id": "src_rc_example_synth",
+        "path": "memory/research_cases/rc_example/SYNTH/synths/synth_v1.json",
+        "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  },
+  "implementation_contract": {
+    "requirements": [
+      {
+        "req_id": "req_001",
+        "text": "Ship the deterministic promotion trace chain.",
+        "takeaway_refs": [
+          "tw_001"
+        ],
+        "priority": "P0"
+      }
+    ],
+    "acceptance_criteria": [
+      {
+        "criterion_id": "ac_001",
+        "statement": "Requirement req_001 is represented in implementation and validation artifacts.",
+        "covers_req_ids": [
+          "req_001"
+        ]
+      }
+    ],
+    "verification_plan": [
+      "Run research case lint in strict mode",
+      "Confirm promotion gate PASS evidence"
+    ],
+    "risk_assessment": "Low-to-medium additive queue artifact"
+  },
+  "orchestration": {
+    "policy_id": "b2_capacity_starvation_concurrency_v1",
+    "scheduler_algorithm": "weighted_round_robin_with_aging",
+    "queue_entered_at": "2026-03-28T09:30:00Z",
+    "priority_weight": 1.0,
+    "starvation_controls": {
+      "max_runnable_wait_seconds": 900,
+      "starvation_incident_wait_seconds": 1200,
+      "max_consecutive_scheduler_skips": 3,
+      "preemption_trigger_runtime_seconds": 1800,
+      "required_fairness_metric": "oldest_runnable_case_wait_seconds"
+    }
+  }
+}

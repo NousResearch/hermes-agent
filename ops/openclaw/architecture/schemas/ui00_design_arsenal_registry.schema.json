@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.ui00_design_arsenal_registry.v1",
+  "title": "UI00DesignArsenalRegistry",
+  "description": "Machine-readable registry for OpenClaw frontend/design arsenal future bucket (UI-00).",
+  "type": "object",
+  "required": ["schema", "generated_at", "slice_id", "source_report", "summary", "arsenal"],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "openclaw.ui00_design_arsenal_registry.v1"
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "slice_id": { "type": "string", "const": "UI-00" },
+    "source_report": { "type": "string", "description": "Absolute path to the authoritative bucket report" },
+    "summary": {
+      "type": "object",
+      "required": ["total_entries", "bucket_breakdown"],
+      "properties": {
+        "total_entries": { "type": "integer", "minimum": 0 },
+        "bucket_breakdown": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "arsenal": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/arsenal_entry" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "arsenal_entry": {
+      "type": "object",
+      "required": ["repo", "bucket", "likely_use", "confidence", "substrate_vs_reference", "future_lane_mapping", "deep_dive_status"],
+      "properties": {
+        "repo": { "type": "string", "description": "GitHub repo slug (owner/name)" },
+        "bucket": {
+          "type": "string",
+          "enum": ["A. Adoptable frontend substrate", "B. Operator cockpit / admin donors", "C. Collaborative canvas / design-system / provenance donors", "D. Visual asset arsenal", "E. Pattern/reference library"]
+        },
+        "likely_use": { "type": "string", "description": "One-line summary of intended use" },
+        "confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"]
+        },
+        "substrate_vs_reference": {
+          "type": "string",
+          "enum": ["substrate", "reference"]
+        },
+        "future_lane_mapping": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Relevant future frontend/operator lanes (e.g. UI-01, UI-02)"
+        },
+        "deep_dive_status": {
+          "type": "string",
+          "enum": ["deep-dive-now", "medium-pass-later", "reference-only"]
+        },
+        "note": { "type": "string", "description": "Optional extra context" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

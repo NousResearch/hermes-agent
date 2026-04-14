@@ -1,0 +1,54 @@
+{
+  "schema_version": "lane.crossover_packet.v1",
+  "packet_id": "lxp_20260320_wave4_slice1_ticket",
+  "packet_type": "ticket",
+  "from_lane_id": "lane.column_a.no_nudge_autonomy",
+  "from_lane_epoch": "epoch_20260320_a1",
+  "to_lane_id": "lane.column_c.upgrade_substrate",
+  "to_lane_epoch": "epoch_20260320_c1",
+  "created_at": "2026-03-20T10:30:00+07:00",
+  "expires_at": "2026-03-20T14:30:00+07:00",
+  "priority": "high",
+  "work_item_id": "wi_wave4_slice1_lane_boundary",
+  "correlation_id": "corr_wave4_lane_boundary_001",
+  "summary": "Define deterministic lane crossover contract and ship schema/template artifacts.",
+  "evidence_refs": [
+    "reports/wave2_wave3_closure_sweep_2026-03-20.md",
+    "reports/wave3_columnA_trust_start_2026-03-20.md"
+  ],
+  "assumption_refs": [
+    "column_a_priority_preserved"
+  ],
+  "payload": {
+    "ticket_id": "tkt_wave4_slice1_lane_boundary",
+    "operation_id": "publish_runtime_state_card_projection",
+    "lease_mode": "fast_path",
+    "risk_tier": "low",
+    "fencing_term": 109,
+    "attestation_refs": [
+      "state/continuity/latest/verify_before_resume_attestation.json"
+    ],
+    "requested_outcome": "Publish lane boundary contract and crossover packet schema.",
+    "definition_of_done": "Spec note and schema/template committed with deterministic required fields.",
+    "allowed_write_paths": [
+      "docs/ops/lane_boundary_contract_v1.md",
+      "docs/ops/schemas/lane_crossover_packet.schema.json",
+      "docs/ops/templates/lane_crossover_ticket.template.json"
+    ],
+    "verification_commands": [
+      "python3 -m json.tool docs/ops/schemas/lane_crossover_packet.schema.json > /dev/null",
+      "python3 -m json.tool docs/ops/templates/lane_crossover_ticket.template.json > /dev/null"
+    ],
+    "due_at": "2026-03-20T16:00:00+07:00"
+  },
+  "contamination_guard": {
+    "source_memory_scope": "shared_contract_only",
+    "contains_unverified_content": false,
+    "cross_lane_write_requested": true,
+    "promotion_gate": "validator_required",
+    "max_inline_context_bytes": 1024,
+    "redaction_applied": false,
+    "notes": "No raw branch transcript or unverifiable summary is carried across lanes."
+  },
+  "ack_required": true
+}

@@ -1,0 +1,607 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/lane_topology_authority_contract.schema.json",
+  "title": "Lane Topology Authority Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "lane_contract_version",
+    "updated_at",
+    "authority_model",
+    "lane_registry",
+    "authority_leases",
+    "mutation_gateway_policy",
+    "override_governance",
+    "jeopardy_policy",
+    "takeover_protocol"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "lane.topology_authority_contract.v1"
+    },
+    "lane_contract_version": {
+      "type": "string",
+      "pattern": "^v[0-9]+\\.[0-9]+$"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "authority_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control_authority_lane_id",
+        "workflow_lead_lane_id",
+        "single_writer_topology_governance",
+        "ticketed_mutation_boundary"
+      ],
+      "properties": {
+        "control_authority_lane_id": {
+          "$ref": "#/$defs/laneId"
+        },
+        "workflow_lead_lane_id": {
+          "$ref": "#/$defs/laneId"
+        },
+        "single_writer_topology_governance": {
+          "type": "boolean",
+          "const": true
+        },
+        "ticketed_mutation_boundary": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "lane_registry": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/laneEntry"
+      }
+    },
+    "authority_leases": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control_lease",
+        "workflow_lease"
+      ],
+      "properties": {
+        "control_lease": {
+          "$ref": "#/$defs/controlLease"
+        },
+        "workflow_lease": {
+          "$ref": "#/$defs/workflowLease"
+        }
+      }
+    },
+    "mutation_gateway_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "high_risk_posture",
+        "ticket_policy",
+        "required_attestations",
+        "attestation_object_policy"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "audit",
+            "enforce_high_risk",
+            "enforce_all"
+          ]
+        },
+        "high_risk_posture": {
+          "type": "string",
+          "enum": [
+            "audit_only",
+            "ticket_required"
+          ]
+        },
+        "ticket_policy": {
+          "$ref": "#/$defs/ticketPolicy"
+        },
+        "required_attestations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "verify_before_resume_pass",
+              "schema_contract_pass",
+              "replay_evidence_pass",
+              "successor_safe_proof_pass"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "attestation_object_policy": {
+          "$ref": "#/$defs/attestationObjectPolicy"
+        }
+      }
+    },
+    "override_governance": {
+      "$ref": "#/$defs/overrideGovernancePolicy"
+    },
+    "jeopardy_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fail_closed_on_lease_uncertainty",
+        "block_codes"
+      ],
+      "properties": {
+        "fail_closed_on_lease_uncertainty": {
+          "type": "boolean",
+          "const": true
+        },
+        "block_codes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "lease_state_unknown",
+              "fencing_term_stale",
+              "ticket_expired",
+              "ticket_missing",
+              "attestation_missing",
+              "action_intent_missing",
+              "action_intent_invalid",
+              "action_intent_mismatch",
+              "override_stop_active",
+              "override_read_only_violation",
+              "override_drain_violation"
+            ]
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "takeover_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_steps",
+        "requires_replay_reconciliation",
+        "requires_new_ticket_epoch"
+      ],
+      "properties": {
+        "required_steps": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "string",
+            "enum": [
+              "freeze_mutation",
+              "revoke_stale_tickets",
+              "reconcile_by_replay",
+              "issue_new_leases",
+              "resume_with_new_tickets"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "requires_replay_reconciliation": {
+          "type": "boolean",
+          "const": true
+        },
+        "requires_new_ticket_epoch": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 1000
+    }
+  },
+  "$defs": {
+    "laneId": {
+      "type": "string",
+      "pattern": "^lane\\.column_[abc]\\.[a-z0-9][a-z0-9_.-]*$"
+    },
+    "laneEpoch": {
+      "type": "string",
+      "pattern": "^epoch_[a-z0-9._:-]+$"
+    },
+    "laneClass": {
+      "type": "string",
+      "enum": [
+        "CAL",
+        "WLL",
+        "EXECUTION",
+        "RESEARCH",
+        "BROWSING",
+        "VERIFICATION",
+        "ROUTING",
+        "SUCCESSION",
+        "OPS"
+      ]
+    },
+    "laneEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lane_id",
+        "lane_class",
+        "agent_id",
+        "lane_epoch_id",
+        "capabilities",
+        "can_issue_mutation_ticket",
+        "can_apply_high_risk_mutation"
+      ],
+      "properties": {
+        "lane_id": {
+          "$ref": "#/$defs/laneId"
+        },
+        "lane_class": {
+          "$ref": "#/$defs/laneClass"
+        },
+        "agent_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "lane_epoch_id": {
+          "$ref": "#/$defs/laneEpoch"
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "topology_governance",
+              "workflow_orchestration",
+              "mutation_execution",
+              "verification_attestation",
+              "research_ingestion",
+              "web_capture",
+              "routing_policy",
+              "failover_takeover",
+              "ops_reliability"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "can_issue_mutation_ticket": {
+          "type": "boolean"
+        },
+        "can_apply_high_risk_mutation": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    },
+    "baseLease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lease_id",
+        "holder_lane_id",
+        "holder_epoch_id",
+        "fencing_term",
+        "issued_at",
+        "expires_at",
+        "status"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string",
+          "pattern": "^lease_[a-z0-9._-]+$"
+        },
+        "holder_lane_id": {
+          "$ref": "#/$defs/laneId"
+        },
+        "holder_epoch_id": {
+          "$ref": "#/$defs/laneEpoch"
+        },
+        "fencing_term": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "issued_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "jeopardy",
+            "expired",
+            "revoked"
+          ]
+        },
+        "jeopardy_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "network_partition",
+            "heartbeat_timeout",
+            "fencing_conflict",
+            "manual_recovery",
+            null
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "jeopardy"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "jeopardy_reason": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "jeopardy_reason"
+            ]
+          },
+          "else": {
+            "properties": {
+              "jeopardy_reason": {
+                "type": [
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "controlLease": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLease"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "lease_id": {
+              "type": "string",
+              "pattern": "^lease_control_[a-z0-9._-]+$"
+            }
+          }
+        }
+      ]
+    },
+    "workflowLease": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/baseLease"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "lease_id": {
+              "type": "string",
+              "pattern": "^lease_workflow_[a-z0-9._-]+$"
+            }
+          }
+        }
+      ]
+    },
+    "ticketPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_for_risk_tiers",
+        "ttl_seconds_max",
+        "required_ticket_fields",
+        "reject_stale_fencing_term"
+      ],
+      "properties": {
+        "required_for_risk_tiers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "high",
+              "critical"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "ttl_seconds_max": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 86400
+        },
+        "required_ticket_fields": {
+          "type": "array",
+          "minItems": 5,
+          "items": {
+            "type": "string",
+            "enum": [
+              "operation_id",
+              "ticket_id",
+              "issued_at",
+              "expires_at",
+              "fencing_term",
+              "integrity_hash"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "reject_stale_fencing_term": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "attestationObjectPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "required_fields",
+        "require_pass_status",
+        "require_operation_match",
+        "reject_expired"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "lane.mutation_attestation.v1"
+        },
+        "required_fields": {
+          "type": "array",
+          "minItems": 4,
+          "items": {
+            "type": "string",
+            "enum": [
+              "attestation_name",
+              "status",
+              "issued_at",
+              "expires_at",
+              "operation_id",
+              "evidence_ref",
+              "integrity_hash"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "require_pass_status": {
+          "type": "boolean",
+          "const": true
+        },
+        "require_operation_match": {
+          "type": "boolean",
+          "const": true
+        },
+        "reject_expired": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "overrideGovernancePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "enforce_at_actuation_boundary",
+        "require_action_intent",
+        "intent_schema_version",
+        "allowed_mutation_classes_by_mode"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "stop",
+            "read_only",
+            "drain"
+          ]
+        },
+        "enforce_at_actuation_boundary": {
+          "type": "boolean",
+          "const": true
+        },
+        "require_action_intent": {
+          "type": "boolean",
+          "const": true
+        },
+        "intent_schema_version": {
+          "type": "string",
+          "const": "lane.action_intent.v1"
+        },
+        "allowed_mutation_classes_by_mode": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "normal",
+            "stop",
+            "read_only",
+            "drain"
+          ],
+          "properties": {
+            "normal": {
+              "$ref": "#/$defs/allowedMutationClassSet"
+            },
+            "stop": {
+              "$ref": "#/$defs/allowedMutationClassSet"
+            },
+            "read_only": {
+              "$ref": "#/$defs/allowedMutationClassSet"
+            },
+            "drain": {
+              "$ref": "#/$defs/allowedMutationClassSet"
+            }
+          },
+          "allOf": [
+            {
+              "properties": {
+                "stop": {
+                  "const": [
+                    "none"
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "read_only": {
+                  "const": [
+                    "none",
+                    "read_only"
+                  ]
+                }
+              }
+            },
+            {
+              "properties": {
+                "drain": {
+                  "const": [
+                    "none",
+                    "read_only",
+                    "drain"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "allowedMutationClassSet": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "read_only",
+          "drain",
+          "mutating"
+        ]
+      },
+      "uniqueItems": true
+    }
+  }
+}

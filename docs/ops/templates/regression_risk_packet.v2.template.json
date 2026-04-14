@@ -1,0 +1,73 @@
+{
+  "packet_id": "a1b2c3d4-1234-5678-9abc-def123456789",
+  "version": "2.0",
+  "proposal_id": "ex-01-stale-task-drain",
+  "change_summary": {
+    "commit_sha": "abc123def456",
+    "pull_request_url": "https://example.com/pr/42"
+  },
+  "risk_assessment": {
+    "overall_tier": "high",
+    "scores": {
+      "blast_radius": 4,
+      "code_churn": 3,
+      "dependency_impact": 2,
+      "test_coverage_delta": 2,
+      "historical_instability": 3,
+      "critical_path_impact": 4
+    },
+    "summary": "Queue-state stale drain change touches critical path and requires replayable risk evidence."
+  },
+  "evidence": {
+    "diff_stats": {
+      "files_changed": 3,
+      "insertions": 124,
+      "deletions": 41
+    },
+    "test_coverage": {
+      "coverage_before_percent": 82.4,
+      "coverage_after_percent": 83.1,
+      "delta": 0.7
+    },
+    "static_analysis": {
+      "critical_violations_added": 0,
+      "code_complexity_increase": 0.3
+    },
+    "dependency_changes": [],
+    "manual_attestations": [
+      "proposal-approved",
+      "manual-routing-validation-complete"
+    ]
+  },
+  "replay_evidence": {
+    "artifact_paths": [
+      "/home/yeqiuqiu/clawd-architect/state/continuity/latest/evidence/ex_01_stale_task_drain_diff.patch",
+      "/home/yeqiuqiu/clawd-architect/state/continuity/latest/evidence/ex_01_coverage_report.json",
+      "/home/yeqiuqiu/clawd-architect/state/continuity/latest/evidence/ex_01_static_analysis.json"
+    ],
+    "validation_gate_log": [
+      {
+        "gate": "artifact_exists",
+        "status": "passed",
+        "timestamp": "2026-04-03T10:15:30Z"
+      },
+      {
+        "gate": "non_empty",
+        "status": "passed",
+        "timestamp": "2026-04-03T10:15:32Z"
+      },
+      {
+        "gate": "provider_quota_check",
+        "status": "passed",
+        "timestamp": "2026-04-03T10:15:35Z"
+      }
+    ],
+    "replay_checksum": "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+  },
+  "blocking_classification": "blocking",
+  "validation": {
+    "status": "pending",
+    "required_approvals": 2,
+    "approvals": []
+  }
+}

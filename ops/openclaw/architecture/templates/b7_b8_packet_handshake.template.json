@@ -1,0 +1,116 @@
+{
+  "schema": "clawd.b7_b8_packet_handshake.v1",
+  "generated_at": "2026-04-04T00:00:00Z",
+  "status": "promoted",
+  "contract_version": "clawd.b7_b8_packet_handshake.v1",
+  "packet": {
+    "bundle_status": "linked",
+    "bundle_id": "b8ev_template_001",
+    "bundle_path": "tmp/ui_bundle_example.json",
+    "bundle_schema_version": "clawd.b8_ui_evidence_bundle.v2",
+    "finding_count_before_enrichment": 2,
+    "finding_count_after_enrichment": 4,
+    "append_only_projection": true,
+    "source_scope": "ui_evidence_bundle"
+  },
+  "b7_enrichment": {
+    "producer_id": "component_consistency_audit_overlay.v1",
+    "status": "applied",
+    "finding_count": 2,
+    "critical_finding_count": 1,
+    "finding_ids": [
+      "cf_count_mismatch_001",
+      "cf_blockage_reason_mismatch_002"
+    ],
+    "quiet_on_success": false
+  },
+  "b8_consumption": {
+    "consumer_id": "operator_task_state_critique_packet.v1",
+    "requested_task_id": "core_roadmap:wave11:ex11.1",
+    "critique_status": "generated",
+    "visibility_state": "degraded",
+    "visibility_score": 42,
+    "task_noise_signal_tags": [
+      "stale"
+    ],
+    "task_suppressed": false,
+    "task_suppression_reasons": [],
+    "consumption_policy": {
+      "promote_high_severity": true,
+      "reject_low_signal": true
+    },
+    "promotion_count": 1,
+    "ignored_count": 1,
+    "promoted_finding_ids": [
+      "cf_count_mismatch_001"
+    ],
+    "ignored_finding_ids": [
+      "cf_blockage_reason_mismatch_002"
+    ],
+    "ignored_reason_counts": {
+      "healthy_visibility_low_severity": 1
+    }
+  },
+  "candidate_opportunity_surface": {
+    "schema": "clawd.b7_candidate_opportunity_surface.v1",
+    "generated_at": "2026-04-04T00:00:00Z",
+    "status": "ready",
+    "policy": {
+      "max_total_candidates": 6,
+      "max_now_candidates": 3,
+      "max_later_candidates": 3,
+      "reject_low_signal_candidates": true,
+      "reject_unmapped_rules": true,
+      "deduplicate_by_rule_and_text": true
+    },
+    "summary": {
+      "input_finding_count": 2,
+      "considered_finding_count": 2,
+      "candidate_count": 2,
+      "now_count": 1,
+      "later_count": 0,
+      "reject_count": 1,
+      "duplicate_input_count": 0,
+      "bounded_drop_count": 0,
+      "low_signal_reject_count": 1
+    },
+    "context": {
+      "critique_status": "generated",
+      "visibility_state": "degraded",
+      "task_suppressed": false,
+      "task_noise_signal_tags": [
+        "stale"
+      ]
+    },
+    "candidates": [
+      {
+        "candidate_id": "sys01_cf_count_mismatch_001",
+        "source_finding_id": "cf_count_mismatch_001",
+        "audit_rule_id": "count_mismatch",
+        "title": "Task/worker count mismatch between summary and detail projection.",
+        "severity": "high",
+        "canonical_lane": "CPL-04",
+        "verdict": "now",
+        "verdict_reason": "promoted_or_high_severity",
+        "confidence": 0.9,
+        "review_state": "review_required"
+      },
+      {
+        "candidate_id": "sys01_cf_blockage_reason_mismatch_002",
+        "source_finding_id": "cf_blockage_reason_mismatch_002",
+        "audit_rule_id": "blockage_reason_mismatch",
+        "title": "Blockage reason mismatch appears low signal in healthy visibility context.",
+        "severity": "low",
+        "canonical_lane": "OBS-03",
+        "verdict": "reject",
+        "verdict_reason": "low_severity_anti_spam",
+        "confidence": 0.84,
+        "review_state": "rejected"
+      }
+    ]
+  },
+  "provenance": {
+    "overlay_artifact_path": "state/continuity/latest/operator_component_consistency_audit_overlay.json",
+    "critique_packet_path": "state/continuity/latest/operator_task_state_critique_core_roadmap_wave11_ex11_1.json"
+  }
+}

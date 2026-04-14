@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/xb_403_downstream_eval_gate_pack.schema.json",
+  "title": "XB-403 Downstream Eval Gate Pack",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "slice_id",
+    "generated_at",
+    "release_bundle_ref",
+    "deterministic_replay_fixture_results_ref",
+    "domain_benchmark_scorecard_ref",
+    "rollback_simulation_report_ref"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.xb_403_downstream_eval_gate_pack.v1"
+    },
+    "slice_id": {
+      "type": "string",
+      "const": "XB-403"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expected_release_id": {
+      "type": "string",
+      "pattern": "^rel_[a-z0-9._-]+$"
+    },
+    "release_bundle_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "deterministic_replay_fixture_results_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "domain_benchmark_scorecard_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rollback_simulation_report_ref": {
+      "type": "string",
+      "minLength": 1
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

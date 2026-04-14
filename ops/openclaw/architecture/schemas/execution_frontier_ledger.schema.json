@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_frontier_ledger.v1",
+  "title": "Execution Frontier Ledger",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "program_state",
+    "current_wave",
+    "last_completed_wave",
+    "active_worker_count",
+    "active_labels",
+    "frontier_lane",
+    "next_candidate",
+    "last_progress_at",
+    "blocked_reason",
+    "transition",
+    "stalled_detection",
+    "source_refs"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.execution_frontier_ledger.v1" },
+    "generated_at": { "type": "string" },
+    "program_state": {
+      "type": "string",
+      "enum": ["running", "blocked", "idle", "waiting"]
+    },
+    "current_wave": { "type": ["integer", "null"], "minimum": 0 },
+    "last_completed_wave": { "type": ["integer", "null"], "minimum": 0 },
+    "active_worker_count": { "type": "integer", "minimum": 0 },
+    "active_labels": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "frontier_lane": { "type": ["string", "null"] },
+    "current_focus": { "type": ["string", "null"] },
+    "next_candidate": { "type": ["string", "null"] },
+    "next_candidate_wave": { "type": ["integer", "null"], "minimum": 0 },
+    "next_candidate_source": { "type": "string" },
+    "last_progress_at": { "type": ["string", "null"] },
+    "blocked_reason": { "type": ["string", "null"] },
+    "transition": {
+      "type": "object",
+      "required": [
+        "selector_version",
+        "selector_state",
+        "close_condition_met",
+        "proposed_next_wave",
+        "reason",
+        "queue_ready_count",
+        "queue_dependency_blocked_count",
+        "dispatch_status"
+      ],
+      "properties": {
+        "selector_version": { "type": "string" },
+        "selector_state": { "type": "string" },
+        "close_condition_met": { "type": "boolean" },
+        "proposed_next_wave": { "type": ["integer", "null"], "minimum": 0 },
+        "reason": { "type": ["string", "null"] },
+        "queue_ready_count": { "type": "integer", "minimum": 0 },
+        "queue_dependency_blocked_count": { "type": "integer", "minimum": 0 },
+        "dispatch_status": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "stalled_detection": {
+      "type": "object",
+      "required": ["stalled", "idle_for_sec", "stalled_after_sec", "reason"],
+      "properties": {
+        "stalled": { "type": "boolean" },
+        "idle_for_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "stalled_after_sec": { "type": "integer", "minimum": 0 },
+        "reason": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "supervisor_state": {
+      "type": "object",
+      "properties": {
+        "state_version": { "type": ["string", "null"] },
+        "state": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "idle_phase": { "type": ["string", "null"] },
+        "autonomous_dispatch_eligible": { "type": ["boolean", "null"] },
+        "autonomous_dispatch_block_reasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "selector_state": { "type": ["string", "null"] },
+        "dispatch_status": { "type": ["string", "null"] },
+        "close_condition_met": { "type": ["boolean", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "source_refs": {
+      "type": "object",
+      "required": ["execution_program_status", "continuity_current"],
+      "properties": {
+        "execution_program_status": { "type": "string" },
+        "continuity_current": { "type": "string" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

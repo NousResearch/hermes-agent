@@ -1,0 +1,191 @@
+{
+  "schema_version": "clawd.model_qualification_packet.v1",
+  "qualification_id": "mq_20260330_spark_canary_baseline",
+  "evaluated_at": "2026-03-30T11:40:00Z", // REQUIRED: ISO 8601 timestamp when qualification was evaluated
+  "policy_version": "model_rollout_gate_contract_v1",
+  "model": {
+    "model_key": "openai-codex/gpt-5.3-codex-spark",
+    "provider": "openai-codex",
+    "route_class": "SPARK",
+    "tier": "lightweight"
+  },
+  "lane_context": {
+    "requested_by_lane_id": "lane.column_b.swarm_orchestration",
+    "actor_role": "VALIDATOR",
+    "work_item_id": "wi_program_c_c2_model_qualification",
+    "session_key": "agent:example:session"
+  },
+  "qualification": {
+    "checklist": [
+      {
+        "check_id": "schema_contract_valid",
+        "status": "pass",
+        "evidence_ref": "ev_schema_001"
+      },
+      {
+        "check_id": "tool_compatibility_validated",
+        "status": "pass",
+        "evidence_ref": "ev_tooling_001"
+      },
+      {
+        "check_id": "evidence_pointer_resolution",
+        "status": "pass",
+        "evidence_ref": "ev_pointer_001"
+      },
+      {
+        "check_id": "abstention_behavior_validated",
+        "status": "pass",
+        "evidence_ref": "ev_abstain_001"
+      },
+      {
+        "check_id": "fallback_route_defined",
+        "status": "pass",
+        "evidence_ref": "ev_fallback_001"
+      },
+      {
+        "check_id": "cost_budget_guard_defined",
+        "status": "pass",
+        "evidence_ref": "ev_cost_001"
+      },
+      {
+        "check_id": "failure_mode_reviewed",
+        "status": "pass",
+        "evidence_ref": "ev_failure_001"
+      },
+      {
+        "check_id": "rollback_playbook_linked",
+        "status": "pass",
+        "evidence_ref": "ev_rollback_001"
+      }
+    ],
+    "benchmark_summary": {
+      "json_valid_rate": 0.998,
+      "evidence_pointer_resolution_rate": 1,
+      "abstain_f1": 0.97,
+      "non_abstain_recall": 0.96,
+      "eval_sample_size": 240
+    }
+  },
+  "scorecard": {
+    "scorecard_version": "clawd.model_qualification_scorecard.v1",
+    "scored_at": "2026-03-30T11:45:00Z", // REQUIRED: ISO 8601 timestamp when scorecard was generated
+    "window": {
+      "start_at": "2026-03-29T00:00:00Z",
+      "end_at": "2026-03-30T11:30:00Z",
+      "sample_count": 240
+    },
+    "latency": {
+      "p50_ms": 6200,
+      "p95_ms": 15800,
+      "p99_ms": 24100,
+      "timeout_rate": 0.008,
+      "score_0_100": 84,
+      "evidence_ref": "ev_latency_001",
+      "notes": "Measured from runner-level telemetry across qualification tasks."
+    },
+    "cost": {
+      "effective_cost_per_1k_input_usd": 0.35,
+      "effective_cost_per_1k_output_usd": 0.9,
+      "daily_projected_cost_usd": 24.2,
+      "provider_cost_coverage_rate": 0.96,
+      "provider_evidence_updated_at": "2026-03-30T11:44:00Z", // REQUIRED: ISO 8601 timestamp when provider evidence was last updated
+      "score_0_100": 88,
+      "evidence_ref": "ev_cost_telemetry_001",
+      "notes": "Provider-normalized cost ledger coverage passes minimum reliability floor."
+    },
+    "trust": {
+      "evidence_pointer_resolution_rate": 1,
+      "unsupported_claim_rate": 0.01,
+      "abstain_f1": 0.97,
+      "operator_override_rate": 0.04,
+      "score_0_100": 92,
+      "evidence_ref": "ev_trust_001",
+      "notes": "No unresolved citation errors in canary shadow sample."
+    },
+    "determinism": {
+      "replay_match_rate": 0.99,
+      "structured_output_stability_rate": 0.985,
+      "idempotent_retry_match_rate": 0.992,
+      "score_0_100": 91,
+      "evidence_ref": "ev_determinism_001",
+      "notes": "Replay and retry signatures match deterministic baseline expectations."
+    },
+    "failure_patterns": [
+      {
+        "pattern_id": "fp_timeout_tail_spike",
+        "description": "Tail latency spikes during external provider contention windows.",
+        "severity": "medium",
+        "observed_rate": 0.015,
+        "detectability": "high",
+        "mitigation": "Route fallback to deterministic digest mode when timeout budget is breached.",
+        "status": "mitigated",
+        "evidence_ref": "ev_failure_telemetry_001"
+      },
+      {
+        "pattern_id": "fp_unpriced_provider_event",
+        "description": "Partial unpriced usage events can bias cost governance if not normalized.",
+        "severity": "high",
+        "observed_rate": 0.04,
+        "detectability": "medium",
+        "mitigation": "Block promotion when provider_cost_coverage_rate falls below policy floor.",
+        "status": "open",
+        "evidence_ref": "ev_cost_coverage_001"
+      }
+    ],
+    "summary": {
+      "weights": {
+        "latency": 0.2,
+        "cost": 0.2,
+        "trust": 0.25,
+        "determinism": 0.25,
+        "failure_patterns": 0.1
+      },
+      "weighted_score_0_100": 89.25,
+      "promotion_recommendation": "hold",
+      "guardrail_violations": [
+        "failure_pattern_open:fp_unpriced_provider_event"
+      ],
+      "notes": "Strong baseline; promotion blocked until cost-coverage risk is closed."
+    }
+  },
+  "rollout": {
+    "current_state": "SHADOW",
+    "requested_action": "promote",
+    "requested_state": "CANARY",
+    "rollout_reason": "Qualification checklist and scorecard baseline passed with one tracked hold condition.",
+    "canary": {
+      "window_minutes": 180,
+      "exposure_percent": 0.1
+    }
+  },
+  "rollback": {
+    "can_auto_rollback": true,
+    "max_rollback_minutes": 20,
+    "fallback_model_ref": "NO_LLM",
+    "owner_role": "SRE",
+    "reason": "Any scorecard guardrail breach reverts to deterministic route."
+  },
+  "kill_switch": {
+    "armed": true,
+    "engage_requested": false,
+    "fallback_route": "NO_LLM"
+  },
+  "source_refs": [
+    {
+      "ref_id": "src_exec_queue_c2",
+      "path": "reports/openclaw_system_execution_queue_full_buildout_2026-03-30.md",
+      "locator": "# C2. Model qualification packet + scorecard",
+      "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "ref_id": "src_model_routing_doctrine",
+      "path": "docs/ops/model_routing_doctrine_v1.md",
+      "locator": "## 7) Qualification and rollout gates",
+      "content_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "decision_refs": [
+    "runbook:model_qualification_scorecard_v1",
+    "contract:model_qualification_rollout_gate_contract_v1"
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "conversion_id": "mcg_20260320_longform_book_example",
+  "created_at": "2026-03-20T10:00:00Z",
+  "policy_version": "markdown_conversion_quality_gate_v1",
+  "source": {
+    "source_id": "src_longform_pdf_001",
+    "source_type": "pdf",
+    "source_path": "memory/inbound_pdfs/example_longform.pdf",
+    "source_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "source_locator": "pages:1-420"
+  },
+  "package": {
+    "package_root": "memory/converted_longform/example_longform_v1",
+    "book_path": "book.md",
+    "chunks_dir": "chunks",
+    "source_map_path": "source_map.jsonl"
+  },
+  "expectations": {
+    "min_chunks": 4,
+    "max_chunks": 4000,
+    "require_source_map_chunk_cover": true,
+    "require_chunk_heading_alignment": true
+  },
+  "profile": {
+    "markdown_flavor": "gfm",
+    "require_frontmatter": false,
+    "required_frontmatter_keys": [],
+    "disallow_raw_html": true,
+    "disallow_javascript_links": true,
+    "max_line_length": 1200,
+    "require_heading_hierarchy": true
+  }
+}

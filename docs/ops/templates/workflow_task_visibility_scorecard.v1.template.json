@@ -1,0 +1,106 @@
+{
+  "schema_version": "clawd.b8_workflow_task_visibility_scorecard.v1",
+  "scope_posture": "support_only",
+  "scorecard_id": "lt02_triage_visibility_20260404t125500z",
+  "generated_at": "2026-04-04T12:55:00Z",
+  "lane_mapping": {
+    "track": "SX",
+    "queue_id": "LT-02",
+    "board_id": "DSG-05",
+    "lanes": ["B8", "C1", "XU", "triage"]
+  },
+  "surface": {
+    "surface_id": "operator_triage_console",
+    "surface_name": "Operator Triage Console",
+    "surface_kind": "operator_triage",
+    "snapshot_at": "2026-04-04T12:50:00Z"
+  },
+  "system_scorecard": {
+    "score": 79.65,
+    "rating": "degraded",
+    "dimensions": {
+      "task_freshness": 83,
+      "worker_health": 78,
+      "blockage_severity": 78,
+      "evidence_quality": 81,
+      "execution_path_stability": 75
+    },
+    "weights": {
+      "task_freshness": 0.3,
+      "worker_health": 0.25,
+      "blockage_severity": 0.2,
+      "evidence_quality": 0.15,
+      "execution_path_stability": 0.1
+    },
+    "thresholds": {
+      "healthy_min": 85,
+      "degraded_min": 60
+    },
+    "task_rating_counts": {
+      "healthy": 1,
+      "degraded": 1,
+      "critical": 0
+    },
+    "task_count": 2,
+    "visible_task_count": 2,
+    "suppressed_task_count": 0
+  },
+  "task_scorecards": [
+    {
+      "task_id": "core_roadmap:wave11:ex11.1",
+      "score": 90.6,
+      "rating": "healthy",
+      "dimensions": {
+        "task_freshness": 94,
+        "worker_health": 88,
+        "blockage_severity": 90,
+        "evidence_quality": 92,
+        "execution_path_stability": 86
+      },
+      "suppressed": false,
+      "suppression_reasons": []
+    },
+    {
+      "task_id": "core_roadmap:wave11:obs01.2",
+      "score": 68.7,
+      "rating": "degraded",
+      "dimensions": {
+        "task_freshness": 72,
+        "worker_health": 68,
+        "blockage_severity": 66,
+        "evidence_quality": 70,
+        "execution_path_stability": 64
+      },
+      "suppressed": false,
+      "suppression_reasons": []
+    }
+  ],
+  "integration_targets": [
+    {
+      "lane": "triage",
+      "surface_id": "operator_triage_console",
+      "integration_method": "ingest execution_snapshot.visibility_scorecard and task_detail.active_task_cards[*].visibility_scorecard",
+      "priority": "immediate"
+    },
+    {
+      "lane": "B8",
+      "surface_id": "operator_task_state_critique_packet",
+      "integration_method": "attach scorecard as evidence-linked rubric block in critique packets",
+      "priority": "queued"
+    }
+  ],
+  "evidence_refs": [
+    "ops/openclaw/continuity/operator_triage_console.sh",
+    "ops/openclaw/architecture/schemas/operator_triage_console.schema.json",
+    "tests/test_operator_triage_console.py"
+  ],
+  "provenance": {
+    "generated_by": "lt02_followthrough_support_slice",
+    "generated_at": "2026-04-04T12:55:00Z",
+    "source_records": [
+      "reports/openclaw_lt02_visibility_scorecard_slice_2026-04-03.md",
+      "reports/openclaw_noise_signal_scorecard_implementation_slice_2026-04-02.md",
+      "reports/openclaw_dsg07_operator_surface_convergence_slice_2026-04-03.md"
+    ]
+  }
+}

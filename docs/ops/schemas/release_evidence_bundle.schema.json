@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/release_evidence_bundle.schema.json",
+  "title": "Release Evidence Bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "release_id",
+    "generated_at",
+    "activation_mode",
+    "stages",
+    "rollback_proof",
+    "compatibility_lifecycle"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.release_evidence_bundle.v1"
+    },
+    "release_id": {
+      "type": "string",
+      "pattern": "^rel_[a-z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "activation_mode": {
+      "type": "string",
+      "enum": [
+        "shadow",
+        "canary",
+        "progressive",
+        "broad_activation"
+      ]
+    },
+    "lane_context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "lane_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "wave": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "health_requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "required_lanes",
+        "min_health_layer",
+        "require_restore_evidence"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "strict",
+            "observe_only"
+          ]
+        },
+        "required_lanes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "min_health_layer": {
+          "type": "string",
+          "enum": [
+            "safe-to-act",
+            "truthful"
+          ]
+        },
+        "require_restore_evidence": {
+          "type": "boolean"
+        }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/stage"
+      }
+    },
+    "rollback_proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_rollback_ref",
+        "state_rollback_ref",
+        "drill_ref",
+        "drilled_at",
+        "max_age_hours"
+      ],
+      "properties": {
+        "artifact_rollback_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state_rollback_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drill_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drilled_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "max_age_hours": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 720
+        }
+      }
+    },
+    "compatibility_lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "register_ref",
+        "active_exceptions",
+        "removal_rfc_refs"
+      ],
+      "properties": {
+        "register_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "active_exceptions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "removal_rfc_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "design_gate_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "ordered_results"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "clawd.design_gate_stack_result.v1"
+        },
+        "ordered_results": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/design_gate_result"
+          }
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "source_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "status",
+        "evidence_refs",
+        "evaluated_at"
+      ],
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": [
+            "local_determinism",
+            "presubmit",
+            "integration_replay",
+            "shadow",
+            "canary",
+            "progressive",
+            "broad_activation"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "block"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "design_gate_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_id",
+        "status",
+        "evidence_refs",
+        "evaluated_at"
+      ],
+      "properties": {
+        "gate_id": {
+          "type": "string",
+          "enum": [
+            "G1_SCHEMA",
+            "G2_STRUCTURE",
+            "G3_A11Y",
+            "G4_VISUAL",
+            "G5_RUNTIME",
+            "G6_ALIGNMENT"
+          ]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "block"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        },
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

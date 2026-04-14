@@ -1,0 +1,70 @@
+{
+  "schema_version": "clawd.personal_context_graph_object.v1",
+  "object_id": "pcg_pattern_protected_focus_block_001",
+  "object_type": "pattern_card",
+  "title": "Pattern: protected focus block",
+  "status": "active",
+  "created_at": "2026-03-29T00:18:00Z",
+  "updated_at": "2026-03-29T00:18:00Z",
+  "revision": 1,
+  "supersedes_object_id": null,
+  "previous_object_hash": null,
+  "object_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "payload": {
+    "pattern_name": "protected_focus_block",
+    "detection_heuristics": [
+      "Calendar has two 90-minute blocks with no conflicts",
+      "Notification suppression activated during both blocks"
+    ],
+    "guardrails": [
+      "Never remove sleep-floor constraint to create extra block time",
+      "Escalate if commitment conflicts with block schedule"
+    ],
+    "linked_lesson_object_ids": [
+      "pcg_lesson_focus_blocks_001"
+    ],
+    "exemplar_object_ids": [
+      "pcg_decision_weekplan_focus_001",
+      "pcg_aar_weekplan_focus_001"
+    ],
+    "confidence": 0.74
+  },
+  "provenance": {
+    "event_id": "evt_personal_pattern_capture_001",
+    "event_type": "personal_pattern_card_capture",
+    "occurred_at": "2026-03-29T00:17:55Z",
+    "source_connector_id": "conn_personal_os_review",
+    "producer_id": "xp_lane_operator",
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "payload_sha256": "sha256:5656565656565656565656565656565656565656565656565656565656565656"
+  },
+  "governance": {
+    "risk_tier": "PX1_ASSIST",
+    "approval_tier": "AP1_EXPLICIT_USER_CONFIRM",
+    "escalation_level": "E0_NONE",
+    "advisory_only": true
+  },
+  "links": {
+    "related_object_ids": [
+      "pcg_lesson_focus_blocks_001",
+      "pcg_decision_weekplan_focus_001",
+      "pcg_constraint_sleep_floor_001"
+    ],
+    "source_refs": [
+      "memory/2026-03-29.md"
+    ],
+    "evidence_refs": [
+      "reports/xp_301_personal_os_scope_boundary_contract_closeout_2026-03-28.md"
+    ]
+  },
+  "metadata": {
+    "created_by": "xp_lane_owner",
+    "source_system": "xp_review_capture",
+    "tags": [
+      "pattern",
+      "focus"
+    ]
+  }
+}

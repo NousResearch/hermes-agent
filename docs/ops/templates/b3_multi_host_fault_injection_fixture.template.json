@@ -1,0 +1,24 @@
+{
+  "schema_version": "clawd.b3.multi_host_fault_injection_fixture.v1",
+  "fixture_id": "b3_multihost_template",
+  "chunk_count": 8,
+  "hosts": [
+    "ingestor_a",
+    "ingestor_b",
+    "ingestor_c"
+  ],
+  "fault_injections": [
+    {
+      "host": "ingestor_a",
+      "trigger_chunk_index": 2,
+      "mode": "drop_host"
+    }
+  ],
+  "assertions": {
+    "expected_decision": "PASS",
+    "require_handoff": true,
+    "require_clean_recovery": true,
+    "require_destination_sha_match": true
+  },
+  "notes": "Template contract for deterministic Slice-25 multi-host fault injection and handoff recovery harness."
+}

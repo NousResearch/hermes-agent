@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.latest.v2",
+  "title": "Ground Truth Connector Latest Surface v2",
+  "type": "object",
+  "required": ["schema_version", "generated_at", "connectors"],
+  "properties": {
+    "schema_version": { "const": "gtc.latest.v2" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "connectors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "connector_type",
+          "connector_id",
+          "latest_evidence_id",
+          "observed_at",
+          "freshness_ttl_ms",
+          "stale"
+        ],
+        "properties": {
+          "connector_type": { "type": "string" },
+          "connector_id": { "type": "string" },
+          "latest_evidence_id": { "type": ["string", "null"] },
+          "observed_at": { "type": ["string", "null"], "format": "date-time" },
+          "freshness_ttl_ms": { "type": "integer", "minimum": 1 },
+          "stale": { "type": "boolean" },
+          "stale_severity": { "type": "string" },
+          "age_ms": { "type": ["integer", "null"], "minimum": 0 },
+          "subject": { "type": "object" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "readiness": {
+      "type": "object",
+      "properties": {
+        "mutate_allowed": { "type": "boolean" },
+        "status": { "type": "string" },
+        "reasons": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

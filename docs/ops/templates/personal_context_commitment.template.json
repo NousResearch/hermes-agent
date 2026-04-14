@@ -1,0 +1,56 @@
+{
+  "schema_version": "clawd.personal_context_graph_object.v1",
+  "object_id": "pcg_commitment_family_dinner_001",
+  "object_type": "commitment",
+  "title": "Family dinner commitment",
+  "status": "active",
+  "created_at": "2026-03-29T00:14:00Z",
+  "updated_at": "2026-03-29T00:14:00Z",
+  "revision": 1,
+  "supersedes_object_id": null,
+  "previous_object_hash": null,
+  "object_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "payload": {
+    "counterparty": "family",
+    "promise": "Keep Wednesday dinner blocked for family unless emergency.",
+    "due_at": "2026-04-02T11:00:00Z",
+    "confidence": 0.95,
+    "commitment_status": "in_progress"
+  },
+  "provenance": {
+    "event_id": "evt_personal_commitment_capture_001",
+    "event_type": "personal_commitment_capture",
+    "occurred_at": "2026-03-29T00:13:55Z",
+    "source_connector_id": "conn_personal_os_manual",
+    "producer_id": "xp_lane_operator",
+    "risk_class": "RG2_HIGH",
+    "route_class": "advisory",
+    "auth_tier": "INTERNAL",
+    "payload_sha256": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "governance": {
+    "risk_tier": "PX2_HIGH_IMPACT",
+    "approval_tier": "AP2_DUAL_CONFIRM",
+    "escalation_level": "E2_APPROVAL_REQUIRED",
+    "advisory_only": true
+  },
+  "links": {
+    "related_object_ids": [
+      "pcg_goal_q2_focus_systems_001"
+    ],
+    "source_refs": [
+      "memory/2026-03-29.md"
+    ],
+    "evidence_refs": [
+      "state/continuity/latest/xp_301_personal_os_approval_log_2026-03-28.jsonl"
+    ]
+  },
+  "metadata": {
+    "created_by": "xp_lane_owner",
+    "source_system": "xp_manual_capture",
+    "tags": [
+      "commitment",
+      "family"
+    ]
+  }
+}

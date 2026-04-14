@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.failover_fsm.reset_readiness_report.v1",
+  "title": "Failover FSM Reset Readiness Report",
+  "type": "object",
+  "required": [
+    "object_type",
+    "evaluated_at",
+    "verdict",
+    "checks",
+    "blockers",
+    "next_required_actions"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.failover_fsm.reset_readiness_report.v1" },
+    "evaluated_at": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["PASS", "FAIL_BLOCKED"] },
+    "checks": {
+      "type": "object",
+      "required": [
+        "continuity_fresh",
+        "proof_valid",
+        "mutation_safe",
+        "coherence_valid",
+        "queue_authority_clear",
+        "connector_fresh"
+      ],
+      "properties": {
+        "continuity_fresh": { "type": "string", "enum": ["pass", "fail"] },
+        "proof_valid": { "type": "string", "enum": ["pass", "fail"] },
+        "mutation_safe": { "type": "string", "enum": ["pass", "fail"] },
+        "coherence_valid": { "type": "string", "enum": ["pass", "fail"] },
+        "queue_authority_clear": { "type": "string", "enum": ["pass", "fail"] },
+        "connector_fresh": { "type": "string", "enum": ["pass", "fail"] }
+      },
+      "additionalProperties": true
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } },
+    "next_required_actions": { "type": "array", "items": { "type": "string" } },
+    "proof": { "type": "object" }
+  },
+  "additionalProperties": true
+}

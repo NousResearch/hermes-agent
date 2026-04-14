@@ -1,0 +1,59 @@
+{
+  "schema_version": "clawd.personal_context_graph_object.v1",
+  "object_id": "pcg_event_q2_planning_offsite_001",
+  "object_type": "event",
+  "title": "Q2 planning offsite",
+  "status": "completed",
+  "created_at": "2026-03-29T00:13:00Z",
+  "updated_at": "2026-03-29T00:13:00Z",
+  "revision": 1,
+  "supersedes_object_id": null,
+  "previous_object_hash": null,
+  "object_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "payload": {
+    "event_kind": "work",
+    "summary": "Two-hour offsite used to commit the next 12-week roadmap.",
+    "occurred_window": {
+      "start": "2026-03-28T18:00:00Z",
+      "end": "2026-03-28T20:00:00Z"
+    },
+    "impact_level": "high"
+  },
+  "provenance": {
+    "event_id": "evt_personal_event_capture_001",
+    "event_type": "personal_event_capture",
+    "occurred_at": "2026-03-29T00:12:55Z",
+    "source_connector_id": "conn_personal_os_calendar",
+    "producer_id": "xp_lane_operator",
+    "risk_class": "RG1_MODERATE",
+    "route_class": "advisory",
+    "auth_tier": "OBSERVABILITY",
+    "payload_sha256": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "governance": {
+    "risk_tier": "PX1_ASSIST",
+    "approval_tier": "AP1_EXPLICIT_USER_CONFIRM",
+    "escalation_level": "E0_NONE",
+    "advisory_only": true
+  },
+  "links": {
+    "related_object_ids": [
+      "pcg_goal_q2_focus_systems_001",
+      "pcg_decision_weekplan_focus_001"
+    ],
+    "source_refs": [
+      "calendar://personal/q2-planning-offsite"
+    ],
+    "evidence_refs": [
+      "memory/2026-03-29.md"
+    ]
+  },
+  "metadata": {
+    "created_by": "xp_lane_owner",
+    "source_system": "xp_calendar_ingest",
+    "tags": [
+      "event",
+      "work"
+    ]
+  }
+}

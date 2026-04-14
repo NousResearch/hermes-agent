@@ -1,0 +1,205 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_replay_resync.schema.json",
+  "title": "Orchestrator Replay/Resync Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_id",
+    "generated_at",
+    "request",
+    "admission",
+    "response"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.replay_resync.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:_\\.-]{7,127}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "last_applied_event_seq"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "cursor_gap",
+            "consumer_restart",
+            "ledger_mismatch",
+            "manual_recovery"
+          ]
+        },
+        "from_event_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "to_event_seq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "last_known_snapshot_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^snapshot:[a-zA-Z0-9._:-]+$"
+        },
+        "last_applied_event_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_events": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      }
+    },
+    "admission": {
+      "$ref": "#/$defs/admission"
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "replay_window",
+        "resume_cursor",
+        "actions"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ready",
+            "partial",
+            "snapshot_reseed_required",
+            "blocked"
+          ]
+        },
+        "replay_window": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start_seq",
+            "end_seq",
+            "available_count"
+          ],
+          "properties": {
+            "start_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "available_count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "resume_cursor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "next_since_seq",
+            "resync_token",
+            "expires_at"
+          ],
+          "properties": {
+            "next_since_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "resync_token": {
+              "type": "string",
+              "minLength": 8
+            },
+            "expires_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "replay_events",
+              "resolve_snapshot",
+              "rebuild_plan",
+              "rerun_idempotent",
+              "operator_review_required"
+            ]
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "decision",
+        "reason_codes"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "degraded",
+            "read_only"
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "deferred",
+            "rejected"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

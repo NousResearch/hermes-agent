@@ -1,0 +1,37 @@
+{
+  "schema_version": "clawd.promotion_trace_manifest.v1",
+  "manifest_id": "ptm_kpq_prom_20260321_example_memory",
+  "generated_at": "2026-03-21T15:00:00Z",
+  "promotion_id": "prom_20260321_example_memory",
+  "queue_entry_id": "kpq_prom_20260321_example_memory",
+  "candidate": {
+    "path": "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/promotion_candidate.json",
+    "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  },
+  "workflow_decision": {
+    "path": "state/continuity/knowledge_promotion_queue/workflow/kpq_prom_20260321_example_memory.json",
+    "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "decision": "PASS",
+    "final_state": "PROMOTED"
+  },
+  "source_refs": [
+    {
+      "ref_id": "src_case_synth",
+      "path": "memory/research_cases/rc_example/SYNTH/synths/synth_v1.json",
+      "declared_content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "observed_content_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "hash_match": true
+    }
+  ],
+  "decision_refs": [
+    "promotion_gate:PASS",
+    "review:approved"
+  ],
+  "shared_memory_object": {
+    "path": "state/continuity/shared_memory/objects/smo_prom_20260321_example_memory.json",
+    "content_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  },
+  "implementation_refs": [
+    "memory/research_cases/rc_example/CANDIDATE/candidates/cand_v1/implementation_queue_item.json"
+  ]
+}

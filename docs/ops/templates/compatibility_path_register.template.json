@@ -1,0 +1,15 @@
+{
+  "schema_version": "clawd.compatibility_path_register.v1",
+  "register_id": "cpr_20260321_release",
+  "generated_at": "2026-03-21T08:30:00Z",
+  "paths": [
+    {
+      "path_id": "compat_model_rollout_v0_fallback",
+      "status": "removal_in_progress",
+      "owner": "release_substrate_owner",
+      "added_at": "2026-03-01T00:00:00Z",
+      "target_removal_wave": "wave_7",
+      "removal_rfc_ref": "docs/ops/templates/compatibility_path_removal_rfc.template.json"
+    }
+  ]
+}

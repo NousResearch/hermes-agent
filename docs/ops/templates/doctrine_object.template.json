@@ -1,0 +1,112 @@
+{
+  "doctrine_id": "doc_example_verify_before_commit",
+  "version": "1.0",
+  "title": "Verify before committing consequential decisions",
+  "principle_text": "For high-impact decisions, run an explicit verification pass against evidence before committing to action.",
+  "rationale": "Reduces false confidence and catches contradiction/freshness drift before irreversible steps.",
+  "status": "draft",
+  "doctrine_type": "principle",
+  "domain_tags": [
+    "philosophy",
+    "judgment",
+    "operations"
+  ],
+  "lane_scope": [
+    "governance",
+    "life",
+    "trading"
+  ],
+  "precedence": {
+    "level": "default",
+    "rank": 50,
+    "overridable": true,
+    "override_requires_review": true,
+    "override_review_queue": "queue/doctrine_review"
+  },
+  "optionality": {
+    "mode": "contextual",
+    "activation_conditions": [
+      "decision_impact=high",
+      "confidence_score<0.75"
+    ],
+    "disable_conditions": [
+      "incident_response_requires_immediate_safing_action"
+    ]
+  },
+  "confidence": {
+    "score": 0.72,
+    "evidence_quality": "medium",
+    "last_calibrated_at": "2026-03-20T10:30:00+07:00",
+    "calibrated_by": "Architect",
+    "uncertainty_notes": "Needs more adversarial examples from life-lane and trading-lane retrospectives."
+  },
+  "source_refs": [
+    {
+      "source_id": "src_philosophy_substrate_pdf",
+      "uri_or_path": "/home/yeqiuqiu/.openclaw/media/inbound/Philosophy_Judgment_Substrate_Design---46349a98-6bf4-4020-84ec-aad5f9a68a8e.pdf",
+      "source_type": "pdf",
+      "locator": "sec 2-3",
+      "citation_text": "Judgment should be explicit, auditable, and conflict-aware.",
+      "evidence_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "source_id": "src_life_philosophy_pdf",
+      "uri_or_path": "/home/yeqiuqiu/.openclaw/media/inbound/Life-Philosophy_Integration_Doctrine---068c2b63-5ef5-4035-be7f-2cfb99cf514b.pdf",
+      "source_type": "pdf",
+      "locator": "sec 4",
+      "citation_text": "Principles should be integrated into reflection and decision loops with periodic review."
+    }
+  ],
+  "contradictions": [
+    {
+      "doctrine_id": "doc_act_fast_under_time_pressure",
+      "relation": "tensions_with",
+      "severity": "medium",
+      "resolution_state": "in_review",
+      "resolution_note": "Fast action doctrine applies first for safety incidents; post-incident verification remains mandatory."
+    }
+  ],
+  "examples": [
+    {
+      "example_id": "ex_pre_trade_risk_check",
+      "context": "Before entering a large position in the trading lane",
+      "recommended_action": "Run checklist + validate assumptions against latest evidence pack",
+      "expected_outcome": "Avoid entering on stale or contradictory thesis",
+      "evidence_refs": [
+        "src_philosophy_substrate_pdf"
+      ]
+    }
+  ],
+  "anti_patterns": [
+    {
+      "anti_pattern_id": "ap_story_first_no_evidence",
+      "description": "Narrative commitment before evidence review",
+      "failure_mode": "Locks in bias and ignores contradiction signals",
+      "trigger_signals": [
+        "no source refs attached",
+        "decision made from memory only"
+      ],
+      "mitigations": [
+        "require source_refs before promotion",
+        "add contradiction check step"
+      ]
+    }
+  ],
+  "governance": {
+    "owner": "Architect",
+    "promotion_state": "review",
+    "approved_by": [],
+    "decision_refs": [
+      "decision://wave4/slice3/doctrine-object-contract-v1"
+    ]
+  },
+  "review": {
+    "cadence": "monthly",
+    "next_review_at": "2026-04-20T10:30:00+07:00",
+    "last_review_at": "2026-03-20T10:30:00+07:00"
+  },
+  "supersedes": [],
+  "superseded_by": null,
+  "created_at": "2026-03-20T10:30:00+07:00",
+  "updated_at": "2026-03-20T10:30:00+07:00"
+}

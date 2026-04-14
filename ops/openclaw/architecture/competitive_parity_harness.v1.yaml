@@ -1,0 +1,63 @@
+version: "1.0"
+id: "openclaw.competitive_parity.harness.v1"
+status: "active"
+updated_at: "2026-03-08T23:50:00+07:00"
+
+competitors:
+  baseline_set:
+    - bybit
+    - hyperliquid
+    - hyperdash
+
+teardown_contract:
+  required_dimensions:
+    - information_density
+    - interaction_latency
+    - keyboard_operability
+    - component_modularity
+    - trust_signaling
+  required_artifacts:
+    - teardown.md
+    - scorecard.json
+    - capture_manifest.json
+  schema: "ops/openclaw/architecture/schemas/competitive_scorecard.schema.json"
+
+acceptance_tests:
+  examples:
+    - id: orderbook_density_1080p
+      description: "render at least 30 rows in 600px viewport without overlap"
+    - id: focus_context_retention
+      description: "modal close returns focus to invoking control"
+    - id: keyboard_composite_navigation
+      description: "composite grids behave as unified tab stops with internal arrow traversal"
+
+parity_dashboard:
+  required_metrics:
+    - parity_score_percent
+    - density_score
+    - latency_delta_ms
+    - component_coverage_ratio
+  publish_cadence: "weekly"
+  fail_conditions:
+    - "score regression > 10 percentage points week-over-week"
+    - "critical benchmark path missing artifact bundle"
+
+backlog_mapping:
+  rules:
+    - "P0 for trust/safety regressions"
+    - "P1 for parity gaps > 15% in high-frequency workflows"
+    - "P2 for visual polish without behavioral impact"
+
+operational_runner:
+  command: "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/architecture/run_competitive_parity_harness.sh --json"
+  periodic_wrapper: "bash /home/yeqiuqiu/clawd-architect/ops/openclaw/run_competitive_parity_harness.sh"
+  queue_task_id: "parity:weekly_harness"
+  output_root: "state/architecture/competitive_parity"
+  input_root: "state/architecture/competitive_parity/inbox"
+  event_policy:
+    emit_on:
+      - regression
+      - blocker
+    silence_on:
+      - routine_success
+      - claim_deferred

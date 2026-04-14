@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/successor_packet.schema.json",
+  "title": "OpenClaw Successor Packet v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_version",
+    "packet_id",
+    "generated_at",
+    "continuity_hash",
+    "readiness",
+    "mutation_gate_status",
+    "freshness_seconds",
+    "artifact_references",
+    "provenance_chain",
+    "generation_metadata",
+    "validation_signature"
+  ],
+  "properties": {
+    "packet_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "packet_id": {
+      "type": "string",
+      "pattern": "^pkt_[a-f0-9-]{36}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "continuity_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "readiness": {
+      "type": "string",
+      "enum": [
+        "READY",
+        "RECONCILE_REQUIRED",
+        "BLOCKED"
+      ]
+    },
+    "mutation_gate_status": {
+      "type": "string",
+      "enum": [
+        "allowed",
+        "blocked"
+      ]
+    },
+    "freshness_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400
+    },
+    "artifact_references": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "artifact_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      }
+    },
+    "provenance_chain": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^pkt_[a-f0-9-]{36}$"
+      }
+    },
+    "generation_metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "worker_lane",
+        "model_selection",
+        "script_version",
+        "generation_trigger"
+      ],
+      "properties": {
+        "worker_lane": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_selection": {
+          "type": "string",
+          "minLength": 1
+        },
+        "script_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generation_trigger": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "warning_channels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "blocker_summary": {
+      "type": "string"
+    },
+    "next_slice_recommendation": {
+      "type": "string"
+    },
+    "handover_instructions": {
+      "type": "string"
+    },
+    "validation_signature": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

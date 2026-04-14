@@ -1,0 +1,79 @@
+{
+  "packet_id": "6d57f416-8f49-45b2-9b47-5b9e8fc4cd34",
+  "version": "1.0",
+  "proposal_id": "lt05-test-gap-pilot-001",
+  "generated_at": "2026-04-04T04:20:00Z",
+  "changed_scope": {
+    "changed_paths": [
+      {
+        "file_path": "scripts/session_topology_router.py",
+        "line_range": "1500-1760",
+        "symbols": [
+          "_regression_risk_packet_gate",
+          "_resolve_effective_risk_tier"
+        ]
+      },
+      {
+        "file_path": "tests/test_session_topology_router.py",
+        "line_range": "1450-1760",
+        "symbols": [
+          "test_session_router_accepts_v2_regression_risk_packet_and_projects_blocking_classification"
+        ]
+      }
+    ],
+    "mapping_basis": [
+      "diff_hunk",
+      "coverage_trace",
+      "manual_review"
+    ]
+  },
+  "test_gap_findings": [
+    {
+      "finding_id": "tg-001",
+      "changed_path": "scripts/session_topology_router.py::_regression_risk_packet_gate",
+      "gap_type": "uncovered_logic_path",
+      "release_impact": "blocking",
+      "mapped_tests": [
+        "tests/test_session_topology_router.py::test_session_router_blocks_v2_regression_risk_packet_when_blocking_classification_mismatched"
+      ],
+      "suggested_test_additions": [
+        "tests/test_session_topology_router.py::test_session_router_blocks_when_test_gap_packet_classification_mismatches_findings"
+      ],
+      "confidence": 0.83,
+      "uncertainty_notes": "No direct replay fixture currently validates mixed blocking/non-blocking finding bundles in one packet lineage."
+    },
+    {
+      "finding_id": "tg-002",
+      "changed_path": "tests/test_session_topology_router.py::regression_risk_v2_branch",
+      "gap_type": "missing_regression_guard",
+      "release_impact": "non_blocking",
+      "mapped_tests": [
+        "tests/test_regression_risk_packet_v2_contract.py::test_regression_risk_packet_v2_requires_replay_evidence_and_blocking_classification"
+      ],
+      "suggested_test_additions": [
+        "tests/test_test_gap_packet_v1_contract.py::test_test_gap_packet_requires_blocking_parity_with_findings"
+      ],
+      "confidence": 0.71,
+      "uncertainty_notes": "Focused on contract-level validation; no end-to-end router gate integration in this pilot slice."
+    }
+  ],
+  "blocking_classification": "blocking",
+  "analysis_scope": {
+    "analyzed_paths": [
+      "scripts/session_topology_router.py",
+      "tests/test_session_topology_router.py",
+      "docs/ops/session_topology_contract_v1.md"
+    ],
+    "unprocessed_scope": [
+      {
+        "path": "state/continuity/latest",
+        "reason": "No runtime evidence replay packet generated in this contract-first slice."
+      }
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "required_approvals": 1,
+    "approvals": []
+  }
+}

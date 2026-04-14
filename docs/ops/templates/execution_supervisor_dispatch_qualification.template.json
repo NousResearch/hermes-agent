@@ -1,0 +1,462 @@
+{
+  "schema": "clawd.execution_supervisor_dispatch_qualification.v1",
+  "generated_at": "2026-04-02T00:00:00Z",
+  "qualification_path": "state/continuity/latest/execution_supervisor_dispatch_qualification_latest.json",
+  "qualification_history_path": "state/continuity/history/execution_supervisor_dispatch_qualification_history.jsonl",
+  "source": {
+    "dispatch_intent_path": "state/continuity/latest/execution_supervisor_dispatch_intent_latest.json",
+    "dispatch_intent_schema": "clawd.execution_supervisor_dispatch_intent.v1",
+    "ledger_path": "state/continuity/latest/execution_supervisor_task_ledger_latest.json",
+    "ledger_schema": "clawd.execution_supervisor_task_ledger.v1",
+    "supervisor_tick_id": "execution_supervisor_tick_example_001",
+    "topology_path": "docs/ops/templates/session_topology_contract.template.json",
+    "topology_loaded": true,
+    "qualification_decision_dir": "state/continuity/latest",
+    "qualification_decision_paths": [
+      "state/continuity/latest/xe102_heavy_gate_sample_2026-03-28.json"
+    ],
+    "worker_health_canary_path": "state/continuity/latest/execution_supervisor_worker_health_canary_latest.json",
+    "worker_health_canary_present": true,
+    "worker_health_canary_schema": "clawd.execution_supervisor_worker_health_canary.v1",
+    "worker_health_canary_max_age_sec": 21600,
+    "worker_health_canary_future_skew_sec": 120,
+    "worker_health_canary_probe_max_age_sec": 21600,
+    "worker_health_canary_probe_future_skew_sec": 120,
+    "worker_health_canary_artifact_required": true,
+    "canary_probe_schedule_path": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json",
+    "canary_probe_schedule_history_path": "state/continuity/history/execution_supervisor_canary_probe_schedule_history.jsonl",
+    "probe_execution_plan_path": "state/continuity/latest/execution_supervisor_probe_execution_plan_latest.json",
+    "probe_execution_plan_history_path": "state/continuity/history/execution_supervisor_probe_execution_plan_history.jsonl",
+    "worker_health_gate_required": true,
+    "resource_preflight_required": true,
+    "resource_preflight_memory_min_mb": 1024,
+    "resource_preflight_disk_free_min_gb": 8,
+    "resource_preflight_load_pct_max": 180,
+    "resource_preflight_tight_headroom_pct": 15
+  },
+  "mode": "plan_only_fail_closed",
+  "fail_closed": true,
+  "launch_mutation_allowed": false,
+  "status": "blocked",
+  "decision": "BLOCKED",
+  "active": false,
+  "decision_reasons": [
+    "dispatch_target_worker_canary_probe_not_passed"
+  ],
+  "ready_candidate_count": 1,
+  "qualified_candidate_count": 0,
+  "blocked_candidate_count": 1,
+  "ready_candidate_task_ids": [
+    "core_roadmap:wave20:a2_quota_retry_slice"
+  ],
+  "qualified_candidate_task_ids": [],
+  "blocked_candidate_task_ids": [
+    "core_roadmap:wave20:a2_quota_retry_slice"
+  ],
+  "evaluated_candidates": [
+    {
+      "task_id": "core_roadmap:wave20:a2_quota_retry_slice",
+      "task_type": "implementation",
+      "task_class": "implementation",
+      "priority": "P1",
+      "source": "reroute",
+      "reason": "provider_quota_exhausted",
+      "classification": "FAILED_PROVIDER_QUOTA",
+      "latest_worker": "codex-worker-plus-11",
+      "target_worker": "codex-worker-plus-11",
+      "target_worker_family": "Codex",
+      "route_workers": [
+        "codex-worker-plus-11",
+        "gemini-pro",
+        "deepseek-reasoner"
+      ],
+      "route_request": {
+        "session_kind": "worker_slice",
+        "task_class": "implementation",
+        "risk_tier": "high",
+        "scope_shape": "single_surface",
+        "verification_class": "validator_required",
+        "worker_topology": "single",
+        "fold_in_target": "canonical_doctrine"
+      },
+      "route_selection": {
+        "selected_rule_id": "rule_worker_implementation_high_heavy",
+        "route_class": "HEAVY",
+        "required_rollout_stage": "active",
+        "selected_model": "openai-codex/gpt-5.3-codex",
+        "selected_model_family": "Codex",
+        "default_model_family": "Codex",
+        "fallback_model_families": [
+          "Gemini",
+          "DeepSeek"
+        ],
+        "qualified_model_candidates": [
+          {
+            "model_key": "openai-codex/gpt-5.3-codex",
+            "model_family": "Codex",
+            "allowed_stages": [
+              "active"
+            ],
+            "source_path": "state/continuity/latest/xe102_heavy_gate_sample_2026-03-28.json"
+          }
+        ]
+      },
+      "worker_health": {
+        "source_present": true,
+        "record_present": true,
+        "status_known": true,
+        "source_schema": "clawd.execution_supervisor_worker_health_canary.v1",
+        "source_generated_at": "2026-04-01T23:59:45Z",
+        "status": "probationary",
+        "canary_status": "pass",
+        "canary_reason": "canary_slice_artifact_pass",
+        "canary_checked_at": "2026-04-01T23:59:42Z",
+        "canary_age_sec": 18,
+        "canary_fresh": true,
+        "canary_max_age_sec": 21600,
+        "canary_future_skew_sec": 120,
+        "canary_artifact_path": "reports/codex_worker_pro_canary_2026-04-01.md",
+        "canary_artifact_present": true,
+        "canary_gate_passed": true,
+        "canary_gate_reason": "dispatch_target_worker_canary_passed",
+        "reason": "runtime_usage_limit_recovered",
+        "probe_status": "required",
+        "probe_reason": "canary_probe_not_executed",
+        "probe_checked_at": "2026-04-01T23:59:40Z",
+        "probe_age_sec": 20,
+        "probe_fresh": true,
+        "probe_max_age_sec": 21600,
+        "probe_future_skew_sec": 120,
+        "probe_artifact_path": "reports/codex_worker_pro_canary_probe_2026-04-01.md",
+        "probe_artifact_present": true,
+        "probe_gate_passed": false,
+        "probe_gate_reason": "dispatch_target_worker_canary_probe_not_passed"
+      },
+      "resource_preflight": {
+        "gate_passed": true,
+        "gate_reason": "dispatch_preflight_resource_validated",
+        "failure_reasons": [],
+        "telemetry_missing": [],
+        "telemetry_complete": true,
+        "attention_required": false,
+        "requirements": {
+          "memory_available_min_mb": 1536,
+          "disk_free_min_gb": 8,
+          "load_per_core_pct_max": 180,
+          "tight_headroom_pct_threshold": 15
+        },
+        "snapshot": {
+          "memory_available_mb": 4096,
+          "disk_free_gb": 120,
+          "load_per_core_pct": 45,
+          "cpu_count": 8,
+          "captured_at": "2026-04-02T00:00:00Z",
+          "disk_usage_path": "./"
+        },
+        "headroom": {
+          "memory_headroom_mb": 2560,
+          "disk_headroom_gb": 112,
+          "load_headroom_pct": 135,
+          "lowest_headroom_pct": 75,
+          "tight_headroom": false
+        },
+        "action_priority": null,
+        "would_block_dispatch": false
+      },
+      "qualification": {
+        "status": "blocked",
+        "reason": "dispatch_target_worker_canary_probe_not_passed",
+        "compatible_route_workers": [
+          "codex-worker-plus-11"
+        ],
+        "decision_notes": [
+          "compatible_route_workers_present"
+        ]
+      }
+    }
+  ],
+  "qualified_candidates": [],
+  "blocked_candidates": [
+    {
+      "task_id": "core_roadmap:wave20:a2_quota_retry_slice"
+    }
+  ],
+  "resource_preflight": {
+    "schema": "clawd.execution_supervisor_resource_preflight.v1",
+    "required": true,
+    "status": "pass",
+    "reason": "resource_preflight_ok",
+    "failure_reasons": [],
+    "blocking_task_ids": [],
+    "attention_task_ids": [],
+    "blocking_candidate_count": 0,
+    "attention_candidate_count": 0,
+    "telemetry_missing": [],
+    "telemetry_complete": true,
+    "host_snapshot": {
+      "captured_at": "2026-04-02T00:00:00Z",
+      "memory_total_mb": 32768,
+      "memory_available_mb": 4096,
+      "disk_total_gb": 512,
+      "disk_free_gb": 120,
+      "load_1m": 1.24,
+      "load_per_core_pct": 45,
+      "cpu_count": 8,
+      "disk_usage_path": "./"
+    },
+    "requirements_defaults": {
+      "memory_available_min_mb": 1024,
+      "disk_free_min_gb": 8,
+      "load_per_core_pct_max": 180,
+      "tight_headroom_pct_threshold": 15
+    },
+    "lowest_headroom_pct": 75,
+    "action_priority": null
+  },
+  "uncertainty_signal": {
+    "schema": "clawd.execution_supervisor_uncertainty_signal.v1",
+    "confidence_score": 85,
+    "confidence_label": "high",
+    "confidence_quantiles": {
+      "p10": 65,
+      "p50": 85,
+      "p90": 95
+    },
+    "uncertainty_reasons": [],
+    "requires_operator_review": false,
+    "source": "resource_preflight_heuristic"
+  },
+  "canary_probe_schedule": {
+    "schema": "clawd.execution_supervisor_canary_probe_schedule.v1",
+    "generated_at": "2026-04-02T00:00:00Z",
+    "schedule_path": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json",
+    "schedule_history_path": "state/continuity/history/execution_supervisor_canary_probe_schedule_history.jsonl",
+    "status": "attention_required",
+    "reason": "canary_restore_pending",
+    "worker_count": 1,
+    "demoted_worker_count": 1,
+    "restore_pending_worker_count": 1,
+    "restored_worker_count": 0,
+    "quarantined_worker_count": 0,
+    "probe_required_worker_count": 1,
+    "canary_required_worker_count": 0,
+    "overdue_probe_worker_count": 0,
+    "next_probe_due_at": "2026-04-02T05:59:40Z",
+    "next_probe_due_in_sec": 21580,
+    "workers": [
+      {
+        "worker": "codex-worker-plus-11",
+        "state": "probe_required",
+        "gate_reason": "dispatch_target_worker_canary_probe_not_passed",
+        "canary_status": "pass",
+        "canary_checked_at": "2026-04-01T23:59:42Z",
+        "canary_fresh": true,
+        "canary_artifact_path": "reports/codex_worker_pro_canary_2026-04-01.md",
+        "canary_artifact_present": true,
+        "canary_gate_passed": true,
+        "canary_gate_reason": "dispatch_target_worker_canary_passed",
+        "demoted": true,
+        "restore_pending": true,
+        "restored": false,
+        "target_task_ids": [
+          "core_roadmap:wave20:a2_quota_retry_slice"
+        ],
+        "blocked_task_ids": [
+          "core_roadmap:wave20:a2_quota_retry_slice"
+        ],
+        "qualified_task_ids": [],
+        "consecutive_ticks_in_state": 2,
+        "first_seen_at": "2026-04-01T23:59:45Z",
+        "last_seen_at": "2026-04-02T00:00:00Z",
+        "pending_since": "2026-04-01T23:59:45Z",
+        "demoted_at": "2026-04-01T23:59:45Z",
+        "restored_at": null
+      }
+    ]
+  },
+  "probe_execution_plan": {
+    "schema": "clawd.execution_supervisor_probe_execution_plan.v1",
+    "generated_at": "2026-04-02T00:00:00Z",
+    "plan_path": "state/continuity/latest/execution_supervisor_probe_execution_plan_latest.json",
+    "plan_history_path": "state/continuity/history/execution_supervisor_probe_execution_plan_history.jsonl",
+    "mode": "plan_only_fail_closed",
+    "fail_closed": true,
+    "launch_mutation_allowed": false,
+    "status": "attention_required",
+    "decision": "PLAN_ONLY",
+    "active": true,
+    "reason": "probe_execution_due",
+    "action_priority": null,
+    "pending_worker_count": 1,
+    "canary_required_worker_count": 0,
+    "probe_required_worker_count": 1,
+    "due_now_worker_count": 0,
+    "due_now_cohort_workers": [],
+    "due_now_cohort_signature": null,
+    "due_now_cohort_signature_first_seen_at": null,
+    "due_now_cohort_signature_consecutive_ticks": 0,
+    "scheduled_worker_count": 1,
+    "overdue_worker_count": 0,
+    "overdue_cohort_workers": [],
+    "overdue_cohort_signature": null,
+    "overdue_cohort_signature_first_seen_at": null,
+    "overdue_cohort_signature_consecutive_ticks": 0,
+    "source": {
+      "canary_probe_schedule_path": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json",
+      "canary_probe_schedule_schema": "clawd.execution_supervisor_canary_probe_schedule.v1",
+      "canary_probe_schedule_generated_at": "2026-04-02T00:00:00Z",
+      "canary_probe_schedule_status": "attention_required"
+    },
+    "workers": [
+      {
+        "worker": "codex-worker-plus-11",
+        "state": "probe_required",
+        "required_step": "capture_probe_execution_evidence",
+        "required_evidence_kind": "probe",
+        "required_status_field": "probe_status",
+        "required_status_value": "pass",
+        "required_checked_at_field": "probe_checked_at",
+        "required_artifact_path_field": "probe_artifact_path",
+        "required_artifact_present_field": "probe_artifact_present",
+        "existing_status": "required",
+        "existing_checked_at": "2026-04-01T23:59:40Z",
+        "existing_artifact_path": "reports/codex_worker_pro_canary_probe_2026-04-01.md",
+        "existing_artifact_present": true,
+        "expected_artifact_hint": "reports/codex_worker_plus_11_restore_probe_2026-04-02.md",
+        "gate_reason": "dispatch_target_worker_canary_probe_not_passed",
+        "target_task_ids": [
+          "core_roadmap:wave20:a2_quota_retry_slice"
+        ],
+        "blocked_task_ids": [
+          "core_roadmap:wave20:a2_quota_retry_slice"
+        ],
+        "pending_since": "2026-04-01T23:59:45Z",
+        "demoted_at": "2026-04-01T23:59:45Z",
+        "consecutive_ticks_in_state": 2,
+        "execution_state": "scheduled",
+        "due_at": "2026-04-02T05:59:40Z",
+        "due_in_sec": 21580,
+        "overdue": false
+      }
+    ]
+  },
+  "launch_readiness": {
+    "schema": "clawd.execution_supervisor_launch_readiness.v1",
+    "state": "blocked",
+    "reason": "dispatch_target_worker_canary_probe_not_passed",
+    "ready_candidate_count": 1,
+    "qualified_candidate_count": 0,
+    "blocked_candidate_count": 1,
+    "blocked_reason_counts": {
+      "dispatch_target_worker_canary_probe_not_passed": 1
+    },
+    "blocked_canary_candidate_count": 1,
+    "blocked_probe_candidate_count": 1,
+    "decision_reasons": [
+      "dispatch_target_worker_canary_probe_not_passed"
+    ],
+    "demotion_restore_posture": {
+      "schema": "clawd.execution_supervisor_worker_demotion_restore_posture.v1",
+      "automatic_demotion_active": true,
+      "automatic_restore_pending": true,
+      "automatic_restore_ready": false,
+      "demoted_worker_count": 1,
+      "restore_pending_worker_count": 1,
+      "restored_worker_count": 0,
+      "demoted_workers": [
+        "codex-worker-plus-11"
+      ],
+      "restore_pending_workers": [
+        "codex-worker-plus-11"
+      ],
+      "restored_workers": [],
+      "oldest_restore_pending_since": "2026-04-02T00:00:00Z",
+      "oldest_restore_pending_worker": "codex-worker-plus-11",
+      "oldest_restore_pending_age_sec": 1800,
+      "oldest_demoted_at": "2026-04-02T00:00:00Z",
+      "oldest_demoted_worker": "codex-worker-plus-11",
+      "oldest_demoted_age_sec": 1800,
+      "latest_restored_at": null,
+      "latest_restored_worker": null,
+      "latest_restored_age_sec": null,
+      "action_priority": "p2"
+    },
+    "canary_probe_schedule": {
+      "schema": "clawd.execution_supervisor_canary_probe_schedule.v1",
+      "source_path": "state/continuity/latest/execution_supervisor_canary_probe_schedule_latest.json",
+      "status": "attention_required",
+      "reason": "canary_restore_pending",
+      "worker_count": 1,
+      "demoted_worker_count": 1,
+      "restore_pending_worker_count": 1,
+      "restored_worker_count": 0,
+      "overdue_probe_worker_count": 0,
+      "next_probe_due_at": "2026-04-02T05:59:40Z",
+      "next_probe_due_in_sec": 21580
+    },
+    "probe_execution_plan": {
+      "schema": "clawd.execution_supervisor_probe_execution_plan.v1",
+      "source_path": "state/continuity/latest/execution_supervisor_probe_execution_plan_latest.json",
+      "status": "attention_required",
+      "reason": "probe_execution_due",
+      "action_priority": null,
+      "pending_worker_count": 1,
+      "canary_required_worker_count": 0,
+      "probe_required_worker_count": 1,
+      "due_now_worker_count": 0,
+      "due_now_cohort_workers": [],
+      "due_now_cohort_signature": null,
+      "due_now_cohort_signature_first_seen_at": null,
+      "due_now_cohort_signature_consecutive_ticks": 0,
+      "scheduled_worker_count": 1,
+      "overdue_worker_count": 0,
+      "overdue_cohort_workers": [],
+      "overdue_cohort_signature": null,
+      "overdue_cohort_signature_first_seen_at": null,
+      "overdue_cohort_signature_consecutive_ticks": 0
+    },
+    "resource_preflight": {
+      "schema": "clawd.execution_supervisor_resource_preflight.v1",
+      "status": "pass",
+      "reason": "resource_preflight_ok",
+      "blocking_candidate_count": 0,
+      "attention_candidate_count": 0,
+      "blocking_task_ids": [],
+      "telemetry_complete": true,
+      "telemetry_missing": [],
+      "lowest_headroom_pct": 75,
+      "action_priority": null
+    },
+    "uncertainty_signal": {
+      "schema": "clawd.execution_supervisor_uncertainty_signal.v1",
+      "confidence_score": 85,
+      "confidence_label": "high",
+      "confidence_quantiles": {
+        "p10": 65,
+        "p50": 85,
+        "p90": 95
+      },
+      "uncertainty_reasons": [],
+      "requires_operator_review": false
+    },
+    "severity_gate": {
+      "schema": "clawd.execution_supervisor_launch_readiness_severity_gate.v1",
+      "state": "critical",
+      "reason": "launch_readiness_persistent_blocked_demoted_cohort",
+      "active": true,
+      "escalation_priority": "p1",
+      "threshold_ticks": 3,
+      "non_ready_state": "blocked",
+      "non_ready_ticks_consecutive": 4,
+      "cohort_worker_count": 1,
+      "cohort_workers": [
+        "codex-worker-plus-11"
+      ],
+      "cohort_signature": "4c3138e0c47ccb9d",
+      "cohort_min_worker_state_ticks": 4,
+      "cohort_max_worker_state_ticks": 4,
+      "schedule_status": "attention_required",
+      "schedule_reason": "canary_restore_pending"
+    }
+  }
+}

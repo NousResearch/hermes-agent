@@ -1,0 +1,13 @@
+{
+  "schema_version": "lane.mutation_attestation.v1",
+  "attestation_name": "verify_before_resume_pass",
+  "status": "pass",
+  "issued_at": "2026-03-20T21:55:00+07:00",
+  "expires_at": "2026-03-20T22:25:00+07:00",
+  "operation_id": "reconcile:execute",
+  "evidence_ref": "state/continuity/latest/verify_before_resume_latest.json",
+  "issued_by": "architect",
+  "issuer_lane_id": "lane.column_c.upgrade_substrate",
+  "integrity_hash": "sha256:attestation_template",
+  "notes": "Structured attestation artifact for high-risk mutation authority checks."
+}

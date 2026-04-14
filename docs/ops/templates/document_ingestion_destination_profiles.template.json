@@ -1,0 +1,28 @@
+{
+  "schema_version": "clawd.document_ingestion.destination_profiles.v1",
+  "default_profile": "general",
+  "profiles": {
+    "general": {
+      "root": "memory/knowledge_ingestion/production",
+      "allowed_classes": [
+        "architecture_spec",
+        "runbook",
+        "policy_doctrine",
+        "research_report",
+        "source_document"
+      ],
+      "owner_role": "knowledge_ingestion_primary",
+      "sla_tier": "standard"
+    },
+    "runbooks": {
+      "root": "memory/knowledge_ingestion/production/runbooks",
+      "allowed_classes": [
+        "runbook",
+        "policy_doctrine",
+        "runtime_evidence"
+      ],
+      "owner_role": "operations_release_owner",
+      "sla_tier": "critical"
+    }
+  }
+}

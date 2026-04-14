@@ -1,0 +1,589 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/health_typed_record.schema.json",
+  "title": "Health Typed Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "record_id",
+    "profile_id",
+    "record_type",
+    "recorded_at",
+    "status",
+    "confidence",
+    "provenance",
+    "confidentiality",
+    "governance",
+    "payload",
+    "relationships",
+    "notes"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.health_typed_record.v1"
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^xhrec_[a-z0-9._-]+$"
+    },
+    "profile_id": {
+      "type": "string",
+      "pattern": "^health_profile_[a-z0-9._-]+$"
+    },
+    "record_type": {
+      "type": "string",
+      "enum": [
+        "measurement",
+        "lab_result",
+        "symptom",
+        "protocol"
+      ]
+    },
+    "recorded_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "raw",
+        "derived",
+        "provisional",
+        "canonical"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_ref",
+        "captured_at",
+        "recorded_by",
+        "payload_sha256"
+      ],
+      "properties": {
+        "source_kind": {
+          "type": "string",
+          "enum": [
+            "manual_entry",
+            "wearable_device",
+            "lab_report",
+            "clinician_note",
+            "imported_file"
+          ]
+        },
+        "source_ref": {
+          "type": "string",
+          "minLength": 3
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "recorded_by": {
+          "type": "string",
+          "pattern": "^(user|system|clinician)_[a-z0-9._-]+$"
+        },
+        "payload_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      }
+    },
+    "confidentiality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "classification",
+        "contains_phi",
+        "sharing_policy",
+        "redaction_required",
+        "retention_tier",
+        "access_roles"
+      ],
+      "properties": {
+        "classification": {
+          "type": "string",
+          "enum": [
+            "health_standard",
+            "health_sensitive",
+            "health_restricted"
+          ]
+        },
+        "contains_phi": {
+          "type": "boolean"
+        },
+        "sharing_policy": {
+          "type": "string",
+          "enum": [
+            "private_only",
+            "care_team_approved",
+            "deidentified_only"
+          ]
+        },
+        "redaction_required": {
+          "type": "boolean"
+        },
+        "retention_tier": {
+          "type": "string",
+          "enum": [
+            "short_term",
+            "standard",
+            "long_term",
+            "legal_hold"
+          ]
+        },
+        "access_roles": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "user_owner",
+              "care_team",
+              "governance_auditor"
+            ]
+          }
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "risk_class",
+        "route_class",
+        "auth_tier",
+        "advisory_only",
+        "escalation_code"
+      ],
+      "properties": {
+        "risk_class": {
+          "type": "string",
+          "enum": [
+            "RG0_LOW",
+            "RG1_MODERATE",
+            "RG2_HIGH",
+            "RG3_CRITICAL"
+          ]
+        },
+        "route_class": {
+          "type": "string",
+          "const": "advisory"
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": [
+            "OBSERVABILITY",
+            "INTERNAL",
+            "ADMIN"
+          ]
+        },
+        "advisory_only": {
+          "type": "boolean",
+          "const": true
+        },
+        "escalation_code": {
+          "type": "string",
+          "enum": [
+            "HE1_BOUNDARY_REFUSAL",
+            "HE2_APPROVAL_OR_CONTEXT_REQUIRED",
+            "HE3_MEDICAL_PROFESSIONAL_ESCALATION",
+            "HE4_EMERGENCY_ESCALATION",
+            "HE5_GOVERNANCE_BLOCK"
+          ]
+        }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "measurement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "metric_name",
+            "value",
+            "unit",
+            "aggregation_window"
+          ],
+          "properties": {
+            "metric_name": {
+              "type": "string",
+              "minLength": 2
+            },
+            "value": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "aggregation_window": {
+              "type": "string",
+              "enum": [
+                "instantaneous",
+                "daily",
+                "weekly",
+                "monthly"
+              ]
+            }
+          }
+        },
+        "lab_result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "test_name",
+            "observed_value",
+            "unit",
+            "reference_range",
+            "interpretation"
+          ],
+          "properties": {
+            "test_name": {
+              "type": "string",
+              "minLength": 2
+            },
+            "observed_value": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "string",
+              "minLength": 1
+            },
+            "reference_range": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "low",
+                "high",
+                "comparator"
+              ],
+              "properties": {
+                "low": {
+                  "type": "number"
+                },
+                "high": {
+                  "type": "number"
+                },
+                "comparator": {
+                  "type": "string",
+                  "enum": [
+                    "inclusive",
+                    "exclusive"
+                  ]
+                }
+              }
+            },
+            "interpretation": {
+              "type": "string",
+              "enum": [
+                "low",
+                "normal",
+                "high",
+                "critical",
+                "unknown"
+              ]
+            }
+          }
+        },
+        "symptom": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "symptom_name",
+            "severity_0_to_10",
+            "duration_hours",
+            "progression"
+          ],
+          "properties": {
+            "symptom_name": {
+              "type": "string",
+              "minLength": 2
+            },
+            "severity_0_to_10": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10
+            },
+            "duration_hours": {
+              "type": "number",
+              "minimum": 0
+            },
+            "progression": {
+              "type": "string",
+              "enum": [
+                "improving",
+                "stable",
+                "worsening",
+                "fluctuating"
+              ]
+            }
+          }
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "protocol_id",
+            "protocol_name",
+            "adherence_pct",
+            "cycle_day",
+            "status"
+          ],
+          "properties": {
+            "protocol_id": {
+              "type": "string",
+              "pattern": "^proto_[a-z0-9._-]+$"
+            },
+            "protocol_name": {
+              "type": "string",
+              "minLength": 2
+            },
+            "adherence_pct": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            },
+            "cycle_day": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "planned",
+                "active",
+                "completed",
+                "paused",
+                "stopped"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "relationships": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "relation_type",
+          "target_record_id"
+        ],
+        "properties": {
+          "relation_type": {
+            "type": "string",
+            "enum": [
+              "corroborates",
+              "contradicts",
+              "derived_from",
+              "links_protocol"
+            ]
+          },
+          "target_record_id": {
+            "type": "string",
+            "pattern": "^xhrec_[a-z0-9._-]+$"
+          }
+        }
+      }
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "measurement"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "measurement"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "lab_result"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "lab_result"
+            ]
+          },
+          "confidentiality": {
+            "properties": {
+              "classification": {
+                "enum": [
+                  "health_sensitive",
+                  "health_restricted"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "symptom"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "symptom"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "record_type": {
+            "const": "protocol"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "required": [
+              "protocol"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "confidentiality": {
+            "properties": {
+              "contains_phi": {
+                "const": true
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "confidentiality": {
+            "properties": {
+              "redaction_required": {
+                "const": true
+              },
+              "sharing_policy": {
+                "enum": [
+                  "private_only",
+                  "care_team_approved"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "confidentiality": {
+            "properties": {
+              "sharing_policy": {
+                "const": "deidentified_only"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "confidentiality": {
+            "properties": {
+              "contains_phi": {
+                "const": false
+              },
+              "redaction_required": {
+                "const": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "canonical"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "confidence": {
+            "minimum": 0.7
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "governance": {
+            "properties": {
+              "risk_class": {
+                "const": "RG3_CRITICAL"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "governance": {
+            "properties": {
+              "escalation_code": {
+                "const": "HE4_EMERGENCY_ESCALATION"
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

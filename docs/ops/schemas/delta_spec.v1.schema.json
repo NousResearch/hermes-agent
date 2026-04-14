@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/delta_spec.v1.schema.json",
+  "title": "OpenClaw Delta Specification v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "task_id"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "delta_spec.v1"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "instructions": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "affected_files": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "validation_requirements": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "anyOf": [
+    { "required": ["instructions"] },
+    { "required": ["prompt"] }
+  ],
+  "description": "Delta specification for a coding change, providing either instructions or a prompt for implementation."
+}

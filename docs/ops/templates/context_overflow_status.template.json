@@ -1,0 +1,302 @@
+{
+  "schema_version": "clawd.context_overflow_status.v1",
+  "status_id": "ovs_20260330T123500Z_context_runtime_local_watch",
+  "generated_at": "2026-03-30T12:35:00Z",
+  "status": "checkpoint_required",
+  "integration_contracts": {
+    "continuity_contract_path": "docs/ops/continuity_integration_contract_v1.md",
+    "overflow_contract_path": "docs/ops/context_overflow_prevention_contract_v1.md",
+    "continuity_clause_refs": [
+      "C2",
+      "C4",
+      "C5"
+    ],
+    "handover_bundle_schema_path": "docs/ops/schemas/handover_bundle.schema.json",
+    "checkpoint_bundle_schema_path": "docs/ops/schemas/checkpoint_bundle.schema.json",
+    "overflow_status_schema_path": "docs/ops/schemas/context_overflow_status.schema.json",
+    "overflow_status_template_path": "docs/ops/templates/context_overflow_status.template.json"
+  },
+  "source_input_map": [
+    {
+      "source_id": "src_pdf_4d1ba541",
+      "artifact_path_or_ref": "sha256:4d1ba5414fe314e580191a51d137932b7efacfffde38a4edc773c8872ed53b9f",
+      "classification": "archive_mined",
+      "overflow_dimensions": [
+        "overflow_trigger",
+        "checkpoint_contract",
+        "resume_gate"
+      ],
+      "notes": "Checkpoint/reset OS + hybrid volumetric/semantic trigger doctrine."
+    },
+    {
+      "source_id": "src_pdf_f1fc25fc",
+      "artifact_path_or_ref": "sha256:f1fc25fce940b647ddb182551a947fa0c11f5ebb13dd8475028b919022db0dc0",
+      "classification": "archive_mined",
+      "overflow_dimensions": [
+        "ground_truth",
+        "fail_closed"
+      ],
+      "notes": "Ground-truth health signals gate runtime actions."
+    },
+    {
+      "source_id": "src_contract_a1",
+      "artifact_path_or_ref": "docs/ops/continuity_integration_contract_v1.md",
+      "classification": "canonical",
+      "overflow_dimensions": [
+        "overflow_trigger",
+        "resume_gate",
+        "fail_closed"
+      ]
+    },
+    {
+      "source_id": "src_report_a2",
+      "artifact_path_or_ref": "reports/execution_A2_handover_checkpoint_normalization_2026-03-30.md",
+      "classification": "canonical_support",
+      "overflow_dimensions": [
+        "checkpoint_contract",
+        "lineage",
+        "resume_gate"
+      ]
+    },
+    {
+      "source_id": "src_runtime_watcher",
+      "artifact_path_or_ref": "ops/openclaw/context_runtime_local_watch.sh",
+      "classification": "support_runtime",
+      "overflow_dimensions": [
+        "overflow_trigger",
+        "ground_truth",
+        "checkpoint_contract",
+        "fail_closed"
+      ],
+      "notes": "Current local-first watcher baseline integrated into A3 contract matrix."
+    },
+    {
+      "source_id": "src_rpt_xe202",
+      "artifact_path_or_ref": "reports/xe202_anchor_preserving_summary_compaction_engine_v1_closeout_2026-03-29.md",
+      "classification": "support",
+      "overflow_dimensions": [
+        "compaction",
+        "lineage"
+      ]
+    }
+  ],
+  "runtime_measurements": {
+    "target_session_key": "agent:codex-executioner:telegram:direct:5936691533",
+    "target_agent_id": "codex-executioner",
+    "context_utilization_pct": 0.88,
+    "warning_threshold_pct": 0.8,
+    "checkpoint_threshold_pct": 0.85,
+    "emergency_threshold_pct": 0.9,
+    "buffer_target_pct": 15,
+    "context_tokens": 239360,
+    "total_tokens": 272000,
+    "session_file_size_bytes": 43103210,
+    "session_bloat_threshold_mb": 50,
+    "session_bloat": false,
+    "runtime_unhealthy": false,
+    "anomaly_keys": [],
+    "snapshot_ref": "state/ground_truth/snapshots/gt_20260330T123400Z.json"
+  },
+  "trigger_evaluation": {
+    "triggered_classes": [
+      "semantic_boundary",
+      "volumetric_checkpoint"
+    ],
+    "semantic_boundary": {
+      "boundary_event": "pre_execution",
+      "boundary_required": true,
+      "boundary_reason": "pre-mutation boundary before high-latency/mutating work."
+    },
+    "volumetric_state": {
+      "band": "checkpoint_required",
+      "observed_buffer_pct": 12,
+      "attention_degradation_tokens": 45000
+    },
+    "fingerprint_input": "context_state=checkpoint_required|boundary=pre_execution|session_bloat=normal|runtime_state=healthy|thresholds=0.80,0.85,0.90"
+  },
+  "action_plan": {
+    "matrix_version": "trigger_action_matrix_v1",
+    "actions": [
+      {
+        "action_id": "capture_ground_truth",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "runtime_unhealthy"
+        ],
+        "priority": 1,
+        "fail_closed_on_error": true
+      },
+      {
+        "action_id": "write_checkpoint",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "session_bloat",
+          "runtime_unhealthy"
+        ],
+        "priority": 2,
+        "fail_closed_on_error": true
+      },
+      {
+        "action_id": "render_handover_compat",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "session_bloat"
+        ],
+        "priority": 3,
+        "fail_closed_on_error": true
+      },
+      {
+        "action_id": "sync_latest_artifacts",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "session_bloat",
+          "runtime_unhealthy"
+        ],
+        "priority": 4,
+        "fail_closed_on_error": true
+      },
+      {
+        "action_id": "run_anchor_preserving_compaction",
+        "required_when_triggered": [
+          "volumetric_warning",
+          "volumetric_checkpoint",
+          "session_bloat"
+        ],
+        "priority": 5,
+        "fail_closed_on_error": false
+      },
+      {
+        "action_id": "emit_event_router_signal",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "session_bloat",
+          "runtime_unhealthy",
+          "checkpoint_write_failure",
+          "handover_render_failure"
+        ],
+        "priority": 6,
+        "fail_closed_on_error": false
+      },
+      {
+        "action_id": "set_mutation_gate_caution",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_warning",
+          "volumetric_checkpoint",
+          "session_bloat"
+        ],
+        "priority": 7,
+        "fail_closed_on_error": false
+      },
+      {
+        "action_id": "require_verify_then_resume",
+        "required_when_triggered": [
+          "semantic_boundary",
+          "volumetric_checkpoint",
+          "volumetric_emergency",
+          "runtime_unhealthy"
+        ],
+        "priority": 8,
+        "fail_closed_on_error": true
+      },
+      {
+        "action_id": "set_mutation_gate_forbidden",
+        "required_when_triggered": [
+          "volumetric_emergency",
+          "runtime_unhealthy",
+          "checkpoint_write_failure",
+          "handover_render_failure"
+        ],
+        "priority": 9,
+        "fail_closed_on_error": false
+      }
+    ]
+  },
+  "execution_results": {
+    "checkpoint_id": "chk_20260330T123500Z_a3c0f1",
+    "handover_path": "reports/handover_context_latest.md",
+    "overflow_status_path": "state/continuity/latest/context_overflow_status_latest.json",
+    "action_outcomes": [
+      {
+        "action_id": "capture_ground_truth",
+        "state": "succeeded",
+        "evidence_ref": "state/ground_truth/snapshots/gt_20260330T123400Z.json",
+        "updated_at": "2026-03-30T12:35:02Z",
+        "error_code": null
+      },
+      {
+        "action_id": "write_checkpoint",
+        "state": "succeeded",
+        "evidence_ref": "state/continuity/checkpoints/chk_20260330T123500Z_a3c0f1.json",
+        "updated_at": "2026-03-30T12:35:05Z",
+        "error_code": null
+      },
+      {
+        "action_id": "render_handover_compat",
+        "state": "succeeded",
+        "evidence_ref": "reports/handover_context_latest.md",
+        "updated_at": "2026-03-30T12:35:07Z",
+        "error_code": null
+      },
+      {
+        "action_id": "sync_latest_artifacts",
+        "state": "succeeded",
+        "evidence_ref": "state/continuity/latest/handover_latest.json",
+        "updated_at": "2026-03-30T12:35:08Z",
+        "error_code": null
+      },
+      {
+        "action_id": "run_anchor_preserving_compaction",
+        "state": "succeeded",
+        "evidence_ref": "state/continuity/latest/xe202_anchor_preserving_summary_compaction_v1_2026-03-29.json",
+        "updated_at": "2026-03-30T12:35:09Z",
+        "error_code": null
+      },
+      {
+        "action_id": "set_mutation_gate_caution",
+        "state": "succeeded",
+        "evidence_ref": "state/handover/latest.json",
+        "updated_at": "2026-03-30T12:35:10Z",
+        "error_code": null
+      },
+      {
+        "action_id": "require_verify_then_resume",
+        "state": "pending",
+        "evidence_ref": "ops/openclaw/continuity/verify_then_resume.sh",
+        "updated_at": "2026-03-30T12:35:11Z",
+        "error_code": null
+      },
+      {
+        "action_id": "emit_event_router_signal",
+        "state": "succeeded",
+        "evidence_ref": "state/event_router/events.jsonl",
+        "updated_at": "2026-03-30T12:35:12Z",
+        "error_code": null
+      }
+    ]
+  },
+  "gate_posture": {
+    "mutation_gate_status": "caution",
+    "safe_to_resume": true,
+    "safe_to_mutate": false,
+    "verify_then_resume_required": true,
+    "fail_closed_reasons": [],
+    "top_blocker": null
+  },
+  "generated_artifacts": {
+    "contract_md": "docs/ops/context_overflow_prevention_contract_v1.md",
+    "schema_json": "docs/ops/schemas/context_overflow_status.schema.json",
+    "template_json": "docs/ops/templates/context_overflow_status.template.json",
+    "execution_report": "reports/execution_A3_context_overflow_prevention_2026-03-30.md"
+  }
+}

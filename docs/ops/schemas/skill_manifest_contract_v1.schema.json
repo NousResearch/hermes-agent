@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/skill_manifest_contract_v1.schema.json",
+  "title": "OpenClaw Skill Manifest Contract v1",
+  "type": "object",
+  "required": [
+    "version",
+    "mode",
+    "valid",
+    "errorCount",
+    "warningCount",
+    "invocation",
+    "manifest",
+    "issues"
+  ],
+  "properties": {
+    "version": {
+      "const": "openclaw-skill-manifest.v1"
+    },
+    "mode": {
+      "enum": [
+        "legacy",
+        "invocation-only",
+        "governed"
+      ]
+    },
+    "valid": {
+      "type": "boolean"
+    },
+    "errorCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "warningCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "invocation": {
+      "type": "object",
+      "required": [
+        "userInvocable",
+        "disableModelInvocation",
+        "modelInvocable"
+      ],
+      "properties": {
+        "userInvocable": { "type": "boolean" },
+        "disableModelInvocation": { "type": "boolean" },
+        "modelInvocable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "metadataDeclared",
+        "skillKey",
+        "rawInstallCount",
+        "normalizedInstallCount"
+      ],
+      "properties": {
+        "metadataDeclared": { "type": "boolean" },
+        "skillKey": { "type": "string", "minLength": 1 },
+        "primaryEnv": { "type": ["string", "null"] },
+        "rawInstallCount": { "type": "integer", "minimum": 0 },
+        "normalizedInstallCount": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "level", "path", "message"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "level": { "enum": ["warn", "error"] },
+          "path": { "type": "string" },
+          "message": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

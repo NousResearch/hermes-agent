@@ -1,0 +1,24 @@
+{
+  "scorecard_id": "scorecard.bybit.order_entry.2026-03-08",
+  "competitor": "bybit",
+  "captured_at": "2026-03-08T22:30:00+07:00",
+  "metrics": {
+    "information_density": 0,
+    "interaction_latency_ms": 0,
+    "keyboard_operability": 0,
+    "component_modularity": 0,
+    "trust_signaling": 0
+  },
+  "acceptance_tests": [
+    {
+      "id": "orderbook_density_1080p",
+      "status": "na",
+      "evidence_ref": ""
+    },
+    {
+      "id": "focus_context_retention",
+      "status": "na",
+      "evidence_ref": ""
+    }
+  ]
+}

@@ -1,0 +1,327 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/refactor_risk_packet.v1.schema.json",
+  "title": "OpenClaw Refactor-Risk Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "packet_id",
+    "version",
+    "proposal_id",
+    "risk_assessment",
+    "decomposition_plan",
+    "rollback_plan",
+    "validation"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk_assessment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "overall_tier",
+        "dimensions",
+        "blast_radius_evidence",
+        "rationale"
+      ],
+      "properties": {
+        "overall_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "dimensions": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "complexity",
+            "blast_radius",
+            "conceptual_clarity"
+          ],
+          "properties": {
+            "complexity": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "blast_radius": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            },
+            "conceptual_clarity": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5
+            }
+          }
+        },
+        "blast_radius_evidence": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": [
+            "impacted_components",
+            "impacted_interfaces",
+            "evidence_refs"
+          ],
+          "properties": {
+            "impacted_components": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "impacted_interfaces": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "evidence_refs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "decomposition_plan": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "chunk_id",
+          "description",
+          "scope",
+          "task_class"
+        ],
+        "properties": {
+          "chunk_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "files": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "lines": {
+                "type": "string"
+              }
+            }
+          },
+          "task_class": {
+            "type": "string",
+            "enum": [
+              "code:generate",
+              "code:edit",
+              "code:review",
+              "code:test",
+              "code:docs"
+            ]
+          }
+        }
+      }
+    },
+    "rollback_plan": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "strategy",
+        "trigger_conditions",
+        "verification_evidence_refs"
+      ],
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": [
+            "revert_commit",
+            "feature_flag_revert",
+            "artifact_restore",
+            "state_restore"
+          ]
+        },
+        "trigger_conditions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "verification_evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "required_approvals"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "approver_id": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "risk_assessment": {
+            "properties": {
+              "overall_tier": {
+                "enum": [
+                  "low",
+                  "medium"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "risk_assessment": {
+            "properties": {
+              "overall_tier": {
+                "const": "high"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "risk_assessment": {
+            "properties": {
+              "overall_tier": {
+                "const": "critical"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 2
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

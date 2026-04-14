@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_run.schema.json",
+  "title": "Orchestrator Artifact Run Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "request_id",
+    "generated_at",
+    "plan_id",
+    "idempotency_key",
+    "canonical_request_hash",
+    "dry_run",
+    "dispatch",
+    "evaluation_gate",
+    "admission",
+    "response"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.run.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9:_\\.-]{7,127}$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^plan:[a-zA-Z0-9._:-]+$"
+    },
+    "idempotency_key": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "pattern": "^[a-zA-Z0-9:_\\.-]+$"
+    },
+    "canonical_request_hash": {
+      "type": "string",
+      "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+    },
+    "dry_run": {
+      "type": "boolean"
+    },
+    "dispatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "target_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "evaluation_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "canary_mode",
+        "attestation_refs"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "gate_policy_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "canary_mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "shadow",
+            "canary"
+          ]
+        },
+        "attestation_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "required": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "gate_policy_ref"
+            ],
+            "properties": {
+              "attestation_refs": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "admission": {
+      "$ref": "#/$defs/admission"
+    },
+    "response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "status",
+        "duplicate_suppressed",
+        "outputs"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "pattern": "^run:[a-zA-Z0-9._:-]+$"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "running",
+            "completed",
+            "failed",
+            "duplicate_suppressed",
+            "rejected"
+          ]
+        },
+        "duplicate_suppressed": {
+          "type": "boolean"
+        },
+        "duplicate_of_run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^run:[a-zA-Z0-9._:-]+$"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_kind",
+              "output_hash",
+              "snapshot_id",
+              "manifest_id"
+            ],
+            "properties": {
+              "artifact_kind": {
+                "type": "string",
+                "minLength": 1
+              },
+              "output_hash": {
+                "type": "string",
+                "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+              },
+              "snapshot_id": {
+                "type": "string",
+                "pattern": "^snapshot:[a-zA-Z0-9._:-]+$"
+              },
+              "manifest_id": {
+                "type": "string",
+                "pattern": "^manifest:[a-zA-Z0-9._:-]+$"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "decision",
+        "reason_codes"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "degraded",
+            "read_only"
+          ]
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "deferred",
+            "rejected"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

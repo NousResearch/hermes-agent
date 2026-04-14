@@ -1,0 +1,12 @@
+{
+  "schema_version": "clawd.shared_memory_demotion_record.v1",
+  "demotion_id": "smd_smo_prom_20260321_example_memory_20260321t140000",
+  "created_at": "2026-03-21T14:00:00Z",
+  "object_id": "smo_prom_20260321_example_memory",
+  "demotion_kind": "stale",
+  "reason": "Staleness policy exceeded demote threshold without refresh evidence.",
+  "owner_id": "librarian_wave7",
+  "owner_role": "LIBRARIAN",
+  "previous_state": "PROMOTED_CANONICAL",
+  "new_state": "DEMOTED_STALE"
+}

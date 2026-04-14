@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/markdown_conversion_gate_packet.schema.json",
+  "title": "Markdown Conversion Gate Packet",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "conversion_id",
+    "source_artifact",
+    "markdown_artifact"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.markdown_conversion_gate.packet.v1"
+    },
+    "conversion_id": {
+      "type": "string",
+      "pattern": "^mdconv_[a-z0-9._-]+$"
+    },
+    "source_artifact": {
+      "$ref": "#/$defs/artifact"
+    },
+    "markdown_artifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifact"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "markdown"
+            }
+          }
+        }
+      ]
+    },
+    "source_text_artifact": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifact"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "plain_text"
+            }
+          }
+        }
+      ]
+    },
+    "quality_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_markdown_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_nonempty_lines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "min_heading_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "require_fence_balance": {
+          "type": "boolean"
+        },
+        "max_control_char_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "max_repeated_line_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_alpha_char_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_word_coverage_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "min_reference_words": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ref_id",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "ref_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^(sha256:)?[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "kind"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "pdf",
+            "epub",
+            "docx",
+            "html",
+            "markdown",
+            "plain_text",
+            "other"
+          ]
+        }
+      }
+    }
+  }
+}

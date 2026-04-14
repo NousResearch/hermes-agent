@@ -1,0 +1,95 @@
+version: "1.0"
+id: "openclaw.web_interaction.idd.v1"
+status: "active"
+updated_at: "2026-03-09T09:35:00+07:00"
+
+routing_policy:
+  fetch_mode_allowed_when:
+    - "static HTML retrieval"
+    - "metadata extraction (title/meta/json-ld)"
+    - "preflight reconnaissance before browser automation"
+  browser_mode_required_when:
+    - "javascript hydration required"
+    - "login/session based content"
+    - "iframe traversal"
+    - "canvas/chart capture"
+    - "computed style extraction"
+  hard_rule: "Do not run browser automation if fetch-mode fulfills artifact contract."
+
+gating_detection:
+  bot_wall_signals:
+    - "http_403"
+    - "http_429"
+    - "cloudflare_1015"
+    - "cloudflare_1020"
+  login_wall_signals:
+    - "auth_redirect"
+    - "password_or_signin_form_required"
+  region_wall_signals:
+    - "geo_restriction_copy"
+    - "http_451"
+  on_detection:
+    bot_wall: "abort macro, backoff domain schedule, emit blocker report only on sustained failure window"
+    login_wall: "switch to operator-assisted relay path"
+    region_wall: "mark artifact blocked_geo and skip retries until policy override"
+
+selector_policy:
+  priority_order:
+    - "ARIA role + accessible name"
+    - "label-based selectors"
+    - "visible text selectors"
+    - "data-testid (if stable and available)"
+    - "layout-relative fallback"
+  forbidden_primary:
+    - "absolute xpath"
+    - "fragile generated class chains"
+
+macro_contract:
+  schema: "ops/openclaw/architecture/schemas/web_capture_macro.schema.json"
+  required_steps:
+    - "navigate"
+    - "wait_for_settle"
+    - "extract_dom"
+  browser_required_steps:
+    - "extract_css_tokens"
+    - "capture_screenshot"
+  required_metadata:
+    - macro_id
+    - domain
+    - target_url
+    - viewport
+    - anti_bot_policy
+
+artifact_bundle:
+  root: "ops/web_capture/artifacts/<run_id>/"
+  required_files:
+    - index.json
+    - screenshot.png
+    - dom_snapshot.html
+    - css_tokens.json
+    - execution_trace.json
+  index_required_fields:
+    - run_id
+    - macro_id
+    - source_url
+    - captured_at
+    - toolchain_version
+    - gating_flags
+
+reliability_eval:
+  min_macro_success_rate: 0.8
+  flaky_threshold: 0.1
+  max_time_to_first_snapshot_sec: 20
+  blank_artifact_entropy_floor: 0.05
+  connected_block_coverage_floor: 0.005
+  min_visible_text_chars_fetch: 48
+  min_visible_text_chars_browser: 80
+  min_trace_events_fetch: 1
+  min_trace_events_browser: 3
+  fail_fast:
+    - "invalid_artifact_manifest"
+    - "blank_screenshot_detected"
+    - "dom_capture_missing"
+    - "dom_visible_text_sparse"
+    - "execution_trace_incomplete"
+    - "css_tokens_invalid"

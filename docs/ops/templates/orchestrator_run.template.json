@@ -1,0 +1,43 @@
+{
+  "schema_version": "clawd.orchestrator.run.v1",
+  "contract_version": "orchestrator_api_contract_v1",
+  "request_id": "req:orchestrator:run:2026-03-30T18-42-00Z",
+  "generated_at": "2026-03-30T18:42:00+07:00",
+  "plan_id": "plan:yq_terminal:daily_brief:2026-03-30:001",
+  "idempotency_key": "idem:yq_terminal:daily_brief:2026-03-30:001",
+  "canonical_request_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "dry_run": true,
+  "dispatch": {
+    "enabled": false,
+    "target_profile": null
+  },
+  "evaluation_gate": {
+    "required": true,
+    "gate_policy_ref": "docs/ops/evaluation_gated_promotion_loop_v1.md#pre_run_gate",
+    "canary_mode": "shadow",
+    "attestation_refs": [
+      "state/continuity/latest/mutation_attestation_latest.json"
+    ]
+  },
+  "admission": {
+    "mode": "degraded",
+    "decision": "accepted",
+    "reason_codes": [
+      "dry_run_only_degraded_mode"
+    ]
+  },
+  "response": {
+    "run_id": "run:yq_terminal:daily_brief:2026-03-30:001",
+    "status": "accepted",
+    "duplicate_suppressed": false,
+    "duplicate_of_run_id": null,
+    "outputs": [
+      {
+        "artifact_kind": "why_pack",
+        "output_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "snapshot_id": "snapshot:yq_terminal:2026-03-30T10:59:59Z:1280042",
+        "manifest_id": "manifest:yq_terminal:2026-03-30:daily_brief:001"
+      }
+    ]
+  }
+}

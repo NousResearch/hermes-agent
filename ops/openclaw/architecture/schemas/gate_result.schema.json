@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.gate_result.v1",
+  "title": "Gate OS Result",
+  "type": "object",
+  "required": [
+    "schema",
+    "gate_id",
+    "gate_version",
+    "run",
+    "status",
+    "severity",
+    "mutation",
+    "reason"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.gate_result.v1" },
+    "gate_id": { "type": "string", "minLength": 1 },
+    "gate_version": { "type": "string", "minLength": 1 },
+    "run": {
+      "type": "object",
+      "required": ["run_id", "timestamp"],
+      "properties": {
+        "run_id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "host_id": { "type": ["string", "null"] },
+        "toolchain_fingerprint": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "target": { "type": ["object", "null"] },
+    "status": { "type": "string", "enum": ["pass", "warn", "fail", "error"] },
+    "severity": { "type": "string", "enum": ["info", "soft_fail", "hard_fail", "blocker"] },
+    "mutation": {
+      "type": "object",
+      "required": ["blocked"],
+      "properties": {
+        "blocked": { "type": "boolean" },
+        "block_scope": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "reason": {
+      "type": "object",
+      "required": ["code", "summary"],
+      "properties": {
+        "code": { "type": "string" },
+        "summary": { "type": "string" },
+        "details": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "findings": { "type": "array" },
+    "evidence_refs": { "type": "array" },
+    "remediation": { "type": "array" },
+    "replay": { "type": ["object", "null"] },
+    "notify": { "type": ["object", "null"] },
+    "override": { "type": ["object", "null"] }
+  },
+  "additionalProperties": true
+}

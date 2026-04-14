@@ -1,0 +1,758 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/checkpoint_bundle.schema.json",
+  "title": "Checkpoint Bundle Normalization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_id",
+    "generated_at",
+    "status",
+    "integration_contract",
+    "source_input_map",
+    "checkpoint",
+    "proof",
+    "pending_work",
+    "safe_resume",
+    "markdown_form",
+    "lineage",
+    "generated_artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.checkpoint_bundle.v1"
+    },
+    "bundle_id": {
+      "type": "string",
+      "pattern": "^checkpoint_bundle_[a-zA-Z0-9._-]+$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "active",
+        "draft",
+        "superseded"
+      ]
+    },
+    "integration_contract": {
+      "$ref": "#/$defs/integrationContract"
+    },
+    "source_input_map": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "$ref": "#/$defs/sourceInput"
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint_id",
+        "created_at",
+        "trigger",
+        "parent_checkpoint_id",
+        "session_key",
+        "objective",
+        "repo_state",
+        "state_capture",
+        "execution_plan",
+        "integrity"
+      ],
+      "properties": {
+        "checkpoint_id": {
+          "type": "string",
+          "pattern": "^chk_[a-zA-Z0-9._-]+$"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "trigger": {
+          "type": "string",
+          "minLength": 1
+        },
+        "parent_checkpoint_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_key": {
+          "type": "string",
+          "minLength": 1
+        },
+        "objective": {
+          "$ref": "#/$defs/objective"
+        },
+        "repo_state": {
+          "$ref": "#/$defs/repoState"
+        },
+        "state_capture": {
+          "$ref": "#/$defs/stateCapture"
+        },
+        "execution_plan": {
+          "$ref": "#/$defs/executionPlan"
+        },
+        "integrity": {
+          "$ref": "#/$defs/integrity"
+        }
+      }
+    },
+    "proof": {
+      "$ref": "#/$defs/proofStatus"
+    },
+    "pending_work": {
+      "$ref": "#/$defs/pendingWork"
+    },
+    "safe_resume": {
+      "$ref": "#/$defs/safeResume"
+    },
+    "markdown_form": {
+      "$ref": "#/$defs/checkpointMarkdownForm"
+    },
+    "lineage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "append_only",
+        "latest_pointer_path",
+        "pointer_checkpoint_id",
+        "pointer_updated_at"
+      ],
+      "properties": {
+        "append_only": {
+          "type": "boolean"
+        },
+        "latest_pointer_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pointer_checkpoint_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pointer_updated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "generated_artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_json",
+        "template_json",
+        "example_json",
+        "example_md",
+        "execution_report"
+      ],
+      "properties": {
+        "schema_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "template_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example_json": {
+          "type": "string",
+          "minLength": 1
+        },
+        "example_md": {
+          "type": "string",
+          "minLength": 1
+        },
+        "execution_report": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "integrationContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_id",
+        "contract_path",
+        "schema_path",
+        "template_path",
+        "clause_refs"
+      ],
+      "properties": {
+        "contract_id": {
+          "type": "string",
+          "const": "continuity_integration_contract_v1"
+        },
+        "contract_path": {
+          "type": "string",
+          "const": "docs/ops/continuity_integration_contract_v1.md"
+        },
+        "schema_path": {
+          "type": "string",
+          "const": "docs/ops/schemas/continuity_integration_contract.schema.json"
+        },
+        "template_path": {
+          "type": "string",
+          "const": "docs/ops/templates/continuity_integration_contract.template.json"
+        },
+        "clause_refs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "C1",
+              "C2",
+              "C3",
+              "C4",
+              "C5",
+              "C6"
+            ]
+          }
+        }
+      }
+    },
+    "sourceInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "artifact_path_or_ref",
+        "classification",
+        "continuity_dimensions"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^src_[a-zA-Z0-9._-]+$"
+        },
+        "artifact_path_or_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "archive_mined",
+            "historical",
+            "support",
+            "canonical"
+          ]
+        },
+        "continuity_dimensions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "checkpoint_contract",
+              "proof_gate",
+              "pending_work",
+              "resume_safety",
+              "ground_truth",
+              "overflow_trigger",
+              "lineage"
+            ]
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "primary_goal",
+        "status",
+        "blocker_reason"
+      ],
+      "properties": {
+        "primary_goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "READY",
+            "PROGRESS",
+            "BLOCKER",
+            "DEGRADED"
+          ]
+        },
+        "blocker_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "repoState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_path",
+        "branch",
+        "head",
+        "git_status_short"
+      ],
+      "properties": {
+        "repo_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "git_status_short": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "stateCapture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "env_snapshot_path",
+        "ground_truth_snapshot_path",
+        "active_cron_jobs_count",
+        "active_subagents_count",
+        "open_ports_count",
+        "anomalies_count"
+      ],
+      "properties": {
+        "env_snapshot_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ground_truth_snapshot_path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "active_cron_jobs_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "active_subagents_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "open_ports_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "anomalies_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "executionPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "next_actions",
+        "verification_commands",
+        "rollback_commands"
+      ],
+      "properties": {
+        "next_actions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/nextAction"
+          }
+        },
+        "verification_commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "rollback_commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "nextAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent",
+        "command"
+      ],
+      "properties": {
+        "intent": {
+          "type": "string",
+          "minLength": 1
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "snapshot_sha256",
+        "checkpoint_payload_sha256",
+        "checkpoint_file_sha256"
+      ],
+      "properties": {
+        "snapshot_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "checkpoint_payload_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "checkpoint_file_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "proofStatus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proof_state",
+        "proof_id",
+        "evaluated_at",
+        "expires_at",
+        "reset_allowed",
+        "resume_allowed",
+        "top_blocker",
+        "proof_source_path",
+        "status_source_path"
+      ],
+      "properties": {
+        "proof_state": {
+          "type": "string",
+          "enum": [
+            "PROOF_MISSING",
+            "PROOF_REFUSED",
+            "PROOF_INVALID",
+            "PROOF_EXPIRED",
+            "PROOF_VALID_BLOCKED",
+            "PROOF_VALID_PASS"
+          ]
+        },
+        "proof_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "reset_allowed": {
+          "type": "boolean"
+        },
+        "resume_allowed": {
+          "type": "boolean"
+        },
+        "top_blocker": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "proof_source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status_source_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "pendingWork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "items"
+      ],
+      "properties": {
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pending_total",
+            "queued",
+            "review",
+            "blocked",
+            "running"
+          ],
+          "properties": {
+            "pending_total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "queued": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "review": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "blocked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "running": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task_id",
+              "title",
+              "status",
+              "resume_hint"
+            ],
+            "properties": {
+              "task_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "QUEUED",
+                  "RUNNING",
+                  "REVIEW",
+                  "BLOCKED"
+                ]
+              },
+              "owner": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resume_hint": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "safeResume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safe_to_resume",
+        "safe_to_reset",
+        "mutation_gate_status",
+        "mutation_gate_posture",
+        "verify_gate_ready",
+        "required_preflight_commands",
+        "blockers"
+      ],
+      "properties": {
+        "safe_to_resume": {
+          "type": "boolean"
+        },
+        "safe_to_reset": {
+          "type": "boolean"
+        },
+        "mutation_gate_status": {
+          "type": "string",
+          "enum": [
+            "allowed",
+            "forbidden",
+            "caution",
+            "unknown"
+          ]
+        },
+        "mutation_gate_posture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "verify_gate_ready": {
+          "type": "boolean"
+        },
+        "required_preflight_commands": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "blockers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "checkpointMarkdownForm": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format_version",
+        "markdown_path",
+        "frontmatter",
+        "required_sections"
+      ],
+      "properties": {
+        "format_version": {
+          "type": "string",
+          "const": "clawd.checkpoint_markdown.v1"
+        },
+        "markdown_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "frontmatter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "checkpoint_id",
+            "created_at",
+            "trigger",
+            "status",
+            "objective",
+            "json_path",
+            "env_snapshot_path",
+            "ground_truth_snapshot_path"
+          ],
+          "properties": {
+            "checkpoint_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "trigger": {
+              "type": "string",
+              "minLength": 1
+            },
+            "status": {
+              "type": "string",
+              "minLength": 1
+            },
+            "objective": {
+              "type": "string",
+              "minLength": 1
+            },
+            "json_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "env_snapshot_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "ground_truth_snapshot_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "required_sections": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "Objective",
+              "Environment State",
+              "Next Actions",
+              "Verification Commands",
+              "Rollback Commands",
+              "Proof Status",
+              "Pending Work",
+              "Safe Resume",
+              "Notes"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

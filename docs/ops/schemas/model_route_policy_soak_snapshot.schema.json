@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/model_route_policy_soak_snapshot.schema.json",
+  "title": "Model Route Policy Soak Snapshot",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema", "generated_at", "status", "counts", "violations"],
+  "properties": {
+    "schema": {"const": "clawd.model_route_policy_soak_snapshot.v1"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "status": {"type": "string", "enum": ["ok", "policy_violations", "error"]},
+    "counts": {"type": "object"},
+    "violations": {"type": "array"}
+  }
+}

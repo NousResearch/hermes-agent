@@ -1,0 +1,55 @@
+{
+  "schema_version": "lane.bridge_object.v1",
+  "bridge_id": "brg_20260320_wave4_slice4_doctrine_object",
+  "created_at": "2026-03-20T10:30:00+07:00",
+  "expires_at": "2026-03-20T16:30:00+07:00",
+  "from_lane_id": "lane.column_b.swarm_orchestration",
+  "from_lane_epoch": "epoch_20260320_b1",
+  "to_lane_id": "lane.column_a.no_nudge_autonomy",
+  "to_lane_epoch": "epoch_20260320_a1",
+  "work_item_id": "wi_wave4_slice4_cross_lane_bridge",
+  "bridge_reason": "Bridge an approved doctrine object reference for cross-lane consumption without raw transcript leakage.",
+  "object_class": "doctrine_object",
+  "object_ref": {
+    "object_id": "doc_columna_promotion_not_leakage",
+    "path": "docs/ops/templates/doctrine_object.template.json",
+    "locator": "$.doctrine_id",
+    "content_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "schema_ref": "docs/ops/schemas/doctrine_object.schema.json",
+    "bytes": 3765
+  },
+  "source_refs": [
+    "docs/ops/doctrine_object_contract_v1.md",
+    "docs/ops/promotion_protocol_contract_v1.md",
+    "docs/ops/lane_boundary_contract_v1.md"
+  ],
+  "decision_refs": [
+    "decision_wave4_slice4_bridge_gate_pass"
+  ],
+  "approval": {
+    "approval_state": "approved",
+    "reviewer_role": "VALIDATOR",
+    "reviewer_id": "validator_lane_boundary_v1",
+    "reviewed_at": "2026-03-20T10:45:00+07:00",
+    "decision_ref": "decision_wave4_slice4_bridge_approve_001"
+  },
+  "promotion": {
+    "promotion_required": true,
+    "promotion_id": "prom_20260320_doctrine_object_bridge_ready",
+    "promotion_state": "APPROVED",
+    "leakage_check": "pass",
+    "classification": "internal",
+    "redaction_applied": false
+  },
+  "contamination_guard": {
+    "source_memory_scope": "shared_contract_only",
+    "contains_unverified_content": false,
+    "cross_lane_write_requested": false,
+    "promotion_gate": "validator_required",
+    "max_inline_context_bytes": 0,
+    "redaction_applied": false,
+    "allow_inline_excerpt": false,
+    "notes": "Reference-only bridge. No lane-local transcript content is transferred."
+  },
+  "ack_required": true
+}

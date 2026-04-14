@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/compatibility_path_removal_rfc.schema.json",
+  "title": "Compatibility Path Removal RFC",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "rfc_id",
+    "path_id",
+    "status",
+    "owner",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.compatibility_path_removal_rfc.v1"
+    },
+    "rfc_id": {
+      "type": "string",
+      "pattern": "^crfc_[a-z0-9._-]+$"
+    },
+    "path_id": {
+      "type": "string",
+      "pattern": "^compat_[a-z0-9._-]+$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "proposed",
+        "approved",
+        "executed",
+        "rejected"
+      ]
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "decision_note": {
+      "type": "string"
+    }
+  }
+}

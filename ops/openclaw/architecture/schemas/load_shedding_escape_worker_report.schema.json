@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.load_shedding.escape_worker_report.v1",
+  "title": "Load Shedding Escape Worker Report",
+  "type": "object",
+  "required": ["object_type", "worker_id", "started_at", "result", "actions", "artifacts"],
+  "properties": {
+    "object_type": { "const": "clawd.load_shedding.escape_worker_report.v1" },
+    "worker_id": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "string" },
+    "completed_at": { "type": ["string", "null"] },
+    "result": { "type": "string", "enum": ["PASS", "FAIL", "TIMEOUT", "UNKNOWN"] },
+    "actions": { "type": "array", "items": { "type": "string" } },
+    "artifacts": { "type": "object" },
+    "next_trigger": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

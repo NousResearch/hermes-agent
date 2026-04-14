@@ -1,0 +1,18 @@
+{
+  "object_type": "clawd.failover_fsm.successor_resume_validation_report.v1",
+  "evaluated_at": "2026-03-20T10:12:00Z",
+  "verdict": "PASS",
+  "checks": {
+    "generation_parity": "pass",
+    "resume_safety_proof": "pass",
+    "queue_reconcile": "pass",
+    "lease_transfer_or_reclaim": "pass",
+    "post_proof_invalidation_absent": "pass"
+  },
+  "blockers": [],
+  "proof": {
+    "proof_state": "PROOF_VALID_PASS",
+    "proof_id": "proof_abc123",
+    "expires_at": "2026-03-20T10:15:00Z"
+  }
+}

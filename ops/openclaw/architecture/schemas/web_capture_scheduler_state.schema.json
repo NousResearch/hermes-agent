@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.web_capture.scheduler_state.v1",
+  "title": "Web Capture Scheduler State",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "updated_at",
+    "mode",
+    "dry_run",
+    "force",
+    "selection_status",
+    "summary",
+    "domains",
+    "macros",
+    "state_path",
+    "domain_cursor",
+    "contract"
+  ],
+  "properties": {
+    "schema_version": { "const": "openclaw.web_capture.scheduler_state.v1" },
+    "updated_at": { "type": "string" },
+    "mode": { "type": "string", "enum": ["auto", "fetch", "browser"] },
+    "dry_run": { "type": "boolean" },
+    "force": { "type": "boolean" },
+    "last_selected_domain": { "type": ["string", "null"] },
+    "last_selected_macro_slug": { "type": ["string", "null"] },
+    "last_selected_at": { "type": ["string", "null"] },
+    "selection_status": {
+      "type": "string",
+      "enum": ["idle_no_eligible_macro", "selected_dry_run", "executed"]
+    },
+    "selection": {
+      "type": ["object", "null"],
+      "properties": {
+        "domain": { "type": ["string", "null"] },
+        "macro_slug": { "type": ["string", "null"] },
+        "macro_path": { "type": ["string", "null"] },
+        "reason": { "type": ["string", "null"] },
+        "fairness": { "type": ["object", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "execution": {
+      "type": "object",
+      "required": ["executed"],
+      "properties": {
+        "executed": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "total_macros",
+        "valid_macros",
+        "eligible_macros",
+        "blocked_or_skipped_macros",
+        "reason_counts"
+      ],
+      "properties": {
+        "total_macros": { "type": "integer", "minimum": 0 },
+        "valid_macros": { "type": "integer", "minimum": 0 },
+        "eligible_macros": { "type": "integer", "minimum": 0 },
+        "blocked_or_skipped_macros": { "type": "integer", "minimum": 0 },
+        "reason_counts": { "type": "object" }
+      },
+      "additionalProperties": true
+    },
+    "domains": { "type": "array", "items": { "type": "object" } },
+    "macros": { "type": "array", "items": { "type": "object" } },
+    "state_path": { "type": "string" },
+    "domain_cursor": { "type": "object" },
+    "contract": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "schema_path",
+        "validated_at",
+        "state_valid",
+        "validation_errors"
+      ],
+      "properties": {
+        "schema_version": { "const": "openclaw.web_capture.scheduler_state.v1" },
+        "schema_path": { "type": "string" },
+        "validated_at": { "type": "string" },
+        "state_valid": { "type": "boolean" },
+        "validation_errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "previous_state_valid": { "type": "boolean" },
+        "previous_state_errors": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

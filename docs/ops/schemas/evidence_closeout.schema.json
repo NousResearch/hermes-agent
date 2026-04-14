@@ -1,0 +1,315 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/evidence_closeout.schema.json",
+  "title": "Evidence Closeout",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "closeout_id",
+    "slice_id",
+    "work_item_id",
+    "outcome",
+    "summary",
+    "claims",
+    "evidence_objects",
+    "verification",
+    "coherence_tuple",
+    "timing",
+    "remaining_risks",
+    "next_actions"
+  ],
+  "properties": {
+    "closeout_id": {
+      "type": "string",
+      "pattern": "^closeout_[a-z0-9._-]+$"
+    },
+    "slice_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "work_item_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "SUCCESS",
+        "PARTIAL",
+        "RETRY_REQUIRED",
+        "BLOCKED",
+        "INVALID"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
+    },
+    "evidence_objects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidenceObject"
+      }
+    },
+    "verification": {
+      "$ref": "#/$defs/verification"
+    },
+    "coherence_tuple": {
+      "$ref": "#/$defs/coherenceTuple"
+    },
+    "timing": {
+      "$ref": "#/$defs/timing"
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/decision"
+      },
+      "default": []
+    },
+    "remaining_risks": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "author_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "statement",
+        "status",
+        "evidence_refs"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "evidence_backed",
+            "speculative"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidenceObject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "tool",
+        "captured_at",
+        "content_hash",
+        "artifact_path",
+        "why_it_matters"
+      ],
+      "properties": {
+        "evidence_id": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "why_it_matters": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "independent",
+        "verifier_role",
+        "checks"
+      ],
+      "properties": {
+        "independent": {
+          "type": "boolean"
+        },
+        "verifier_role": {
+          "type": "string",
+          "enum": [
+            "VALIDATOR",
+            "SRE",
+            "LIBRARIAN",
+            "EXECUTOR",
+            "PLANNER",
+            "RESEARCHER"
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "status"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "warn"
+                ]
+              },
+              "evidence_ref": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "coherenceTuple": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "world_anchor_id",
+        "policy_epoch_id",
+        "connector_snapshot_id",
+        "valid_until",
+        "build_generation_id"
+      ],
+      "properties": {
+        "world_anchor_id": {
+          "type": "string"
+        },
+        "policy_epoch_id": {
+          "type": "string"
+        },
+        "connector_snapshot_id": {
+          "type": "string"
+        },
+        "valid_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "build_generation_id": {
+          "type": "string"
+        }
+      }
+    },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "started_at",
+        "finished_at",
+        "duration_min"
+      ],
+      "properties": {
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finished_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "duration_min": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "rationale",
+        "timestamp"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "authorized_by": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

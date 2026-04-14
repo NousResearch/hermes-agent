@@ -1,0 +1,633 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/cross_lane_bridge_object.schema.json",
+  "title": "Cross-Lane Bridge Object",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bridge_id",
+    "created_at",
+    "from_lane_id",
+    "from_lane_epoch",
+    "to_lane_id",
+    "to_lane_epoch",
+    "work_item_id",
+    "bridge_reason",
+    "object_class",
+    "object_ref",
+    "source_refs",
+    "approval",
+    "promotion",
+    "contamination_guard"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "lane.bridge_object.v1"
+    },
+    "bridge_id": {
+      "type": "string",
+      "pattern": "^brg_[a-z0-9._-]+$"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "from_lane_id": {
+      "$ref": "#/$defs/laneId"
+    },
+    "from_lane_epoch": {
+      "$ref": "#/$defs/laneEpoch"
+    },
+    "to_lane_id": {
+      "$ref": "#/$defs/laneId"
+    },
+    "to_lane_epoch": {
+      "$ref": "#/$defs/laneEpoch"
+    },
+    "work_item_id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "bridge_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "object_class": {
+      "type": "string",
+      "enum": [
+        "doctrine_object",
+        "promotion_candidate",
+        "lane_crossover_packet",
+        "evidence_closeout",
+        "approved_artifact_ref"
+      ]
+    },
+    "object_ref": {
+      "$ref": "#/$defs/objectRef"
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "decision_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "approval": {
+      "$ref": "#/$defs/approval"
+    },
+    "promotion": {
+      "$ref": "#/$defs/promotion"
+    },
+    "contamination_guard": {
+      "$ref": "#/$defs/contaminationGuard"
+    },
+    "inline_excerpt": {
+      "type": "string",
+      "maxLength": 512
+    },
+    "ack_required": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "object_class": {
+            "const": "doctrine_object"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_ref": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/objectRef"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "object_id": {
+                    "type": "string",
+                    "pattern": "^doc_[a-z0-9._-]+$"
+                  },
+                  "schema_ref": {
+                    "const": "docs/ops/schemas/doctrine_object.schema.json"
+                  }
+                }
+              }
+            ]
+          },
+          "promotion": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/promotion"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "promotion_required": {
+                    "const": true
+                  },
+                  "promotion_id": {
+                    "type": "string",
+                    "pattern": "^prom_[a-z0-9._-]+$"
+                  },
+                  "promotion_state": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "PROMOTED"
+                    ]
+                  },
+                  "leakage_check": {
+                    "const": "pass"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_class": {
+            "const": "promotion_candidate"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_ref": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/objectRef"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "object_id": {
+                    "type": "string",
+                    "pattern": "^prom_[a-z0-9._-]+$"
+                  },
+                  "schema_ref": {
+                    "const": "docs/ops/schemas/promotion_candidate.schema.json"
+                  }
+                }
+              }
+            ]
+          },
+          "promotion": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/promotion"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "promotion_state": {
+                    "type": "string",
+                    "enum": [
+                      "PENDING_REVIEW",
+                      "APPROVED",
+                      "PROMOTED",
+                      "REJECTED",
+                      "BLOCKED"
+                    ]
+                  },
+                  "leakage_check": {
+                    "const": "pass"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_class": {
+            "const": "lane_crossover_packet"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_ref": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/objectRef"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "object_id": {
+                    "type": "string",
+                    "pattern": "^lxp_[a-z0-9._-]+$"
+                  },
+                  "schema_ref": {
+                    "const": "docs/ops/schemas/lane_crossover_packet.schema.json"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_class": {
+            "const": "evidence_closeout"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "object_ref": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/objectRef"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "object_id": {
+                    "type": "string",
+                    "pattern": "^closeout_[a-z0-9._-]+$"
+                  },
+                  "schema_ref": {
+                    "const": "docs/ops/schemas/evidence_closeout.schema.json"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "object_class": {
+            "const": "approved_artifact_ref"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "approval": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/approval"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "approval_state": {
+                    "const": "promoted"
+                  }
+                }
+              }
+            ]
+          },
+          "promotion": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/promotion"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "promotion_required": {
+                    "const": true
+                  },
+                  "promotion_id": {
+                    "type": "string",
+                    "pattern": "^prom_[a-z0-9._-]+$"
+                  },
+                  "promotion_state": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "PROMOTED"
+                    ]
+                  },
+                  "leakage_check": {
+                    "const": "pass"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "inline_excerpt"
+        ]
+      },
+      "then": {
+        "properties": {
+          "contamination_guard": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/contaminationGuard"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "allow_inline_excerpt": {
+                    "const": true
+                  },
+                  "max_inline_context_bytes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 512
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "promotion": {
+            "type": "object",
+            "properties": {
+              "classification": {
+                "const": "restricted"
+              }
+            },
+            "required": [
+              "classification"
+            ]
+          }
+        },
+        "required": [
+          "promotion"
+        ]
+      },
+      "then": {
+        "properties": {
+          "promotion": {
+            "type": "object",
+            "properties": {
+              "redaction_applied": {
+                "const": true
+              }
+            }
+          },
+          "contamination_guard": {
+            "type": "object",
+            "properties": {
+              "redaction_applied": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "properties": {
+        "contamination_guard": {
+          "type": "object",
+          "properties": {
+            "contains_unverified_content": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "laneId": {
+      "type": "string",
+      "pattern": "^lane\\.column_[abc]\\.[a-z0-9][a-z0-9_.-]*$"
+    },
+    "laneEpoch": {
+      "type": "string",
+      "pattern": "^epoch_[a-z0-9._:-]+$"
+    },
+    "objectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "object_id",
+        "path",
+        "content_hash",
+        "schema_ref"
+      ],
+      "properties": {
+        "object_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "path": {
+          "type": "string",
+          "pattern": "^(?!/)(?!.*\\.\\.)[a-zA-Z0-9._/-]+$"
+        },
+        "locator": {
+          "type": "string"
+        },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^(sha256:)?[a-f0-9]{64}$"
+        },
+        "schema_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_state",
+        "reviewer_role",
+        "reviewer_id",
+        "reviewed_at",
+        "decision_ref"
+      ],
+      "properties": {
+        "approval_state": {
+          "type": "string",
+          "enum": [
+            "approved",
+            "promoted"
+          ]
+        },
+        "reviewer_role": {
+          "type": "string",
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN"
+          ]
+        },
+        "reviewer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "decision_ref": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "promotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "promotion_required",
+        "promotion_id",
+        "promotion_state",
+        "leakage_check",
+        "classification",
+        "redaction_applied"
+      ],
+      "properties": {
+        "promotion_required": {
+          "type": "boolean"
+        },
+        "promotion_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "promotion_state": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "LOCAL_ONLY",
+            "PENDING_REVIEW",
+            "APPROVED",
+            "PROMOTED",
+            "REJECTED",
+            "BLOCKED",
+            null
+          ]
+        },
+        "leakage_check": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "pass",
+            "fail",
+            null
+          ]
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "public",
+            "internal",
+            "restricted"
+          ]
+        },
+        "redaction_applied": {
+          "type": "boolean"
+        }
+      }
+    },
+    "contaminationGuard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_memory_scope",
+        "contains_unverified_content",
+        "cross_lane_write_requested",
+        "promotion_gate",
+        "max_inline_context_bytes",
+        "redaction_applied",
+        "allow_inline_excerpt"
+      ],
+      "properties": {
+        "source_memory_scope": {
+          "type": "string",
+          "enum": [
+            "lane_local_only",
+            "shared_contract_only",
+            "mixed"
+          ]
+        },
+        "contains_unverified_content": {
+          "type": "boolean"
+        },
+        "cross_lane_write_requested": {
+          "type": "boolean"
+        },
+        "promotion_gate": {
+          "type": "string",
+          "enum": [
+            "none",
+            "validator_required",
+            "human_required"
+          ]
+        },
+        "max_inline_context_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 512
+        },
+        "redaction_applied": {
+          "type": "boolean"
+        },
+        "allow_inline_excerpt": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.load_shedding.watchdog_probe.v1",
+  "title": "Load Shedding Watchdog Probe",
+  "type": "object",
+  "required": [
+    "object_type",
+    "probed_at",
+    "lane_heartbeat_age_sec",
+    "tier_assessment",
+    "escalation",
+    "reason_codes"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.load_shedding.watchdog_probe.v1" },
+    "probed_at": { "type": "string" },
+    "lane_heartbeat_age_sec": { "type": "integer", "minimum": 0 },
+    "tier_assessment": { "type": "string", "enum": ["NORMAL", "WARNING", "CRITICAL", "UNKNOWN"] },
+    "escalation": { "type": "object" },
+    "reason_codes": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

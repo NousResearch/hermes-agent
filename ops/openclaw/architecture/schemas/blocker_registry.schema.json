@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.continuity.blocker_registry.v1",
+  "title": "Continuity Blocker Registry",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "status",
+    "readiness",
+    "freshness",
+    "source_current",
+    "truth_anchor",
+    "mutation_gate",
+    "blockers"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.continuity.blocker_registry.v1" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "status": { "type": "string", "enum": ["READY", "BLOCKER"] },
+    "readiness": {
+      "type": "string",
+      "enum": ["READY", "READY_WITH_DEBT", "RECONCILE_REQUIRED", "NOT_READY", "UNKNOWN"]
+    },
+    "freshness": {
+      "type": "object",
+      "required": ["source", "max_age_sec", "fresh"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "source_generated_at": { "type": ["string", "null"] },
+        "source_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "max_age_sec": { "type": "integer", "minimum": 0 },
+        "fresh": { "type": "boolean" },
+        "failclose_reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": true
+    },
+    "source_current": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "source_precedence": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "truth_anchor": {
+      "type": "object",
+      "required": ["snapshot_id", "journal_offset", "pointer_hash"],
+      "properties": {
+        "snapshot_id": { "type": ["string", "null"] },
+        "journal_offset": { "type": ["string", "null"] },
+        "pointer_hash": { "type": ["string", "null"] },
+        "pointer_source": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "mutation_gate": {
+      "type": "object",
+      "required": ["status", "reason"],
+      "properties": {
+        "status": { "type": "string", "enum": ["allowed", "forbidden"] },
+        "posture": { "type": "string" },
+        "reason": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "blocking_reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "concurrency_reasons": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "expected_in_flight_guard": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "blockers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["reason", "severity", "owner", "status", "evidence"],
+        "properties": {
+          "reason": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["blocker", "warn"] },
+          "owner": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "notes": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,1099 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.operator_triage_console.v1",
+  "title": "Operator Triage Console Latest",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "source",
+    "status",
+    "execution_snapshot",
+    "lanes",
+    "issues",
+    "recommended_actions",
+    "evidence_refs"
+  ],
+  "properties": {
+    "schema": { "const": "clawd.operator_triage_console.v1" },
+    "generated_at": { "type": "string", "minLength": 1 },
+    "source": {
+      "type": "object",
+      "required": ["mission_control_path"],
+      "properties": {
+        "mission_control_path": { "type": "string", "minLength": 1 },
+        "mission_control_generated_at": { "type": ["string", "null"] },
+        "mission_control_age_sec": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "status": {
+      "type": "object",
+      "required": [
+        "severity",
+        "label",
+        "readiness",
+        "mutation_gate",
+        "hard_blockers",
+        "warnings",
+        "issue_count",
+        "lane_count"
+      ],
+      "properties": {
+        "severity": { "type": "string", "enum": ["p0", "p1", "p2"] },
+        "label": { "type": "string", "minLength": 1 },
+        "readiness": { "type": "string", "minLength": 1 },
+        "mutation_gate": { "type": "string", "minLength": 1 },
+        "hard_blockers": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "issue_count": { "type": "integer", "minimum": 0 },
+        "suppressed_issue_count": { "type": "integer", "minimum": 0 },
+        "lane_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "execution_snapshot": {
+      "type": "object",
+      "required": [
+        "active_task_count",
+        "active_task_ids",
+        "reported_running_tasks",
+        "worker_state",
+        "blockage"
+      ],
+      "properties": {
+        "active_task_count": { "type": "integer", "minimum": 0 },
+        "active_task_ids": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "reported_running_tasks": { "type": "integer", "minimum": 0 },
+        "current_focus": { "type": ["string", "null"] },
+        "frontier_next_candidate": { "type": ["string", "null"] },
+        "target_step_id": { "type": ["string", "null"] },
+        "launched_step_id": { "type": ["string", "null"] },
+        "task_detail": {
+          "type": "object",
+          "properties": {
+            "foreground_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "background_ready_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "background_blocked_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "ready_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "blocked_candidate_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "critique_available_task_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "active_task_cards": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["task_id", "state", "foreground", "blocked", "critique_available"],
+                "properties": {
+                  "task_id": { "type": "string", "minLength": 1 },
+                  "state": { "type": "string", "minLength": 1 },
+                  "foreground": { "type": "boolean" },
+                  "blocked": { "type": "boolean" },
+                  "critique_available": { "type": "boolean" },
+                  "visibility_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                  "visibility_rating": { "type": ["string", "null"], "enum": ["healthy", "degraded", "critical", null] },
+                  "visibility_scorecard": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "dimensions": { "type": ["object", "null"] },
+                      "weights": { "type": ["object", "null"] },
+                      "weighted_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                      "rating": { "type": ["string", "null"], "enum": ["healthy", "degraded", "critical", null] }
+                    },
+                    "additionalProperties": true
+                  },
+                  "noise_signal_tags": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                  },
+                  "suppressed": { "type": ["boolean", "null"] },
+                  "suppression_reasons": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "suppressed_task_cards": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "task_id": { "type": "string", "minLength": 1 },
+                  "state": { "type": ["string", "null"] },
+                  "suppression_reasons": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1 }
+                  },
+                  "visibility_score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                  "visibility_rating": { "type": ["string", "null"], "enum": ["healthy", "degraded", "critical", null] }
+                },
+                "additionalProperties": true
+              }
+            },
+            "all_task_card_count": { "type": ["integer", "null"], "minimum": 0 },
+            "suppressed_task_card_count": { "type": ["integer", "null"], "minimum": 0 },
+            "noise_signal_policy": {
+              "type": "object",
+              "properties": {
+                "show_stale": { "type": ["boolean", "null"] },
+                "show_redundant": { "type": ["boolean", "null"] },
+                "verbose_state": { "type": ["boolean", "null"] },
+                "show_chatter": { "type": ["boolean", "null"] },
+                "show_recoverable_errors": { "type": ["boolean", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "freshness": {
+              "type": "object",
+              "properties": {
+                "status": { "type": ["string", "null"] },
+                "reason": { "type": ["string", "null"] },
+                "worst_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "last_signal_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "last_progress_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "mission_control_age_sec": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "worker_state": {
+          "type": "object",
+          "required": [
+            "demoted_worker_count",
+            "restore_pending_worker_count",
+            "restored_worker_count",
+            "probe_due_now_worker_count",
+            "probe_overdue_worker_count",
+            "fail_closed",
+            "launch_mutation_allowed"
+          ],
+          "properties": {
+            "demoted_worker_count": { "type": "integer", "minimum": 0 },
+            "restore_pending_worker_count": { "type": "integer", "minimum": 0 },
+            "restored_worker_count": { "type": "integer", "minimum": 0 },
+            "probe_due_now_worker_count": { "type": "integer", "minimum": 0 },
+            "probe_overdue_worker_count": { "type": "integer", "minimum": 0 },
+            "oldest_demoted_worker": { "type": ["string", "null"] },
+            "oldest_demoted_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "probe_execution_status": { "type": ["string", "null"] },
+            "probe_execution_reason": { "type": ["string", "null"] },
+            "fail_closed": { "type": "boolean" },
+            "launch_mutation_allowed": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "worker_state_detail": {
+          "type": "object",
+          "properties": {
+            "status": { "type": ["string", "null"] },
+            "launch_readiness_state": { "type": ["string", "null"] },
+            "launch_readiness_reason": { "type": ["string", "null"] },
+            "launch_readiness_severity_state": { "type": ["string", "null"] },
+            "launch_readiness_severity_reason": { "type": ["string", "null"] },
+            "launch_readiness_severity_non_ready_ticks": { "type": ["integer", "null"], "minimum": 0 },
+            "launch_readiness_severity_threshold_ticks": { "type": ["integer", "null"], "minimum": 0 },
+            "demotion_action_priority": { "type": ["string", "null"] },
+            "probe_execution_action_priority": { "type": ["string", "null"] },
+            "oldest_restore_pending_worker": { "type": ["string", "null"] },
+            "oldest_restore_pending_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "oldest_probe_due_now_worker": { "type": ["string", "null"] },
+            "oldest_probe_due_now_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "oldest_probe_overdue_worker": { "type": ["string", "null"] },
+            "oldest_probe_overdue_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+            "freshness": {
+              "type": "object",
+              "properties": {
+                "status": { "type": ["string", "null"] },
+                "reason": { "type": ["string", "null"] },
+                "worst_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "dispatch_intent_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "dispatch_qualification_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "last_signal_age_sec": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "inspection_workflow": {
+          "type": "object",
+          "properties": {
+            "freshness": {
+              "type": "object",
+              "properties": {
+                "task_status": { "type": ["string", "null"] },
+                "worker_status": { "type": ["string", "null"] },
+                "requires_attention": { "type": ["boolean", "null"] },
+                "next_action": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "action": { "type": ["string", "null"] },
+                    "priority": { "type": ["string", "null"] },
+                    "command": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
+            },
+            "blockage": {
+              "type": "object",
+              "properties": {
+                "blocked": { "type": ["boolean", "null"] },
+                "primary_reason": { "type": ["string", "null"] },
+                "reason_count": { "type": ["integer", "null"], "minimum": 0 },
+                "frontier_next_candidate": { "type": ["string", "null"] },
+                "fail_closed": { "type": ["boolean", "null"] },
+                "next_action": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "action": { "type": ["string", "null"] },
+                    "priority": { "type": ["string", "null"] },
+                    "command": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": true
+                },
+                "worker_state_action": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "action": { "type": ["string", "null"] },
+                    "priority": { "type": ["string", "null"] },
+                    "command": { "type": ["string", "null"] }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
+            },
+            "inspection_order": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "step": { "type": ["string", "null"] },
+                  "next_action": {
+                    "type": ["object", "null"],
+                    "properties": {
+                      "action": { "type": ["string", "null"] },
+                      "priority": { "type": ["string", "null"] },
+                      "command": { "type": ["string", "null"] }
+                    },
+                    "additionalProperties": true
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        },
+        "freshness_degradation_projection": {
+          "type": ["object", "null"],
+          "properties": {
+            "status": { "type": ["string", "null"], "enum": ["healthy", "degraded", null] },
+            "degraded": { "type": ["boolean", "null"] },
+            "fail_closed": { "type": ["boolean", "null"] },
+            "reason": { "type": ["string", "null"] },
+            "reasons": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "task_status": { "type": ["string", "null"] },
+            "worker_status": { "type": ["string", "null"] },
+            "mission_freshness_posture": { "type": ["string", "null"] },
+            "requires_attention": { "type": ["boolean", "null"] },
+            "safe_next_action": { "type": ["object", "null"], "additionalProperties": true },
+            "parity": {
+              "type": ["object", "null"],
+              "properties": {
+                "inspection_requires_attention": { "type": ["boolean", "null"] },
+                "task_surface_requires_attention": { "type": ["boolean", "null"] },
+                "mission_posture_requires_attention": { "type": ["boolean", "null"] },
+                "mission_failclose_reason_count": { "type": ["integer", "null"], "minimum": 0 },
+                "inspection_matches_projection": { "type": ["boolean", "null"] },
+                "task_surface_matches_projection": { "type": ["boolean", "null"] },
+                "mission_posture_matches_projection": { "type": ["boolean", "null"] }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "task_state_surface": {
+          "type": "object",
+          "properties": {
+            "schema": { "type": ["string", "null"] },
+            "summary": {
+              "type": ["object", "null"],
+              "properties": {
+                "state": { "type": ["string", "null"], "enum": ["blocked", "stale", "ready", "unknown", null] },
+                "blocked_work_count": { "type": ["integer", "null"], "minimum": 0 },
+                "active_slice_count": { "type": ["integer", "null"], "minimum": 0 },
+                "freshness_status": { "type": ["string", "null"] },
+                "worker_status": { "type": ["string", "null"] },
+                "requires_attention": { "type": ["boolean", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "blocked_work": {
+              "type": ["object", "null"],
+              "properties": {
+                "blocked": { "type": ["boolean", "null"] },
+                "task_ids": {
+                  "type": ["array", "null"],
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "primary_reason": { "type": ["string", "null"] },
+                "reason_count": { "type": ["integer", "null"], "minimum": 0 },
+                "frontier_next_candidate": { "type": ["string", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "active_slices": {
+              "type": ["object", "null"],
+              "properties": {
+                "task_ids": {
+                  "type": ["array", "null"],
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "foreground_task_ids": {
+                  "type": ["array", "null"],
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "background_ready_task_ids": {
+                  "type": ["array", "null"],
+                  "items": { "type": "string", "minLength": 1 }
+                },
+                "current_focus": { "type": ["string", "null"] },
+                "frontier_next_candidate": { "type": ["string", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "freshness": {
+              "type": ["object", "null"],
+              "properties": {
+                "task_status": { "type": ["string", "null"] },
+                "task_worst_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "worker_status": { "type": ["string", "null"] },
+                "worker_worst_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+                "requires_attention": { "type": ["boolean", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "safe_next_actions": {
+              "type": ["object", "null"],
+              "properties": {
+                "inspect_freshness": { "type": ["object", "null"], "additionalProperties": true },
+                "inspect_blockage_frontier": { "type": ["object", "null"], "additionalProperties": true },
+                "inspect_worker_state": { "type": ["object", "null"], "additionalProperties": true }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "state_explainability": {
+          "type": "object",
+          "properties": {
+            "schema": { "type": ["string", "null"] },
+            "decision_order": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "enum": ["blocked", "stale", "ready"] }
+            },
+            "dominant_state": { "type": ["string", "null"], "enum": ["blocked", "stale", "ready", "unknown", null] },
+            "dominant_reason": { "type": ["string", "null"] },
+            "dominant_triggers": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "safe_next_action": {
+              "type": ["object", "null"],
+              "properties": {
+                "action": { "type": ["string", "null"] },
+                "priority": { "type": ["string", "null"] },
+                "command": { "type": ["string", "null"] }
+              },
+              "additionalProperties": true
+            },
+            "state_cards": {
+              "type": ["object", "null"],
+              "properties": {
+                "blocked": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "active": { "type": ["boolean", "null"] },
+                    "reason": { "type": ["string", "null"] },
+                    "triggers": {
+                      "type": ["array", "null"],
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "safe_next_action": { "type": ["object", "null"], "additionalProperties": true }
+                  },
+                  "additionalProperties": true
+                },
+                "stale": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "active": { "type": ["boolean", "null"] },
+                    "reason": { "type": ["string", "null"] },
+                    "triggers": {
+                      "type": ["array", "null"],
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "safe_next_action": { "type": ["object", "null"], "additionalProperties": true }
+                  },
+                  "additionalProperties": true
+                },
+                "ready": {
+                  "type": ["object", "null"],
+                  "properties": {
+                    "active": { "type": ["boolean", "null"] },
+                    "reason": { "type": ["string", "null"] },
+                    "triggers": {
+                      "type": ["array", "null"],
+                      "items": { "type": "string", "minLength": 1 }
+                    },
+                    "safe_next_action": { "type": ["object", "null"], "additionalProperties": true }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
+            },
+            "signals": { "type": ["object", "null"], "additionalProperties": true },
+            "visibility_scorecard": {
+              "type": ["object", "null"],
+              "properties": {
+                "score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+                "rating": { "type": ["string", "null"], "enum": ["healthy", "degraded", "critical", null] },
+                "task_count": { "type": ["integer", "null"], "minimum": 0 },
+                "suppressed_task_count": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            },
+            "transcript_mining_required": { "type": ["boolean", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "visibility_scorecard": {
+          "type": "object",
+          "properties": {
+            "score": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
+            "rating": { "type": ["string", "null"], "enum": ["healthy", "degraded", "critical", null] },
+            "dimensions": { "type": ["object", "null"] },
+            "weights": { "type": ["object", "null"] },
+            "thresholds": { "type": ["object", "null"] },
+            "task_rating_counts": { "type": ["object", "null"] },
+            "task_count": { "type": ["integer", "null"], "minimum": 0 },
+            "visible_task_count": { "type": ["integer", "null"], "minimum": 0 },
+            "suppressed_task_count": { "type": ["integer", "null"], "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "blockage": {
+          "type": "object",
+          "required": ["reasons", "blocked_candidate_count", "program_state", "dispatch_status"],
+          "properties": {
+            "primary_reason": { "type": ["string", "null"] },
+            "reasons": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "blocked_candidate_count": { "type": "integer", "minimum": 0 },
+            "program_state": { "type": "string", "minLength": 1 },
+            "dispatch_status": { "type": "string", "minLength": 1 },
+            "frontier_selector_state": { "type": ["string", "null"] },
+            "frontier_supervisor_state": { "type": ["string", "null"] },
+            "frontier_stalled": { "type": ["boolean", "null"] },
+            "autonomous_dispatch_status": { "type": ["string", "null"] },
+            "autonomous_dispatch_block_reason": { "type": ["string", "null"] },
+            "autonomous_dispatch_error": { "type": ["string", "null"] },
+            "reason_count": { "type": ["integer", "null"], "minimum": 0 }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "lanes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["lane", "severity", "status", "summary"],
+        "properties": {
+          "lane": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["p0", "p1", "p2"] },
+          "status": { "type": "string", "minLength": 1 },
+          "summary": { "type": "string", "minLength": 1 },
+          "evidence_ref": { "type": ["string", "null"] },
+          "next_action": {
+            "type": ["object", "null"],
+            "properties": {
+              "action": { "type": ["string", "null"] },
+              "priority": { "type": ["string", "null"] },
+              "command": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "severity", "lane", "reason"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "severity": { "type": "string", "enum": ["p0", "p1", "p2"] },
+          "lane": { "type": "string", "minLength": 1 },
+          "reason": { "type": "string", "minLength": 1 },
+          "evidence_ref": { "type": ["string", "null"] },
+          "recommended_action": {
+            "type": ["object", "null"],
+            "properties": {
+              "action": { "type": ["string", "null"] },
+              "priority": { "type": ["string", "null"] },
+              "command": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "noise_signal": {
+      "type": "object",
+      "properties": {
+        "heuristics": { "type": ["object", "null"] },
+        "thresholds": { "type": ["object", "null"] },
+        "summary": {
+          "type": ["object", "null"],
+          "properties": {
+            "visible_issue_count": { "type": ["integer", "null"], "minimum": 0 },
+            "suppressed_issue_count": { "type": ["integer", "null"], "minimum": 0 },
+            "visible_task_card_count": { "type": ["integer", "null"], "minimum": 0 },
+            "suppressed_task_card_count": { "type": ["integer", "null"], "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "suppressed_issues": {
+          "type": "array",
+          "items": { "type": "object", "additionalProperties": true }
+        }
+      },
+      "additionalProperties": true
+    },
+    "recommended_actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action", "command", "priority"],
+        "properties": {
+          "action": { "type": "string", "minLength": 1 },
+          "command": { "type": "string", "minLength": 1 },
+          "priority": { "type": "string", "enum": ["p0", "p1", "p2", "p3"] },
+          "reason": { "type": ["string", "null"] }
+        },
+        "additionalProperties": true
+      }
+    },
+    "ui_evidence_bundle": {
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["linked", "invalid"] },
+        "bundle_path": { "type": ["string", "null"] },
+        "bundle_id": { "type": ["string", "null"] },
+        "schema_version": { "type": ["string", "null"] },
+        "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+        "critical_finding_count": { "type": ["integer", "null"], "minimum": 0 },
+        "execution_link_status": { "type": ["string", "null"], "enum": ["linked", "missing", "not_required", "not_reported", null] },
+        "execution_evidence_link_count": { "type": ["integer", "null"], "minimum": 0 },
+        "execution_lesson_tag_count": { "type": ["integer", "null"], "minimum": 0 },
+        "validation_gate_status": { "type": ["string", "null"], "enum": ["passed", "failed", "neutral", "not_reported", null] },
+        "validation_gate_count": { "type": ["integer", "null"], "minimum": 0 },
+        "validation_gate_failure_count": { "type": ["integer", "null"], "minimum": 0 },
+        "validation_gate_pass_count": { "type": ["integer", "null"], "minimum": 0 },
+        "validation_gate_skipped_count": { "type": ["integer", "null"], "minimum": 0 },
+        "component_consistency_audit_overlay": {
+          "type": ["object", "null"],
+          "properties": {
+            "status": { "type": ["string", "null"], "enum": ["applied", "clean", "skipped", "invalid", null] },
+            "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+            "critical_finding_count": { "type": ["integer", "null"], "minimum": 0 },
+            "reason": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        },
+        "captured_at": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "component_consistency_audit_overlay": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": ["string", "null"] },
+        "overlay_id": { "type": ["string", "null"] },
+        "generated_at": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"], "enum": ["applied", "clean", "skipped", "invalid", null] },
+        "bundle_id": { "type": ["string", "null"] },
+        "bundle_path": { "type": ["string", "null"] },
+        "ui_state_source": { "type": ["string", "null"] },
+        "ui_state_artifact_path": { "type": ["string", "null"] },
+        "artifact_path": { "type": ["string", "null"] },
+        "source_scope": { "type": ["string", "null"] },
+        "runtime_execution_snapshot_overlay": {
+          "type": ["object", "null"],
+          "properties": {
+            "status": { "type": ["string", "null"] },
+            "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+            "critical_finding_count": { "type": ["integer", "null"], "minimum": 0 }
+          },
+          "additionalProperties": true
+        },
+        "reason": { "type": ["string", "null"] },
+        "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+        "critical_finding_count": { "type": ["integer", "null"], "minimum": 0 },
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "finding_id": { "type": ["string", "null"] },
+              "author_id": { "type": ["string", "null"] },
+              "created_at": { "type": ["string", "null"] },
+              "finding_text": { "type": ["string", "null"] },
+              "severity": { "type": ["string", "null"], "enum": ["critical", "high", "medium", "low", null] },
+              "audit_rule_id": { "type": ["string", "null"] },
+              "inconsistent_paths": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "expected_value": { "type": ["string", "null"] },
+              "actual_value": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "federated_evidence": {
+      "type": "object",
+      "required": ["schema", "generated_at", "requested_task_id", "status", "sources_consulted", "evidence", "summary"],
+      "properties": {
+        "schema": { "const": "clawd.federated_evidence.v1" },
+        "generated_at": { "type": "string", "minLength": 1 },
+        "requested_task_id": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "enum": ["ready", "empty", "degraded"] },
+        "sources_consulted": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source_type": { "type": ["string", "null"] },
+              "path": { "type": ["string", "null"] },
+              "status": { "type": ["string", "null"] },
+              "bundle_id": { "type": ["string", "null"] },
+              "rows_scanned": { "type": ["integer", "null"], "minimum": 0 },
+              "applied_batches_seen": { "type": ["integer", "null"], "minimum": 0 },
+              "matched_entries": { "type": ["integer", "null"], "minimum": 0 },
+              "entry_count": { "type": ["integer", "null"], "minimum": 0 },
+              "finding_count": { "type": ["integer", "null"], "minimum": 0 },
+              "critical_finding_count": { "type": ["integer", "null"], "minimum": 0 },
+              "alert_count": { "type": ["integer", "null"], "minimum": 0 },
+              "selected_case_count": { "type": ["integer", "null"], "minimum": 0 },
+              "oldest_runnable_case_wait_seconds": { "type": ["integer", "null"], "minimum": 0 },
+              "policy_id": { "type": ["string", "null"] },
+              "record_present": { "type": ["boolean", "null"] },
+              "ingestion_id": { "type": ["string", "null"] },
+              "destination_path": { "type": ["string", "null"] },
+              "classification_label": { "type": ["string", "null"] },
+              "ingestion_mode": { "type": ["string", "null"] },
+              "updated_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+              "raw_status": { "type": ["string", "null"] },
+              "failure_code": { "type": ["string", "null"] },
+              "last_validation_gate_failure_gate": { "type": ["string", "null"] },
+              "error": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": { "type": ["string", "null"] },
+              "source": { "type": ["string", "null"] },
+              "timestamp": { "type": ["string", "null"] },
+              "summary": { "type": ["string", "null"] },
+              "relevance": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+              "matched_terms": {
+                "type": ["array", "null"],
+                "items": { "type": "string", "minLength": 1 }
+              }
+            },
+            "additionalProperties": true
+          }
+        },
+        "summary": {
+          "type": "object",
+          "properties": {
+            "source_count": { "type": ["integer", "null"], "minimum": 0 },
+            "evidence_count": { "type": ["integer", "null"], "minimum": 0 },
+            "max_items": { "type": ["integer", "null"], "minimum": 1 },
+            "latency_ms": { "type": ["integer", "null"], "minimum": 0 },
+            "retrieval_query": { "type": ["string", "null"] },
+            "retrieval_terms": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "source_health": {
+              "type": ["object", "null"],
+              "properties": {
+                "healthy_source_count": { "type": ["integer", "null"], "minimum": 0 },
+                "degraded_source_count": { "type": ["integer", "null"], "minimum": 0 },
+                "neutral_source_count": { "type": ["integer", "null"], "minimum": 0 }
+              },
+              "additionalProperties": true
+            },
+            "degraded_reason_count": { "type": ["integer", "null"], "minimum": 0 },
+            "degraded_reasons": {
+              "type": ["array", "null"],
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "memory_consolidation_runtime_latest_path": { "type": ["string", "null"] },
+            "research_case_registry_path": { "type": ["string", "null"] },
+            "research_case_capacity_runtime_path": { "type": ["string", "null"] },
+            "production_knowledge_ingestion_latest_path": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "b7_b8_packet_handshake": {
+      "type": "object",
+      "required": [
+        "schema",
+        "generated_at",
+        "status",
+        "contract_version",
+        "packet",
+        "b7_enrichment",
+        "b8_consumption",
+        "candidate_opportunity_surface",
+        "provenance"
+      ],
+      "properties": {
+        "schema": { "const": "clawd.b7_b8_packet_handshake.v1" },
+        "generated_at": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": [
+            "clean",
+            "promoted",
+            "consumed_ignored",
+            "consumed_without_promotion",
+            "gated",
+            "enriched_waiting_b8"
+          ]
+        },
+        "contract_version": { "const": "clawd.b7_b8_packet_handshake.v1" },
+        "packet": {
+          "type": "object",
+          "required": [
+            "bundle_status",
+            "bundle_id",
+            "bundle_path",
+            "bundle_schema_version",
+            "finding_count_before_enrichment",
+            "finding_count_after_enrichment",
+            "append_only_projection",
+            "source_scope"
+          ],
+          "properties": {
+            "bundle_status": { "type": "string", "minLength": 1 },
+            "bundle_id": { "type": ["string", "null"] },
+            "bundle_path": { "type": ["string", "null"] },
+            "bundle_schema_version": { "type": ["string", "null"] },
+            "finding_count_before_enrichment": { "type": "integer", "minimum": 0 },
+            "finding_count_after_enrichment": { "type": "integer", "minimum": 0 },
+            "append_only_projection": { "type": "boolean" },
+            "source_scope": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "b7_enrichment": {
+          "type": "object",
+          "required": [
+            "producer_id",
+            "status",
+            "finding_count",
+            "critical_finding_count",
+            "finding_ids",
+            "quiet_on_success"
+          ],
+          "properties": {
+            "producer_id": { "type": "string", "minLength": 1 },
+            "status": { "type": "string", "minLength": 1 },
+            "finding_count": { "type": "integer", "minimum": 0 },
+            "critical_finding_count": { "type": "integer", "minimum": 0 },
+            "finding_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "quiet_on_success": { "type": "boolean" }
+          },
+          "additionalProperties": true
+        },
+        "b8_consumption": {
+          "type": "object",
+          "required": [
+            "consumer_id",
+            "requested_task_id",
+            "critique_status",
+            "visibility_state",
+            "visibility_score",
+            "task_noise_signal_tags",
+            "task_suppressed",
+            "task_suppression_reasons",
+            "consumption_policy",
+            "promotion_count",
+            "ignored_count",
+            "promoted_finding_ids",
+            "ignored_finding_ids",
+            "ignored_reason_counts"
+          ],
+          "properties": {
+            "consumer_id": { "type": "string", "minLength": 1 },
+            "requested_task_id": { "type": ["string", "null"] },
+            "critique_status": {
+              "type": "string",
+              "enum": [
+                "generated",
+                "healthy",
+                "cooldown",
+                "task_not_active",
+                "task_too_young",
+                "age_unknown",
+                "not_requested"
+              ]
+            },
+            "visibility_state": { "type": ["string", "null"] },
+            "visibility_score": { "type": ["number", "null"] },
+            "task_noise_signal_tags": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "task_suppressed": { "type": "boolean" },
+            "task_suppression_reasons": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "consumption_policy": { "type": ["object", "null"], "additionalProperties": true },
+            "promotion_count": { "type": "integer", "minimum": 0 },
+            "ignored_count": { "type": "integer", "minimum": 0 },
+            "promoted_finding_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "ignored_finding_ids": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "ignored_reason_counts": { "type": "object", "additionalProperties": true }
+          },
+          "additionalProperties": true
+        },
+        "candidate_opportunity_surface": {
+          "type": "object",
+          "required": [
+            "schema",
+            "generated_at",
+            "status",
+            "policy",
+            "summary",
+            "context",
+            "candidates"
+          ],
+          "properties": {
+            "schema": { "const": "clawd.b7_candidate_opportunity_surface.v1" },
+            "generated_at": { "type": "string" },
+            "status": { "type": "string", "enum": ["ready", "empty"] },
+            "policy": { "type": "object", "additionalProperties": true },
+            "summary": { "type": "object", "additionalProperties": true },
+            "context": { "type": "object", "additionalProperties": true },
+            "candidates": {
+              "type": "array",
+              "items": { "type": "object", "additionalProperties": true }
+            }
+          },
+          "additionalProperties": true
+        },
+        "provenance": {
+          "type": "object",
+          "required": ["overlay_artifact_path", "critique_packet_path"],
+          "properties": {
+            "overlay_artifact_path": { "type": ["string", "null"] },
+            "critique_packet_path": { "type": ["string", "null"] }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "candidate_opportunity_surface": {
+      "type": "object",
+      "required": ["schema", "generated_at", "status", "policy", "summary", "context", "candidates"],
+      "properties": {
+        "schema": { "const": "clawd.b7_candidate_opportunity_surface.v1" },
+        "generated_at": { "type": "string" },
+        "status": { "type": "string", "enum": ["ready", "empty"] },
+        "policy": { "type": "object", "additionalProperties": true },
+        "summary": { "type": "object", "additionalProperties": true },
+        "context": { "type": "object", "additionalProperties": true },
+        "candidates": { "type": "array", "items": { "type": "object", "additionalProperties": true } }
+      },
+      "additionalProperties": true
+    },
+    "operator_surface_convergence": {
+      "type": "object",
+      "properties": {
+        "schema": { "type": ["string", "null"], "enum": ["clawd.operator_surface_convergence.v1", null] },
+        "status": { "type": ["string", "null"], "enum": ["converged", "degraded", "diverged", null] },
+        "reason": { "type": ["string", "null"] },
+        "checks": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {
+              "check_id": { "type": ["string", "null"] },
+              "status": { "type": ["string", "null"], "enum": ["healthy", "neutral", "degraded", "critical", null] },
+              "reason": { "type": ["string", "null"] }
+            },
+            "additionalProperties": true
+          }
+        },
+        "safe_next_action": { "type": ["object", "null"], "additionalProperties": true },
+        "projection": {
+          "type": ["object", "null"],
+          "properties": {
+            "state_explainability": { "type": ["object", "null"], "additionalProperties": true },
+            "freshness_degradation": {
+              "type": ["object", "null"],
+              "properties": {
+                "status": { "type": ["string", "null"], "enum": ["healthy", "degraded", null] },
+                "degraded": { "type": ["boolean", "null"] },
+                "fail_closed": { "type": ["boolean", "null"] },
+                "reason": { "type": ["string", "null"] },
+                "parity": { "type": ["object", "null"], "additionalProperties": true }
+              },
+              "additionalProperties": true
+            },
+            "visibility_scorecard": { "type": ["object", "null"], "additionalProperties": true },
+            "noise_signal_summary": { "type": ["object", "null"], "additionalProperties": true },
+            "ui_evidence_bundle": { "type": ["object", "null"], "additionalProperties": true },
+            "component_consistency_overlay": { "type": ["object", "null"], "additionalProperties": true },
+            "verify_posture": { "type": ["object", "null"], "additionalProperties": true },
+            "source_of_truth_map_guard": { "type": ["object", "null"], "additionalProperties": true },
+            "b7_b8_packet_handshake": { "type": ["object", "null"], "additionalProperties": true }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "source_of_truth_map_guard": {
+      "type": "object",
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "present": { "type": ["boolean", "null"] },
+        "payload_valid": { "type": ["boolean", "null"] },
+        "status": { "type": ["string", "null"], "enum": ["healthy", "neutral", "degraded", "critical", null] },
+        "reason": { "type": ["string", "null"] },
+        "decision": { "type": ["string", "null"] },
+        "block_reason": { "type": ["string", "null"] },
+        "block_reasons": {
+          "type": ["array", "null"],
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "generated_at": { "type": ["string", "null"] },
+        "checker_version": { "type": ["string", "null"] }
+      },
+      "additionalProperties": true
+    },
+    "critique_request": {
+      "type": "object",
+      "required": ["requested_task_id", "status", "cooldown_sec", "minimum_age_sec"],
+      "properties": {
+        "requested_task_id": { "type": "string", "minLength": 1 },
+        "status": {
+          "type": "string",
+          "enum": [
+            "generated",
+            "healthy",
+            "cooldown",
+            "task_not_active",
+            "task_too_young",
+            "age_unknown"
+          ]
+        },
+        "message": { "type": ["string", "null"] },
+        "cooldown_sec": { "type": "integer", "minimum": 0 },
+        "minimum_age_sec": { "type": "integer", "minimum": 0 },
+        "observed_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "age_sec_remaining": { "type": ["integer", "null"], "minimum": 0 },
+        "cooldown_sec_remaining": { "type": ["integer", "null"], "minimum": 0 },
+        "packet_path": { "type": ["string", "null"] },
+        "last_requested_at": { "type": ["string", "null"] },
+        "packet": { "type": ["object", "null"] },
+        "scoring": {
+          "type": ["object", "null"],
+          "properties": {
+            "stall_risk": { "type": "number", "minimum": 0, "maximum": 1 },
+            "thrashing_risk": { "type": "number", "minimum": 0, "maximum": 1 },
+            "operator_burden": { "type": "number", "minimum": 0, "maximum": 1 },
+            "efficiency": { "type": "number", "minimum": 0, "maximum": 1 }
+          },
+          "additionalProperties": true
+        },
+        "visibility_scorecard": { "type": ["object", "null"], "additionalProperties": true },
+        "b7_consumption_bridge": { "type": ["object", "null"], "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "additionalProperties": true
+}

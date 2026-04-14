@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/b3_multi_host_fault_injection_fixture.schema.json",
+  "title": "B3 Multi-Host Fault-Injection Fixture Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "fixture_id",
+    "chunk_count",
+    "hosts",
+    "fault_injections",
+    "assertions"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.b3.multi_host_fault_injection_fixture.v1"
+    },
+    "fixture_id": {
+      "type": "string",
+      "pattern": "^b3_multihost_[a-z0-9._-]+$"
+    },
+    "chunk_count": {
+      "type": "integer",
+      "minimum": 3,
+      "maximum": 2048
+    },
+    "hosts": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9._-]+$"
+      }
+    },
+    "fault_injections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "host",
+          "trigger_chunk_index",
+          "mode"
+        ],
+        "properties": {
+          "host": {
+            "type": "string",
+            "pattern": "^[a-z0-9._-]+$"
+          },
+          "trigger_chunk_index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "drop_host"
+            ]
+          }
+        }
+      }
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_decision",
+        "require_handoff",
+        "require_clean_recovery",
+        "require_destination_sha_match"
+      ],
+      "properties": {
+        "expected_decision": {
+          "type": "string",
+          "enum": [
+            "PASS"
+          ]
+        },
+        "require_handoff": {
+          "type": "boolean"
+        },
+        "require_clean_recovery": {
+          "type": "boolean"
+        },
+        "require_destination_sha_match": {
+          "type": "boolean"
+        }
+      }
+    },
+    "notes": {
+      "type": "string"
+    }
+  }
+}

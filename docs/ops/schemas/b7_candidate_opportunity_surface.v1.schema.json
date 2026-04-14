@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/b7_candidate_opportunity_surface.v1.schema.json",
+  "title": "OpenClaw B7 Candidate Opportunity Surface v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "generated_at",
+    "status",
+    "policy",
+    "summary",
+    "context",
+    "candidates"
+  ],
+  "properties": {
+    "schema": {
+      "type": "string",
+      "const": "clawd.b7_candidate_opportunity_surface.v1"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "empty"
+      ]
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "max_total_candidates",
+        "max_now_candidates",
+        "max_later_candidates",
+        "reject_low_signal_candidates",
+        "reject_unmapped_rules",
+        "deduplicate_by_rule_and_text"
+      ],
+      "properties": {
+        "max_total_candidates": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_now_candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_later_candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject_low_signal_candidates": {
+          "type": "boolean"
+        },
+        "reject_unmapped_rules": {
+          "type": "boolean"
+        },
+        "deduplicate_by_rule_and_text": {
+          "type": "boolean"
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "input_finding_count",
+        "considered_finding_count",
+        "candidate_count",
+        "now_count",
+        "later_count",
+        "reject_count",
+        "duplicate_input_count",
+        "bounded_drop_count",
+        "low_signal_reject_count"
+      ],
+      "properties": {
+        "input_finding_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "considered_finding_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "now_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "later_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "reject_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_input_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bounded_drop_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "low_signal_reject_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "critique_status",
+        "visibility_state",
+        "task_suppressed",
+        "task_noise_signal_tags"
+      ],
+      "properties": {
+        "critique_status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visibility_state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "task_suppressed": {
+          "type": "boolean"
+        },
+        "task_noise_signal_tags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "candidate_id",
+          "source_finding_id",
+          "audit_rule_id",
+          "title",
+          "severity",
+          "canonical_lane",
+          "verdict",
+          "verdict_reason",
+          "confidence",
+          "review_state"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "pattern": "^sys01_[A-Za-z0-9_.-]{1,140}$"
+          },
+          "source_finding_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "audit_rule_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "canonical_lane": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Z][A-Z0-9]{1,4}-\\d{2,3}$"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "now",
+              "later",
+              "reject"
+            ]
+          },
+          "verdict_reason": {
+            "type": "string",
+            "minLength": 1
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "review_state": {
+            "type": "string",
+            "enum": [
+              "review_required",
+              "rejected"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

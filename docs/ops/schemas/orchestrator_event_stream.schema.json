@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/orchestrator_event_stream.schema.json",
+  "title": "Orchestrator Event Stream Envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "stream_id",
+    "emitted_at",
+    "event",
+    "cursor"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.orchestrator.event_stream.v1"
+    },
+    "contract_version": {
+      "type": "string",
+      "const": "orchestrator_api_contract_v1"
+    },
+    "stream_id": {
+      "type": "string",
+      "pattern": "^stream:[a-zA-Z0-9._:-]+$"
+    },
+    "emitted_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_id",
+        "event_seq",
+        "available_at",
+        "available_seq",
+        "type",
+        "severity",
+        "dedupe_key"
+      ],
+      "properties": {
+        "event_id": {
+          "type": "string",
+          "pattern": "^event:[a-zA-Z0-9._:-]+$"
+        },
+        "event_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "available_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "available_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "entity_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "correlation_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_event_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^event:[a-zA-Z0-9._:-]+$"
+        },
+        "dedupe_key": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "cursor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "since_seq",
+        "next_after_seq",
+        "retention",
+        "gap_detected"
+      ],
+      "properties": {
+        "since_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "next_after_seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "min_seq",
+            "max_seq"
+          ],
+          "properties": {
+            "min_seq": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "max_seq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "gap_detected": {
+          "type": "boolean"
+        },
+        "resync_hint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,348 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/trading_journal_entry.schema.json",
+  "title": "Trading Journal Entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entry_id",
+    "journal_id",
+    "revision",
+    "created_at",
+    "supersedes_entry_id",
+    "previous_entry_hash",
+    "entry_hash",
+    "thesis",
+    "entry",
+    "exit",
+    "context",
+    "evidence",
+    "outcome",
+    "review",
+    "governance",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.trading_journal_entry.v1"
+    },
+    "entry_id": {
+      "type": "string",
+      "pattern": "^xtj_[a-z0-9._-]+$"
+    },
+    "journal_id": {
+      "type": "string",
+      "pattern": "^journal_[a-z0-9._-]+$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "supersedes_entry_id": {
+      "type": ["string", "null"],
+      "pattern": "^xtj_[a-z0-9._-]+$"
+    },
+    "previous_entry_hash": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "entry_hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "thesis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "hypothesis", "invalidation", "confidence"],
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": ["long", "short", "neutral"]
+        },
+        "hypothesis": {
+          "type": "string",
+          "minLength": 8
+        },
+        "invalidation": {
+          "type": "string",
+          "minLength": 8
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "planned_at",
+        "trigger_type",
+        "trigger_detail",
+        "planned_size_pct_risk",
+        "entry_price",
+        "stop_loss"
+      ],
+      "properties": {
+        "planned_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "trigger_type": {
+          "type": "string",
+          "enum": ["breakout", "mean_reversion", "news", "manual"]
+        },
+        "trigger_detail": {
+          "type": "string",
+          "minLength": 3
+        },
+        "planned_size_pct_risk": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "entry_price": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "stop_loss": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "planned_exit", "executed_exit", "closed_at"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["open", "closed", "cancelled"]
+        },
+        "planned_exit": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "executed_exit": {
+          "type": ["number", "null"],
+          "exclusiveMinimum": 0
+        },
+        "closed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset", "venue", "timeframe", "market_regime", "tags"],
+      "properties": {
+        "asset": {
+          "type": "string",
+          "minLength": 2
+        },
+        "venue": {
+          "type": "string",
+          "minLength": 2
+        },
+        "timeframe": {
+          "type": "string",
+          "minLength": 1
+        },
+        "market_regime": {
+          "type": "string",
+          "enum": ["trend", "range", "high_volatility", "event_driven", "unknown"]
+        },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["evidence_id", "kind", "source_ref", "captured_at", "content_sha256"],
+        "properties": {
+          "evidence_id": {
+            "type": "string",
+            "pattern": "^evid_[a-z0-9._-]+$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["chart", "orderbook", "news", "notebook", "other"]
+          },
+          "source_ref": {
+            "type": "string",
+            "minLength": 3
+          },
+          "captured_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "content_sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "r_multiple", "pnl_quote", "notes"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["pending", "win", "loss", "breakeven", "cancelled"]
+        },
+        "r_multiple": {
+          "type": "number"
+        },
+        "pnl_quote": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "minLength": 4
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["review_status", "checklisted_at", "lessons", "follow_up_actions", "review_refs"],
+      "properties": {
+        "review_status": {
+          "type": "string",
+          "enum": ["pending", "completed"]
+        },
+        "checklisted_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        },
+        "lessons": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "follow_up_actions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        },
+        "review_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 3
+          }
+        }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risk_class", "route_class", "auth_tier", "advisory_only"],
+      "properties": {
+        "risk_class": {
+          "type": "string",
+          "enum": ["RG1_MODERATE", "RG2_HIGH"]
+        },
+        "route_class": {
+          "type": "string",
+          "const": "advisory"
+        },
+        "auth_tier": {
+          "type": "string",
+          "enum": ["OBSERVABILITY", "INTERNAL", "ADMIN"]
+        },
+        "advisory_only": {
+          "type": "boolean",
+          "const": true
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["created_by", "source_system"],
+      "properties": {
+        "created_by": {
+          "type": "string",
+          "minLength": 2
+        },
+        "source_system": {
+          "type": "string",
+          "minLength": 2
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "revision": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_entry_id": {
+            "type": "null"
+          },
+          "previous_entry_hash": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "revision": {
+            "minimum": 2
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "supersedes_entry_id": {
+            "type": "string",
+            "pattern": "^xtj_[a-z0-9._-]+$"
+          },
+          "previous_entry_hash": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schema_version": "proposal_archive_packet.v1",
+  "task_id": "cod05-archive-002",
+  "task_class": "code:edit",
+  "phase": "archive",
+  "artifacts": [
+    "proposal_packet",
+    "approval_records",
+    "delta_spec",
+    "code_delta",
+    "validation_results",
+    "routing_audit"
+  ],
+  "artifact_refs": {
+    "proposal_packet": "state/continuity/latest/evidence/cod05_proposal_packet_2026-04-04.json",
+    "approval_records": "state/continuity/latest/evidence/cod05_approval_records_2026-04-04.json",
+    "delta_spec": "state/continuity/latest/evidence/cod05_delta_spec_2026-04-04.json",
+    "code_delta": "state/continuity/latest/evidence/cod05_code_delta_2026-04-04.patch",
+    "validation_results": "state/continuity/latest/evidence/cod05_validation_results_2026-04-04.json",
+    "routing_audit": "state/continuity/latest/evidence/cod05_routing_audit_2026-04-04.json"
+  },
+  "archive_summary": "Archive packet for proposal/apply/archive routing contract closure with approval-hook evidence.",
+  "generated_at": "2026-04-04T12:39:00+07:00"
+}

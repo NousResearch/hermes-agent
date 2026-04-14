@@ -1,0 +1,297 @@
+{
+  "schema_version": "clawd.continuity_integration_contract.v1",
+  "contract_id": "continuity_integration_contract_v1",
+  "generated_at": "2026-03-30T11:20:00Z",
+  "status": "active",
+  "authority": {
+    "owner": "Architect",
+    "scope": "OpenClaw continuity and ground-truth integration substrate",
+    "canonical_contract_path": "docs/ops/continuity_integration_contract_v1.md",
+    "historical_docs_policy": "source_input_only",
+    "supersedes_fragmented_references": true,
+    "notes": "Historical and archive-mined continuity materials are folded in as source inputs, not standalone active contracts."
+  },
+  "canonical_artifacts": {
+    "contract_markdown_path": "docs/ops/continuity_integration_contract_v1.md",
+    "schema_path": "docs/ops/schemas/continuity_integration_contract.schema.json",
+    "template_path": "docs/ops/templates/continuity_integration_contract.template.json",
+    "runtime_surfaces": [
+      "state/continuity/latest/handover_latest.json",
+      "state/continuity/latest/current.json",
+      "state/continuity/latest/ground_truth_latest.json",
+      "state/continuity/latest/verify_last.json"
+    ]
+  },
+  "integration_domains": {
+    "checkpoint_handover": {
+      "objective": "Require machine-readable checkpoint/handover continuity artifacts as primary resume input.",
+      "required_inputs": [
+        "state/continuity/checkpoints/*.json",
+        "state/continuity/latest/handover_latest.json"
+      ],
+      "required_outputs": [
+        "state/continuity/latest/handover_latest.json",
+        "state/continuity/latest/current.json"
+      ],
+      "fail_closed_on": [
+        "missing_checkpoint",
+        "invalid_checkpoint_json",
+        "checkpoint_pointer_mismatch"
+      ]
+    },
+    "context_overflow_prevention": {
+      "objective": "Use volumetric and semantic trigger boundaries to force continuity capture before context degradation causes state loss.",
+      "required_inputs": [
+        "context utilization telemetry",
+        "semantic boundary events"
+      ],
+      "required_outputs": [
+        "continuity checkpoint trigger event",
+        "handover refresh artifact"
+      ],
+      "fail_closed_on": [
+        "overflow_trigger_missing",
+        "checkpoint_not_written"
+      ]
+    },
+    "ground_truth_capture": {
+      "objective": "Anchor continuity decisions to host-captured runtime truth instead of narrative memory.",
+      "required_inputs": [
+        "gateway status",
+        "cron registry",
+        "session/process/git state"
+      ],
+      "required_outputs": [
+        "state/continuity/latest/ground_truth_latest.json",
+        "state/continuity/latest/current.json"
+      ],
+      "fail_closed_on": [
+        "ground_truth_stale",
+        "ground_truth_missing",
+        "ground_truth_parse_failure"
+      ]
+    },
+    "verify_gate": {
+      "objective": "Mutation-capable paths are blocked until verify-before-resume checks pass with fresh evidence.",
+      "required_inputs": [
+        "docs/ops/verify_before_resume_gate_checklist_v1.md",
+        "state/continuity/latest/verify_last.json"
+      ],
+      "required_outputs": [
+        "verify gate decision",
+        "mutation gate posture"
+      ],
+      "fail_closed_on": [
+        "verify_missing",
+        "verify_stale",
+        "verify_forbidden"
+      ]
+    },
+    "recovery_fail_closed": {
+      "objective": "Continuity producer and consumer paths emit typed fail-closed artifacts on invalid/stale/missing upstream state.",
+      "required_inputs": [
+        "continuity_current runtime artifacts",
+        "publish lock diagnostics",
+        "reconcile telemetry"
+      ],
+      "required_outputs": [
+        "degraded continuity current artifact",
+        "typed blocking reasons"
+      ],
+      "fail_closed_on": [
+        "invalid_continuity_now_payload",
+        "publish_lock_timeout_without_owner_hint",
+        "recovery_contract_violation"
+      ]
+    }
+  },
+  "trigger_policy": {
+    "volumetric": {
+      "context_utilization_threshold_pct": 85,
+      "context_emergency_threshold_pct": 90,
+      "buffer_target_pct": 15,
+      "notes": "Thresholds reflect archive-mined continuity guidance; implementation-specific guards may use stricter values."
+    },
+    "semantic": {
+      "required_boundaries": [
+        "pre_execution",
+        "post_mutation",
+        "post_scheduling_change",
+        "failure_boundary",
+        "handover_boundary"
+      ]
+    }
+  },
+  "fail_closed_policy": {
+    "mutation_default": "forbidden",
+    "on_missing_truth": "block_and_emit",
+    "on_invalid_artifact": "block_and_emit",
+    "on_stale_artifact": "block_and_emit",
+    "required_gate_results": [
+      "allowed",
+      "caution",
+      "forbidden"
+    ]
+  },
+  "source_input_map": [
+    {
+      "source_id": "src_pdf_4d1ba541",
+      "title": "Agent Context Overflow Prevention System",
+      "path_or_ref": "sha256:4d1ba5414fe314e580191a51d137932b7efacfffde38a4edc773c8872ed53b9f",
+      "source_type": "pdf",
+      "classification": "archive_mined",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C1",
+        "C2",
+        "C4"
+      ]
+    },
+    {
+      "source_id": "src_pdf_c34f592e",
+      "title": "AI Continuity Architecture Design",
+      "path_or_ref": "sha256:c34f592e30a08559f043e07a90de3cc81c8d8f52809865bef203805ecc00da45",
+      "source_type": "pdf",
+      "classification": "archive_mined",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C1",
+        "C5",
+        "C6"
+      ]
+    },
+    {
+      "source_id": "src_pdf_f1fc25fc",
+      "title": "Local Assistant Ground Truth Integration Plan",
+      "path_or_ref": "sha256:f1fc25fce940b647ddb182551a947fa0c11f5ebb13dd8475028b919022db0dc0",
+      "source_type": "pdf",
+      "classification": "archive_mined",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C3",
+        "C4",
+        "C5"
+      ]
+    },
+    {
+      "source_id": "src_rpt_fourpack_20260308",
+      "title": "Upgrade continuity ground-truth four-pack synthesis",
+      "path_or_ref": "reports/upgrade_continuity_ground_truth_fourpack_synthesis_2026-03-08.md",
+      "source_type": "report",
+      "classification": "historical",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ]
+    },
+    {
+      "source_id": "src_rpt_batch7_20260308",
+      "title": "P0 continuity batch 7 verify/reconcile/history",
+      "path_or_ref": "reports/p0_upgrade_batch7_continuity_verify_reconcile_history_2026-03-08.md",
+      "source_type": "report",
+      "classification": "historical",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C4",
+        "C5",
+        "C6"
+      ]
+    },
+    {
+      "source_id": "src_rpt_runtime_failclose_20260327",
+      "title": "Continuity current runtime fail-close boundary",
+      "path_or_ref": "reports/continuity_current_runtime_failclose_boundary_2026-03-27.md",
+      "source_type": "report",
+      "classification": "support",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C5"
+      ]
+    },
+    {
+      "source_id": "src_rpt_archive_mining_20260330",
+      "title": "OpenClaw archive mining ground-truth continuity",
+      "path_or_ref": "reports/openclaw_archive_mining_ground_truth_continuity_2026-03-30.md",
+      "source_type": "report",
+      "classification": "archive_mined",
+      "status_in_contract": "source_input_only",
+      "folded_into_clauses": [
+        "C1",
+        "C2",
+        "C3",
+        "C4",
+        "C5",
+        "C6"
+      ]
+    },
+    {
+      "source_id": "src_rpt_exec_queue_20260330",
+      "title": "OpenClaw system execution queue full buildout",
+      "path_or_ref": "reports/openclaw_system_execution_queue_full_buildout_2026-03-30.md",
+      "source_type": "report",
+      "classification": "canonical",
+      "status_in_contract": "subordinate_active_contract",
+      "folded_into_clauses": [
+        "C1",
+        "C3",
+        "C4",
+        "C5"
+      ]
+    },
+    {
+      "source_id": "src_doc_sot_map_20260320",
+      "title": "OpenClaw system source-of-truth map",
+      "path_or_ref": "reports/openclaw_system_source_of_truth_map_2026-03-20.md",
+      "source_type": "doc",
+      "classification": "canonical",
+      "status_in_contract": "subordinate_active_contract",
+      "folded_into_clauses": [
+        "C1",
+        "C3",
+        "C4"
+      ]
+    }
+  ],
+  "roadmap_fold_ins": [
+    {
+      "fold_in_id": "foldin_a1_canonical_bundle",
+      "source_path": "reports/openclaw_system_execution_queue_full_buildout_2026-03-30.md",
+      "queue_slice": "A1",
+      "target_clause": "C1",
+      "adoption_state": "adopted",
+      "notes": "Creates one canonical continuity integration contract bundle and reclassifies fragmented historical references."
+    },
+    {
+      "fold_in_id": "foldin_archive_mined_trigger_policy",
+      "source_path": "reports/openclaw_archive_mining_ground_truth_continuity_2026-03-30.md",
+      "queue_slice": "A1",
+      "target_clause": "C2",
+      "adoption_state": "adopted",
+      "notes": "Integrates hybrid volumetric plus semantic trigger doctrine."
+    },
+    {
+      "fold_in_id": "foldin_runtime_failclosed_boundary",
+      "source_path": "reports/continuity_current_runtime_failclose_boundary_2026-03-27.md",
+      "queue_slice": "A1",
+      "target_clause": "C5",
+      "adoption_state": "adopted",
+      "notes": "Preserves typed fail-closed continuity producer semantics under malformed upstream payloads."
+    }
+  ],
+  "acceptance_criteria": {
+    "one_active_contract": true,
+    "schema_template_present": true,
+    "archived_inputs_mapped": true,
+    "historical_refs_reclassified": true,
+    "notes": "A1 target met: canonical continuity bundle exists with explicit artifact map and reclassification semantics."
+  },
+  "generated_artifacts": {
+    "contract_md": "docs/ops/continuity_integration_contract_v1.md",
+    "schema_json": "docs/ops/schemas/continuity_integration_contract.schema.json",
+    "template_json": "docs/ops/templates/continuity_integration_contract.template.json",
+    "execution_report": "reports/execution_A1_continuity_bundle_2026-03-30.md"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "clawd.compatibility_path_removal_rfc.v1",
+  "rfc_id": "crfc_model_rollout_v0_fallback",
+  "path_id": "compat_model_rollout_v0_fallback",
+  "status": "approved",
+  "owner": "release_substrate_owner",
+  "evidence_refs": [
+    "reports/wave6_compatibility_path_removal_evidence_2026-03-21.md"
+  ],
+  "decision_note": "Removal approved after replay + rollback drill evidence met thresholds."
+}

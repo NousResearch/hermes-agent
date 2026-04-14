@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/test_gap_packet.v1.schema.json",
+  "title": "OpenClaw Test-Gap Packet v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "packet_id",
+    "version",
+    "proposal_id",
+    "changed_scope",
+    "test_gap_findings",
+    "blocking_classification",
+    "analysis_scope",
+    "validation"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "changed_scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "changed_paths",
+        "mapping_basis"
+      ],
+      "properties": {
+        "changed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "file_path"
+            ],
+            "properties": {
+              "file_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "line_range": {
+                "type": "string"
+              },
+              "symbols": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "mapping_basis": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": [
+              "diff_hunk",
+              "coverage_trace",
+              "call_graph",
+              "manual_review"
+            ]
+          }
+        }
+      }
+    },
+    "test_gap_findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "finding_id",
+          "changed_path",
+          "gap_type",
+          "release_impact",
+          "mapped_tests",
+          "confidence"
+        ],
+        "properties": {
+          "finding_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changed_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "gap_type": {
+            "type": "string",
+            "enum": [
+              "uncovered_branch",
+              "uncovered_logic_path",
+              "missing_integration_coverage",
+              "missing_regression_guard"
+            ]
+          },
+          "release_impact": {
+            "type": "string",
+            "enum": [
+              "blocking",
+              "non_blocking"
+            ]
+          },
+          "mapped_tests": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "suggested_test_additions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "uncertainty_notes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "blocking_classification": {
+      "type": "string",
+      "enum": [
+        "blocking",
+        "non_blocking"
+      ]
+    },
+    "analysis_scope": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "analyzed_paths",
+        "unprocessed_scope"
+      ],
+      "properties": {
+        "analyzed_paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "unprocessed_scope": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "path",
+              "reason"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "required_approvals"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "properties": {
+              "approver_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "test_gap_findings": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "release_impact"
+              ],
+              "properties": {
+                "release_impact": {
+                  "const": "blocking"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocking_classification": {
+            "const": "blocking"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": {
+            "test_gap_findings": {
+              "contains": {
+                "type": "object",
+                "required": [
+                  "release_impact"
+                ],
+                "properties": {
+                  "release_impact": {
+                    "const": "blocking"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "blocking_classification": {
+            "const": "non_blocking"
+          }
+        }
+      }
+    }
+  ]
+}

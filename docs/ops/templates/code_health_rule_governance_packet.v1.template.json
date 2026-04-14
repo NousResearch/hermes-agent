@@ -1,0 +1,161 @@
+{
+  "packet_id": "aa27449c-20a8-42cf-8674-13d4cbc79a89",
+  "schema_version": "code_health_rule_governance_packet.v1",
+  "proposal_id": "cod06-lt07-governance-001",
+  "generated_at": "2026-04-04T12:10:00Z",
+  "change_scope": {
+    "task_class": "code:review",
+    "risk_tier": "high",
+    "paths": [
+      "scripts/session_topology_router.py",
+      "tests/test_session_topology_router.py"
+    ]
+  },
+  "code_health_metrics": {
+    "metric_evidence": [
+      {
+        "metric_id": "cyclomatic_complexity_delta",
+        "metric_name": "Cyclomatic Complexity Delta",
+        "value": 1.0,
+        "unit": "delta",
+        "threshold": {
+          "operator": "<=",
+          "value": 2
+        },
+        "status": "pass",
+        "evidence_refs": [
+          "state/continuity/latest/evidence/cyclomatic_complexity_delta_2026-04-04.json"
+        ]
+      },
+      {
+        "metric_id": "critical_violations_added",
+        "metric_name": "Critical Violations Added",
+        "value": 0,
+        "unit": "count",
+        "threshold": {
+          "operator": "==",
+          "value": 0
+        },
+        "status": "pass",
+        "evidence_refs": [
+          "state/continuity/latest/evidence/static_analysis_2026-04-04.json"
+        ]
+      }
+    ],
+    "summary": {
+      "failed_metric_count": 0,
+      "warn_metric_count": 0,
+      "pass_metric_count": 2
+    }
+  },
+  "rule_findings": {
+    "rules_evaluated": [
+      {
+        "rule_id": "rg-no-legacy-bypass-without-evidence",
+        "rule_name": "No Legacy Bypass Without Evidence",
+        "scope": {
+          "paths": [
+            "scripts/session_topology_router.py"
+          ]
+        },
+        "status": "violation",
+        "violation_count": 1
+      },
+      {
+        "rule_id": "rg-coding-packet-requires-audit-trace",
+        "rule_name": "Coding Packet Requires Audit Trace",
+        "scope": {
+          "paths": [
+            "docs/ops/session_topology_contract_v1.md",
+            "tests/test_session_topology_router.py"
+          ]
+        },
+        "status": "pass",
+        "violation_count": 0
+      }
+    ],
+    "conflicts": [
+      {
+        "rule_id_a": "rg-no-legacy-bypass-without-evidence",
+        "rule_id_b": "rg-legacy-bypass-debug-emergency",
+        "reason": "Both rules target same condition with conflicting enforcement posture.",
+        "severity": "high"
+      }
+    ],
+    "duplicates": [
+      {
+        "canonical_rule_id": "rg-coding-packet-requires-audit-trace",
+        "duplicate_rule_id": "rg-coding-packet-must-have-audit-log",
+        "overlap_ratio": 0.92,
+        "reason": "Semantic duplicate found across adjacent governance packs."
+      }
+    ],
+    "merged_violation_analytics": {
+      "total_violations": 1,
+      "unique_rules_violated": 1,
+      "conflict_count": 1,
+      "duplicate_count": 1,
+      "governance_signal": "action_required"
+    }
+  },
+  "governance_recommendations": [
+    {
+      "recommendation_id": "rec-merge-001",
+      "action": "merge_rules",
+      "priority": "p0",
+      "linked_rule_ids": [
+        "rg-coding-packet-requires-audit-trace",
+        "rg-coding-packet-must-have-audit-log"
+      ],
+      "rationale": "Duplicate policy causes noisy dual-firing; merge into canonical rule id."
+    },
+    {
+      "recommendation_id": "rec-scope-002",
+      "action": "tighten_scope",
+      "priority": "p1",
+      "linked_rule_ids": [
+        "rg-legacy-bypass-debug-emergency"
+      ],
+      "rationale": "Narrow emergency bypass rule to explicit debug-only paths to remove conflict."
+    }
+  ],
+  "audit_trail": {
+    "events": [
+      {
+        "event_id": "evt-001",
+        "timestamp": "2026-04-04T12:11:00Z",
+        "actor": {
+          "actor_type": "worker",
+          "actor_id": "subagent-lt07"
+        },
+        "action": "packet_generated",
+        "notes": "Initial code-health and rule-governance packet emitted."
+      },
+      {
+        "event_id": "evt-002",
+        "timestamp": "2026-04-04T12:11:30Z",
+        "actor": {
+          "actor_type": "validator",
+          "actor_id": "schema-gate"
+        },
+        "action": "rule_conflict_detected",
+        "notes": "Detected high-severity conflict in legacy bypass governance rules."
+      },
+      {
+        "event_id": "evt-003",
+        "timestamp": "2026-04-04T12:12:00Z",
+        "actor": {
+          "actor_type": "operator",
+          "actor_id": "architect"
+        },
+        "action": "recommendation_emitted",
+        "notes": "P0 merge recommendation issued for duplicate governance rule pair."
+      }
+    ]
+  },
+  "validation": {
+    "status": "pending",
+    "required_approvals": 1,
+    "approvals": []
+  }
+}

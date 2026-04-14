@@ -1,0 +1,55 @@
+{
+  "promotion_id": "prom_20260320_example_lane_insight",
+  "created_at": "2026-03-20T10:30:00+07:00",
+  "promotion_state": "PENDING_REVIEW",
+  "source_lane": {
+    "lane_id": "lane_wave4_slice2",
+    "work_item_id": "wi_wave4_slice2_promotion_contract",
+    "producer_role": "EXECUTOR",
+    "session_key": "agent:example:subagent:session"
+  },
+  "insight": {
+    "title": "Example insight title",
+    "statement": "Concise, evidence-backed insight to consider for promotion.",
+    "kind": "rule"
+  },
+  "provenance": {
+    "capture_method": "manual synthesis from validated artifacts",
+    "captured_at": "2026-03-20T10:30:00+07:00",
+    "tool_trace_refs": [
+      "trace_001"
+    ]
+  },
+  "confidence": {
+    "score": 0.82,
+    "method": "triangulated from 2 source artifacts and direct verification",
+    "notes": "Above doctrine threshold"
+  },
+  "source_refs": [
+    {
+      "ref_id": "src_wave4_slice2_contract",
+      "path": "docs/ops/promotion_protocol_contract_v1.md",
+      "locator": "# Core invariants",
+      "content_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "review": {
+    "state": "pending",
+    "reviewer_role": null,
+    "reviewer_id": null,
+    "reviewed_at": null,
+    "rationale": "Awaiting reviewer decision"
+  },
+  "target": {
+    "surface": "doctrine",
+    "target_path": "docs/ops/unified_operating_doctrine_v1.md",
+    "merge_mode": "append"
+  },
+  "safety": {
+    "classification": "internal",
+    "leakage_check": "pass",
+    "redaction_applied": false,
+    "notes": "No sensitive secrets present"
+  },
+  "decision_refs": []
+}

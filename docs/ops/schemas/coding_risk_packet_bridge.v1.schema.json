@@ -1,0 +1,495 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openclaw.local/schemas/coding_risk_packet_bridge.v1.schema.json",
+  "title": "OpenClaw Coding Risk Packet Bridge v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "packet_id",
+    "schema_version",
+    "proposal_id",
+    "generated_at",
+    "regression_risk",
+    "refactor_risk",
+    "code_health_rule_governance",
+    "bridge_decision",
+    "audit_trail",
+    "validation"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "coding_risk_packet_bridge.v1"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "regression_risk": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "packet_id",
+        "overall_tier",
+        "blocking_classification",
+        "replay_checksum",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "regression_risk_packet.v2"
+        },
+        "packet_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "overall_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "blocking_classification": {
+          "type": "string",
+          "enum": [
+            "blocking",
+            "non_blocking"
+          ]
+        },
+        "replay_checksum": {
+          "type": "string",
+          "pattern": "^sha256:[A-Fa-f0-9]{64}$"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "refactor_risk": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "packet_id",
+        "overall_tier",
+        "blast_radius",
+        "rollback_strategy",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "refactor_risk_packet.v1"
+        },
+        "packet_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "overall_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "blast_radius": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "rollback_strategy": {
+          "type": "string",
+          "enum": [
+            "revert_commit",
+            "feature_flag_revert",
+            "artifact_restore",
+            "state_restore"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "code_health_rule_governance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema_version",
+        "packet_id",
+        "governance_signal",
+        "conflict_count",
+        "duplicate_count",
+        "evidence_refs"
+      ],
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "const": "code_health_rule_governance_packet.v1"
+        },
+        "packet_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "governance_signal": {
+          "type": "string",
+          "enum": [
+            "stable",
+            "watch",
+            "action_required"
+          ]
+        },
+        "conflict_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicate_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "bridge_decision": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "effective_risk_tier",
+        "merge_blocked",
+        "required_approvals",
+        "rationale"
+      ],
+      "properties": {
+        "effective_risk_tier": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "merge_blocked": {
+          "type": "boolean"
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "audit_trail": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "events"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "event_id",
+              "timestamp",
+              "actor_type",
+              "action",
+              "notes"
+            ],
+            "properties": {
+              "event_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "actor_type": {
+                "type": "string",
+                "enum": [
+                  "worker",
+                  "validator",
+                  "operator"
+                ]
+              },
+              "action": {
+                "type": "string",
+                "enum": [
+                  "bridge_emitted",
+                  "bridge_validated",
+                  "bridge_approved"
+                ]
+              },
+              "notes": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "required_approvals"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected"
+          ]
+        },
+        "required_approvals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "approvals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "approver_id",
+              "timestamp"
+            ],
+            "properties": {
+              "approver_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "timestamp": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "notes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "regression_risk": {
+            "properties": {
+              "blocking_classification": {
+                "const": "blocking"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "merge_blocked": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "code_health_rule_governance": {
+            "properties": {
+              "governance_signal": {
+                "const": "action_required"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "effective_risk_tier": {
+                "enum": [
+                  "high",
+                  "critical"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "effective_risk_tier": {
+                "const": "low"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "required_approvals": {
+                "const": 0
+              }
+            }
+          },
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "effective_risk_tier": {
+                "const": "medium"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "required_approvals": {
+                "const": 1
+              }
+            }
+          },
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "effective_risk_tier": {
+                "const": "high"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "required_approvals": {
+                "const": 2
+              }
+            }
+          },
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "effective_risk_tier": {
+                "const": "critical"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "bridge_decision": {
+            "properties": {
+              "required_approvals": {
+                "const": 3
+              }
+            }
+          },
+          "validation": {
+            "properties": {
+              "required_approvals": {
+                "const": 3
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

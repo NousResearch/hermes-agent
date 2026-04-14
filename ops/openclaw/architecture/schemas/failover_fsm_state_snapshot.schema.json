@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.failover_fsm.state_snapshot.v1",
+  "title": "Failover FSM State Snapshot",
+  "type": "object",
+  "required": [
+    "object_type",
+    "state",
+    "state_version",
+    "entered_at",
+    "reset_required",
+    "reset_allowed",
+    "active_blockers"
+  ],
+  "properties": {
+    "object_type": { "const": "clawd.failover_fsm.state_snapshot.v1" },
+    "state": {
+      "type": "string",
+      "enum": [
+        "HEALTHY",
+        "WARNING",
+        "PRE_FAILOVER",
+        "FAILOVER_PREP",
+        "RESET_READY",
+        "BLOCKED_RESET",
+        "SUCCESSOR_RESUME_VALIDATION"
+      ]
+    },
+    "state_version": { "type": "integer", "minimum": 1 },
+    "entered_at": { "type": "string" },
+    "last_transition_trigger": {
+      "type": ["string", "null"],
+      "enum": [
+        "TR_WARN_THRESHOLD_REACHED",
+        "TR_WARN_THRESHOLD_CLEARED_STABLE",
+        "TR_CRITICAL_THRESHOLD_REACHED",
+        "TR_RESET_REQUIRED",
+        "TR_FAILOVER_PREP_STARTED",
+        "TR_RESET_READINESS_PASS",
+        "TR_RESET_READINESS_FAIL",
+        "TR_BLOCKERS_CLEARED",
+        "TR_RESET_EXECUTED",
+        "TR_SUCCESSOR_VALIDATION_PASS",
+        "TR_SUCCESSOR_VALIDATION_FAIL",
+        "TR_UNKNOWN_OR_INCOMPLETE_SIGNAL",
+        null
+      ]
+    },
+    "reset_required": { "type": "boolean" },
+    "reset_allowed": { "type": "boolean" },
+    "active_blockers": { "type": "array", "items": { "type": "string" } },
+    "coherence_tuple_ref": { "type": "object" }
+  },
+  "additionalProperties": true
+}

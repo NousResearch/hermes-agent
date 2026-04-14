@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clawd-architect.local/docs/ops/schemas/knowledge_promotion_queue_entry.schema.json",
+  "title": "Knowledge Promotion Queue Entry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "queue_entry_id",
+    "enqueued_at",
+    "status",
+    "promotion_id",
+    "candidate_path",
+    "candidate_sha256",
+    "target_surface",
+    "review"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "clawd.knowledge_promotion_queue.entry.v1"
+    },
+    "queue_entry_id": {
+      "type": "string",
+      "pattern": "^kpq_[a-z0-9._-]+$"
+    },
+    "enqueued_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "QUEUED_REVIEW",
+        "APPROVED",
+        "PROMOTED",
+        "REJECTED",
+        "BLOCKED"
+      ]
+    },
+    "promotion_id": {
+      "type": "string",
+      "pattern": "^prom_[a-z0-9._-]+$"
+    },
+    "candidate_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "candidate_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "target_surface": {
+      "type": "string",
+      "enum": [
+        "doctrine",
+        "memory",
+        "playbook"
+      ]
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "reviewer_role",
+        "reviewer_id",
+        "reviewed_at",
+        "rationale"
+      ],
+      "properties": {
+        "state": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "needs_changes"
+          ]
+        },
+        "reviewer_role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PLANNER",
+            "EXECUTOR",
+            "VALIDATOR",
+            "RESEARCHER",
+            "SRE",
+            "LIBRARIAN",
+            null
+          ]
+        },
+        "reviewer_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reviewed_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "workflow_decision_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "promotion_manifest_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shared_memory_object_path": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_block_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

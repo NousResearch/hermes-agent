@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openclaw.gtc.gateboard.v2",
+  "title": "Ground Truth Connector Gateboard v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at",
+    "build_generation_id",
+    "valid_until",
+    "issuer_boot_id",
+    "connector_vector_digest",
+    "mutate_allowed",
+    "status",
+    "blocking_reasons",
+    "warning_reasons",
+    "required_connectors",
+    "verify_status",
+    "runtime_critical_anomaly_count",
+    "open_incident_count",
+    "queue_active_nonterminal_count"
+  ],
+  "properties": {
+    "schema_version": { "const": "gtc.gateboard.v2" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "build_generation_id": { "type": "string", "minLength": 8 },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "issuer_boot_id": { "type": "string", "minLength": 3 },
+    "connector_vector_digest": { "type": "string", "minLength": 16 },
+    "mutate_allowed": { "type": "boolean" },
+    "status": { "type": "string", "enum": ["green", "yellow", "red"] },
+    "blocking_reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "warning_reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "required_connectors": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 3 }
+    },
+    "verify_status": { "type": "string" },
+    "runtime_critical_anomaly_count": { "type": "integer", "minimum": 0 },
+    "open_incident_count": { "type": "integer", "minimum": 0 },
+    "queue_active_nonterminal_count": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": true
+}

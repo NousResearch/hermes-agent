@@ -1,0 +1,268 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clawd.execution_supervisor_dispatch_intent.v1",
+  "title": "Execution Supervisor Dispatch Intent",
+  "type": "object",
+  "required": [
+    "schema",
+    "generated_at",
+    "intent_path",
+    "intent_history_path",
+    "source",
+    "mode",
+    "fail_closed",
+    "launch_mutation_allowed",
+    "status",
+    "decision",
+    "active",
+    "decision_reasons",
+    "ready_candidate_count",
+    "blocked_candidate_count",
+    "ready_candidates",
+    "blocked_candidates",
+    "qualification_consumption",
+    "launch_readiness",
+    "reroute_summary",
+    "worker_floor_enforcement"
+  ],
+  "properties": {
+    "schema": {
+      "const": "clawd.execution_supervisor_dispatch_intent.v1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "intent_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "intent_history_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source": {
+      "type": "object",
+      "required": ["ledger_path", "source_present"],
+      "properties": {
+        "ledger_path": { "type": "string", "minLength": 1 },
+        "ledger_schema": { "type": ["string", "null"] },
+        "supervisor_tick_id": { "type": ["string", "null"] },
+        "mode": { "type": ["string", "null"] },
+        "source_present": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["plan_only_fail_closed"]
+    },
+    "fail_closed": {
+      "type": "boolean"
+    },
+    "launch_mutation_allowed": {
+      "type": "boolean"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["idle", "dispatch_ready", "blocked", "degraded"]
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["NO_ACTION", "PLAN_ONLY", "BLOCKED"]
+    },
+    "active": {
+      "type": "boolean"
+    },
+    "decision_reasons": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "ready_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "blocked_candidate_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ready_candidate_task_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "blocked_candidate_task_ids": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "ready_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "blocked_candidates": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "qualification_consumption": {
+      "type": "object",
+      "required": [
+        "schema",
+        "source_path",
+        "source_present",
+        "ready_candidate_count",
+        "qualified_candidate_count",
+        "blocked_candidate_count",
+        "pending_candidate_count",
+        "consumption_state",
+        "qualification_gate_passed",
+        "gate_reason",
+        "launch_readiness"
+      ],
+      "properties": {
+        "schema": {
+          "const": "clawd.execution_supervisor_dispatch_qualification_consumption.v1"
+        },
+        "source_path": { "type": "string", "minLength": 1 },
+        "source_present": { "type": "boolean" },
+        "source_schema": { "type": ["string", "null"] },
+        "source_generated_at": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "decision": { "type": ["string", "null"] },
+        "fail_closed": { "type": ["boolean", "null"] },
+        "launch_mutation_allowed": { "type": ["boolean", "null"] },
+        "freshness_reference_generated_at": { "type": ["string", "null"] },
+        "freshness_max_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "qualification_age_sec": { "type": ["integer", "null"], "minimum": 0 },
+        "qualification_fresh": { "type": ["boolean", "null"] },
+        "freshness_reason": { "type": ["string", "null"] },
+        "ready_candidate_count": { "type": "integer", "minimum": 0 },
+        "evaluated_ready_candidate_count": { "type": "integer", "minimum": 0 },
+        "qualified_candidate_count": { "type": "integer", "minimum": 0 },
+        "blocked_candidate_count": { "type": "integer", "minimum": 0 },
+        "pending_candidate_count": { "type": "integer", "minimum": 0 },
+        "qualified_candidate_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "blocked_candidate_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "pending_candidate_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "retired_candidate_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "consumption_state": {
+          "type": "string",
+          "enum": [
+            "no_dispatch_required",
+            "qualification_missing",
+            "qualification_contract_invalid",
+            "requalification_required",
+            "qualified_ready",
+            "blocked",
+            "mixed"
+          ]
+        },
+        "qualification_gate_passed": { "type": "boolean" },
+        "gate_reason": { "type": "string" },
+        "decision_reasons": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "launch_readiness": {
+          "type": "object",
+          "required": ["schema", "state", "reason"],
+          "properties": {
+            "schema": { "type": "string" },
+            "state": { "type": "string" },
+            "reason": { "type": "string" },
+            "blocked_reason_counts": { "type": "object", "additionalProperties": true },
+            "demotion_restore_posture": { "type": "object", "additionalProperties": true },
+            "canary_probe_schedule": { "type": "object", "additionalProperties": true },
+            "probe_execution_plan": { "type": "object", "additionalProperties": true },
+            "severity_gate": { "type": "object", "additionalProperties": true }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "launch_readiness": {
+      "type": "object",
+      "required": ["schema", "state", "reason"],
+      "properties": {
+        "schema": { "type": "string" },
+        "state": { "type": "string" },
+        "reason": { "type": "string" },
+        "blocked_reason_counts": { "type": "object", "additionalProperties": true },
+        "demotion_restore_posture": { "type": "object", "additionalProperties": true },
+        "canary_probe_schedule": { "type": "object", "additionalProperties": true },
+        "probe_execution_plan": { "type": "object", "additionalProperties": true },
+        "severity_gate": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    },
+    "reroute_summary": {
+      "type": "object",
+      "required": ["required_count", "dispatch_ready_count", "blocked_count", "ready_task_ids"],
+      "properties": {
+        "required_count": { "type": "integer", "minimum": 0 },
+        "dispatch_ready_count": { "type": "integer", "minimum": 0 },
+        "blocked_count": { "type": "integer", "minimum": 0 },
+        "ready_task_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "worker_floor_enforcement": {
+      "type": "object",
+      "required": [
+        "required",
+        "enforceable",
+        "global_blocked",
+        "core",
+        "support",
+        "planned_launch_count",
+        "blocked_launch_count"
+      ],
+      "properties": {
+        "required": { "type": "boolean" },
+        "enforceable": { "type": "boolean" },
+        "global_blocked": { "type": "boolean" },
+        "core": { "type": "object", "additionalProperties": true },
+        "support": { "type": "object", "additionalProperties": true },
+        "planned_launch_count": { "type": "integer", "minimum": 0 },
+        "blocked_launch_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["task_type", "source", "reason"],
+      "properties": {
+        "task_id": { "type": ["string", "null"] },
+        "task_type": { "type": "string" },
+        "task_class": { "type": ["string", "null"] },
+        "source": {
+          "type": "string",
+          "enum": ["reroute", "worker_floor_enforcement"]
+        },
+        "reason": { "type": "string" },
+        "target_worker": { "type": ["string", "null"] },
+        "classification": { "type": ["string", "null"] },
+        "latest_worker": { "type": ["string", "null"] },
+        "reroute_status": { "type": ["string", "null"] },
+        "deficit": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

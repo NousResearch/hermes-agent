@@ -1,0 +1,124 @@
+{
+  "schema_version": "clawd.domain_release_evidence_bundle.v1",
+  "release_id": "rel_xg802_domain_canary_20260328",
+  "generated_at": "2026-03-28T15:15:00Z",
+  "activation_mode": "canary",
+  "lane_context": {
+    "lane_id": "lane.column_c.domain_governance",
+    "wave": "xr2"
+  },
+  "stages": [
+    {
+      "stage": "local_determinism",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/xg_802_domain_release_stage_evidence_2026-03-28.md"
+      ],
+      "evaluated_at": "2026-03-28T14:45:00Z"
+    },
+    {
+      "stage": "presubmit",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/xg_802_domain_release_stage_evidence_2026-03-28.md"
+      ],
+      "evaluated_at": "2026-03-28T14:50:00Z"
+    },
+    {
+      "stage": "integration_replay",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/xg_802_domain_release_stage_evidence_2026-03-28.md"
+      ],
+      "evaluated_at": "2026-03-28T14:55:00Z"
+    },
+    {
+      "stage": "shadow",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/xg_802_domain_release_stage_evidence_2026-03-28.md"
+      ],
+      "evaluated_at": "2026-03-28T15:00:00Z"
+    },
+    {
+      "stage": "canary",
+      "status": "pass",
+      "evidence_refs": [
+        "reports/xg_802_domain_release_stage_evidence_2026-03-28.md"
+      ],
+      "evaluated_at": "2026-03-28T15:05:00Z"
+    }
+  ],
+  "rollback_proof": {
+    "artifact_rollback_ref": "reports/xg_802_release_artifact_rollback_proof_2026-03-28.md",
+    "state_rollback_ref": "reports/xg_802_release_state_rollback_proof_2026-03-28.md",
+    "drill_ref": "reports/xg_802_release_rollback_drill_2026-03-28.md",
+    "drilled_at": "2026-03-28T13:20:00Z",
+    "max_age_hours": 48
+  },
+  "compatibility_lifecycle": {
+    "register_ref": "docs/ops/templates/compatibility_path_register.template.json",
+    "active_exceptions": 1,
+    "removal_rfc_refs": [
+      "docs/ops/templates/compatibility_path_removal_rfc.template.json"
+    ]
+  },
+  "domain_governance": {
+    "risk_class": "RG2_HIGH",
+    "auth_tier": "ADMIN",
+    "route_class": "sensitive_action",
+    "sensitive_action": true
+  },
+  "approval_ladder": {
+    "required": true,
+    "steps": [
+      {
+        "step": "governance_owner_signoff",
+        "status": "pass",
+        "approver_id": "XG_lane_governor",
+        "approved_at": "2026-03-28T15:06:00Z",
+        "evidence_ref": "reports/xg_802_approval_ladder_simulation_2026-03-28.md"
+      },
+      {
+        "step": "release_owner_signoff",
+        "status": "pass",
+        "approver_id": "C2_release_governance_owner",
+        "approved_at": "2026-03-28T15:08:00Z",
+        "evidence_ref": "reports/xg_802_approval_ladder_simulation_2026-03-28.md"
+      }
+    ]
+  },
+  "attribution": {
+    "requested_by": "XG_lane_governor",
+    "approved_by": "C2_release_governance_owner",
+    "executed_by": "xg_802_release_gate_runner",
+    "decision_log_ref": "state/continuity/release_governance/release_evidence_ladder_decisions.jsonl"
+  },
+  "internal_release_profile": {
+    "public_packaging_in_scope": false,
+    "benchmark_thresholds": [
+      {
+        "metric_id": "retrieval_hit_at_5",
+        "comparator": ">=",
+        "threshold": 0.82,
+        "observed": 0.86,
+        "status": "pass",
+        "evidence_ref": "state/continuity/latest/xg_802_benchmark_threshold_gate_results_2026-03-28.json"
+      },
+      {
+        "metric_id": "negative_query_guard_pass_rate",
+        "comparator": ">=",
+        "threshold": 0.95,
+        "observed": 0.97,
+        "status": "pass",
+        "evidence_ref": "state/continuity/latest/xg_802_benchmark_threshold_gate_results_2026-03-28.json"
+      }
+    ],
+    "rollback_readiness": {
+      "status": "pass",
+      "proof_refs": [
+        "state/continuity/latest/xg_802_rollback_readiness_validation_2026-03-28.json"
+      ]
+    }
+  }
+}

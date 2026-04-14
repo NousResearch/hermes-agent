@@ -647,7 +647,7 @@ def get_plugin_toolsets() -> List[tuple]:
     toolset_tools: Dict[str, List[str]] = {}
     toolset_plugin: Dict[str, LoadedPlugin] = {}
     for tool_name in manager._plugin_tool_names:
-        entry = registry._tools.get(tool_name)
+        entry = registry.get_entry(tool_name)
         if not entry:
             continue
         ts = entry.toolset
@@ -656,7 +656,7 @@ def get_plugin_toolsets() -> List[tuple]:
     # Map toolsets back to the plugin that registered them
     for _name, loaded in manager._plugins.items():
         for tool_name in loaded.tools_registered:
-            entry = registry._tools.get(tool_name)
+            entry = registry.get_entry(tool_name)
             if entry and entry.toolset in toolset_tools:
                 toolset_plugin.setdefault(entry.toolset, loaded)
 

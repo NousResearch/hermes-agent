@@ -1,7 +1,6 @@
 """Tests for toolsets.py — toolset resolution, validation, and composition."""
 
-import pytest
-
+from tools.registry import ToolRegistry
 from toolsets import (
     TOOLSETS,
     get_toolset,
@@ -13,6 +12,18 @@ from toolsets import (
     create_custom_toolset,
     get_toolset_info,
 )
+
+
+def _dummy_handler(args, **kwargs):
+    return "{}"
+
+
+def _make_schema(name: str, description: str = "test tool"):
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {"type": "object", "properties": {}},
+    }
 
 
 class TestGetToolset:
@@ -51,6 +62,25 @@ class TestResolveToolset:
 
     def test_unknown_toolset_returns_empty(self):
         assert resolve_toolset("nonexistent") == []
+
+    def test_plugin_toolset_uses_registry_snapshot(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="plugin_b",
+            toolset="plugin_example",
+            schema=_make_schema("plugin_b", "B"),
+            handler=_dummy_handler,
+        )
+        reg.register(
+            name="plugin_a",
+            toolset="plugin_example",
+            schema=_make_schema("plugin_a", "A"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        assert resolve_toolset("plugin_example") == ["plugin_a", "plugin_b"]
 
     def test_all_alias(self):
         tools = resolve_toolset("all")
@@ -141,3 +171,20 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+
+class TestPluginToolsets:
+    def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):
+        reg = ToolRegistry()
+        reg.register(
+            name="plugin_tool",
+            toolset="plugin_bundle",
+            schema=_make_schema("plugin_tool", "Plugin tool"),
+            handler=_dummy_handler,
+        )
+
+        monkeypatch.setattr("tools.registry.registry", reg)
+
+        all_toolsets = get_all_toolsets()
+        assert "plugin_bundle" in all_toolsets
+        assert all_toolsets["plugin_bundle"]["tools"] == ["plugin_tool"]

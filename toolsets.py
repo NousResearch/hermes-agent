@@ -409,8 +409,31 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         Dict: Toolset definition with description, tools, and includes
         None: If toolset not found
     """
-    # Return toolset definition
-    return TOOLSETS.get(name)
+    toolset = TOOLSETS.get(name)
+    if toolset:
+        return toolset
+
+    try:
+        from tools.registry import registry
+    except Exception:
+        return None
+
+    registry_toolset = name
+    description = f"Plugin toolset: {name}"
+
+    if name not in _get_plugin_toolset_names():
+        registry_toolset = _get_mcp_toolset_aliases().get(name)
+        if not registry_toolset:
+            return None
+        description = f"MCP server '{name}' tools"
+    elif name.startswith("mcp-"):
+        description = f"MCP server '{name[4:]}' tools"
+
+    return {
+        "description": description,
+        "tools": registry.get_tool_names_for_toolset(registry_toolset),
+        "includes": [],
+    }
 
 
 def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
@@ -438,7 +461,7 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
             # Use a fresh visited set per branch to avoid cross-branch contamination
             resolved = resolve_toolset(toolset_name, visited.copy())
             all_tools.update(resolved)
-        return list(all_tools)
+        return sorted(all_tools)
 
     # Check for cycles / already-resolved (diamond deps).
     # Silently return [] — either this is a diamond (not a bug, tools already
@@ -449,15 +472,8 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     visited.add(name)
 
     # Get toolset definition
-    toolset = TOOLSETS.get(name)
+    toolset = get_toolset(name)
     if not toolset:
-        # Fall back to tool registry for plugin-provided toolsets
-        if name in _get_plugin_toolset_names():
-            try:
-                from tools.registry import registry
-                return registry.get_tool_names_for_toolset(name)
-            except Exception:
-                pass
         return []
 
     # Collect direct tools
@@ -470,7 +486,7 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
         included_tools = resolve_toolset(included_name, visited)
         tools.update(included_tools)
     
-    return list(tools)
+    return sorted(tools)
 
 
 def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
@@ -489,7 +505,7 @@ def resolve_multiple_toolsets(toolset_names: List[str]) -> List[str]:
         tools = resolve_toolset(name)
         all_tools.update(tools)
     
-    return list(all_tools)
+    return sorted(all_tools)
 
 
 def _get_plugin_toolset_names() -> Set[str]:
@@ -509,6 +525,18 @@ def _get_plugin_toolset_names() -> Set[str]:
         return set()
 
 
+def _get_mcp_toolset_aliases() -> Dict[str, str]:
+    """Map raw MCP server names to their live registry toolset names."""
+    aliases = {}
+    for toolset_name in _get_plugin_toolset_names():
+        if not toolset_name.startswith("mcp-"):
+            continue
+        alias = toolset_name[4:]
+        if alias and alias not in TOOLSETS:
+            aliases[alias] = toolset_name
+    return aliases
+
+
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     """
     Get all available toolsets with their definitions.
@@ -518,19 +546,18 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict: All toolset definitions
     """
-    result = TOOLSETS.copy()
-    # Add plugin-provided toolsets (synthetic entries)
+    result = dict(TOOLSETS)
     for ts_name in _get_plugin_toolset_names():
-        if ts_name not in result:
-            try:
-                from tools.registry import registry
-                tools = registry.get_tool_names_for_toolset(ts_name)
-                result[ts_name] = {
-                    "description": f"Plugin toolset: {ts_name}",
-                    "tools": tools,
-                }
-            except Exception:
-                pass
+        display_name = ts_name
+        if ts_name.startswith("mcp-"):
+            alias = ts_name[4:]
+            if alias and alias not in TOOLSETS:
+                display_name = alias
+        if display_name in result:
+            continue
+        toolset = get_toolset(display_name)
+        if toolset:
+            result[display_name] = toolset
     return result
 
 
@@ -544,7 +571,13 @@ def get_toolset_names() -> List[str]:
         List[str]: List of toolset names
     """
     names = set(TOOLSETS.keys())
-    names |= _get_plugin_toolset_names()
+    for ts_name in _get_plugin_toolset_names():
+        if ts_name.startswith("mcp-"):
+            alias = ts_name[4:]
+            if alias and alias not in TOOLSETS:
+                names.add(alias)
+                continue
+        names.add(ts_name)
     return sorted(names)
 
 
@@ -565,8 +598,9 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in TOOLSETS:
         return True
-    # Check tool registry for plugin-provided toolsets
-    return name in _get_plugin_toolset_names()
+    if name in _get_plugin_toolset_names():
+        return True
+    return name in _get_mcp_toolset_aliases()
 
 
 def create_custom_toolset(

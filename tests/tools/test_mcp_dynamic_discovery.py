@@ -21,34 +21,19 @@ class TestRegisterServerTools:
     def mock_registry(self):
         return ToolRegistry()
 
-    @pytest.fixture
-    def mock_toolsets(self):
-        return {
-            "hermes-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
-            "hermes-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
-            "custom-toolset": {"tools": [], "description": "Other", "includes": []},
-        }
-
-    def test_injects_hermes_toolsets(self, mock_registry, mock_toolsets):
-        """Tools are injected into hermes-* toolsets but not custom ones."""
+    def test_exposes_live_server_aliases(self, mock_registry):
+        """Registered MCP tools are reachable via live raw-server aliases."""
         server = MCPServerTask("my_srv")
         server._tools = [_make_mcp_tool("my_tool", "desc")]
         server.session = MagicMock()
+        from toolsets import resolve_toolset, validate_toolset
 
-        with patch("tools.registry.registry", mock_registry), \
-            patch("toolsets.create_custom_toolset"), \
-            patch.dict("toolsets.TOOLSETS", mock_toolsets, clear=True):
-
+        with patch("tools.registry.registry", mock_registry):
             registered = _register_server_tools("my_srv", server, {})
-
-        assert "mcp_my_srv_my_tool" in registered
-        assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
-
-        # Injected into hermes-* toolsets
-        assert "mcp_my_srv_my_tool" in mock_toolsets["hermes-cli"]["tools"]
-        assert "mcp_my_srv_my_tool" in mock_toolsets["hermes-telegram"]["tools"]
-        # NOT into non-hermes toolsets
-        assert "mcp_my_srv_my_tool" not in mock_toolsets["custom-toolset"]["tools"]
+            assert "mcp_my_srv_my_tool" in registered
+            assert "mcp_my_srv_my_tool" in mock_registry.get_all_tool_names()
+            assert validate_toolset("my_srv") is True
+            assert "mcp_my_srv_my_tool" in resolve_toolset("my_srv")
 
 
 class TestRefreshTools:
@@ -58,19 +43,13 @@ class TestRefreshTools:
     def mock_registry(self):
         return ToolRegistry()
 
-    @pytest.fixture
-    def mock_toolsets(self):
-        return {
-            "hermes-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
-            "hermes-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
-        }
-
     @pytest.mark.asyncio
-    async def test_nuke_and_repave(self, mock_registry, mock_toolsets):
+    async def test_nuke_and_repave(self, mock_registry):
         """Old tools are removed and new tools registered on refresh."""
         server = MCPServerTask("live_srv")
         server._refresh_lock = asyncio.Lock()
         server._config = {}
+        from toolsets import resolve_toolset
 
         # Seed initial state: one old tool registered
         mock_registry.register(
@@ -79,7 +58,6 @@ class TestRefreshTools:
             description="", emoji="",
         )
         server._registered_tool_names = ["mcp_live_srv_old_tool"]
-        mock_toolsets["hermes-cli"]["tools"].append("mcp_live_srv_old_tool")
 
         # New tool list from server
         new_tool = _make_mcp_tool("new_tool", "new behavior")
@@ -89,20 +67,13 @@ class TestRefreshTools:
             )
         )
 
-        with patch("tools.registry.registry", mock_registry), \
-            patch("toolsets.create_custom_toolset"), \
-            patch.dict("toolsets.TOOLSETS", mock_toolsets, clear=True):
-
+        with patch("tools.registry.registry", mock_registry):
             await server._refresh_tools()
-
-        # Old tool completely gone
-        assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
-        assert "mcp_live_srv_old_tool" not in mock_toolsets["hermes-cli"]["tools"]
-
-        # New tool registered
-        assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
-        assert "mcp_live_srv_new_tool" in mock_toolsets["hermes-cli"]["tools"]
-        assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
+            assert "mcp_live_srv_old_tool" not in mock_registry.get_all_tool_names()
+            assert "mcp_live_srv_old_tool" not in resolve_toolset("live_srv")
+            assert "mcp_live_srv_new_tool" in mock_registry.get_all_tool_names()
+            assert "mcp_live_srv_new_tool" in resolve_toolset("live_srv")
+            assert server._registered_tool_names == ["mcp_live_srv_new_tool"]
 
 
 class TestMessageHandler:

@@ -295,6 +295,16 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    # Merge user-defined custom headers from config.yaml.
+    # Applied last so user values can override provider defaults.
+    try:
+        from hermes_cli.config import get_custom_headers
+        custom = get_custom_headers()
+        if custom:
+            kwargs.setdefault("default_headers", {}).update(custom)
+    except Exception:
+        pass
+
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

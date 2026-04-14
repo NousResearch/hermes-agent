@@ -121,6 +121,23 @@ _OR_HEADERS = {
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
 
+
+def _merge_custom_headers(headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Merge user-defined custom_headers from config.yaml into *headers*.
+
+    Returns a new dict with provider headers first, then custom headers on top
+    so user values can override defaults.
+    """
+    merged = dict(headers) if headers else {}
+    try:
+        from hermes_cli.config import get_custom_headers
+        custom = get_custom_headers()
+        if custom:
+            merged.update(custom)
+    except Exception:
+        pass
+    return merged
+
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
 # when the auxiliary client is backed by Nous Portal.
@@ -719,11 +736,11 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = _merge_custom_headers({"User-Agent": "KimiCLI/1.30.0"})
             elif "api.githubcopilot.com" in base_url.lower():
                 from hermes_cli.models import copilot_default_headers
 
-                extra["default_headers"] = copilot_default_headers()
+                extra["default_headers"] = _merge_custom_headers(copilot_default_headers())
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -740,11 +757,11 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            extra["default_headers"] = _merge_custom_headers({"User-Agent": "KimiCLI/1.30.0"})
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
-            extra["default_headers"] = copilot_default_headers()
+            extra["default_headers"] = _merge_custom_headers(copilot_default_headers())
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -763,14 +780,14 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                       default_headers=_merge_custom_headers(_OR_HEADERS)), _OPENROUTER_MODEL
 
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                   default_headers=_merge_custom_headers(_OR_HEADERS)), _OPENROUTER_MODEL
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1236,13 +1253,17 @@ def _to_async_client(sync_client, model: str):
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
-        async_kwargs["default_headers"] = dict(_OR_HEADERS)
+        async_kwargs["default_headers"] = _merge_custom_headers(dict(_OR_HEADERS))
     elif "api.githubcopilot.com" in base_lower:
         from hermes_cli.models import copilot_default_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
+        async_kwargs["default_headers"] = _merge_custom_headers(copilot_default_headers())
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+        async_kwargs["default_headers"] = _merge_custom_headers({"User-Agent": "KimiCLI/1.30.0"})
+    else:
+        _custom_only = _merge_custom_headers()
+        if _custom_only:
+            async_kwargs["default_headers"] = _custom_only
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1419,10 +1440,10 @@ def resolve_provider_client(
             )
             extra = {}
             if "api.kimi.com" in custom_base.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = _merge_custom_headers({"User-Agent": "KimiCLI/1.30.0"})
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
-                extra["default_headers"] = copilot_default_headers()
+                extra["default_headers"] = _merge_custom_headers(copilot_default_headers())
             client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
@@ -1522,6 +1543,7 @@ def resolve_provider_client(
             from hermes_cli.models import copilot_default_headers
 
             headers.update(copilot_default_headers())
+        headers = _merge_custom_headers(headers) if headers else _merge_custom_headers()
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))

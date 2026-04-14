@@ -50,6 +50,17 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+# =============================================================================
+# Custom HTTP Headers
+# =============================================================================
+# Extra headers added to every outgoing LLM API request (Anthropic & OpenAI).
+# Useful for request-origin tagging, internal auditing, compliance, or
+# routing through corporate API gateways.
+#
+# custom_headers:
+#   X-Request-Source: "my-service"
+#   X-Cost-Center: "team-ai"
+
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
   # context_length: TOTAL context window (input + output tokens combined).

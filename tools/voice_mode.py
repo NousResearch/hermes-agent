@@ -63,11 +63,6 @@ def _termux_microphone_command() -> Optional[str]:
     return shutil.which("termux-microphone-record")
 
 
-def _termux_media_player_command() -> Optional[str]:
-    if not _is_termux_environment():
-        return None
-    return shutil.which("termux-media-player")
-
 
 def _termux_api_app_installed() -> bool:
     if not _is_termux_environment():
@@ -106,8 +101,9 @@ def detect_audio_environment() -> dict:
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
         warnings.append("Running over SSH -- no audio devices available")
 
-    # Docker detection
-    if os.path.exists('/.dockerenv'):
+    # Docker/Podman container detection
+    from hermes_constants import is_container
+    if is_container():
         warnings.append("Running inside Docker container -- no audio devices")
 
     # WSL detection — PulseAudio bridge makes audio work in WSL.
@@ -189,7 +185,6 @@ SAMPLE_RATE = 16000  # Whisper native rate
 CHANNELS = 1  # Mono
 DTYPE = "int16"  # 16-bit PCM
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
-MAX_RECORDING_SECONDS = 120  # Safety cap
 
 # Silence detection defaults
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
@@ -419,10 +414,6 @@ class AudioRecorder:
     # -- public properties ---------------------------------------------------
 
     @property
-    def is_recording(self) -> bool:
-        return self._recording
-
-    @property
     def elapsed_seconds(self) -> float:
         if not self._recording:
             return 0.0
@@ -432,6 +423,11 @@ class AudioRecorder:
     def current_rms(self) -> int:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
+
+    @property
+    def is_recording(self) -> bool:
+        """Whether audio recording is currently active."""
+        return self._recording
 
     # -- public methods ------------------------------------------------------
 

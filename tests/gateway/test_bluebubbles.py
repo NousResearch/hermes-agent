@@ -359,3 +359,257 @@ class TestBlueBubblesAttachmentDownload:
             adapter._download_attachment("att-guid", {"mimeType": "image/png"})
         )
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Webhook registration
+# ---------------------------------------------------------------------------
+
+
+class TestBlueBubblesWebhookUrl:
+    """_webhook_url property normalises local hosts to 'localhost'."""
+
+    def test_default_host(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        # Default webhook_host is 0.0.0.0 → normalized to localhost
+        assert "localhost" in adapter._webhook_url
+        assert str(adapter.webhook_port) in adapter._webhook_url
+        assert adapter.webhook_path in adapter._webhook_url
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::"])
+    def test_local_hosts_normalized(self, monkeypatch, host):
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith("http://localhost:")
+
+    def test_custom_host_preserved(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
+        assert "192.168.1.50" in adapter._webhook_url
+
+
+class TestBlueBubblesWebhookRegistration:
+    """Tests for _register_webhook, _unregister_webhook, _find_registered_webhooks."""
+
+    @staticmethod
+    def _mock_client(get_response=None, post_response=None, delete_ok=True):
+        """Build a tiny mock httpx.AsyncClient."""
+
+        async def mock_get(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return get_response or {"status": 200, "data": []}
+            return R()
+
+        async def mock_post(*args, **kwargs):
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+                def json(self):
+                    return post_response or {"status": 200, "data": {}}
+            return R()
+
+        async def mock_delete(*args, **kwargs):
+            class R:
+                status_code = 200 if delete_ok else 500
+                def raise_for_status(self_inner):
+                    if not delete_ok:
+                        raise Exception("delete failed")
+            return R()
+
+        return type(
+            "MockClient", (),
+            {"get": mock_get, "post": mock_post, "delete": mock_delete},
+        )()
+
+    # -- _find_registered_webhooks --
+
+    def test_find_registered_webhooks_returns_matches(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_url
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": url, "events": ["new-message"]},
+                {"id": 2, "url": "http://other:9999/hook", "events": ["message"]},
+            ]}
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(url)
+        )
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_find_registered_webhooks_empty_when_none(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []}
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(adapter._webhook_url)
+        )
+        assert result == []
+
+    def test_find_registered_webhooks_handles_api_error(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client()
+
+        # Override _api_get to raise
+        async def bad_get(path):
+            raise ConnectionError("server down")
+        adapter._api_get = bad_get
+
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter._find_registered_webhooks(adapter._webhook_url)
+        )
+        assert result == []
+
+    # -- _register_webhook --
+
+    def test_register_fresh(self, monkeypatch):
+        """No existing webhook → POST creates one."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 200, "data": {"id": 42}},
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+
+    def test_register_accepts_201(self, monkeypatch):
+        """BB might return 201 Created — must still succeed."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 201, "data": {"id": 43}},
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+
+    def test_register_reuses_existing(self, monkeypatch):
+        """Crash resilience — existing registration is reused, no POST needed."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_url
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 7, "url": url, "events": ["new-message"]},
+            ]},
+        )
+
+        # Track whether POST was called
+        post_called = False
+        orig_api_post = adapter._api_post
+        async def tracking_post(path, payload):
+            nonlocal post_called
+            post_called = True
+            return await orig_api_post(path, payload)
+        adapter._api_post = tracking_post
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is True
+        assert not post_called, "Should reuse existing, not POST again"
+
+    def test_register_returns_false_without_client(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = None
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is False
+
+    def test_register_returns_false_on_server_error(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": []},
+            post_response={"status": 500, "message": "internal error"},
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._register_webhook()
+        )
+        assert ok is False
+
+    # -- _unregister_webhook --
+
+    def test_unregister_removes_matching(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_url
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 10, "url": url},
+            ]},
+        )
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._unregister_webhook()
+        )
+        assert ok is True
+
+    def test_unregister_removes_all_duplicates(self, monkeypatch):
+        """Multiple orphaned registrations for same URL — all get removed."""
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        url = adapter._webhook_url
+        deleted_ids = []
+
+        async def mock_delete(*args, **kwargs):
+            # Extract ID from URL
+            url_str = args[0] if args else ""
+            deleted_ids.append(url_str)
+            class R:
+                status_code = 200
+                def raise_for_status(self):
+                    pass
+            return R()
+
+        adapter.client = self._mock_client(
+            get_response={"status": 200, "data": [
+                {"id": 1, "url": url},
+                {"id": 2, "url": url},
+                {"id": 3, "url": "http://other/hook"},
+            ]},
+        )
+        adapter.client.delete = mock_delete
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._unregister_webhook()
+        )
+        assert ok is True
+        assert len(deleted_ids) == 2
+
+    def test_unregister_returns_false_without_client(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = None
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._unregister_webhook()
+        )
+        assert ok is False
+
+    def test_unregister_handles_api_failure_gracefully(self, monkeypatch):
+        import asyncio
+        adapter = _make_adapter(monkeypatch)
+        adapter.client = self._mock_client()
+
+        async def bad_get(path):
+            raise ConnectionError("server down")
+        adapter._api_get = bad_get
+
+        ok = asyncio.get_event_loop().run_until_complete(
+            adapter._unregister_webhook()
+        )
+        assert ok is False

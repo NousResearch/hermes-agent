@@ -37,8 +37,6 @@ from utils import is_truthy_value
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
-from hermes_constants import get_hermes_home
-
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -92,19 +90,6 @@ _local_model_name: Optional[str] = None
 # Config helpers
 # ---------------------------------------------------------------------------
 
-
-def get_stt_model_from_config() -> Optional[str]:
-    """Read the STT model name from ~/.hermes/config.yaml.
-
-    Returns the value of ``stt.model`` if present, otherwise ``None``.
-    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
-    """
-    try:
-        from hermes_cli.config import read_raw_config
-        return read_raw_config().get("stt", {}).get("model")
-    except Exception:
-        pass
-    return None
 
 
 def _load_stt_config() -> dict:

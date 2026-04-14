@@ -33,12 +33,14 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    safe_url_for_log,
     cache_document_from_bytes,
 )
 
@@ -88,11 +90,9 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
-        # Dedup cache: event_ts → timestamp.  Prevents duplicate bot
-        # responses when Socket Mode reconnects redeliver events.
-        self._seen_messages: Dict[str, float] = {}
-        self._SEEN_TTL = 300   # 5 minutes
-        self._SEEN_MAX = 2000  # prune threshold
+        # Dedup cache: prevents duplicate bot responses when Socket Mode
+        # reconnects redeliver events.
+        self._dedup = MessageDeduplicator()
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
@@ -151,15 +151,7 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
         try:
-            # Acquire scoped lock to prevent duplicate app token usage
-            from gateway.status import acquire_scoped_lock
-            self._token_lock_identity = app_token
-            acquired, existing = acquire_scoped_lock('slack-app-token', app_token, metadata={'platform': 'slack'})
-            if not acquired:
-                owner_pid = existing.get('pid') if isinstance(existing, dict) else None
-                message = f'Slack app token already in use' + (f' (PID {owner_pid})' if owner_pid else '') + '. Stop the other gateway first.'
-                logger.error('[%s] %s', self.name, message)
-                self._set_fatal_error('slack_token_lock', message, retryable=False)
+            if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
                 return False
 
             # First token is the primary — used for AsyncApp / Socket Mode
@@ -246,14 +238,7 @@ class SlackAdapter(BasePlatformAdapter):
                 logger.warning("[Slack] Error while closing Socket Mode handler: %s", e, exc_info=True)
         self._running = False
 
-        # Release the token lock (use stored identity, not re-read env)
-        try:
-            from gateway.status import release_scoped_lock
-            if getattr(self, '_token_lock_identity', None):
-                release_scoped_lock('slack-app-token', self._token_lock_identity)
-                self._token_lock_identity = None
-        except Exception:
-            pass
+        self._release_platform_lock()
 
         logger.info("[Slack] Disconnected")
 
@@ -656,8 +641,19 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             import httpx
 
+            async def _ssrf_redirect_guard(response):
+                """Re-check redirect targets so public URLs cannot bounce into private IPs."""
+                if response.is_redirect and response.next_request:
+                    redirect_url = str(response.next_request.url)
+                    if not is_safe_url(redirect_url):
+                        raise ValueError("Blocked redirect to private/internal address")
+
             # Download the image first
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            ) as client:
                 response = await client.get(image_url)
                 response.raise_for_status()
 
@@ -674,7 +670,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
-                image_url,
+                safe_url_for_log(image_url),
                 e,
                 exc_info=True,
             )
@@ -941,17 +937,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
-        if event_ts:
-            now = time.time()
-            if event_ts in self._seen_messages:
-                return
-            self._seen_messages[event_ts] = now
-            if len(self._seen_messages) > self._SEEN_MAX:
-                cutoff = now - self._SEEN_TTL
-                self._seen_messages = {
-                    k: v for k, v in self._seen_messages.items()
-                    if v > cutoff
-                }
+        if event_ts and self._dedup.is_duplicate(event_ts):
+            return
 
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
         #   "none"     — ignore all bot messages (default, backward-compatible)
@@ -1595,6 +1582,18 @@ class SlackAdapter(BasePlatformAdapter):
                         headers={"Authorization": f"Bearer {bot_token}"},
                     )
                     response.raise_for_status()
+
+                    # Slack may return an HTML sign-in/redirect page
+                    # instead of actual media bytes (e.g. expired token,
+                    # restricted file access).  Detect this early so we
+                    # don't cache bogus data and confuse downstream tools.
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of media "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
 
                     if audio:
                         from gateway.platforms.base import cache_audio_from_bytes

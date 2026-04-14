@@ -198,8 +198,8 @@ class HermesTokenStorage:
             return None
         try:
             return OAuthToken.model_validate(data)
-        except Exception:
-            logger.warning("Corrupt tokens at %s -- ignoring", self._tokens_path())
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt tokens at %s -- ignoring: %s", self._tokens_path(), exc)
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
@@ -214,8 +214,8 @@ class HermesTokenStorage:
             return None
         try:
             return OAuthClientInformationFull.model_validate(data)
-        except Exception:
-            logger.warning("Corrupt client info at %s -- ignoring", self._client_info_path())
+        except (ValueError, TypeError, KeyError) as exc:
+            logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
@@ -343,13 +343,14 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     timeout = 300.0
     poll_interval = 0.5
     elapsed = 0.0
-    while elapsed < timeout:
-        if result["auth_code"] is not None or result["error"] is not None:
-            break
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-    server.server_close()
+    try:
+        while elapsed < timeout:
+            if result["auth_code"] is not None or result["error"] is not None:
+                break
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+    finally:
+        server.server_close()
 
     if result["error"]:
         raise RuntimeError(f"OAuth authorization failed: {result['error']}")

@@ -20,9 +20,7 @@ Both ``code_execution_tool.py`` and ``tools/environments/local.py`` consult
 from __future__ import annotations
 
 import logging
-import os
 from contextvars import ContextVar
-from pathlib import Path
 from typing import Iterable
 
 logger = logging.getLogger(__name__)
@@ -101,7 +99,3 @@ def clear_env_passthrough() -> None:
     _get_allowed().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_passthrough
-    _config_passthrough = None

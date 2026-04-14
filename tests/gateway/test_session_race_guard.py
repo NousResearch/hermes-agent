@@ -41,6 +41,15 @@ def _make_runner():
     runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    runner._restart_drain_timeout = 0.0
+    runner._stop_task = None
+    runner._exit_code = None
+    runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
@@ -51,7 +60,8 @@ def _make_runner():
 
 def _make_event(text="hello", chat_id="12345"):
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"
+        platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm",
+        user_id="u1",
     )
     return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
@@ -183,7 +193,8 @@ async def test_command_messages_do_not_leave_sentinel():
     _handle_message.  They must NOT leave a sentinel behind."""
     runner = _make_runner()
     source = SessionSource(
-        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm"
+        platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm",
+        user_id="u1",
     )
     event = MessageEvent(
         text="/help", message_type=MessageType.TEXT, source=source
@@ -231,9 +242,7 @@ async def test_stop_during_sentinel_force_cleans_session():
         stop_event = _make_event(text="/stop")
         result = await runner._handle_message(stop_event)
         assert result is not None, "/stop during sentinel should return a message"
-        assert "force-stopped" in result.lower() or "unlocked" in result.lower()
-
-        # Sentinel must be cleaned up
+        assert "stopped" in result.lower()
         assert session_key not in runner._running_agents, (
             "/stop must remove sentinel so the session is unlocked"
         )
@@ -259,7 +268,7 @@ async def test_stop_hard_kills_running_agent():
     forever — showing 'writing...' but never producing output."""
     runner = _make_runner()
     session_key = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u1")
     )
 
     # Simulate a running (possibly hung) agent
@@ -280,7 +289,7 @@ async def test_stop_hard_kills_running_agent():
 
     # Must return a confirmation
     assert result is not None
-    assert "force-stopped" in result.lower() or "unlocked" in result.lower()
+    assert "stopped" in result.lower()
 
 
 # ------------------------------------------------------------------
@@ -292,7 +301,7 @@ async def test_stop_clears_pending_messages():
     queued during the run must be discarded."""
     runner = _make_runner()
     session_key = build_session_key(
-        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm")
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u1")
     )
 
     fake_agent = MagicMock()

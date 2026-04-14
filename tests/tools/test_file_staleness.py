@@ -19,8 +19,8 @@ from tools.file_tools import (
     read_file_tool,
     write_file_tool,
     patch_tool,
-    clear_read_tracker,
     _check_file_staleness,
+    _read_tracker,
 )
 
 
@@ -75,14 +75,14 @@ def _make_fake_ops(read_content="hello\n", file_size=6):
 class TestStalenessCheck(unittest.TestCase):
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "stale_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("original content\n")
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -153,14 +153,14 @@ class TestStalenessCheck(unittest.TestCase):
 class TestPatchStaleness(unittest.TestCase):
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         self._tmpdir = tempfile.mkdtemp()
         self._tmpfile = os.path.join(self._tmpdir, "patch_test.txt")
         with open(self._tmpfile, "w") as f:
             f.write("original line\n")
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
         try:
             os.unlink(self._tmpfile)
             os.rmdir(self._tmpdir)
@@ -206,10 +206,10 @@ class TestPatchStaleness(unittest.TestCase):
 class TestCheckFileStalenessHelper(unittest.TestCase):
 
     def setUp(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def tearDown(self):
-        clear_read_tracker()
+        _read_tracker.clear()
 
     def test_returns_none_for_unknown_task(self):
         self.assertIsNone(_check_file_staleness("/tmp/x.py", "nonexistent"))

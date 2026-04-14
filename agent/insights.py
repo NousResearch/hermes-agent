@@ -27,7 +27,6 @@ from agent.usage_pricing import (
     DEFAULT_PRICING,
     estimate_usage_cost,
     format_duration_compact,
-    get_pricing,
     has_known_pricing,
 )
 
@@ -37,15 +36,6 @@ _DEFAULT_PRICING = DEFAULT_PRICING
 def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
     """Check if a model has known pricing (vs unknown/custom endpoint)."""
     return has_known_pricing(model_name, provider=provider, base_url=base_url)
-
-
-def _get_pricing(model_name: str) -> Dict[str, float]:
-    """Look up pricing for a model. Uses fuzzy matching on model name.
-
-    Returns _DEFAULT_PRICING (zero cost) for unknown/custom models —
-    we can't assume costs for self-hosted endpoints, local inference, etc.
-    """
-    return get_pricing(model_name)
 
 
 def _estimate_cost(

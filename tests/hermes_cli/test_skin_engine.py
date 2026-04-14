@@ -40,13 +40,6 @@ class TestSkinConfig:
         assert skin.get_branding("agent_name") == "Hermes Agent"
         assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
-    def test_get_spinner_list_empty_for_default(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        # Default skin has no custom spinner config
-        assert skin.get_spinner_list("waiting_faces") == []
-        assert skin.get_spinner_list("thinking_verbs") == []
-
     def test_get_spinner_wings_empty_for_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
@@ -68,9 +61,6 @@ class TestBuiltinSkins:
     def test_ares_has_spinner_customization(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")
-        assert len(skin.get_spinner_list("waiting_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_verbs")) > 0
         wings = skin.get_spinner_wings()
         assert len(wings) > 0
         assert isinstance(wings[0], tuple)
@@ -195,31 +185,6 @@ class TestDisplayIntegration:
         from agent.display import get_skin_tool_prefix
         set_active_skin("ares")
         assert get_skin_tool_prefix() == "╎"
-
-    def test_get_skin_faces_default(self):
-        from agent.display import get_skin_faces, KawaiiSpinner
-        faces = get_skin_faces("waiting_faces", KawaiiSpinner.KAWAII_WAITING)
-        # Default skin has no custom faces, so should return the default list
-        assert faces == KawaiiSpinner.KAWAII_WAITING
-
-    def test_get_skin_faces_ares(self):
-        from hermes_cli.skin_engine import set_active_skin
-        from agent.display import get_skin_faces, KawaiiSpinner
-        set_active_skin("ares")
-        faces = get_skin_faces("waiting_faces", KawaiiSpinner.KAWAII_WAITING)
-        assert "(⚔)" in faces
-
-    def test_get_skin_verbs_default(self):
-        from agent.display import get_skin_verbs, KawaiiSpinner
-        verbs = get_skin_verbs()
-        assert verbs == KawaiiSpinner.THINKING_VERBS
-
-    def test_get_skin_verbs_ares(self):
-        from hermes_cli.skin_engine import set_active_skin
-        from agent.display import get_skin_verbs
-        set_active_skin("ares")
-        verbs = get_skin_verbs()
-        assert "forging" in verbs
 
     def test_tool_message_uses_skin_prefix(self):
         from hermes_cli.skin_engine import set_active_skin

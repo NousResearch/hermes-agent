@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tools.skill_manager_tool import (
     _validate_name,
     _validate_category,
@@ -330,6 +332,25 @@ word word
             result = _patch_skill("nonexistent", "old", "new")
         assert result["success"] is False
 
+    def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
+        outside_file = tmp_path / "outside.txt"
+        outside_file.write_text("old text here")
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            link = tmp_path / "my-skill" / "references" / "evil.md"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(outside_file)
+            except OSError:
+                pytest.skip("Symlinks not supported")
+
+            result = _patch_skill("my-skill", "old text", "new text", file_path="references/evil.md")
+
+        assert result["success"] is False
+        assert "escapes" in result["error"].lower()
+        assert outside_file.read_text() == "old text here"
+
 
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
@@ -375,6 +396,25 @@ class TestWriteFile:
             result = _write_file("my-skill", "secret/evil.py", "malicious")
         assert result["success"] is False
 
+    def test_write_symlink_escape_blocked(self, tmp_path):
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            link = tmp_path / "my-skill" / "references" / "escape"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(outside_dir, target_is_directory=True)
+            except OSError:
+                pytest.skip("Symlinks not supported")
+
+            result = _write_file("my-skill", "references/escape/owned.md", "malicious")
+
+        assert result["success"] is False
+        assert "escapes" in result["error"].lower()
+        assert not (outside_dir / "owned.md").exists()
+
 
 class TestRemoveFile:
     def test_remove_existing_file(self, tmp_path):
@@ -390,6 +430,27 @@ class TestRemoveFile:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _remove_file("my-skill", "references/nope.md")
         assert result["success"] is False
+
+    def test_remove_symlink_escape_blocked(self, tmp_path):
+        outside_dir = tmp_path / "outside"
+        outside_dir.mkdir()
+        outside_file = outside_dir / "keep.txt"
+        outside_file.write_text("content")
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            link = tmp_path / "my-skill" / "references" / "escape"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(outside_dir, target_is_directory=True)
+            except OSError:
+                pytest.skip("Symlinks not supported")
+
+            result = _remove_file("my-skill", "references/escape/keep.txt")
+
+        assert result["success"] is False
+        assert "escapes" in result["error"].lower()
+        assert outside_file.exists()
 
 
 # ---------------------------------------------------------------------------

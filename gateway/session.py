@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -31,9 +30,6 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
-
-_PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
-
 
 def _hash_id(value: str) -> str:
     """Deterministic 12-char hex hash of an identifier."""
@@ -57,10 +53,6 @@ def _hash_chat_id(value: str) -> str:
         return f"{prefix}:{_hash_id(value[colon + 1:])}"
     return _hash_id(value)
 
-
-def _looks_like_phone(value: str) -> bool:
-    """Return True if *value* looks like a phone number (E.164 or similar)."""
-    return bool(_PHONE_RE.match(value.strip()))
 
 from .config import (
     Platform,
@@ -144,15 +136,6 @@ class SessionSource:
             chat_id_alt=data.get("chat_id_alt"),
         )
     
-    @classmethod
-    def local_cli(cls) -> "SessionSource":
-        """Create a source representing the local CLI."""
-        return cls(
-            platform=Platform.LOCAL,
-            chat_id="cli",
-            chat_name="CLI terminal",
-            chat_type="dm",
-        )
 
 
 @dataclass
@@ -384,6 +367,11 @@ class SessionEntry:
     # survives gateway restarts (the old in-memory _pre_flushed_sessions
     # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
+
+    # When True the next call to get_or_create_session() will auto-reset
+    # this session (create a new session_id) so the user starts fresh.
+    # Set by /stop to break stuck-resume loops (#7536).
+    suspended: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -403,6 +391,7 @@ class SessionEntry:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
+            "suspended": self.suspended,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -439,6 +428,7 @@ class SessionEntry:
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
+            suspended=data.get("suspended", False),
         )
 
 
@@ -510,8 +500,7 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None,
-                 on_auto_reset=None):
+                 has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
@@ -715,7 +704,12 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                reset_reason = self._should_reset(entry, source)
+                # Auto-reset sessions marked as suspended (e.g. after /stop
+                # broke a stuck loop — #7536).
+                if entry.suspended:
+                    reset_reason = "suspended"
+                else:
+                    reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
@@ -770,41 +764,6 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
-        # Seed new DM thread sessions with parent DM session history.
-        # When a bot reply creates a Slack thread and the user responds in it,
-        # the thread gets a new session (keyed by thread_ts).  Without seeding,
-        # the thread session starts with zero context — the user's original
-        # question and the bot's answer are invisible.  Fix: copy the parent
-        # DM session's transcript into the new thread session so context carries
-        # over while still keeping threads isolated from each other.
-        if (
-            source.chat_type == "dm"
-            and source.thread_id
-            and entry.created_at == entry.updated_at  # brand-new session
-            and not was_auto_reset
-        ):
-            parent_source = SessionSource(
-                platform=source.platform,
-                chat_id=source.chat_id,
-                chat_type="dm",
-                user_id=source.user_id,
-                # no thread_id — this is the parent DM session
-            )
-            parent_key = self._generate_session_key(parent_source)
-            with self._lock:
-                parent_entry = self._entries.get(parent_key)
-            if parent_entry and parent_entry.session_id != entry.session_id:
-                try:
-                    parent_history = self.load_transcript(parent_entry.session_id)
-                    if parent_history:
-                        self.rewrite_transcript(entry.session_id, parent_history)
-                        logger.info(
-                            "[Session] Seeded DM thread session %s with %d messages from parent %s",
-                            entry.session_id, len(parent_history), parent_entry.session_id,
-                        )
-                except Exception as e:
-                    logger.warning("[Session] Failed to seed thread session: %s", e)
-
         return entry
 
     def update_session(
@@ -822,6 +781,44 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def suspend_session(self, session_key: str) -> bool:
+        """Mark a session as suspended so it auto-resets on next access.
+
+        Used by ``/stop`` to prevent stuck sessions from being resumed
+        after a gateway restart (#7536).  Returns True if the session
+        existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                self._entries[session_key].suspended = True
+                self._save()
+                return True
+        return False
+
+    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+        """Mark recently-active sessions as suspended.
+
+        Called on gateway startup to prevent sessions that were likely
+        in-flight when the gateway last exited from being blindly resumed
+        (#7536).  Only suspends sessions updated within *max_age_seconds*
+        to avoid resetting long-idle sessions that are harmless to resume.
+        Returns the number of sessions that were suspended.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.suspended and entry.updated_at >= cutoff:
+                    entry.suspended = True
+                    count += 1
+            if count:
+                self._save()
+        return count
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
@@ -880,7 +877,8 @@ class SessionStore:
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
-        old transcript is loaded on the next message.
+        old transcript is loaded on the next message. If the target session was
+        previously ended, re-open it so gateway resume semantics match the CLI.
         """
         db_end_session_id = None
         new_entry = None
@@ -919,6 +917,12 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
 
         return new_entry
 

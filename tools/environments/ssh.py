@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -8,6 +9,13 @@ import tempfile
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.file_sync import (
+    FileSyncManager,
+    iter_sync_files,
+    quoted_mkdir_command,
+    quoted_rm_command,
+    unique_parent_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +51,15 @@ class SSHEnvironment(BaseEnvironment):
         _ensure_ssh_available()
         self._establish_connection()
         self._remote_home = self._detect_remote_home()
-        self._last_sync_time: float = 0  # guarantees first _before_execute syncs
-        self._sync_files()
+
+        self._ensure_remote_dirs()
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            upload_fn=self._scp_upload,
+            delete_fn=self._ssh_delete,
+            bulk_upload_fn=self._ssh_bulk_upload,
+        )
+        self._sync_manager.sync(force=True)
 
         self.init_session()
 
@@ -92,50 +107,130 @@ class SSHEnvironment(BaseEnvironment):
             return "/root"
         return f"/home/{self.user}"
 
-    def _sync_files(self) -> None:
-        """Rsync skills directory and credential files to the remote host."""
-        try:
-            container_base = f"{self._remote_home}/.hermes"
-            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+    # ------------------------------------------------------------------
+    # File sync (via FileSyncManager)
+    # ------------------------------------------------------------------
 
-            rsync_base = ["rsync", "-az", "--timeout=30", "--safe-links"]
-            ssh_opts = f"ssh -o ControlPath={self.control_socket} -o ControlMaster=auto"
-            if self.port != 22:
-                ssh_opts += f" -p {self.port}"
-            if self.key_path:
-                ssh_opts += f" -i {self.key_path}"
-            rsync_base.extend(["-e", ssh_opts])
-            dest_prefix = f"{self.user}@{self.host}"
+    def _ensure_remote_dirs(self) -> None:
+        """Create base ~/.hermes directory tree on remote in one SSH call."""
+        base = f"{self._remote_home}/.hermes"
+        dirs = [base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]
+        cmd = self._build_ssh_command()
+        cmd.append(quoted_mkdir_command(dirs))
+        subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
-            for mount_entry in get_credential_file_mounts():
-                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
-                parent_dir = str(Path(remote_path).parent)
-                mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {parent_dir}")
-                subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
-                cmd = rsync_base + [mount_entry["host_path"], f"{dest_prefix}:{remote_path}"]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
-                    logger.info("SSH: synced credential %s -> %s", mount_entry["host_path"], remote_path)
+    # _get_sync_files provided via iter_sync_files in FileSyncManager init
+
+    def _scp_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via scp over ControlMaster."""
+        parent = str(Path(remote_path).parent)
+        mkdir_cmd = self._build_ssh_command()
+        mkdir_cmd.append(f"mkdir -p {shlex.quote(parent)}")
+        subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
+
+        scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
+        if self.port != 22:
+            scp_cmd.extend(["-P", str(self.port)])
+        if self.key_path:
+            scp_cmd.extend(["-i", self.key_path])
+        scp_cmd.extend([host_path, f"{self.user}@{self.host}:{remote_path}"])
+        result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise RuntimeError(f"scp failed: {result.stderr.strip()}")
+
+    def _ssh_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single tar-over-SSH stream.
+
+        Pipes ``tar c`` on the local side through an SSH connection to
+        ``tar x`` on the remote, transferring all files in one TCP stream
+        instead of spawning a subprocess per file.  Directory creation is
+        batched into a single ``mkdir -p`` call beforehand.
+
+        Typical improvement: ~580 files goes from O(N) scp round-trips
+        to a single streaming transfer.
+        """
+        if not files:
+            return
+
+        parents = unique_parent_dirs(files)
+        if parents:
+            cmd = self._build_ssh_command()
+            cmd.append(quoted_mkdir_command(parents))
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            if result.returncode != 0:
+                raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
+
+        # Symlink staging avoids fragile GNU tar --transform rules.
+        with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            for host_path, remote_path in files:
+                staged = os.path.join(staging, remote_path.lstrip("/"))
+                os.makedirs(os.path.dirname(staged), exist_ok=True)
+                os.symlink(os.path.abspath(host_path), staged)
+
+            tar_cmd = ["tar", "-chf", "-", "-C", staging, "."]
+            ssh_cmd = self._build_ssh_command()
+            ssh_cmd.append("tar xf - -C /")
+
+            tar_proc = subprocess.Popen(
+                tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            try:
+                ssh_proc = subprocess.Popen(
+                    ssh_cmd, stdin=tar_proc.stdout, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            except Exception:
+                tar_proc.kill()
+                tar_proc.wait()
+                raise
+
+            # Allow tar_proc to receive SIGPIPE if ssh_proc exits early
+            tar_proc.stdout.close()
+
+            try:
+                _, ssh_stderr = ssh_proc.communicate(timeout=120)
+                # Use communicate() instead of wait() to drain stderr and
+                # avoid deadlock if tar produces more than PIPE_BUF of errors.
+                tar_stderr_raw = b""
+                if tar_proc.poll() is None:
+                    _, tar_stderr_raw = tar_proc.communicate(timeout=10)
                 else:
-                    logger.debug("SSH: rsync credential failed: %s", result.stderr.strip())
+                    tar_stderr_raw = tar_proc.stderr.read() if tar_proc.stderr else b""
+            except subprocess.TimeoutExpired:
+                tar_proc.kill()
+                ssh_proc.kill()
+                tar_proc.wait()
+                ssh_proc.wait()
+                raise RuntimeError("SSH bulk upload timed out")
 
-            for skills_mount in get_skills_directory_mount(container_base=container_base):
-                remote_path = skills_mount["container_path"]
-                mkdir_cmd = self._build_ssh_command()
-                mkdir_cmd.append(f"mkdir -p {remote_path}")
-                subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=10)
-                cmd = rsync_base + [
-                    skills_mount["host_path"].rstrip("/") + "/",
-                    f"{dest_prefix}:{remote_path}/",
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if result.returncode == 0:
-                    logger.info("SSH: synced skills dir %s -> %s", skills_mount["host_path"], remote_path)
-                else:
-                    logger.debug("SSH: rsync skills dir failed: %s", result.stderr.strip())
-        except Exception as e:
-            logger.debug("SSH: could not sync skills/credentials: %s", e)
+            if tar_proc.returncode != 0:
+                raise RuntimeError(
+                    f"tar create failed (rc={tar_proc.returncode}): "
+                    f"{tar_stderr_raw.decode(errors='replace').strip()}"
+                )
+            if ssh_proc.returncode != 0:
+                raise RuntimeError(
+                    f"tar extract over SSH failed (rc={ssh_proc.returncode}): "
+                    f"{ssh_stderr.decode(errors='replace').strip()}"
+                )
+
+        logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _ssh_delete(self, remote_paths: list[str]) -> None:
+        """Batch-delete remote files in one SSH call."""
+        cmd = self._build_ssh_command()
+        cmd.append(quoted_rm_command(remote_paths))
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
+
+    def _before_execute(self) -> None:
+        """Sync files to remote via FileSyncManager (rate-limited internally)."""
+        self._sync_manager.sync()
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

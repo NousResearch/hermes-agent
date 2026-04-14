@@ -28,11 +28,15 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self._completion_consumed: set = set()
 
     def get(self, session_id):
         if self._sessions:
             return self._sessions.pop(0)
         return None
+
+    def is_completion_consumed(self, session_id):
+        return session_id in self._completion_consumed
 
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
@@ -128,12 +132,16 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
 
     monkeypatch.setattr(GatewayRunner, "_is_user_authorized", tracking_auth)
 
-    # _handle_message will proceed past auth check and eventually fail on
-    # downstream logic. We just need to verify auth is skipped.
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Auth check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not auth_called, (
         "_is_user_authorized should NOT be called for internal events"
@@ -175,13 +183,118 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
     runner.pairing_store.generate_code = tracking_generate
 
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Pairing check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not generate_called, (
         "Pairing code should NOT be generated for internal events"
+    )
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path):
+    """Synthetic completion event should carry user_id and user_name from the watcher."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    watcher = _watcher_dict_with_notify()
+    watcher["user_id"] = "user-42"
+    watcher["user_name"] = "alice"
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.user_id == "user-42"
+    assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
+    """A non-internal event with user_id=None should be silently dropped."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+        user_id=None,
+    )
+    event = MessageEvent(
+        text="service message",
+        source=source,
+        internal=False,
+    )
+
+    result = await runner._handle_message(event)
+
+    # Should return None (dropped) and NOT send any pairing message
+    assert result is None
+    assert adapter.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path):
+    """A message with user_id=None must never call generate_code."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters[Platform.DISCORD] = adapter
+
+    generate_called = False
+    original_generate = runner.pairing_store.generate_code
+
+    def tracking_generate(*args, **kwargs):
+        nonlocal generate_called
+        generate_called = True
+        return original_generate(*args, **kwargs)
+
+    runner.pairing_store.generate_code = tracking_generate
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="456",
+        chat_type="dm",
+        user_id=None,
+    )
+    event = MessageEvent(text="anonymous", source=source, internal=False)
+
+    await runner._handle_message(event)
+
+    assert not generate_called, (
+        "Pairing code should NOT be generated for messages with user_id=None"
     )
 
 

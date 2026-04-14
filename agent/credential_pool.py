@@ -18,12 +18,12 @@ import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _auth_store_lock,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _import_codex_cli_tokens,
+    _write_codex_cli_tokens,
     _load_auth_store,
     _load_provider_state,
     _resolve_kimi_base_url,
@@ -288,6 +288,14 @@ def _iter_custom_providers(config: Optional[dict] = None):
         return
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
+        # Fall back to the v12+ providers dict via the compatibility layer
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return
+    if not custom_providers:
         return
     for entry in custom_providers:
         if not isinstance(entry, dict):
@@ -693,6 +701,14 @@ class CredentialPool:
                         self._replace_entry(synced, updated)
                         self._persist()
                         self._sync_device_code_entry_to_auth_store(updated)
+                        try:
+                            _write_codex_cli_tokens(
+                                updated.access_token,
+                                updated.refresh_token,
+                                last_refresh=updated.last_refresh,
+                            )
+                        except Exception as wexc:
+                            logger.debug("Failed to write refreshed Codex tokens to CLI file (retry): %s", wexc)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Codex retry refresh also failed: %s", retry_exc)
@@ -718,6 +734,17 @@ class CredentialPool:
         # _seed_from_singletons() on the next load_pool() sees fresh state
         # instead of re-seeding stale/consumed tokens.
         self._sync_device_code_entry_to_auth_store(updated)
+        # Write refreshed tokens back to ~/.codex/auth.json so Codex CLI
+        # and VS Code don't hit "refresh_token_reused" on their next refresh.
+        if self.provider == "openai-codex":
+            try:
+                _write_codex_cli_tokens(
+                    updated.access_token,
+                    updated.refresh_token,
+                    last_refresh=updated.last_refresh,
+                )
+            except Exception as wexc:
+                logger.debug("Failed to write refreshed Codex tokens to CLI file: %s", wexc)
         return updated
 
     def _entry_needs_refresh(self, entry: PooledCredential) -> bool:
@@ -738,17 +765,6 @@ class CredentialPool:
             # is enumerated for listing, migration, or selection.
             return False
         return False
-
-    def mark_used(self, entry_id: Optional[str] = None) -> None:
-        """Increment request_count for tracking. Used by least_used strategy."""
-        target_id = entry_id or self._current_id
-        if not target_id:
-            return
-        with self._lock:
-            for idx, entry in enumerate(self._entries):
-                if entry.id == target_id:
-                    self._entries[idx] = replace(entry, request_count=entry.request_count + 1)
-                    return
 
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
@@ -911,11 +927,6 @@ class CredentialPool:
             else:
                 self._active_leases[credential_id] = count - 1
 
-    def active_lease_count(self, credential_id: str) -> int:
-        """Return the number of active leases for a credential."""
-        with self._lock:
-            return self._active_leases.get(credential_id, 0)
-
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._try_refresh_current_unlocked()
@@ -1075,6 +1086,17 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     auth_store = _load_auth_store()
 
     if provider == "anthropic":
+        # Only auto-discover external credentials (Claude Code, Hermes PKCE)
+        # when the user has explicitly configured anthropic as their provider.
+        # Without this gate, auxiliary client fallback chains silently read
+        # ~/.claude/.credentials.json without user consent.  See PR #4210.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("anthropic"):
+                return changed, active_sources
+        except ImportError:
+            pass
+
         from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
 
         for source_name, creds in (
@@ -1082,6 +1104,13 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             ("claude_code", read_claude_code_credentials()),
         ):
             if creds and creds.get("accessToken"):
+                # Check if user explicitly removed this source
+                try:
+                    from hermes_cli.auth import is_source_suppressed
+                    if is_source_suppressed(provider, source_name):
+                        continue
+                except ImportError:
+                    pass
                 active_sources.add(source_name)
                 changed |= _upsert_entry(
                     entries,
@@ -1126,6 +1155,23 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
     elif provider == "openai-codex":
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None
+        # Fallback: import from Codex CLI (~/.codex/auth.json) if Hermes auth
+        # store has no tokens.  This mirrors resolve_codex_runtime_credentials()
+        # so that load_pool() and list_authenticated_providers() detect tokens
+        # that only exist in the Codex CLI shared file.
+        if not (isinstance(tokens, dict) and tokens.get("access_token")):
+            try:
+                from hermes_cli.auth import _import_codex_cli_tokens, _save_codex_tokens
+                cli_tokens = _import_codex_cli_tokens()
+                if cli_tokens:
+                    logger.info("Importing Codex CLI tokens into Hermes auth store.")
+                    _save_codex_tokens(cli_tokens)
+                    # Re-read state after import
+                    auth_store = _load_auth_store()
+                    state = _load_provider_state(auth_store, "openai-codex")
+                    tokens = state.get("tokens") if isinstance(state, dict) else None
+            except Exception as exc:
+                logger.debug("Codex CLI token import failed: %s", exc)
         if isinstance(tokens, dict) and tokens.get("access_token"):
             active_sources.add("device_code")
             changed |= _upsert_entry(

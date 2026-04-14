@@ -27,7 +27,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import re
 import subprocess
 import time
@@ -186,13 +185,24 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery (telegram, discord, etc.)
+        # Cross-platform delivery — any platform with a gateway adapter
         if self.gateway_runner and deliver_type in (
             "telegram",
             "discord",
             "slack",
             "signal",
             "sms",
+            "whatsapp",
+            "matrix",
+            "mattermost",
+            "homeassistant",
+            "email",
+            "dingtalk",
+            "feishu",
+            "wecom",
+            "wecom_callback",
+            "weixin",
+            "bluebubbles",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
@@ -262,7 +272,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 ", ".join(self._dynamic_routes.keys()) or "(none)",
             )
         except Exception as e:
-            logger.warning("[webhook] Failed to reload dynamic routes: %s", e)
+            logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""

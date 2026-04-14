@@ -1,6 +1,7 @@
 """Regression tests for Nous OAuth refresh + agent-key mint interactions."""
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -8,6 +9,80 @@ import httpx
 import pytest
 
 from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_runtime_credentials
+
+
+# =============================================================================
+# _resolve_verify: CA bundle path validation
+# =============================================================================
+
+
+class TestResolveVerifyFallback:
+    """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
+
+    def test_missing_ca_bundle_in_auth_state_falls_back(self):
+        from hermes_cli.auth import _resolve_verify
+
+        result = _resolve_verify(auth_state={
+            "tls": {"insecure": False, "ca_bundle": "/nonexistent/ca-bundle.pem"},
+        })
+        assert result is True
+
+    def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path):
+        from hermes_cli.auth import _resolve_verify
+
+        ca_file = tmp_path / "ca-bundle.pem"
+        ca_file.write_text("fake cert")
+        result = _resolve_verify(auth_state={
+            "tls": {"insecure": False, "ca_bundle": str(ca_file)},
+        })
+        assert result == str(ca_file)
+
+    def test_missing_ssl_cert_file_env_falls_back(self, monkeypatch):
+        from hermes_cli.auth import _resolve_verify
+
+        monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ssl-cert.pem")
+        monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
+        result = _resolve_verify(auth_state={"tls": {}})
+        assert result is True
+
+    def test_missing_hermes_ca_bundle_env_falls_back(self, monkeypatch):
+        from hermes_cli.auth import _resolve_verify
+
+        monkeypatch.setenv("HERMES_CA_BUNDLE", "/nonexistent/hermes-ca.pem")
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        result = _resolve_verify(auth_state={"tls": {}})
+        assert result is True
+
+    def test_insecure_takes_precedence_over_missing_ca(self):
+        from hermes_cli.auth import _resolve_verify
+
+        result = _resolve_verify(
+            insecure=True,
+            auth_state={"tls": {"ca_bundle": "/nonexistent/ca.pem"}},
+        )
+        assert result is False
+
+    def test_no_ca_bundle_returns_true(self, monkeypatch):
+        from hermes_cli.auth import _resolve_verify
+
+        monkeypatch.delenv("HERMES_CA_BUNDLE", raising=False)
+        monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+        result = _resolve_verify(auth_state={"tls": {}})
+        assert result is True
+
+    def test_explicit_ca_bundle_param_missing_falls_back(self):
+        from hermes_cli.auth import _resolve_verify
+
+        result = _resolve_verify(ca_bundle="/nonexistent/explicit-ca.pem")
+        assert result is True
+
+    def test_explicit_ca_bundle_param_valid_is_returned(self, tmp_path):
+        from hermes_cli.auth import _resolve_verify
+
+        ca_file = tmp_path / "explicit-ca.pem"
+        ca_file.write_text("fake cert")
+        result = _resolve_verify(ca_bundle=str(ca_file))
+        assert result == str(ca_file)
 
 
 def _setup_nous_auth(
@@ -52,6 +127,76 @@ def _mint_payload(api_key: str = "agent-key") -> dict:
         "expires_in": 1800,
         "reused": False,
     }
+
+
+def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
+    """get_nous_auth_status() should find Nous credentials in the pool
+    even when the auth store has no Nous provider entry — this is the
+    case when login happened via the dashboard device-code flow which
+    saves to the pool only.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    # Empty auth store — no Nous provider entry
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Seed the credential pool with a Nous entry
+    from agent.credential_pool import PooledCredential, load_pool
+    pool = load_pool("nous")
+    entry = PooledCredential.from_dict("nous", {
+        "access_token": "test-access-token",
+        "refresh_token": "test-refresh-token",
+        "portal_base_url": "https://portal.example.com",
+        "inference_base_url": "https://inference.example.com/v1",
+        "agent_key": "test-agent-key",
+        "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+        "label": "dashboard device_code",
+        "auth_type": "oauth",
+        "source": "manual:dashboard_device_code",
+        "base_url": "https://inference.example.com/v1",
+    })
+    pool.add_entry(entry)
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert "example.com" in str(status.get("portal_base_url", ""))
+
+
+def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
+    """get_nous_auth_status() falls back to auth store when credential
+    pool is empty.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-123")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+
+
+def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch):
+    """get_nous_auth_status() returns logged_in=False when both pool
+    and auth store are empty.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is False
 
 
 def test_refresh_token_persisted_when_mint_returns_insufficient_credits(tmp_path, monkeypatch):

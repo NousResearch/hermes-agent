@@ -54,20 +54,29 @@ class TestAnthropicDotToHyphen:
 
 # ── OpenCode Zen regression ────────────────────────────────────────────
 
-class TestOpenCodeZenDotToHyphen:
-    """OpenCode Zen follows Anthropic convention (dots→hyphens)."""
+class TestOpenCodeZenModelNormalization:
+    """OpenCode Zen preserves dots for most models, but Claude stays hyphenated."""
 
     @pytest.mark.parametrize("model,expected", [
         ("claude-sonnet-4.6", "claude-sonnet-4-6"),
-        ("glm-4.5", "glm-4-5"),
+        ("opencode-zen/claude-opus-4.5", "claude-opus-4-5"),
+        ("glm-4.5", "glm-4.5"),
+        ("glm-5.1", "glm-5.1"),
+        ("gpt-5.4", "gpt-5.4"),
+        ("minimax-m2.5-free", "minimax-m2.5-free"),
+        ("kimi-k2.5", "kimi-k2.5"),
     ])
-    def test_zen_converts_dots(self, model, expected):
+    def test_zen_normalizes_models(self, model, expected):
         result = normalize_model_for_provider(model, "opencode-zen")
         assert result == expected
 
     def test_zen_strips_vendor_prefix(self):
         result = normalize_model_for_provider("opencode-zen/claude-sonnet-4.6", "opencode-zen")
         assert result == "claude-sonnet-4-6"
+
+    def test_zen_strips_vendor_prefix_for_non_claude(self):
+        result = normalize_model_for_provider("opencode-zen/glm-5.1", "opencode-zen")
+        assert result == "glm-5.1"
 
 
 # ── Copilot dot preservation (regression) ──────────────────────────────
@@ -100,6 +109,21 @@ class TestAggregatorProviders:
     def test_vendor_already_present(self):
         result = normalize_model_for_provider("anthropic/claude-sonnet-4.6", "openrouter")
         assert result == "anthropic/claude-sonnet-4.6"
+
+
+class TestIssue6211NativeProviderPrefixNormalization:
+    @pytest.mark.parametrize("model,target_provider,expected", [
+        ("zai/glm-5.1", "zai", "glm-5.1"),
+        ("google/gemini-2.5-pro", "gemini", "google/gemini-2.5-pro"),
+        ("moonshot/kimi-k2.5", "kimi-coding", "kimi-k2.5"),
+        ("anthropic/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
+        ("Qwen/Qwen3.5-397B-A17B", "huggingface", "Qwen/Qwen3.5-397B-A17B"),
+        ("modal/zai-org/GLM-5-FP8", "custom", "modal/zai-org/GLM-5-FP8"),
+    ])
+    def test_native_provider_prefixes_are_only_stripped_on_matching_provider(
+        self, model, target_provider, expected
+    ):
+        assert normalize_model_for_provider(model, target_provider) == expected
 
 
 # ── detect_vendor ──────────────────────────────────────────────────────

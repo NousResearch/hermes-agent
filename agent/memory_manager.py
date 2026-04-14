@@ -28,7 +28,6 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -133,11 +132,6 @@ class MemoryManager:
     def providers(self) -> List[MemoryProvider]:
         """All registered providers in order."""
         return list(self._providers)
-
-    @property
-    def provider_names(self) -> List[str]:
-        """Names of all registered providers."""
-        return [p.name for p in self._providers]
 
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         """Get a provider by name, or None if not registered."""

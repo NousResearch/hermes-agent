@@ -48,4 +48,4 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 
 - **[Personality & SOUL.md](personality.md)** — Fully customizable agent personality. `SOUL.md` is the primary identity file — the first thing in the system prompt — and you can swap in built-in or custom `/personality` presets per session.
 - **[Skins & Themes](skins.md)** — Customize the CLI's visual presentation: banner colors, spinner faces and verbs, response-box labels, branding text, and the tool activity prefix.
-- **[Plugins](plugins.md)** — Add custom tools, hooks, and integrations without modifying core code. Drop a directory into `~/.hermes/plugins/` with a `plugin.yaml` and Python code.
+- **[Plugins](plugins.md)** — Add custom tools, hooks, and integrations without modifying core code. Three plugin types: general plugins (tools/hooks), memory providers (cross-session knowledge), and context engines (alternative context management). Managed via the unified `hermes plugins` interactive UI.

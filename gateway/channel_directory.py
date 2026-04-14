@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 
+_SESSION_DISCOVERY_PLATFORMS = frozenset({
+    "telegram",
+    "whatsapp",
+    "signal",
+    "mattermost",
+    "matrix",
+    "homeassistant",
+    "email",
+    "sms",
+    "dingtalk",
+    "feishu",
+    "wecom",
+    "wecom_callback",
+    "weixin",
+    "bluebubbles",
+})
+
 
 def _normalize_channel_query(value: str) -> str:
     return value.lstrip("#").strip().lower()
@@ -76,13 +93,11 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
-    # Platforms that don't support direct channel enumeration get session-based
-    # discovery automatically.  Skip infrastructure entries that aren't messaging
-    # platforms — everything else falls through to _build_from_sessions().
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
-    for plat in Platform:
-        plat_name = plat.value
-        if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
+    # Platforms without direct channel enumeration rely on session-based
+    # discovery. Keep this allowlist explicit so messaging platforms like
+    # "email" stay covered even when infrastructure platforms are added.
+    for plat_name in sorted(_SESSION_DISCOVERY_PLATFORMS):
+        if plat_name in platforms:
             continue
         platforms[plat_name] = _build_from_sessions(plat_name)
 

@@ -187,26 +187,40 @@ class HomeAssistantAdapter(BasePlatformAdapter):
     async def _cleanup_ws(self) -> None:
         """Close WebSocket and session."""
         if self._ws and not self._ws.closed:
-            await self._ws.close()
+            try:
+                await asyncio.wait_for(self._ws.close(), timeout=1.0)
+            except Exception:
+                response = getattr(self._ws, "_response", None)
+                connection = getattr(response, "connection", None)
+                transport = getattr(connection, "transport", None)
+                if transport is not None:
+                    transport.abort()
         self._ws = None
         if self._session and not self._session.closed:
-            await self._session.close()
+            try:
+                await asyncio.wait_for(self._session.close(), timeout=1.0)
+            except Exception:
+                pass
         self._session = None
 
     async def disconnect(self) -> None:
         """Disconnect from Home Assistant."""
         self._running = False
         if self._listen_task:
-            self._listen_task.cancel()
+            listen_task = self._listen_task
+            listen_task.cancel()
             try:
-                await self._listen_task
-            except asyncio.CancelledError:
+                await asyncio.wait_for(listen_task, timeout=1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
             self._listen_task = None
 
         await self._cleanup_ws()
         if self._rest_session and not self._rest_session.closed:
-            await self._rest_session.close()
+            try:
+                await asyncio.wait_for(self._rest_session.close(), timeout=1.0)
+            except Exception:
+                pass
         self._rest_session = None
         logger.info("[%s] Disconnected", self.name)
 

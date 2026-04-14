@@ -35,7 +35,7 @@ def _adapter_for(server: FakeHAServer, **extra) -> HomeAssistantAdapter:
     config = PlatformConfig(
         enabled=True,
         token=server.token,
-        extra={"url": server.url, **extra},
+        extra={"url": server.url, "watch_all": True, **extra},
     )
     return HomeAssistantAdapter(config)
 

@@ -25,6 +25,7 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import mimetypes
 import os
@@ -948,16 +949,42 @@ class MatrixAdapter(BasePlatformAdapter):
     # Sync loop
     # ------------------------------------------------------------------
 
+    @staticmethod
+    async def _maybe_await(value):
+        """Await *value* when it is awaitable, otherwise return it directly."""
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
         client = self._client
         # Resume from the token stored during the initial sync.
-        next_batch = await client.sync_store.get_next_batch()
+        sync_store = getattr(client, "sync_store", None)
+        next_batch = None
+        if sync_store is not None and hasattr(sync_store, "get_next_batch"):
+            stored_batch = await self._maybe_await(sync_store.get_next_batch())
+            if isinstance(stored_batch, str) and stored_batch:
+                next_batch = stored_batch
         while not self._closing:
             try:
-                sync_data = await client.sync(
-                    since=next_batch, timeout=30000,
-                )
+                sync_kwargs = {"timeout": 30000}
+                if next_batch:
+                    sync_kwargs["since"] = next_batch
+                sync_data = await client.sync(**sync_kwargs)
+
+                try:
+                    from nio import SyncError
+                except Exception:
+                    SyncError = None  # type: ignore[assignment]
+                if SyncError is not None and isinstance(sync_data, SyncError):
+                    err_str = str(getattr(sync_data, "message", sync_data)).lower()
+                    if "m_unknown_token" in err_str:
+                        logger.error(
+                            "Matrix: permanent auth error: %s — stopping sync",
+                            getattr(sync_data, "message", sync_data),
+                        )
+                        return
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
@@ -969,7 +996,8 @@ class MatrixAdapter(BasePlatformAdapter):
                     nb = sync_data.get("next_batch")
                     if nb:
                         next_batch = nb
-                        await client.sync_store.put_next_batch(nb)
+                        if sync_store is not None and hasattr(sync_store, "put_next_batch"):
+                            await self._maybe_await(sync_store.put_next_batch(nb))
 
                     # Dispatch events to registered handlers so that
                     # _on_room_message / _on_reaction / _on_invite fire.

@@ -17,7 +17,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
-RUN useradd -u 10000 -m -d /opt/data hermes
+RUN useradd -u 10000 -m -d /opt/data -s /bin/bash hermes
 
 # Copy Node.js, uv, and gosu from upstream images instead of installing them in-place.
 COPY --from=node_runtime /usr/local/bin/node /usr/local/bin/node
@@ -56,10 +56,13 @@ USER hermes
 
 # Configure the optional Python extras to install.
 ARG EXTRAS="messaging,cron,cli,modal,tts-premium,voice,pty,honcho,mcp,homeassistant,acp,slack"
+ENV VIRTUAL_ENV=/opt/hermes/.venv
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
 
 # Copy the application source as `hermes` and install Hermes into the virtual environment.
 COPY . .
-RUN uv venv && \
+RUN uv venv $VIRTUAL_ENV && \
     uv pip install --no-cache -e ".[$EXTRAS]"
 
 USER root

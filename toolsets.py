@@ -420,14 +420,22 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
 
     registry_toolset = name
     description = f"Plugin toolset: {name}"
+    alias_target = registry.get_toolset_alias_target(name)
 
     if name not in _get_plugin_toolset_names():
-        registry_toolset = _get_mcp_toolset_aliases().get(name)
+        registry_toolset = alias_target
         if not registry_toolset:
             return None
         description = f"MCP server '{name}' tools"
-    elif name.startswith("mcp-"):
-        description = f"MCP server '{name[4:]}' tools"
+    else:
+        reverse_aliases = {
+            canonical: alias
+            for alias, canonical in _get_registry_toolset_aliases().items()
+            if alias not in TOOLSETS
+        }
+        alias = reverse_aliases.get(name)
+        if alias:
+            description = f"MCP server '{alias}' tools"
 
     return {
         "description": description,
@@ -525,16 +533,13 @@ def _get_plugin_toolset_names() -> Set[str]:
         return set()
 
 
-def _get_mcp_toolset_aliases() -> Dict[str, str]:
-    """Map raw MCP server names to their live registry toolset names."""
-    aliases = {}
-    for toolset_name in _get_plugin_toolset_names():
-        if not toolset_name.startswith("mcp-"):
-            continue
-        alias = toolset_name[4:]
-        if alias and alias not in TOOLSETS:
-            aliases[alias] = toolset_name
-    return aliases
+def _get_registry_toolset_aliases() -> Dict[str, str]:
+    """Return explicit toolset aliases registered in the live registry."""
+    try:
+        from tools.registry import registry
+        return registry.get_registered_toolset_aliases()
+    except Exception:
+        return {}
 
 
 def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
@@ -547,12 +552,13 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
         Dict: All toolset definitions
     """
     result = dict(TOOLSETS)
+    aliases = _get_registry_toolset_aliases()
     for ts_name in _get_plugin_toolset_names():
         display_name = ts_name
-        if ts_name.startswith("mcp-"):
-            alias = ts_name[4:]
-            if alias and alias not in TOOLSETS:
+        for alias, canonical in aliases.items():
+            if canonical == ts_name and alias not in TOOLSETS:
                 display_name = alias
+                break
         if display_name in result:
             continue
         toolset = get_toolset(display_name)
@@ -571,13 +577,14 @@ def get_toolset_names() -> List[str]:
         List[str]: List of toolset names
     """
     names = set(TOOLSETS.keys())
+    aliases = _get_registry_toolset_aliases()
     for ts_name in _get_plugin_toolset_names():
-        if ts_name.startswith("mcp-"):
-            alias = ts_name[4:]
-            if alias and alias not in TOOLSETS:
+        for alias, canonical in aliases.items():
+            if canonical == ts_name and alias not in TOOLSETS:
                 names.add(alias)
-                continue
-        names.add(ts_name)
+                break
+        else:
+            names.add(ts_name)
     return sorted(names)
 
 
@@ -600,7 +607,7 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in _get_plugin_toolset_names():
         return True
-    return name in _get_mcp_toolset_aliases()
+    return name in _get_registry_toolset_aliases()
 
 
 def create_custom_toolset(

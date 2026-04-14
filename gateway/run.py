@@ -2918,6 +2918,51 @@ class GatewayRunner:
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
+
+        if not command:
+            try:
+                from agent.skill_commands import (
+                    build_skill_invocation_message,
+                    get_skill_commands,
+                    parse_text_skill_invocation,
+                    resolve_text_skill_invocation,
+                )
+
+                parsed_skill = parse_text_skill_invocation(event.text)
+                if parsed_skill is not None:
+                    alias = parsed_skill.get("alias", "")
+                    if not alias:
+                        return (
+                            "Skill activation needs a skill name after the prefix. "
+                            "Example: `skill weather Moscow` or `скилл погода Москва`."
+                        )
+
+                    resolved = resolve_text_skill_invocation(event.text)
+                    if resolved is None:
+                        return (
+                            f"Unknown skill alias `{alias}`. "
+                            f"Try /commands or /skills to see available skills."
+                        )
+
+                    cmd_key, user_instruction = resolved
+                    skill_cmds = get_skill_commands()
+                    _skill_name = skill_cmds.get(cmd_key, {}).get("name", "")
+                    _plat = source.platform.value if source.platform else None
+                    if _plat and _skill_name:
+                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                        if _skill_name in _get_plat_disabled(platform=_plat):
+                            return (
+                                f"The **{_skill_name}** skill is disabled for {_plat}.\n"
+                                f"Enable it with: `hermes skills config`"
+                            )
+
+                    msg = build_skill_invocation_message(
+                        cmd_key, user_instruction, task_id=_quick_key
+                    )
+                    if msg:
+                        event.text = msg
+            except Exception as e:
+                logger.debug("Text skill activation check failed (non-fatal): %s", e)
         
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger

@@ -19,6 +19,84 @@ _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_TEXT_SKILL_ACTIVATORS = {"skill", "скилл", "скил"}
+
+
+def _normalize_text_skill_alias(value: str) -> str:
+    """Normalize a text alias for explicit skill activation matching."""
+    return " ".join(
+        str(value or "")
+        .strip()
+        .lower()
+        .replace("ё", "е")
+        .replace("_", "-")
+        .split()
+    )
+
+
+def _extract_frontmatter_aliases(frontmatter: dict[str, Any], skill_name: str) -> list[str]:
+    """Return deduplicated explicit text aliases from top-level frontmatter.
+
+    The canonical skill name is always included so text activation works even
+    when ``aliases`` is omitted.
+    """
+    aliases: list[str] = [str(skill_name or "").strip()]
+    raw_aliases = frontmatter.get("aliases")
+    if isinstance(raw_aliases, str):
+        aliases.append(raw_aliases)
+    elif isinstance(raw_aliases, list):
+        aliases.extend(str(item) for item in raw_aliases if isinstance(item, str))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for alias in aliases:
+        cleaned = str(alias or "").strip()
+        normalized = _normalize_text_skill_alias(cleaned)
+        if not cleaned or not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(cleaned)
+    return result
+
+
+def parse_text_skill_invocation(message: str) -> dict[str, str] | None:
+    """Parse explicit voice/text-friendly skill activation.
+
+    Supports messages that begin with a dedicated activator, e.g.
+    ``skill weather Moscow`` or ``скилл погода Москва``.
+    """
+    raw = str(message or "").strip()
+    if not raw:
+        return None
+    parts = raw.split(maxsplit=2)
+    if not parts:
+        return None
+    activator = _normalize_text_skill_alias(parts[0])
+    if activator not in _TEXT_SKILL_ACTIVATORS:
+        return None
+    alias = parts[1].strip() if len(parts) > 1 else ""
+    instruction = parts[2].strip() if len(parts) > 2 else ""
+    return {
+        "activator": parts[0],
+        "alias": alias,
+        "alias_normalized": _normalize_text_skill_alias(alias),
+        "user_instruction": instruction,
+    }
+
+
+def resolve_text_skill_invocation(message: str) -> tuple[str, str] | None:
+    """Resolve an explicit text skill invocation to ``(/cmd-key, args)``."""
+    parsed = parse_text_skill_invocation(message)
+    if not parsed:
+        return None
+    alias = parsed.get("alias_normalized") or ""
+    if not alias:
+        return None
+    for cmd_key, info in get_skill_commands().items():
+        aliases = info.get("aliases_normalized") or []
+        if alias in aliases:
+            return cmd_key, parsed.get("user_instruction", "")
+    return None
 
 
 def build_plan_path(
@@ -240,6 +318,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             if line and not line.startswith('#'):
                                 description = line[:80]
                                 break
+                    aliases = _extract_frontmatter_aliases(frontmatter, name)
                     seen_names.add(name)
                     # Normalize to hyphen-separated slug, stripping
                     # non-alnum chars (e.g. +, /) to avoid invalid
@@ -252,6 +331,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
+                        "aliases": aliases,
+                        "aliases_normalized": [
+                            _normalize_text_skill_alias(alias) for alias in aliases
+                        ],
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }

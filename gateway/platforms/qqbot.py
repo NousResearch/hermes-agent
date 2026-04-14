@@ -67,6 +67,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -218,6 +219,12 @@ class QQAdapter(BasePlatformAdapter):
             logger.warning("[%s] %s", self.name, message)
             return False
 
+        # Prevent duplicate connections with the same credentials
+        if not self._acquire_platform_lock(
+            "qqbot-appid", self._app_id, "QQBot app ID"
+        ):
+            return False
+
         try:
             self._http_client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
@@ -242,6 +249,7 @@ class QQAdapter(BasePlatformAdapter):
             self._set_fatal_error("qq_connect_error", message, retryable=True)
             logger.error("[%s] %s", self.name, message, exc_info=True)
             await self._cleanup()
+            self._release_platform_lock()
             return False
 
     async def disconnect(self) -> None:
@@ -266,6 +274,7 @@ class QQAdapter(BasePlatformAdapter):
             self._heartbeat_task = None
 
         await self._cleanup()
+        self._release_platform_lock()
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup(self) -> None:
@@ -1523,7 +1532,11 @@ class QQAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a text or markdown message to a QQ user or group."""
+        """Send a text or markdown message to a QQ user or group.
+
+        Applies format_message(), splits long messages via truncate_message(),
+        and retries transient failures with exponential backoff.
+        """
         del metadata
 
         if not self.is_connected:
@@ -1532,24 +1545,53 @@ class QQAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True)
 
-        try:
-            # Determine routing
-            chat_type = self._guess_chat_type(chat_id)
-            is_reply = bool(reply_to)
+        formatted = self.format_message(content)
+        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
-            if chat_type == "c2c":
-                return await self._send_c2c_text(chat_id, content, reply_to)
-            elif chat_type == "group":
-                return await self._send_group_text(chat_id, content, reply_to)
-            elif chat_type == "guild":
-                return await self._send_guild_text(chat_id, content, reply_to)
-            else:
-                return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
-        except asyncio.TimeoutError:
-            return SendResult(success=False, error="Timeout sending message to QQ")
-        except Exception as exc:
-            logger.error("[%s] Send failed: %s", self.name, exc)
-            return SendResult(success=False, error=str(exc))
+        last_result = SendResult(success=False, error="No chunks")
+        for chunk in chunks:
+            last_result = await self._send_chunk(chat_id, chunk, reply_to)
+            if not last_result.success:
+                return last_result
+            # Only reply_to the first chunk
+            reply_to = None
+        return last_result
+
+    async def _send_chunk(
+        self, chat_id: str, content: str, reply_to: Optional[str] = None,
+    ) -> SendResult:
+        """Send a single chunk with retry + exponential backoff."""
+        last_exc: Optional[Exception] = None
+        chat_type = self._guess_chat_type(chat_id)
+
+        for attempt in range(3):
+            try:
+                if chat_type == "c2c":
+                    return await self._send_c2c_text(chat_id, content, reply_to)
+                elif chat_type == "group":
+                    return await self._send_group_text(chat_id, content, reply_to)
+                elif chat_type == "guild":
+                    return await self._send_guild_text(chat_id, content, reply_to)
+                else:
+                    return SendResult(success=False, error=f"Unknown chat type for {chat_id}")
+            except Exception as exc:
+                last_exc = exc
+                err = str(exc).lower()
+                # Permanent errors — don't retry
+                if any(k in err for k in ("invalid", "forbidden", "not found", "bad request")):
+                    break
+                # Transient — back off and retry
+                if attempt < 2:
+                    delay = 1.0 * (2 ** attempt)
+                    logger.warning("[%s] send retry %d/3 after %.1fs: %s",
+                                   self.name, attempt + 1, delay, exc)
+                    await asyncio.sleep(delay)
+
+        error_msg = str(last_exc) if last_exc else "Unknown error"
+        logger.error("[%s] Send failed: %s", self.name, error_msg)
+        retryable = not any(k in error_msg.lower()
+                            for k in ("invalid", "forbidden", "not found"))
+        return SendResult(success=False, error=error_msg, retryable=retryable)
 
     async def _send_c2c_text(
         self, openid: str, content: str, reply_to: Optional[str] = None
@@ -1824,26 +1866,11 @@ class QQAdapter(BasePlatformAdapter):
         """Format message for QQ.
 
         When markdown_support is enabled, content is sent as-is (QQ renders it).
-        When disabled, strip common Markdown patterns for plain-text display.
+        When disabled, strip markdown via shared helper (same as BlueBubbles/SMS).
         """
         if self._markdown_support:
             return content
-
-        # Strip markdown formatting for plain text
-        text = content
-        # Bold/italic/strikethrough
-        import re
-        text = re.sub(r'\*{1,2}([^*]+)\*{1,2}', r'\1', text)
-        text = re.sub(r'_{1,2}([^_]+)_{1,2}', r'\1', text)
-        text = re.sub(r'~~([^~]+)~~', r'\1', text)
-        # Code blocks
-        text = re.sub(r'```[\s\S]*?```', lambda m: m.group(0).split('\n', 1)[-1].rsplit('```', 1)[0] if '\n' in m.group(0) else m.group(0).replace('`', ''), text)
-        text = re.sub(r'`([^`]+)`', r'\1', text)
-        # Links
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'\1 (\2)', text)
-        # Headers
-        text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-        return text
+        return strip_markdown(content)
 
     # ------------------------------------------------------------------
     # Chat info

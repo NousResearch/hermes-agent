@@ -1391,6 +1391,65 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    async def _notify_active_sessions_of_shutdown(self) -> None:
+        """Send a notification to every chat with an active agent.
+
+        Called at the very start of stop() — adapters are still connected so
+        messages can be delivered.  Best-effort: individual send failures are
+        logged and swallowed so they never block the shutdown sequence.
+        """
+        active = self._snapshot_running_agents()
+        if not active:
+            return
+
+        action = "restarting" if self._restart_requested else "shutting down"
+        hint = (
+            "Your current task will be interrupted. "
+            "Use /retry after restart to continue."
+            if self._restart_requested
+            else "Your current task will be interrupted."
+        )
+        msg = f"⚠️ Gateway {action} — {hint}"
+
+        notified: set = set()
+        for session_key in active:
+            # Parse platform + chat_id from the session key.
+            # Format: agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]
+            parts = session_key.split(":")
+            if len(parts) < 5:
+                continue
+            platform_str = parts[2]
+            chat_id = parts[4]
+
+            # Deduplicate: one notification per chat, even if multiple
+            # sessions (different users/threads) share the same chat.
+            dedup_key = (platform_str, chat_id)
+            if dedup_key in notified:
+                continue
+
+            try:
+                platform = Platform(platform_str)
+                adapter = self.adapters.get(platform)
+                if not adapter:
+                    continue
+
+                # Include thread_id if present so the message lands in the
+                # correct forum topic / thread.
+                thread_id = parts[5] if len(parts) > 5 else None
+                metadata = {"thread_id": thread_id} if thread_id else None
+
+                await adapter.send(chat_id, msg, metadata=metadata)
+                notified.add(dedup_key)
+                logger.info(
+                    "Sent shutdown notification to %s:%s",
+                    platform_str, chat_id,
+                )
+            except Exception as e:
+                logger.debug(
+                    "Failed to send shutdown notification to %s:%s: %s",
+                    platform_str, chat_id, e,
+                )
+
     def _finalize_shutdown_agents(self, active_agents: Dict[str, Any]) -> None:
         for agent in active_agents.values():
             try:
@@ -2018,6 +2077,10 @@ class GatewayRunner:
             self._running = False
             self._draining = True
 
+            # Notify all chats with active agents BEFORE draining.
+            # Adapters are still connected here, so messages can be sent.
+            await self._notify_active_sessions_of_shutdown()
+
             timeout = self._restart_drain_timeout
             active_agents, timed_out = await self._drain_active_agents(timeout)
             if timed_out:
@@ -2088,12 +2151,23 @@ class GatewayRunner:
 
             # Write a clean-shutdown marker so the next startup knows this
             # wasn't a crash.  suspend_recently_active() only needs to run
-            # after unexpected exits — graceful shutdowns already drain
-            # active agents, so there's no stuck-session risk.
-            try:
-                (_hermes_home / ".clean_shutdown").touch()
-            except Exception:
-                pass
+            # after unexpected exits.  However, if the drain timed out and
+            # agents were force-interrupted, their sessions may be in an
+            # incomplete state (trailing tool response, no final assistant
+            # message).  Skip the marker in that case so the next startup
+            # suspends those sessions — giving users a clean slate instead
+            # of resuming a half-finished tool loop.
+            if not timed_out:
+                try:
+                    (_hermes_home / ".clean_shutdown").touch()
+                except Exception:
+                    pass
+            else:
+                logger.info(
+                    "Skipping .clean_shutdown marker — drain timed out with "
+                    "interrupted agents; next startup will suspend recently "
+                    "active sessions."
+                )
 
             if self._restart_requested and self._restart_via_service:
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE

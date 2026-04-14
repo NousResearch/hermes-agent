@@ -945,6 +945,7 @@ setup_path() {
     # which is always bash when piped from curl).
     if ! echo "$PATH" | tr ':' '\n' | grep -q "^$command_link_dir$"; then
         SHELL_CONFIGS=()
+        IS_FISH=false
         LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
         case "$LOGIN_SHELL" in
             zsh)
@@ -960,6 +961,13 @@ setup_path() {
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
                 [ -f "$HOME/.bash_profile" ] && SHELL_CONFIGS+=("$HOME/.bash_profile")
                 ;;
+            fish)
+                # fish uses ~/.config/fish/config.fish and fish_add_path — not export PATH=
+                IS_FISH=true
+                FISH_CONFIG="$HOME/.config/fish/config.fish"
+                mkdir -p "$(dirname "$FISH_CONFIG")"
+                touch "$FISH_CONFIG"
+                ;;
             *)
                 [ -f "$HOME/.bashrc" ] && SHELL_CONFIGS+=("$HOME/.bashrc")
                 [ -f "$HOME/.zshrc" ] && SHELL_CONFIGS+=("$HOME/.zshrc")
@@ -967,7 +975,7 @@ setup_path() {
         esac
         # Also ensure ~/.profile has it (sourced by login shells on
         # Ubuntu/Debian/WSL even when ~/.bashrc is skipped)
-        [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
+        [ "$IS_FISH" = "false" ] && [ -f "$HOME/.profile" ] && SHELL_CONFIGS+=("$HOME/.profile")
 
         PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
 
@@ -980,7 +988,17 @@ setup_path() {
             fi
         done
 
-        if [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
+        # fish uses fish_add_path instead of export PATH=...
+        if [ "$IS_FISH" = "true" ]; then
+            if ! grep -q 'fish_add_path.*\.local/bin' "$FISH_CONFIG" 2>/dev/null; then
+                echo "" >> "$FISH_CONFIG"
+                echo "# Hermes Agent — ensure ~/.local/bin is on PATH" >> "$FISH_CONFIG"
+                echo 'fish_add_path "$HOME/.local/bin"' >> "$FISH_CONFIG"
+                log_success "Added ~/.local/bin to PATH in $FISH_CONFIG"
+            fi
+        fi
+
+        if [ "$IS_FISH" = "false" ] && [ ${#SHELL_CONFIGS[@]} -eq 0 ]; then
             log_warn "Could not detect shell config file to add ~/.local/bin to PATH"
             log_info "Add manually: $PATH_LINE"
         fi
@@ -1315,6 +1333,8 @@ print_success() {
             echo "   source ~/.zshrc"
         elif [ "$LOGIN_SHELL" = "bash" ]; then
             echo "   source ~/.bashrc"
+        elif [ "$LOGIN_SHELL" = "fish" ]; then
+            echo "   source ~/.config/fish/config.fish"
         else
             echo "   source ~/.bashrc   # or ~/.zshrc"
         fi

@@ -4428,20 +4428,12 @@ def cmd_completion(args, parser=None):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
     shell = getattr(args, "shell", "bash")
-    if parser is not None:
-        if shell == "zsh":
-            print(generate_zsh(parser))
-        elif shell == "fish":
-            print(generate_fish(parser))
-        else:
-            print(generate_bash(parser))
+    if shell == "zsh":
+        print(generate_zsh(parser))
+    elif shell == "fish":
+        print(generate_fish(parser))
     else:
-        # Fallback: parser not available (e.g. called outside main())
-        from hermes_cli.profiles import generate_bash_completion, generate_zsh_completion
-        if shell == "zsh":
-            print(generate_zsh_completion())
-        else:
-            print(generate_bash_completion())
+        print(generate_bash(parser))
 
 
 def cmd_logs(args):

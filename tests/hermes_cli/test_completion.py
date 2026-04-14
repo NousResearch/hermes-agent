@@ -20,6 +20,7 @@ def _make_parser() -> argparse.ArgumentParser:
     """Build a minimal parser that mirrors the real hermes structure."""
     p = argparse.ArgumentParser(prog="hermes")
     p.add_argument("--version", "-V", action="store_true")
+    p.add_argument("-p", "--profile", help="Profile name")
     sub = p.add_subparsers(dest="command")
 
     chat = sub.add_parser("chat", help="Interactive chat with the agent")
@@ -39,6 +40,17 @@ def _make_parser() -> argparse.ArgumentParser:
     sess_sub.add_parser("list", help="List sessions")
     sess_sub.add_parser("delete", help="Delete a session")
 
+    prof = sub.add_parser("profile", help="Manage profiles")
+    prof_sub = prof.add_subparsers(dest="profile_command")
+    prof_sub.add_parser("list", help="List profiles")
+    prof_sub.add_parser("use", help="Switch to a profile")
+    prof_sub.add_parser("create", help="Create a new profile")
+    prof_sub.add_parser("delete", help="Delete a profile")
+    prof_sub.add_parser("show", help="Show profile details")
+    prof_sub.add_parser("alias", help="Set profile alias")
+    prof_sub.add_parser("rename", help="Rename a profile")
+    prof_sub.add_parser("export", help="Export a profile")
+
     sub.add_parser("version", help="Show version")
 
     return p
@@ -51,7 +63,7 @@ def _make_parser() -> argparse.ArgumentParser:
 class TestWalk:
     def test_top_level_subcommands_extracted(self):
         tree = _walk(_make_parser())
-        assert set(tree["subcommands"].keys()) == {"chat", "gateway", "sessions", "version"}
+        assert set(tree["subcommands"].keys()) == {"chat", "gateway", "sessions", "profile", "version"}
 
     def test_nested_subcommands_extracted(self):
         tree = _walk(_make_parser())
@@ -187,3 +199,73 @@ class TestSubcommandDrift:
         }
         missing = required - defined
         assert not missing, f"Missing from _SUBCOMMANDS: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# 6. Profile completion (regression prevention)
+# ---------------------------------------------------------------------------
+
+class TestProfileCompletion:
+    """Ensure profile name completion is present in all shell outputs."""
+
+    def test_bash_has_profiles_helper(self):
+        out = generate_bash(_make_parser())
+        assert "_hermes_profiles()" in out
+        assert 'profiles_dir="$HOME/.hermes/profiles"' in out
+
+    def test_bash_completes_profiles_after_p_flag(self):
+        out = generate_bash(_make_parser())
+        assert '"-p"' in out or "== \"-p\"" in out
+        assert '"--profile"' in out or '== "--profile"' in out
+        assert "_hermes_profiles" in out
+
+    def test_bash_profile_subcommand_has_action_completion(self):
+        out = generate_bash(_make_parser())
+        assert "use|delete|show|alias|rename|export)" in out
+
+    def test_bash_profile_actions_complete_profile_names(self):
+        """After 'hermes profile use', complete with profile names."""
+        out = generate_bash(_make_parser())
+        # The profile case should have _hermes_profiles for name-taking actions
+        lines = out.split("\n")
+        in_profile_case = False
+        has_profiles_in_action = False
+        for line in lines:
+            if "profile)" in line:
+                in_profile_case = True
+            if in_profile_case and "_hermes_profiles" in line:
+                has_profiles_in_action = True
+                break
+        assert has_profiles_in_action, "profile actions should complete with _hermes_profiles"
+
+    def test_zsh_has_profiles_helper(self):
+        out = generate_zsh(_make_parser())
+        assert "_hermes_profiles()" in out
+        assert "$HOME/.hermes/profiles" in out
+
+    def test_zsh_has_profile_flag_completion(self):
+        out = generate_zsh(_make_parser())
+        assert "--profile" in out
+        assert "_hermes_profiles" in out
+
+    def test_zsh_profile_actions_complete_names(self):
+        out = generate_zsh(_make_parser())
+        assert "use|delete|show|alias|rename|export)" in out
+
+    def test_fish_has_profiles_helper(self):
+        out = generate_fish(_make_parser())
+        assert "__hermes_profiles" in out
+        assert "$HOME/.hermes/profiles" in out
+
+    def test_fish_has_profile_flag_completion(self):
+        out = generate_fish(_make_parser())
+        assert "-s p -l profile" in out
+        assert "(__hermes_profiles)" in out
+
+    def test_fish_profile_actions_complete_names(self):
+        out = generate_fish(_make_parser())
+        # Should have profile name completion for actions like use, delete, etc.
+        assert "__hermes_profiles" in out
+        count = out.count("(__hermes_profiles)")
+        # At least the -p flag + the profile action completions
+        assert count >= 2, f"Expected >=2 profile completion entries, got {count}"

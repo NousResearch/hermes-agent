@@ -1455,6 +1455,17 @@ def get_python_path() -> str:
             venv_python = venv / "bin" / "python"
         if venv_python.exists():
             return str(venv_python)
+    
+    # Fallback: use PROJECT_ROOT/venv/bin/python (same logic as generate_systemd_unit)
+    # This is more reliable than sys.executable when running under uv.
+    fallback_venv = PROJECT_ROOT / "venv"
+    if is_windows():
+        fallback_python = fallback_venv / "Scripts" / "python.exe"
+    else:
+        fallback_python = fallback_venv / "bin" / "python"
+    if fallback_python.exists():
+        return str(fallback_python)
+    
     return sys.executable
 
 

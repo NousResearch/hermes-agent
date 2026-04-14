@@ -1,42 +1,39 @@
-import { Ansi, Box, Text } from '@hermes/ink'
+import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 import { LONG_MSG, ROLE } from '../constants.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, thinkingPreview, userDisplay } from '../lib/text.js'
+import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, userDisplay } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { Msg, ThinkingMode } from '../types.js'
-
+import type { DetailsMode, Msg } from '../types.js'
 import { Md } from './markdown.js'
 import { ToolTrail } from './thinking.js'
 
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
-  thinkingMode = 'truncated',
+  detailsMode = 'collapsed',
   msg,
   t
 }: {
   cols: number
   compact?: boolean
-  thinkingMode?: ThinkingMode
+  detailsMode?: DetailsMode
   msg: Msg
   t: Theme
 }) {
   if (msg.kind === 'trail' && msg.tools?.length) {
-    return (
+    return detailsMode === 'hidden' ? null : (
       <Box flexDirection="column" marginTop={1}>
-        <ToolTrail t={t} thinkingMode={thinkingMode} trail={msg.tools} />
+        <ToolTrail detailsMode={detailsMode} t={t} trail={msg.tools} />
       </Box>
     )
   }
 
   if (msg.role === 'tool') {
-    const preview = compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14))
-
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
         <Text color={t.color.dim} wrap="truncate-end">
-          {preview || '(empty tool result)'}
+          {compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14)) || '(empty tool result)'}
         </Text>
       </Box>
     )
@@ -44,33 +41,19 @@ export const MessageLine = memo(function MessageLine({
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
   const thinking = msg.thinking?.replace(/\n/g, ' ').trim() ?? ''
-  const preview = thinkingPreview(thinking, thinkingMode, Math.min(96, Math.max(32, cols - 18)))
-  const showThinkingPreview = Boolean(preview && !msg.tools?.length)
+  const showDetails = detailsMode !== 'hidden' && (Boolean(msg.tools?.length) || Boolean(thinking))
 
   const content = (() => {
-    if (msg.kind === 'slash') {
-      return <Text color={t.color.dim}>{msg.text}</Text>
-    }
-
-    if (msg.role !== 'user' && hasAnsi(msg.text)) {
-      return <Ansi>{msg.text}</Ansi>
-    }
-
-    if (msg.role === 'assistant') {
-      return <Md compact={compact} t={t} text={msg.text} />
-    }
+    if (msg.kind === 'slash') return <Text color={t.color.dim}>{msg.text}</Text>
+    if (msg.role !== 'user' && hasAnsi(msg.text)) return <Ansi>{msg.text}</Ansi>
+    if (msg.role === 'assistant') return <Md compact={compact} t={t} text={msg.text} />
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
-
       return (
         <Text color={body}>
           {head}
-
-          <Text color={t.color.dim} dimColor>
-            [long message]
-          </Text>
-
+          <Text color={t.color.dim} dimColor>[long message]</Text>
           {rest.join('')}
         </Text>
       )
@@ -85,25 +68,16 @@ export const MessageLine = memo(function MessageLine({
       marginBottom={msg.role === 'user' ? 1 : 0}
       marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}
     >
-      {msg.tools?.length ? (
+      {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
-          <ToolTrail reasoning={thinking} t={t} thinkingMode={thinkingMode} trail={msg.tools} />
+          <ToolTrail detailsMode={detailsMode} reasoning={thinking} t={t} trail={msg.tools} />
         </Box>
-      ) : null}
-
-      {showThinkingPreview && (
-        <Text color={t.color.dim} dimColor {...(thinkingMode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
-          {'└ '}
-          {preview}
-        </Text>
       )}
 
       <Box>
-        <Box flexShrink={0} width={3}>
-          <Text bold={msg.role === 'user'} color={prefix}>
-            {glyph}{' '}
-          </Text>
-        </Box>
+        <NoSelect flexShrink={0} fromLeftEdge width={3}>
+          <Text bold={msg.role === 'user'} color={prefix}>{glyph}{' '}</Text>
+        </NoSelect>
 
         <Box width={Math.max(20, cols - 5)}>{content}</Box>
       </Box>

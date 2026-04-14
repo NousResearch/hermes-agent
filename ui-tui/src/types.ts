@@ -33,6 +33,7 @@ export interface Msg {
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
+export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
 export interface SessionInfo {
@@ -76,20 +77,6 @@ export interface PanelSection {
   rows?: [string, string][]
   text?: string
   title?: string
-}
-
-export type PasteKind = 'code' | 'log' | 'text'
-export type PasteMode = 'attach' | 'excerpt' | 'inline'
-
-export interface PendingPaste {
-  charCount: number
-  createdAt: number
-  id: number
-  kind: PasteKind
-  lineCount: number
-  mode: PasteMode
-  text: string
-  tokenCount: number
 }
 
 export interface SlashCatalog {

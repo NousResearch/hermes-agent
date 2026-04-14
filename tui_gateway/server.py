@@ -1499,6 +1499,42 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5001, str(e))
 
+    if key == "details_mode":
+        nv = str(value or "").strip().lower()
+        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
+        if nv not in allowed_dm:
+            return _err(rid, 4002, f"unknown details_mode: {value}")
+        _write_config_key("display.details_mode", nv)
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "thinking_mode":
+        nv = str(value or "").strip().lower()
+        allowed_tm = frozenset({"collapsed", "truncated", "full"})
+        if nv not in allowed_tm:
+            return _err(rid, 4002, f"unknown thinking_mode: {value}")
+        _write_config_key("display.thinking_mode", nv)
+        # Backward compatibility bridge: keep details_mode aligned.
+        _write_config_key("display.details_mode", "expanded" if nv == "full" else "collapsed")
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key in ("compact", "statusbar"):
+        raw = str(value or "").strip().lower()
+        cfg0 = _load_cfg()
+        d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
+        def_key = "tui_compact" if key == "compact" else "tui_statusbar"
+        cur_b = bool(d0.get(def_key, False if key == "compact" else True))
+        if raw in ("", "toggle"):
+            nv_b = not cur_b
+        elif raw == "on":
+            nv_b = True
+        elif raw == "off":
+            nv_b = False
+        else:
+            return _err(rid, 4002, f"unknown {key} value: {value}")
+        _write_config_key(f"display.{def_key}", nv_b)
+        out = "on" if nv_b else "off"
+        return _ok(rid, {"key": key, "value": out})
+
     if key in ("prompt", "personality", "skin"):
         try:
             cfg = _load_cfg()
@@ -1562,6 +1598,27 @@ def _(rid, params: dict) -> dict:
         effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
         display = "show" if bool(cfg.get("display", {}).get("show_reasoning", False)) else "hide"
         return _ok(rid, {"value": effort, "display": display})
+    if key == "details_mode":
+        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
+        raw = str(_load_cfg().get("display", {}).get("details_mode", "collapsed") or "collapsed").strip().lower()
+        nv = raw if raw in allowed_dm else "collapsed"
+        return _ok(rid, {"value": nv})
+    if key == "thinking_mode":
+        allowed_tm = frozenset({"collapsed", "truncated", "full"})
+        cfg = _load_cfg()
+        raw = str(cfg.get("display", {}).get("thinking_mode", "") or "").strip().lower()
+        if raw in allowed_tm:
+            nv = raw
+        else:
+            dm = str(cfg.get("display", {}).get("details_mode", "collapsed") or "collapsed").strip().lower()
+            nv = "full" if dm == "expanded" else "collapsed"
+        return _ok(rid, {"value": nv})
+    if key == "compact":
+        on = bool(_load_cfg().get("display", {}).get("tui_compact", False))
+        return _ok(rid, {"value": "on" if on else "off"})
+    if key == "statusbar":
+        on = bool(_load_cfg().get("display", {}).get("tui_statusbar", True))
+        return _ok(rid, {"value": "on" if on else "off"})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:

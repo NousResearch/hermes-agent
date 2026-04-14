@@ -156,6 +156,55 @@ function cursorLayout(value: string, cursor: number, cols: number) {
   return { column: col, line }
 }
 
+function offsetFromPosition(value: string, row: number, col: number, cols: number) {
+  if (!value.length) {
+    return 0
+  }
+
+  const targetRow = Math.max(0, Math.floor(row))
+  const targetCol = Math.max(0, Math.floor(col))
+  const w = Math.max(1, cols - 1)
+
+  let line = 0
+  let column = 0
+  let lastOffset = 0
+
+  for (const { segment, index } of seg().segment(value)) {
+    lastOffset = index
+
+    if (segment === '\n') {
+      if (line === targetRow) {
+        return index
+      }
+      line++
+      column = 0
+      continue
+    }
+
+    const sw = Math.max(1, stringWidth(segment))
+
+    if (column + sw > w) {
+      if (line === targetRow) {
+        return index
+      }
+      line++
+      column = 0
+    }
+
+    if (line === targetRow && targetCol <= column + Math.max(0, sw - 1)) {
+      return index
+    }
+
+    column += sw
+  }
+
+  if (targetRow >= line) {
+    return value.length
+  }
+
+  return lastOffset
+}
+
 // ── Render value with inverse-video cursor ───────────────────────────
 
 function renderWithCursor(value: string, cursor: number) {
@@ -282,6 +331,13 @@ export function TextInput({
 
     return renderWithCursor(display, cur)
   }, [cur, display, focus, placeholder])
+
+  const clickCursor = (e: { localRow?: number; localCol?: number }) => {
+    if (!focus) return
+    const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+    setCur(next)
+    curRef.current = next
+  }
 
   // ── Sync external value changes ──────────────────────────────────
 
@@ -512,7 +568,7 @@ export function TextInput({
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <Box ref={boxRef}>
+    <Box ref={boxRef} onClick={clickCursor}>
       <Text wrap="wrap">{rendered}</Text>
     </Box>
   )

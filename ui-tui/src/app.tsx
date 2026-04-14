@@ -3,14 +3,24 @@ import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Box, Text, useApp, useInput, useStdout } from '@hermes/ink'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  AlternateScreen,
+  Box,
+  NoSelect,
+  ScrollBox,
+  Text,
+  useApp,
+  useHasSelection,
+  useInput,
+  useSelection,
+  useStdout
+} from '@hermes/ink'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Banner, Panel, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ModelPicker } from './components/modelPicker.js'
-import { PasteShelf } from './components/pasteShelf.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
@@ -21,17 +31,15 @@ import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
+import { useVirtualHistory } from './hooks/useVirtualHistory.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
 import { asRpcResult, rpcErrorMessage } from './lib/rpc.js'
 import {
   buildToolTrailLine,
-  compactPreview,
-  estimateTokensRough,
   fmtK,
   hasInterpolation,
   isToolTrailResultLine,
   isTransientTrailLine,
-  pasteTokenLabel,
   pick,
   sameToolTrailGroup,
   stripTrailingPasteNewlines,
@@ -43,81 +51,45 @@ import type {
   ActivityItem,
   ApprovalReq,
   ClarifyReq,
+  DetailsMode,
   Msg,
   PanelSection,
-  PasteMode,
-  PendingPaste,
   SecretReq,
   SessionInfo,
   SlashCatalog,
   SudoReq,
-  ThinkingMode,
   Usage
 } from './types.js'
 
 // ── Constants ────────────────────────────────────────────────────────
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
-const PASTE_TOKEN_RE = /\[\[paste:(\d+)(?:[^\n]*?)\]\]/g
 const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 
-const LARGE_PASTE = { chars: 8000, lines: 80 }
-const EXCERPT = { chars: 1200, lines: 14 }
 const MAX_HISTORY = 800
 const REASONING_PULSE_MS = 700
+const WHEEL_SCROLL_STEP = 3
+const MOUSE_TRACKING = !/^(1|true|yes|on)$/.test((process.env.HERMES_TUI_DISABLE_MOUSE ?? '').trim().toLowerCase())
 
-const SECRET_PATTERNS = [
-  /AKIA[0-9A-Z]{16}/g,
-  /AIza[0-9A-Za-z-_]{30,}/g,
-  /gh[pousr]_[A-Za-z0-9]{20,}/g,
-  /sk-[A-Za-z0-9]{20,}/g,
-  /sk-ant-[A-Za-z0-9-]{20,}/g,
-  /xox[baprs]-[A-Za-z0-9-]{10,}/g,
-  /\b(?:api[_-]?key|token|secret)\b\s*[:=]\s*["']?[A-Za-z0-9_-]{12,}/gi
-]
+const DETAILS_MODES: DetailsMode[] = ['hidden', 'collapsed', 'expanded']
+
+const parseDetailsMode = (v: unknown): DetailsMode | null => {
+  const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+  return DETAILS_MODES.includes(s as DetailsMode) ? (s as DetailsMode) : null
+}
+
+const resolveDetailsMode = (d: any): DetailsMode =>
+  parseDetailsMode(d?.details_mode)
+  ?? ({ full: 'expanded' as const, collapsed: 'collapsed' as const, truncated: 'collapsed' as const }[
+    String(d?.thinking_mode ?? '').trim().toLowerCase()
+  ] ?? 'collapsed')
+
+const nextDetailsMode = (m: DetailsMode): DetailsMode =>
+  DETAILS_MODES[(DETAILS_MODES.indexOf(m) + 1) % DETAILS_MODES.length]!
 
 // ── Pure helpers ─────────────────────────────────────────────────────
 
 const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
-
-const classifyPaste = (text: string): PendingPaste['kind'] => {
-  if (/error|warn|traceback|exception|stack|debug|\[\d{2}:\d{2}:\d{2}\]/i.test(text)) {
-    return 'log'
-  }
-
-  if (
-    /```|function\s+\w+|class\s+\w+|import\s+.+from|const\s+\w+\s*=|def\s+\w+\(|<\w+/.test(text) ||
-    text.split('\n').filter(l => /[{}()[\];<>]/.test(l)).length >= 3
-  ) {
-    return 'code'
-  }
-
-  return 'text'
-}
-
-const redactSecrets = (text: string) => {
-  let redactions = 0
-
-  const cleaned = SECRET_PATTERNS.reduce(
-    (t, pat) =>
-      t.replace(pat, val => {
-        redactions++
-
-        return val.includes(':') || val.includes('=')
-          ? `${val.split(/[:=]/)[0]}: [REDACTED_SECRET]`
-          : '[REDACTED_SECRET]'
-      }),
-    text
-  )
-
-  return { redactions, text: cleaned }
-}
-
-const stripTokens = (text: string, re: RegExp) =>
-  text
-    .replace(re, '')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
 
 const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?: number } | null | undefined) => {
   const dims = info?.width && info?.height ? `${info.width}x${info.height}` : ''
@@ -366,7 +338,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
-  const [pastes, setPastes] = useState<PendingPaste[]>([])
   const [streaming, setStreaming] = useState('')
   const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
@@ -378,21 +349,19 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [bellOnComplete, setBellOnComplete] = useState(false)
   const [clockNow, setClockNow] = useState(() => Date.now())
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>('truncated')
+  const [detailsMode, setDetailsMode] = useState<DetailsMode>('collapsed')
 
   // ── Refs ─────────────────────────────────────────────────────────
 
   const activityIdRef = useRef(0)
   const toolCompleteRibbonRef = useRef<{ label: string; line: string } | null>(null)
   const buf = useRef('')
-  const inflightPasteIdsRef = useRef<number[]>([])
   const interruptedRef = useRef(false)
   const reasoningRef = useRef('')
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const lastEmptyAt = useRef(0)
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
-  const pasteCounterRef = useRef(0)
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
   const persistedToolLabelsRef = useRef<Set<string>>(new Set())
@@ -400,6 +369,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
   const sidRef = useRef<string | null>(sid)
+  const scrollRef = useRef<import('@hermes/ink').ScrollBoxHandle | null>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const configMtimeRef = useRef(0)
   colsRef.current = cols
@@ -408,6 +378,9 @@ export function App({ gw }: { gw: GatewayClient }) {
   reasoningRef.current = reasoning
 
   // ── Hooks ────────────────────────────────────────────────────────
+
+  const hasSelection = useHasSelection()
+  const selection = useSelection()
 
   const { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue } =
     useQueue()
@@ -453,7 +426,16 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const empty = !messages.length
   const isBlocked = blocked()
-  const hasAnyThinking = Boolean(reasoning.trim() || historyItems.some(m => m.thinking?.trim()))
+  const virtualRows = useMemo(
+    () =>
+      historyItems.map((msg, index) => ({
+        index,
+        key: `${index}:${msg.role}:${msg.kind ?? ''}:${msg.text.slice(0, 40)}`,
+        msg
+      })),
+    [historyItems]
+  )
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
 
   // ── Resize RPC ───────────────────────────────────────────────────
 
@@ -612,7 +594,11 @@ export function App({ gw }: { gw: GatewayClient }) {
       configMtimeRef.current = Number(r?.mtime ?? 0)
     })
     rpc('config.get', { key: 'full' }).then((r: any) => {
-      setBellOnComplete(!!r?.config?.display?.bell_on_complete)
+      const display = r?.config?.display ?? {}
+      setBellOnComplete(!!display?.bell_on_complete)
+      setCompact(!!display?.tui_compact)
+      setStatusBar(display?.tui_statusbar !== false)
+      setDetailsMode(resolveDetailsMode(display))
     })
   }, [rpc, sid])
 
@@ -635,7 +621,11 @@ export function App({ gw }: { gw: GatewayClient }) {
             pushActivity('MCP reloaded after config change')
           })
           rpc('config.get', { key: 'full' }).then((cfg: any) => {
-            setBellOnComplete(!!cfg?.config?.display?.bell_on_complete)
+            const display = cfg?.config?.display ?? {}
+            setBellOnComplete(!!display?.bell_on_complete)
+            setCompact(!!display?.tui_compact)
+            setStatusBar(display?.tui_statusbar !== false)
+            setDetailsMode(resolveDetailsMode(display))
           })
         } else if (!configMtimeRef.current && next) {
           configMtimeRef.current = next
@@ -681,7 +671,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     setInfo(null)
     setHistoryItems([])
     setMessages([])
-    setPastes([])
     setActivity([])
     setBgTasks(new Set())
     setUsage(ZERO)
@@ -825,55 +814,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   // ── Paste pipeline ───────────────────────────────────────────────
 
-  const resolvePasteTokens = useCallback(
-    (text: string) => {
-      const byId = new Map(pastes.map(p => [p.id, p]))
-      const missingIds = new Set<number>()
-      const usedIds = new Set<number>()
-      let redactions = 0
-
-      const resolved = text.replace(PASTE_TOKEN_RE, (_m, rawId: string) => {
-        const id = parseInt(rawId, 10)
-        const paste = byId.get(id)
-
-        if (!paste) {
-          missingIds.add(id)
-
-          return `[missing paste:${id}]`
-        }
-
-        usedIds.add(id)
-        const cleaned = redactSecrets(paste.text)
-        redactions += cleaned.redactions
-
-        if (paste.mode === 'inline') {
-          return cleaned.text
-        }
-
-        const lang = paste.kind === 'code' ? 'text' : ''
-        const lines = cleaned.text.split('\n')
-
-        if (paste.mode === 'excerpt') {
-          let excerpt = lines.slice(0, EXCERPT.lines).join('\n')
-
-          if (excerpt.length > EXCERPT.chars) {
-            excerpt = excerpt.slice(0, EXCERPT.chars).trimEnd() + '…'
-          }
-
-          const truncated = lines.length > EXCERPT.lines || cleaned.text.length > excerpt.length
-          const tail = truncated ? `\n…[paste #${id} truncated]` : ''
-
-          return `[paste #${id} excerpt]\n\`\`\`${lang}\n${excerpt}${tail}\n\`\`\``
-        }
-
-        return `[paste #${id} attached · ${paste.lineCount} lines]\n\`\`\`${lang}\n${cleaned.text}\n\`\`\``
-      })
-
-      return { missingIds: [...missingIds], redactions, text: resolved, usedIds: [...usedIds] }
-    },
-    [pastes]
-  )
-
   const paste = useCallback(
     (quiet = false) =>
       rpc('clipboard.paste', { session_id: sid }).then((r: any) => {
@@ -911,70 +851,23 @@ export function App({ gw }: { gw: GatewayClient }) {
         return null
       }
 
-      const lineCount = cleanedText.split('\n').length
-
-      if (cleanedText.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
-        return {
-          cursor: cursor + cleanedText.length,
-          value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
-        }
+      return {
+        cursor: cursor + cleanedText.length,
+        value: value.slice(0, cursor) + cleanedText + value.slice(cursor)
       }
-
-      pasteCounterRef.current++
-      const id = pasteCounterRef.current
-      const mode: PasteMode = 'attach'
-      const charCount = cleanedText.length
-      const tokenCount = estimateTokensRough(cleanedText)
-      const token = pasteTokenLabel({ charCount, id, lineCount, text: cleanedText, tokenCount })
-      const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
-      const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
-      const insert = `${lead}${token}${tail}`
-
-      setPastes(prev =>
-        [
-          ...prev,
-          {
-            charCount,
-            createdAt: Date.now(),
-            id,
-            kind: classifyPaste(cleanedText),
-            lineCount,
-            mode,
-            text: cleanedText,
-            tokenCount
-          }
-        ].slice(-24)
-      )
-
-      pushActivity(`captured ${lineCount} lines · ${fmtK(tokenCount)} tok as #${id} (${mode})`)
-
-      return { cursor: cursor + insert.length, value: value.slice(0, cursor) + insert + value.slice(cursor) }
     },
-    [paste, pushActivity]
+    [paste]
   )
 
   // ── Send ─────────────────────────────────────────────────────────
 
   const send = (text: string) => {
-    const payload = resolvePasteTokens(text)
-
-    if (payload.missingIds.length) {
-      pushActivity(`missing paste token(s): ${payload.missingIds.join(', ')}`, 'warn')
-
-      return
-    }
-
-    if (payload.redactions > 0) {
-      pushActivity(`redacted ${payload.redactions} secret-like value(s)`, 'warn')
-    }
-
     const startSubmit = (displayText: string, submitText: string) => {
       if (statusTimerRef.current) {
         clearTimeout(statusTimerRef.current)
         statusTimerRef.current = null
       }
 
-      inflightPasteIdsRef.current = payload.usedIds
       setLastUserMsg(text)
       appendMessage({ role: 'user', text: displayText })
       setBusy(true)
@@ -983,7 +876,6 @@ export function App({ gw }: { gw: GatewayClient }) {
       interruptedRef.current = false
 
       gw.request('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
-        inflightPasteIdsRef.current = []
         sys(`error: ${e.message}`)
         setStatus('ready')
         setBusy(false)
@@ -1000,14 +892,14 @@ export function App({ gw }: { gw: GatewayClient }) {
             pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, r.text || payload.text)
+          startSubmit(r.text || text, r.text || text)
 
           return
         }
 
-        startSubmit(text, payload.text)
+        startSubmit(text, text)
       })
-      .catch(() => startSubmit(text, payload.text))
+      .catch(() => startSubmit(text, text))
   }
 
   const shellExec = (cmd: string) => {
@@ -1148,14 +1040,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         return
       }
 
-      const { missingIds } = resolvePasteTokens(full)
-
-      if (missingIds.length) {
-        pushActivity(`missing paste token(s): ${missingIds.join(', ')}`, 'warn')
-
-        return
-      }
-
       clearInput()
 
       const editIdx = queueEditRef.current
@@ -1198,7 +1082,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       send(full)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appendMessage, busy, enqueue, gw, pushHistory, resolvePasteTokens, sid]
+    [appendMessage, busy, enqueue, gw, pushHistory, sid]
   )
 
   // ── Input handling ───────────────────────────────────────────────
@@ -1270,6 +1154,23 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (completions.length && input && historyIdx === null && (key.upArrow || key.downArrow)) {
       setCompIdx(i => (key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length))
 
+      return
+    }
+
+    if (key.wheelUp) {
+      scrollRef.current?.scrollBy(-WHEEL_SCROLL_STEP)
+      return
+    }
+
+    if (key.wheelDown) {
+      scrollRef.current?.scrollBy(WHEEL_SCROLL_STEP)
+      return
+    }
+
+    if (key.pageUp || key.pageDown) {
+      const viewport = scrollRef.current?.getViewportHeight() ?? Math.max(6, (stdout?.rows ?? 24) - 8)
+      const step = Math.max(4, viewport - 2)
+      scrollRef.current?.scrollBy(key.pageUp ? -step : step)
       return
     }
 
@@ -1351,6 +1252,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           statusTimerRef.current = null
           setStatus('ready')
         }, 1500)
+      } else if (hasSelection) {
+        const copied = selection.copySelection()
+        if (copied) {
+          sys('copied selection')
+        }
       } else if (input || inputBuf.length) {
         clearIn()
       } else {
@@ -1371,16 +1277,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       setStatus('forging session…')
       newSession()
-
-      return
-    }
-
-    if (ctrl(key, ch, 't')) {
-      if (hasAnyThinking) {
-        setThinkingMode(mode => (mode === 'collapsed' ? 'truncated' : mode === 'truncated' ? 'full' : 'collapsed'))
-      } else {
-        sys('no thinking available')
-      }
 
       return
     }
@@ -1747,11 +1643,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           setReasoning('')
           setStreaming('')
 
-          if (inflightPasteIdsRef.current.length) {
-            setPastes(prev => prev.filter(paste => !inflightPasteIdsRef.current.includes(paste.id)))
-            inflightPasteIdsRef.current = []
-          }
-
           if (!wasInterrupted) {
             appendMessage({
               role: 'assistant',
@@ -1790,7 +1681,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         }
 
         case 'error':
-          inflightPasteIdsRef.current = []
           idle()
           setReasoning('')
           turnToolsRef.current = []
@@ -1869,6 +1759,11 @@ export function App({ gw }: { gw: GatewayClient }) {
             sections.push({ text: `${catalog.skillCount} skill commands available — /skills to browse` })
           }
 
+          sections.push({
+            title: 'TUI',
+            rows: [['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode']]
+          })
+
           sections.push({ title: 'Hotkeys', rows: HOTKEYS })
 
           panel('Commands', sections)
@@ -1929,6 +1824,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             const mode = arg.trim().toLowerCase()
             setCompact(current => {
               const next = mode === 'on' ? true : mode === 'off' ? false : !current
+              rpc('config.set', { key: 'compact', value: next ? 'on' : 'off' }).catch(() => {})
               queueMicrotask(() => sys(`compact ${next ? 'on' : 'off'}`))
 
               return next
@@ -1936,7 +1832,46 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           return true
+
+        case 'details':
+
+        case 'detail':
+          if (!arg) {
+            rpc('config.get', { key: 'details_mode' })
+              .then((r: any) => {
+                const mode = parseDetailsMode(r?.value) ?? detailsMode
+                setDetailsMode(mode)
+                sys(`details: ${mode}`)
+              })
+              .catch(() => sys(`details: ${detailsMode}`))
+
+            return true
+          }
+
+          {
+            const mode = arg.trim().toLowerCase()
+            if (!['hidden', 'collapsed', 'expanded', 'cycle', 'toggle'].includes(mode)) {
+              sys('usage: /details [hidden|collapsed|expanded|cycle]')
+              return true
+            }
+
+            const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(detailsMode) : (mode as DetailsMode)
+            setDetailsMode(next)
+            rpc('config.set', { key: 'details_mode', value: next }).catch(() => {})
+            sys(`details: ${next}`)
+          }
+
+          return true
+
         case 'copy': {
+          if (!arg && hasSelection) {
+            const copied = selection.copySelection()
+            if (copied) {
+              sys('copied selection')
+              return true
+            }
+          }
+
           const all = messages.filter(m => m.role === 'assistant')
 
           if (arg && Number.isNaN(parseInt(arg, 10))) {
@@ -1966,71 +1901,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          if (arg === 'list') {
-            if (!pastes.length) {
-              sys('no text pastes')
-            } else {
-              panel('Paste Shelf', [
-                {
-                  rows: pastes.map(
-                    p =>
-                      [
-                        `#${p.id} ${p.mode}`,
-                        `${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
-                      ] as [string, string]
-                  )
-                }
-              ])
-            }
-
-            return true
-          }
-
-          if (arg === 'clear') {
-            setPastes([])
-            setInput(v => stripTokens(v, PASTE_TOKEN_RE))
-            setInputBuf(prev => prev.map(l => stripTokens(l, PASTE_TOKEN_RE)).filter(Boolean))
-            pushActivity('cleared paste shelf')
-
-            return true
-          }
-
-          if (arg.startsWith('drop ')) {
-            const id = parseInt(arg.split(/\s+/)[1] ?? '-1', 10)
-
-            if (!id || !pastes.some(p => p.id === id)) {
-              sys('usage: /paste drop <id>')
-
-              return true
-            }
-
-            const re = new RegExp(`\\s*\\[\\[paste:${id}(?:[^\\n]*?)\\]\\]\\s*`, 'g')
-            setPastes(prev => prev.filter(p => p.id !== id))
-            setInput(v => stripTokens(v, re))
-            setInputBuf(prev => prev.map(l => stripTokens(l, re)).filter(Boolean))
-            pushActivity(`dropped paste #${id}`)
-
-            return true
-          }
-
-          if (arg.startsWith('mode ')) {
-            const [, rawId, rawMode] = arg.split(/\s+/)
-            const id = parseInt(rawId ?? '-1', 10)
-            const mode = rawMode as PasteMode
-
-            if (!id || !['attach', 'excerpt', 'inline'].includes(mode) || !pastes.some(p => p.id === id)) {
-              sys('usage: /paste mode <id> <attach|excerpt|inline>')
-
-              return true
-            }
-
-            setPastes(prev => prev.map(p => (p.id === id ? { ...p, mode } : p)))
-            pushActivity(`paste #${id} mode → ${mode}`)
-
-            return true
-          }
-
-          sys('usage: /paste [list|mode <id> <attach|excerpt|inline>|drop <id>|clear]')
+          sys('usage: /paste')
 
           return true
         case 'logs': {
@@ -2043,8 +1914,15 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'statusbar':
 
         case 'sb':
+          if (arg && !['on', 'off', 'toggle'].includes(arg.trim().toLowerCase())) {
+            sys('usage: /statusbar [on|off|toggle]')
+            return true
+          }
+
           setStatusBar(current => {
-            const next = !current
+            const mode = arg.trim().toLowerCase()
+            const next = mode === 'on' ? true : mode === 'off' ? false : !current
+            rpc('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => {})
             queueMicrotask(() => sys(`status bar ${next ? 'on' : 'off'}`))
 
             return next
@@ -2843,18 +2721,20 @@ export function App({ gw }: { gw: GatewayClient }) {
     [
       catalog,
       compact,
+      detailsMode,
       guardBusySessionSwitch,
       gw,
+      hasSelection,
       lastUserMsg,
       maybeWarn,
       messages,
       newSession,
       page,
       panel,
-      pastes,
       pushActivity,
       rpc,
       resetVisibleHistory,
+      selection,
       send,
       sid,
       statusBar,
@@ -2943,249 +2823,266 @@ export function App({ gw }: { gw: GatewayClient }) {
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
 
   const hasReasoning = Boolean(reasoning.trim())
-
-  const showProgressArea = Boolean(busy || tools.length || turnTrail.length || hasReasoning)
+  const showProgressArea =
+    detailsMode === 'hidden'
+      ? activity.some(i => i.tone !== 'info')
+      : Boolean(busy || tools.length || turnTrail.length || hasReasoning || activity.length)
 
   const showStreamingArea = Boolean(streaming)
+  const visibleHistory = virtualRows.slice(virtualHistory.start, virtualHistory.end)
 
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <Box flexDirection="column">
-      {historyItems.map((m, i) => (
-        <Box flexDirection="column" key={i} paddingX={1}>
-          {m.kind === 'intro' && m.info ? (
-            <Box flexDirection="column" paddingTop={1}>
-              <Banner t={theme} />
-              <SessionPanel info={m.info} sid={sid} t={theme} />
-            </Box>
-          ) : m.kind === 'panel' && m.panelData ? (
-            <Panel sections={m.panelData.sections} t={theme} title={m.panelData.title} />
-          ) : (
-            <MessageLine cols={cols} compact={compact} msg={m} t={theme} thinkingMode={thinkingMode} />
-          )}
-        </Box>
-      ))}
+    <AlternateScreen mouseTracking={MOUSE_TRACKING}>
+      <Box flexDirection="column" flexGrow={1}>
+        <ScrollBox flexDirection="column" flexGrow={1} ref={scrollRef} stickyScroll width="100%">
+          <Box flexDirection="column" paddingX={1}>
+            {virtualHistory.topSpacer > 0 ? <Box height={virtualHistory.topSpacer} /> : null}
 
-      <Box flexDirection="column" paddingX={1}>
-        {showProgressArea && (
-          <Box marginBottom={showStreamingArea ? 1 : 0}>
-            <ToolTrail
-              activity={busy ? activity : []}
-              busy={busy && !streaming}
-              reasoning={reasoning}
-              reasoningActive={reasoningActive}
-              reasoningStreaming={reasoningStreaming}
-              t={theme}
-              thinkingMode={hasReasoning ? thinkingMode : 'truncated'}
-              tools={tools}
-              trail={turnTrail}
-            />
-          </Box>
-        )}
+            {visibleHistory.map(row => (
+              <Box flexDirection="column" key={row.key} ref={virtualHistory.measureRef(row.key)}>
+                {row.msg.kind === 'intro' && row.msg.info ? (
+                  <Box flexDirection="column" paddingTop={1}>
+                    <Banner t={theme} />
+                    <SessionPanel info={row.msg.info} sid={sid} t={theme} />
+                  </Box>
+                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+                  <Panel sections={row.msg.panelData.sections} t={theme} title={row.msg.panelData.title} />
+                ) : (
+                  <MessageLine cols={cols} compact={compact} detailsMode={detailsMode} msg={row.msg} t={theme} />
+                )}
+              </Box>
+            ))}
 
-        {showStreamingArea && (
-          <Box>
-            <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
-          </Box>
-        )}
+            {virtualHistory.bottomSpacer > 0 ? <Box height={virtualHistory.bottomSpacer} /> : null}
 
-        {clarify && (
-          <PromptBox color={theme.color.bronze}>
-            <ClarifyPrompt
-              cols={cols}
-              onAnswer={answerClarify}
-              onCancel={() => answerClarify('')}
-              req={clarify}
-              t={theme}
-            />
-          </PromptBox>
-        )}
-
-        {approval && (
-          <PromptBox color={theme.color.bronze}>
-            <ApprovalPrompt
-              onChoice={choice => {
-                rpc('approval.respond', { choice, session_id: sid }).then(r => {
-                  if (!r) {
-                    return
-                  }
-
-                  setApproval(null)
-                  sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
-                  setStatus('running…')
-                })
-              }}
-              req={approval}
-              t={theme}
-            />
-          </PromptBox>
-        )}
-
-        {sudo && (
-          <PromptBox color={theme.color.bronze}>
-            <MaskedPrompt
-              cols={cols}
-              icon="🔐"
-              label="sudo password required"
-              onSubmit={pw => {
-                rpc('sudo.respond', { request_id: sudo.requestId, password: pw }).then(r => {
-                  if (!r) {
-                    return
-                  }
-
-                  setSudo(null)
-                  setStatus('running…')
-                })
-              }}
-              t={theme}
-            />
-          </PromptBox>
-        )}
-
-        {secret && (
-          <PromptBox color={theme.color.bronze}>
-            <MaskedPrompt
-              cols={cols}
-              icon="🔑"
-              label={secret.prompt}
-              onSubmit={val => {
-                rpc('secret.respond', { request_id: secret.requestId, value: val }).then(r => {
-                  if (!r) {
-                    return
-                  }
-
-                  setSecret(null)
-                  setStatus('running…')
-                })
-              }}
-              sub={`for ${secret.envVar}`}
-              t={theme}
-            />
-          </PromptBox>
-        )}
-
-        {picker && (
-          <PromptBox color={theme.color.bronze}>
-            <SessionPicker gw={gw} onCancel={() => setPicker(false)} onSelect={resumeById} t={theme} />
-          </PromptBox>
-        )}
-
-        {modelPicker && (
-          <PromptBox color={theme.color.bronze}>
-            <ModelPicker
-              gw={gw}
-              onCancel={() => setModelPicker(false)}
-              onSelect={value => {
-                setModelPicker(false)
-                slash(`/model ${value}`)
-              }}
-              sessionId={sid}
-              t={theme}
-            />
-          </PromptBox>
-        )}
-
-        <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
-
-        <PasteShelf draft={[...inputBuf, input].join('\n')} pastes={pastes} t={theme} />
-
-        {bgTasks.size > 0 && (
-          <Text color={theme.color.dim} dimColor>
-            {bgTasks.size} background {bgTasks.size === 1 ? 'task' : 'tasks'} running
-          </Text>
-        )}
-
-        <Text> </Text>
-
-        {statusBar && (
-          <StatusRule
-            bgCount={bgTasks.size}
-            cols={cols}
-            durationLabel={durationLabel}
-            model={info?.model?.split('/').pop() ?? ''}
-            status={status}
-            statusColor={statusColor}
-            t={theme}
-            usage={usage}
-            voiceLabel={voiceLabel}
-          />
-        )}
-
-        {pager && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
-            {pager.title && (
-              <Box justifyContent="center" marginBottom={1}>
-                <Text bold color={theme.color.gold}>
-                  {pager.title}
-                </Text>
+            {showStreamingArea && (
+              <Box marginTop={1}>
+                <MessageLine
+                  cols={cols}
+                  compact={compact}
+                  detailsMode={detailsMode}
+                  msg={{ role: 'assistant', text: streaming }}
+                  t={theme}
+                />
               </Box>
             )}
-
-            {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
-              <Text key={i}>{line}</Text>
-            ))}
-
-            <Box marginTop={1}>
-              <Text color={theme.color.dim}>
-                {pager.offset + pagerPageSize < pager.lines.length
-                  ? `Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
-                  : `end · q to close (${pager.lines.length} lines)`}
-              </Text>
-            </Box>
           </Box>
-        )}
+        </ScrollBox>
 
-        {!isBlocked && (
-          <Box flexDirection="column">
-            {inputBuf.map((line, i) => (
-              <Box key={i}>
-                <Box width={3}>
-                  <Text color={theme.color.dim}>{i === 0 ? `${theme.brand.prompt} ` : '  '}</Text>
-                </Box>
-
-                <Text color={theme.color.cornsilk}>{line || ' '}</Text>
-              </Box>
-            ))}
-
+        <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
+          {showProgressArea && (
             <Box>
-              <Box width={3}>
-                <Text bold color={theme.color.gold}>
-                  {inputBuf.length ? '  ' : `${theme.brand.prompt} `}
-                </Text>
-              </Box>
-
-              <TextInput
-                columns={Math.max(20, cols - 3)}
-                onChange={setInput}
-                onPaste={handleTextPaste}
-                onSubmit={submit}
-                placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : ''}
-                value={input}
+              <ToolTrail
+                activity={activity}
+                busy={busy && !streaming}
+                detailsMode={detailsMode}
+                reasoning={reasoning}
+                reasoningActive={reasoningActive}
+                reasoningStreaming={reasoningStreaming}
+                t={theme}
+                tools={tools}
+                trail={turnTrail}
               />
             </Box>
-          </Box>
-        )}
+          )}
 
-        {!!completions.length && (
-          <Box borderColor={theme.color.bronze} borderStyle="single" flexDirection="column" paddingX={1}>
-            {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
-              const active = Math.max(0, compIdx - 8) + i === compIdx
+          {clarify && (
+            <PromptBox color={theme.color.bronze}>
+              <ClarifyPrompt
+                cols={cols}
+                onAnswer={answerClarify}
+                onCancel={() => answerClarify('')}
+                req={clarify}
+                t={theme}
+              />
+            </PromptBox>
+          )}
 
-              return (
-                <Text key={item.text}>
-                  <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>
-                    {item.display}
+          {approval && (
+            <PromptBox color={theme.color.bronze}>
+              <ApprovalPrompt
+                onChoice={choice => {
+                  rpc('approval.respond', { choice, session_id: sid }).then(r => {
+                    if (!r) {
+                      return
+                    }
+
+                    setApproval(null)
+                    sys(choice === 'deny' ? 'denied' : `approved (${choice})`)
+                    setStatus('running…')
+                  })
+                }}
+                req={approval}
+                t={theme}
+              />
+            </PromptBox>
+          )}
+
+          {sudo && (
+            <PromptBox color={theme.color.bronze}>
+              <MaskedPrompt
+                cols={cols}
+                icon="🔐"
+                label="sudo password required"
+                onSubmit={pw => {
+                  rpc('sudo.respond', { request_id: sudo.requestId, password: pw }).then(r => {
+                    if (!r) {
+                      return
+                    }
+
+                    setSudo(null)
+                    setStatus('running…')
+                  })
+                }}
+                t={theme}
+              />
+            </PromptBox>
+          )}
+
+          {secret && (
+            <PromptBox color={theme.color.bronze}>
+              <MaskedPrompt
+                cols={cols}
+                icon="🔑"
+                label={secret.prompt}
+                onSubmit={val => {
+                  rpc('secret.respond', { request_id: secret.requestId, value: val }).then(r => {
+                    if (!r) {
+                      return
+                    }
+
+                    setSecret(null)
+                    setStatus('running…')
+                  })
+                }}
+                sub={`for ${secret.envVar}`}
+                t={theme}
+              />
+            </PromptBox>
+          )}
+
+          {picker && (
+            <PromptBox color={theme.color.bronze}>
+              <SessionPicker gw={gw} onCancel={() => setPicker(false)} onSelect={resumeById} t={theme} />
+            </PromptBox>
+          )}
+
+          {modelPicker && (
+            <PromptBox color={theme.color.bronze}>
+              <ModelPicker
+                gw={gw}
+                onCancel={() => setModelPicker(false)}
+                onSelect={value => {
+                  setModelPicker(false)
+                  slash(`/model ${value}`)
+                }}
+                sessionId={sid}
+                t={theme}
+              />
+            </PromptBox>
+          )}
+
+          <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
+
+          {bgTasks.size > 0 && (
+            <Text color={theme.color.dim} dimColor>
+              {bgTasks.size} background {bgTasks.size === 1 ? 'task' : 'tasks'} running
+            </Text>
+          )}
+
+          <Text> </Text>
+
+          {statusBar && (
+            <StatusRule
+              bgCount={bgTasks.size}
+              cols={cols}
+              durationLabel={durationLabel}
+              model={info?.model?.split('/').pop() ?? ''}
+              status={status}
+              statusColor={statusColor}
+              t={theme}
+              usage={usage}
+              voiceLabel={voiceLabel}
+            />
+          )}
+
+          {pager && (
+            <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+              {pager.title && (
+                <Box justifyContent="center" marginBottom={1}>
+                  <Text bold color={theme.color.gold}>
+                    {pager.title}
                   </Text>
-                  {item.meta ? <Text color={theme.color.dim}> {item.meta}</Text> : null}
-                </Text>
-              )
-            })}
-          </Box>
-        )}
+                </Box>
+              )}
 
-        {!empty && !sid && <Text color={theme.color.dim}>⚕ {status}</Text>}
+              {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
+                <Text key={i}>{line}</Text>
+              ))}
+
+              <Box marginTop={1}>
+                <Text color={theme.color.dim}>
+                  {pager.offset + pagerPageSize < pager.lines.length
+                    ? `Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
+                    : `end · q to close (${pager.lines.length} lines)`}
+                </Text>
+              </Box>
+            </Box>
+          )}
+
+          {!isBlocked && (
+            <Box flexDirection="column">
+              {inputBuf.map((line, i) => (
+                <Box key={i}>
+                  <Box width={3}>
+                    <Text color={theme.color.dim}>{i === 0 ? `${theme.brand.prompt} ` : '  '}</Text>
+                  </Box>
+
+                  <Text color={theme.color.cornsilk}>{line || ' '}</Text>
+                </Box>
+              ))}
+
+              <Box>
+                <Box width={3}>
+                  <Text bold color={theme.color.gold}>
+                    {inputBuf.length ? '  ' : `${theme.brand.prompt} `}
+                  </Text>
+                </Box>
+
+                <TextInput
+                  columns={Math.max(20, cols - 3)}
+                  onChange={setInput}
+                  onPaste={handleTextPaste}
+                  onSubmit={submit}
+                  placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : ''}
+                  value={input}
+                />
+              </Box>
+            </Box>
+          )}
+
+          {!!completions.length && (
+            <Box borderColor={theme.color.bronze} borderStyle="single" flexDirection="column" paddingX={1}>
+              {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
+                const active = Math.max(0, compIdx - 8) + i === compIdx
+
+                return (
+                  <Text key={item.text}>
+                    <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>
+                      {item.display}
+                    </Text>
+                    {item.meta ? <Text color={theme.color.dim}> {item.meta}</Text> : null}
+                  </Text>
+                )
+              })}
+            </Box>
+          )}
+
+          {!empty && !sid && <Text color={theme.color.dim}>⚕ {status}</Text>}
+        </NoSelect>
       </Box>
-    </Box>
+    </AlternateScreen>
   )
 }

@@ -150,10 +150,7 @@ Notes:
 - Queued drafts keep their original `!cmd` and `{!cmd}` text while you edit them. Shell commands and interpolation run when the queued item is actually sent.
 - If you load a queued item into the input and resubmit plain text, that queue item is replaced, removed from the queue preview, and promoted to send next. If the agent is still busy, the edited item is moved to the front of the queue and sent after the current run completes.
 - Completion requests are debounced by 60 ms. Input starting with `/` uses `complete.slash`. A trailing token that starts with `./`, `../`, `~/`, `/`, or `@` uses `complete.path`.
-- Text pastes are captured into a local paste shelf and inserted as `[[paste:<id>]]` tokens. Nothing is newline-flattened.
-- Small pastes default to `excerpt` mode. Larger pastes default to `attach` mode.
-- Very large paste references trigger a confirmation prompt before send.
-- Pasted content is scanned for obvious secret patterns before send and redacted in the outbound payload.
+- Text pastes are inserted inline directly into the draft. Nothing is newline-flattened.
 - `Ctrl+G` writes the current draft, including any multiline buffer, to a temp file, temporarily swaps screen buffers, launches `$EDITOR`, then restores the TUI and submits the saved text if the editor exits cleanly.
 - Input history is stored in `~/.hermes/.hermes_history` or under `HERMES_HOME`.
 
@@ -192,6 +189,7 @@ The local slash handler covers the built-ins that need direct client behavior:
 - `/resume`
 - `/copy`
 - `/paste`
+- `/details`
 - `/logs`
 - `/statusbar`, `/sb`
 - `/queue`
@@ -202,7 +200,8 @@ Notes:
 
 - `/copy` sends the selected assistant response through OSC 52.
 - `/paste` with no args asks the gateway for clipboard image attachment state.
-- `/paste list|mode|drop|clear` manages text paste-shelf items.
+- `/paste` does not manage text paste entries; text paste is inline-only.
+- `/details [hidden|collapsed|expanded|cycle]` controls thinking/tool-detail visibility.
 - `/statusbar` toggles the status rule on/off.
 
 Anything else falls through to:

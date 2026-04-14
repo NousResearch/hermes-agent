@@ -5,6 +5,8 @@ import sys
 from tui_gateway.server import handle_request, resolve_skin, write_json
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+
 
 def main():
     if not write_json({

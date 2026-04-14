@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { resolve } from 'node:path'
+import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
 const MAX_GATEWAY_LOG_LINES = 200
@@ -55,6 +55,9 @@ export class GatewayClient extends EventEmitter {
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
     const python = process.env.HERMES_PYTHON ?? resolve(root, 'venv/bin/python')
     const cwd = process.env.HERMES_CWD || root
+    const env = { ...process.env }
+    const pyPath = (env.PYTHONPATH ?? '').trim()
+    env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.ready = false
     this.pendingExit = undefined
     this.stdoutRl?.close()
@@ -81,6 +84,7 @@ export class GatewayClient extends EventEmitter {
 
     this.proc = spawn(python, ['-m', 'tui_gateway.entry'], {
       cwd,
+      env,
       stdio: ['pipe', 'pipe', 'pipe']
     })
 

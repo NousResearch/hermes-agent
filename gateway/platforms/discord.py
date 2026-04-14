@@ -2122,14 +2122,11 @@ class DiscordAdapter(BasePlatformAdapter):
         prompts = self.config.extra.get("channel_prompts") or {}
         if not isinstance(prompts, dict):
             return None
-        prompts = {str(k): v for k, v in prompts.items()}
 
         for key in (channel_id, parent_id):
             if not key:
                 continue
             prompt = prompts.get(key)
-            if prompt is None:
-                prompt = prompts.get(str(key))
             if prompt is None:
                 continue
             prompt = str(prompt).strip()

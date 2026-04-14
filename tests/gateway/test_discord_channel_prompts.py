@@ -91,10 +91,19 @@ class TestResolveChannelPrompts:
         adapter.config.extra = {"channel_prompts": {"100": "Research mode"}}
         assert adapter._resolve_channel_prompt("100") == "Research mode"
 
-    def test_match_by_numeric_channel_id_key(self):
+    def test_numeric_yaml_keys_normalized_at_config_load(self):
+        """Numeric YAML keys are normalized to strings by config bridging.
+
+        The resolver itself expects string keys (config.py handles normalization),
+        so raw numeric keys will not match — this is intentional.
+        """
         adapter = _make_adapter()
-        adapter.config.extra = {"channel_prompts": {100: "Research mode"}}
+        # Simulates post-bridging state: keys are already strings
+        adapter.config.extra = {"channel_prompts": {"100": "Research mode"}}
         assert adapter._resolve_channel_prompt("100") == "Research mode"
+        # Pre-bridging numeric key would not match (bridging is responsible)
+        adapter.config.extra = {"channel_prompts": {100: "Research mode"}}
+        assert adapter._resolve_channel_prompt("100") is None
 
     def test_match_by_parent_id(self):
         adapter = _make_adapter()

@@ -1336,6 +1336,23 @@ class TestIncomingDocumentHandling:
         assert "can you parse this" in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_zip_skill_cached_without_text_injection(self, adapter):
+        """A ZIP-backed .skill should be cached as an archive, not injected as text."""
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = b"PK\x03\x04skill-bundle"
+            event = self._make_event(files=[{
+                "mimetype": "application/octet-stream",
+                "name": "bundle.skill",
+                "url_private_download": "https://files.slack.com/bundle.skill",
+                "size": 1024,
+            }], text="")
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.media_types == ["application/zip"]
+        assert "Content of bundle.skill" not in (msg_event.text or "")
+
+    @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
         """A .txt file over 100KB should be cached but NOT injected."""
         content = b"x" * (200 * 1024)

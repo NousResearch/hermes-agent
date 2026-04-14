@@ -271,6 +271,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    classify_document_mime,
     cache_image_from_url,
     cache_audio_from_url,
 )
@@ -1413,7 +1414,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         ext = Path(url).suffix.lower()
-                        mime = bridge_mime or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        mime = (
+                            classify_document_mime(ext, Path(url).read_bytes())
+                            if ext == ".skill"
+                            else bridge_mime
+                            or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
+                        )
                         media_types.append(mime)
                         print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
                     else:
@@ -1457,13 +1463,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
                     ext = Path(doc_path).suffix.lower()
-                    if ext in {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}:
+                    if ext in {".txt", ".md", ".skill", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}:
                         try:
                             file_size = Path(doc_path).stat().st_size
                             if file_size > MAX_TEXT_INJECT_BYTES:
                                 print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
                                 continue
-                            content = Path(doc_path).read_text(encoding="utf-8", errors="replace")
+                            raw_bytes = Path(doc_path).read_bytes()
+                            if ext == ".skill" and classify_document_mime(ext, raw_bytes) != "text/markdown":
+                                continue
+                            content = raw_bytes.decode("utf-8", errors="replace")
                             fname = Path(doc_path).name
                             # Remove the doc_<hex>_ prefix for display
                             display_name = fname

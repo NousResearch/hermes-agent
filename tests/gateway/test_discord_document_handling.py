@@ -211,6 +211,20 @@ class TestIncomingDocumentHandling:
         assert "# Title" in event.text
 
     @pytest.mark.asyncio
+    async def test_zip_skill_cached_without_text_injection(self, adapter):
+        """A ZIP-backed .skill should be cached as an archive, not injected as text."""
+        with _mock_aiohttp_download(b"PK\x03\x04skill-bundle"):
+            msg = make_message(
+                attachments=[make_attachment(filename="bundle.skill", content_type="application/octet-stream")],
+                content="",
+            )
+            await adapter._handle_message(msg)
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["application/zip"]
+        assert "Content of bundle.skill" not in (event.text or "")
+
+    @pytest.mark.asyncio
     async def test_log_content_injected(self, adapter):
         """.log file under 100KB should be treated as text/plain and injected."""
         file_content = b"BLE trace line 1\nBLE trace line 2"

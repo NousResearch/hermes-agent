@@ -1356,6 +1356,7 @@ def _log_safe_path(path: str) -> str:
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
+    ".skill": "application/octet-stream",
     ".txt": "text/plain",
     ".csv": "text/csv",
     ".log": "text/plain",
@@ -1377,6 +1378,24 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".py": "text/plain",
     ".sh": "text/plain",
 }
+
+
+def classify_document_mime(ext: str, data: bytes) -> str:
+    """Return the effective MIME type for a known document extension.
+
+    ``.skill`` files can be either UTF-8 Markdown documents or ZIP bundles,
+    so their content must decide the MIME type instead of the extension alone.
+    """
+    mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
+    if ext != ".skill":
+        return mime_type
+    if data.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return "application/zip"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return mime_type
+    return "text/markdown"
 
 
 # ---------------------------------------------------------------------------

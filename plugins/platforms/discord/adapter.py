@@ -119,6 +119,7 @@ from gateway.platforms.base import (
     cache_audio_from_url,
     cache_audio_from_bytes,
     cache_document_from_bytes,
+    classify_document_mime,
     SUPPORTED_DOCUMENT_TYPES,
     _TEXT_INJECT_EXTENSIONS,
     _prefix_within_utf16_limit,
@@ -6404,7 +6405,7 @@ class DiscordAdapter(BasePlatformAdapter):
                             raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
                         if in_allowlist:
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                            doc_mime = classify_document_mime(ext, raw_bytes)
                         else:
                             # Untyped file. Use the source content_type if
                             # discord gave us one, otherwise fall back to
@@ -6432,7 +6433,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         # ``gateway/run.py`` to emit a path-pointing context note.
                         MAX_TEXT_INJECT_BYTES = 100 * 1024
                         _is_text = (
-                            ext in _TEXT_INJECT_EXTENSIONS
+                            doc_mime == "text/markdown"
+                            if ext == ".skill"
+                            else ext in _TEXT_INJECT_EXTENSIONS
                             or (content_type or "").startswith("text/")
                         )
                         if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:

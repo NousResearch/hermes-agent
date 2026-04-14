@@ -208,6 +208,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    classify_document_mime,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -7999,7 +8000,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
                 cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
+                mime_type = (
+                    classify_document_mime(ext, raw_bytes)
+                    if ext in SUPPORTED_DOCUMENT_TYPES
+                    else doc.mime_type or "application/octet-stream"
+                )
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
@@ -8010,7 +8015,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 # decodable ASCII headers. Binary files are surfaced as a cached
                 # path only (run.py emits a path-pointing context note).
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
+                _is_text = (
+                    mime_type == "text/markdown"
+                    if ext == ".skill"
+                    else ext in _TEXT_INJECT_EXTENSIONS
+                    or (doc_mime or "").startswith("text/")
+                )
                 if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")

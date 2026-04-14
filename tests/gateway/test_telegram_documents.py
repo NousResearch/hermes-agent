@@ -234,6 +234,39 @@ class TestDocumentDownloadBlock:
         assert "# Title" in event.text
 
     @pytest.mark.asyncio
+    async def test_supported_skill_injects_content(self, adapter):
+        content = b"---\nname: test-skill\n---\n# Skill body"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="example.skill", mime_type="text/markdown",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert "name: test-skill" in event.text
+        assert "[Content of example.skill]" in event.text
+        assert event.media_types == ["text/markdown"]
+
+    @pytest.mark.asyncio
+    async def test_zip_skill_cached_without_text_injection(self, adapter):
+        content = b"PK\x03\x04fake-bundle"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name="bundle.skill", mime_type="application/octet-stream",
+            file_size=len(content), file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_types == ["application/zip"]
+        assert "Content of bundle.skill" not in (event.text or "")
+
+    @pytest.mark.asyncio
     async def test_caption_preserved_with_injection(self, adapter):
         content = b"file text"
         file_obj = _make_file_obj(content)

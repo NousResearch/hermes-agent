@@ -52,6 +52,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
     cache_video_from_bytes,
+    classify_document_mime,
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -3100,7 +3101,7 @@ class SlackAdapter(BasePlatformAdapter):
                         raw_bytes, original_filename or f"document{ext or '.bin'}"
                     )
                     if in_allowlist:
-                        doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        doc_mime = classify_document_mime(ext, raw_bytes)
                     else:
                         doc_mime = mimetype or "application/octet-stream"
                     media_urls.append(cached_path)
@@ -3114,7 +3115,12 @@ class SlackAdapter(BasePlatformAdapter):
                     # decodable ASCII headers. Binary files are surfaced as a
                     # cached path only (run.py emits a path-pointing note).
                     MAX_TEXT_INJECT_BYTES = 100 * 1024
-                    _is_text = ext in _TEXT_INJECT_EXTENSIONS or (mimetype or "").startswith("text/")
+                    _is_text = (
+                        doc_mime == "text/markdown"
+                        if ext == ".skill"
+                        else ext in _TEXT_INJECT_EXTENSIONS
+                        or (mimetype or "").startswith("text/")
+                    )
                     if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                         try:
                             text_content = raw_bytes.decode("utf-8")

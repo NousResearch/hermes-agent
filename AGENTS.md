@@ -16,6 +16,7 @@ hermes-agent/
 ├── model_tools.py        # Tool orchestration, _discover_tools(), handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator
+├── webui.py              # Gradio Web UI standalone launcher
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
 ├── agent/                # Agent internals
 │   ├── prompt_builder.py     # System prompt assembly
@@ -64,6 +65,19 @@ hermes-agent/
 ```
 
 **User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys)
+
+## Web UI Architecture (Gradio)
+
+- **`webui.py`**: The main entry point for the Gradio Web UI. It initializes the `AIAgent` and maps the chat input to the agent's core conversation loop (`run_conversation`).
+- **Streaming integration**: The Web UI uses a thread and a queue system to bridge the synchronous `run_conversation` function with Gradio's asynchronous generator requirements.
+- **Callbacks**:
+  - `stream_delta_callback`: Receives streaming text chunks from the LLM and queues them for the UI.
+  - `tool_progress_callback`: Receives tool execution updates (e.g., tool started, tool progress) and queues them as system messages/logs for the UI to display in the chat context.
+
+To launch the Web UI:
+```bash
+python webui.py
+```
 
 ## File Dependency Chain
 

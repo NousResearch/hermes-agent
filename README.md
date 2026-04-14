@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
-  <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://github.com/Cautioncrazy/caution-hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
 </p>
 
@@ -30,7 +30,7 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 ## Quick Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Cautioncrazy/caution-hermes-agent/main/scripts/install.sh | bash
 ```
 
 Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you.
@@ -44,6 +44,7 @@ After installation:
 ```bash
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
+python webui.py     # start the Gradio Web UI
 ```
 
 ---
@@ -144,7 +145,7 @@ We welcome contributions! See the [Contributing Guide](https://hermes-agent.nous
 Quick start for contributors:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
+git clone https://github.com/Cautioncrazy/caution-hermes-agent.git
 cd hermes-agent
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv venv --python 3.11
@@ -165,8 +166,8 @@ python -m pytest tests/ -q
 
 - 💬 [Discord](https://discord.gg/NousResearch)
 - 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 💡 [Discussions](https://github.com/NousResearch/hermes-agent/discussions)
+- 🐛 [Issues](https://github.com/Cautioncrazy/caution-hermes-agent/issues)
+- 💡 [Discussions](https://github.com/Cautioncrazy/caution-hermes-agent/discussions)
 - 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
 
 ---

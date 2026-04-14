@@ -13,6 +13,7 @@ license = { text = "MIT" }
 dependencies = [
   # Core — pinned to known-good ranges to limit supply chain attack surface
   "openai>=2.21.0,<3",
+  "gradio>=4.0.0",
   "anthropic>=0.39.0,<1",
   "python-dotenv>=1.2.1,<2",
   "fire>=0.7.1,<1",

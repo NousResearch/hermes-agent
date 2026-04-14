@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/Cautioncrazy/caution-hermes-agent/main/scripts/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -26,8 +26,8 @@ NC='\033[0m' # No Color
 BOLD='\033[1m'
 
 # Configuration
-REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
-REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
+REPO_URL_SSH="git@github.com:Cautioncrazy/caution-hermes-agent.git"
+REPO_URL_HTTPS="https://github.com/Cautioncrazy/caution-hermes-agent.git"
 HERMES_HOME="$HOME/.hermes"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_VERSION="3.11"
@@ -175,7 +175,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex"
+            log_info "  irm https://raw.githubusercontent.com/Cautioncrazy/caution-hermes-agent/main/scripts/install.ps1 | iex"
             exit 1
             ;;
         *)
@@ -1300,6 +1300,7 @@ print_success() {
     echo -e "   ${GREEN}hermes config edit${NC}  Open config in editor"
     echo -e "   ${GREEN}hermes gateway install${NC} Install gateway service (messaging + cron)"
     echo -e "   ${GREEN}hermes update${NC}       Update to latest version"
+    echo -e "   ${GREEN}python webui.py${NC}     Launch the Gradio Web UI"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"

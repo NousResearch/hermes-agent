@@ -7,7 +7,7 @@ license: MIT
 metadata:
   hermes:
     tags: [hermes, setup, configuration, multi-agent, spawning, cli, gateway, development]
-    homepage: https://github.com/NousResearch/hermes-agent
+    homepage: https://github.com/Cautioncrazy/caution-hermes-agent
     related_skills: [claude-code, codex, opencode]
 ---
 
@@ -34,7 +34,7 @@ People use Hermes for software development, research, system administration, dat
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Cautioncrazy/caution-hermes-agent/main/scripts/install.sh | bash
 
 # Interactive chat (default)
 hermes

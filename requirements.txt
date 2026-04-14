@@ -21,6 +21,9 @@ debugpy
 firecrawl-py
 parallel-web>=0.4.2
 
+# Web UI
+gradio>=4.0.0
+
 # Image generation
 fal-client
 

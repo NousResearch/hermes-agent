@@ -14,7 +14,7 @@ Run the one-line installer:
 
 ```bash
 # Linux / macOS / WSL2 / Android (Termux)
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Cautioncrazy/caution-hermes-agent/main/scripts/install.sh | bash
 ```
 
 :::tip Android / Termux

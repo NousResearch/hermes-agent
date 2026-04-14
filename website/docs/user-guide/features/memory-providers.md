@@ -302,7 +302,7 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `tags` | — | Tags applied when storing memories |
 | `recall_tags` | — | Tags to filter on recall |
 
-See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
+See [plugin README](https://github.com/Cautioncrazy/caution-hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 
 ---
 

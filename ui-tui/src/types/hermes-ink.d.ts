@@ -53,7 +53,9 @@ declare module '@hermes/ink' {
     readonly scrollToBottom: () => void
     readonly getScrollTop: () => number
     readonly getPendingDelta: () => number
+    readonly getScrollHeight: () => number
     readonly getViewportHeight: () => number
+    readonly getViewportTop: () => number
     readonly isSticky: () => boolean
     readonly subscribe: (listener: () => void) => () => void
   }

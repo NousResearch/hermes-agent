@@ -558,6 +558,53 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
 
+  const scrollWithSelection = useCallback(
+    (delta: number) => {
+      const s = scrollRef.current
+      const sel = selection.getState() as
+        | { anchor?: { row: number }; focus?: { row: number }; isDragging?: boolean }
+        | null
+
+      if (!s || !sel?.anchor || !sel.focus) {
+        s?.scrollBy(delta)
+        return
+      }
+
+      const top = s.getViewportTop()
+      const bottom = top + s.getViewportHeight() - 1
+
+      if (sel.anchor.row < top || sel.anchor.row > bottom) {
+        s.scrollBy(delta)
+        return
+      }
+
+      if (!sel.isDragging && (sel.focus.row < top || sel.focus.row > bottom)) {
+        s.scrollBy(delta)
+        return
+      }
+
+      const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
+      const cur = s.getScrollTop() + s.getPendingDelta()
+      const actual = Math.max(0, Math.min(max, cur + delta)) - cur
+
+      if (actual === 0) {
+        return
+      }
+
+      if (actual > 0) {
+        selection.captureScrolledRows(top, top + actual - 1, 'above')
+        sel.isDragging ? selection.shiftAnchor(-actual, top, bottom) : selection.shiftSelection(-actual, top, bottom)
+      } else {
+        const amount = -actual
+        selection.captureScrolledRows(bottom - amount + 1, bottom, 'below')
+        sel.isDragging ? selection.shiftAnchor(amount, top, bottom) : selection.shiftSelection(amount, top, bottom)
+      }
+
+      s.scrollBy(delta)
+    },
+    [selection]
+  )
+
   // ── Resize RPC ───────────────────────────────────────────────────
 
   useEffect(() => {
@@ -1326,13 +1373,13 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (key.wheelUp) {
-      scrollRef.current?.scrollBy(-WHEEL_SCROLL_STEP)
+      scrollWithSelection(-WHEEL_SCROLL_STEP)
 
       return
     }
 
     if (key.wheelDown) {
-      scrollRef.current?.scrollBy(WHEEL_SCROLL_STEP)
+      scrollWithSelection(WHEEL_SCROLL_STEP)
 
       return
     }
@@ -1340,7 +1387,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (key.pageUp || key.pageDown) {
       const viewport = scrollRef.current?.getViewportHeight() ?? Math.max(6, (stdout?.rows ?? 24) - 8)
       const step = Math.max(4, viewport - 2)
-      scrollRef.current?.scrollBy(key.pageUp ? -step : step)
+      scrollWithSelection(key.pageUp ? -step : step)
 
       return
     }

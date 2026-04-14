@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+from pathlib import Path
 import socket as _socket
 import re
 import sqlite3
@@ -504,6 +505,203 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _require_session_db(self):
+        """Return ``(db, error_response)`` for handlers that need SessionDB."""
+        db = self._ensure_session_db()
+        if db is None:
+            return None, web.json_response(
+                _openai_error(
+                    "Session database is unavailable on this server.",
+                    code="session_db_unavailable",
+                ),
+                status=501,
+            )
+        return db, None
+
+    @staticmethod
+    def _safe_json_loads(raw: Any) -> Any:
+        if not raw or not isinstance(raw, str):
+            return raw
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+
+    def _serialize_session(self, session: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(session or {})
+        if isinstance(data.get("model_config"), str):
+            data["model_config"] = self._safe_json_loads(data["model_config"])
+        return data
+
+    def _serialize_message(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        data = dict(message or {})
+        if isinstance(data.get("tool_calls"), str):
+            data["tool_calls"] = self._safe_json_loads(data["tool_calls"])
+        if isinstance(data.get("reasoning_details"), str):
+            data["reasoning_details"] = self._safe_json_loads(
+                data["reasoning_details"]
+            )
+        if isinstance(data.get("codex_reasoning_items"), str):
+            data["codex_reasoning_items"] = self._safe_json_loads(
+                data["codex_reasoning_items"]
+            )
+        return data
+
+    @staticmethod
+    def _parse_positive_int(
+        value: Any,
+        default: int,
+        *,
+        minimum: int = 0,
+        maximum: int | None = None,
+    ) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        parsed = max(minimum, parsed)
+        if maximum is not None:
+            parsed = min(maximum, parsed)
+        return parsed
+
+    @staticmethod
+    def _deep_merge(target: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+        for key, value in patch.items():
+            if isinstance(value, dict) and isinstance(target.get(key), dict):
+                APIServerAdapter._deep_merge(target[key], value)
+            else:
+                target[key] = value
+        return target
+
+    @staticmethod
+    def _default_chat_message(body: Dict[str, Any]) -> str:
+        message = str(body.get("message") or "").strip()
+        if message:
+            return message
+
+        attachments = body.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            names = []
+            for item in attachments[:5]:
+                if isinstance(item, dict):
+                    name = str(item.get("name") or item.get("fileName") or "").strip()
+                    if name:
+                        names.append(name)
+            if names:
+                return f"Please review the attached content: {', '.join(names)}."
+            return "Please review the attached content."
+
+        return ""
+
+    def _ensure_api_session(
+        self,
+        db,
+        session_id: str,
+        *,
+        model: Optional[str] = None,
+        parent_session_id: Optional[str] = None,
+        title: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create the session row when missing, then return it."""
+        existing = db.get_session(session_id)
+        if existing:
+            return existing
+
+        db.create_session(
+            session_id=session_id,
+            source="api_server",
+            model=model or self._model_name,
+            system_prompt=system_prompt,
+            parent_session_id=parent_session_id,
+        )
+        if title:
+            try:
+                db.set_session_title(session_id, title)
+            except Exception:
+                pass
+        return db.get_session(session_id) or {
+            "id": session_id,
+            "source": "api_server",
+            "model": model or self._model_name,
+            "title": title,
+            "parent_session_id": parent_session_id,
+        }
+
+    def _list_memory_files(self) -> List[Dict[str, Any]]:
+        """Return a lightweight inventory of persistent memory markdown files."""
+        try:
+            from hermes_constants import get_hermes_home
+
+            root = get_hermes_home().resolve()
+        except Exception:
+            root = Path.home() / ".hermes"
+
+        results: List[Dict[str, Any]] = []
+        candidates: List[Path] = []
+
+        memory_md = root / "MEMORY.md"
+        if memory_md.exists():
+            candidates.append(memory_md)
+
+        for subdir in ("memory", "memories"):
+            base = root / subdir
+            if base.exists():
+                candidates.extend(sorted(base.rglob("*.md")))
+
+        for path in candidates:
+            try:
+                rel = str(path.relative_to(root)).replace("\\", "/")
+                stat = path.stat()
+                results.append(
+                    {
+                        "path": rel,
+                        "name": path.name,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                    }
+                )
+            except Exception:
+                continue
+        return results
+
+    def _list_skills_payload(self) -> Dict[str, Any]:
+        """Return installed skills in a frontend-friendly shape."""
+        from tools.skills_tool import skills_list
+
+        raw = json.loads(skills_list())
+        skills = raw.get("skills", []) if isinstance(raw, dict) else []
+        categories = raw.get("categories", []) if isinstance(raw, dict) else []
+
+        normalized = []
+        for skill in skills:
+            if not isinstance(skill, dict):
+                continue
+            name = str(skill.get("name") or "").strip()
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "id": name,
+                    "slug": name,
+                    "name": name,
+                    "description": str(skill.get("description") or "").strip(),
+                    "category": skill.get("category") or "uncategorized",
+                    "tags": skill.get("tags") or [],
+                    "installed": True,
+                    "enabled": True,
+                    "builtin": True,
+                    "sourcePath": f"~/.hermes/skills/{name}",
+                }
+            )
+
+        return {
+            "items": normalized,
+            "skills": normalized,
+            "categories": categories,
+            "count": len(normalized),
+        }
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -514,6 +712,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -528,7 +727,7 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        model = model_override or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -688,6 +887,7 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+        requested_model = str(model_name).strip() if model_name else None
 
         if stream:
             import queue as _q
@@ -746,6 +946,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=requested_model,
             ))
 
             return await self._write_sse_chat_completion(
@@ -760,6 +961,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=requested_model,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1044,6 +1246,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                model_override=str(body.get("model") or "").strip() or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1152,6 +1355,544 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "deleted": True,
         })
+
+    # ------------------------------------------------------------------
+    # Extended Hermes workspace APIs
+    # ------------------------------------------------------------------
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list persisted sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        limit = self._parse_positive_int(request.query.get("limit"), 50, minimum=1, maximum=200)
+        offset = self._parse_positive_int(request.query.get("offset"), 0, minimum=0)
+        source = request.query.get("source") or None
+        items = [
+            self._serialize_session(item)
+            for item in db.list_sessions_rich(source=source, limit=limit, offset=offset)
+        ]
+        total = db.session_count(source=source)
+        return web.json_response({"items": items, "total": total})
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create a new session row."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        session_id = str(body.get("id") or body.get("session_id") or uuid.uuid4()).strip()
+        title = str(body.get("title") or body.get("name") or "").strip() or None
+        model = str(body.get("model") or self._model_name).strip() or self._model_name
+        parent_session_id = str(body.get("parent_session_id") or "").strip() or None
+
+        session = self._ensure_api_session(
+            db,
+            session_id,
+            model=model,
+            parent_session_id=parent_session_id,
+            title=title,
+        )
+        return web.json_response({"session": self._serialize_session(session)})
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id} — fetch a single session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        session = db.get_session(session_id)
+        if not session:
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+                status=404,
+            )
+        return web.json_response({"session": self._serialize_session(session)})
+
+    async def _handle_update_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — update mutable session fields."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        if not db.get_session(session_id):
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+                status=404,
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        title = body.get("title", body.get("label"))
+        if title is not None:
+            try:
+                db.set_session_title(session_id, str(title))
+            except ValueError as e:
+                return web.json_response({"error": str(e)}, status=400)
+
+        session = db.get_session(session_id) or {"id": session_id}
+        return web.json_response({"session": self._serialize_session(session)})
+
+    async def _handle_delete_session_api(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id} — remove a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        deleted = db.delete_session(session_id)
+        if not deleted:
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+                status=404,
+            )
+        return web.json_response({"deleted": True, "session_id": session_id})
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — full message history."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        if not db.get_session(session_id):
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+                status=404,
+            )
+
+        items = [self._serialize_message(msg) for msg in db.get_messages(session_id)]
+        return web.json_response({"items": items, "total": len(items)})
+
+    async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — FTS-backed message search across sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        query = str(request.query.get("q") or "").strip()
+        if not query:
+            return web.json_response({"query": query, "count": 0, "results": []})
+
+        limit = self._parse_positive_int(request.query.get("limit"), 20, minimum=1, maximum=100)
+        offset = self._parse_positive_int(request.query.get("offset"), 0, minimum=0)
+        results = db.search_messages(query, limit=limit, offset=offset)
+        return web.json_response({"query": query, "count": len(results), "results": results})
+
+    async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — clone metadata and message history."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        session = db.get_session(session_id)
+        if not session:
+            return web.json_response(
+                _openai_error(f"Session not found: {session_id}", code="session_not_found"),
+                status=404,
+            )
+
+        messages = db.get_messages(session_id)
+        child_id = f"{session_id}-fork-{uuid.uuid4().hex[:8]}"
+        child_title = session.get("title")
+        if child_title:
+            try:
+                child_title = db.get_next_title_in_lineage(child_title)
+            except Exception:
+                pass
+
+        db.create_session(
+            session_id=child_id,
+            source=session.get("source") or "api_server",
+            model=session.get("model"),
+            model_config=self._safe_json_loads(session.get("model_config")),
+            system_prompt=session.get("system_prompt"),
+            user_id=session.get("user_id"),
+            parent_session_id=session_id,
+        )
+        if child_title:
+            try:
+                db.set_session_title(child_id, child_title)
+            except Exception:
+                pass
+
+        for msg in messages:
+            db.append_message(
+                child_id,
+                role=msg.get("role", ""),
+                content=msg.get("content"),
+                tool_name=msg.get("tool_name"),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id"),
+                token_count=msg.get("token_count"),
+                finish_reason=msg.get("finish_reason"),
+                reasoning=msg.get("reasoning"),
+                reasoning_details=msg.get("reasoning_details"),
+                codex_reasoning_items=msg.get("codex_reasoning_items"),
+            )
+
+        child = db.get_session(child_id) or {"id": child_id}
+        return web.json_response({"session": self._serialize_session(child), "forked_from": session_id})
+
+    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat — non-streaming session chat."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        user_message = self._default_chat_message(body)
+        if not user_message:
+            return web.json_response(_openai_error("Missing 'message' field"), status=400)
+
+        model_override = str(body.get("model") or "").strip() or None
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None:
+            system_prompt = str(system_prompt)
+
+        session = self._ensure_api_session(db, session_id, model=model_override)
+        history = db.get_messages_as_conversation(session_id)
+        run_id = f"run_{uuid.uuid4().hex}"
+
+        try:
+            result, usage = await self._run_agent(
+                user_message=user_message,
+                conversation_history=history,
+                ephemeral_system_prompt=system_prompt,
+                session_id=session_id,
+                model_override=model_override,
+            )
+        except Exception as e:
+            logger.error("Error running agent for session chat %s: %s", session_id, e, exc_info=True)
+            return web.json_response(
+                _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                status=500,
+            )
+
+        final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+        return web.json_response(
+            {
+                "ok": True,
+                "run_id": run_id,
+                "session_id": session_id,
+                "session": self._serialize_session(db.get_session(session_id) or session),
+                "response": final_response,
+                "usage": usage,
+            }
+        )
+
+    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/sessions/{session_id}/chat/stream — SSE stream for enhanced Hermes mode."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        db, db_err = self._require_session_db()
+        if db_err:
+            return db_err
+
+        session_id = request.match_info["session_id"]
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        user_message = self._default_chat_message(body)
+        if not user_message:
+            return web.json_response(_openai_error("Missing 'message' field"), status=400)
+
+        model_override = str(body.get("model") or "").strip() or None
+        system_prompt = body.get("system_message") or body.get("instructions")
+        if system_prompt is not None:
+            system_prompt = str(system_prompt)
+
+        self._ensure_api_session(db, session_id, model=model_override)
+        history = db.get_messages_as_conversation(session_id)
+
+        run_id = f"run_{uuid.uuid4().hex}"
+        assistant_message_id = f"msg_{uuid.uuid4().hex}"
+        loop = asyncio.get_running_loop()
+        q: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue()
+        agent_ref = [None]
+
+        def _push(event_name: str, payload: Dict[str, Any]) -> None:
+            data = {
+                "event": event_name,
+                "run_id": run_id,
+                "session_id": session_id,
+                "timestamp": time.time(),
+                **payload,
+            }
+            try:
+                loop.call_soon_threadsafe(q.put_nowait, data)
+            except Exception:
+                pass
+
+        def _on_delta(delta: Optional[str]) -> None:
+            if not delta:
+                return
+            _push("assistant.delta", {"delta": delta})
+
+        def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+            if event_type == "tool.started":
+                _push(
+                    "tool.started",
+                    {
+                        "tool_name": tool_name or "",
+                        "preview": preview or "",
+                        "tool_call": {
+                            "id": f"{run_id}:{tool_name or 'tool'}",
+                            "name": tool_name or "tool",
+                            "arguments": args,
+                        },
+                    },
+                )
+            elif event_type == "tool.completed":
+                _push(
+                    "tool.completed",
+                    {
+                        "tool_name": tool_name or "",
+                        "duration": kwargs.get("duration", 0),
+                        "error": kwargs.get("is_error", False),
+                    },
+                )
+            elif event_type == "reasoning.available":
+                _push("reasoning.available", {"text": preview or ""})
+
+        async def _run_and_finish():
+            try:
+                _push("run.started", {"message": user_message})
+                _push(
+                    "message.started",
+                    {
+                        "message": {
+                            "id": assistant_message_id,
+                            "role": "assistant",
+                            "content": [],
+                        }
+                    },
+                )
+                result, usage = await self._run_agent(
+                    user_message=user_message,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    stream_delta_callback=_on_delta,
+                    tool_progress_callback=_on_tool_progress,
+                    agent_ref=agent_ref,
+                    model_override=model_override,
+                )
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                _push("assistant.completed", {"content": final_response})
+                _push("run.completed", {"content": final_response, "usage": usage})
+            except Exception as exc:
+                logger.exception("[api_server] session stream %s failed", session_id)
+                _push("error", {"message": str(exc)})
+            finally:
+                try:
+                    q.put_nowait(None)
+                except Exception:
+                    pass
+
+        task = asyncio.create_task(_run_and_finish())
+        try:
+            self._background_tasks.add(task)
+        except Exception:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+
+        try:
+            while True:
+                item = await q.get()
+                if item is None:
+                    await response.write(b": stream closed\n\n")
+                    break
+                event_name = item.pop("event", "message")
+                payload = json.dumps(item)
+                await response.write(f"event: {event_name}\ndata: {payload}\n\n".encode())
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                try:
+                    agent.interrupt("Session SSE client disconnected")
+                except Exception:
+                    pass
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except Exception:
+                    pass
+
+        return response
+
+    async def _handle_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills — list installed skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            return web.json_response(self._list_skills_payload())
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_skill_view(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/{name} — view a skill's full metadata/content."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from tools.skills_tool import skill_view
+
+        name = request.match_info["name"]
+        result = json.loads(skill_view(name))
+        status = 200 if result.get("success", False) else 404
+        return web.json_response(result, status=status)
+
+    async def _handle_skill_categories(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/categories — list known categories."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        payload = self._list_skills_payload()
+        return web.json_response({"categories": payload.get("categories", [])})
+
+    async def _handle_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — lightweight memory inventory."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        files = self._list_memory_files()
+        return web.json_response({"files": files, "count": len(files)})
+
+    async def _handle_config(self, request: "web.Request") -> "web.Response":
+        """GET/PATCH /api/config — read or update Hermes config/env."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from hermes_cli.config import (
+            get_env_path,
+            load_env,
+            read_raw_config,
+            save_config,
+            save_env_value,
+            remove_env_value,
+        )
+
+        if request.method == "GET":
+            config = read_raw_config()
+            env = load_env()
+            redacted = {
+                key: (
+                    "***"
+                    if any(token in key for token in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and value
+                    else value
+                )
+                for key, value in env.items()
+            }
+            return web.json_response(
+                {
+                    "config": config,
+                    "env": redacted,
+                    "env_path": str(get_env_path()),
+                }
+            )
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be an object"), status=400)
+
+        config_patch = body.get("config") if isinstance(body.get("config"), dict) else body.get("patch")
+        if config_patch is None and any(k not in ("env",) for k in body.keys()):
+            config_patch = {k: v for k, v in body.items() if k != "env"}
+        if not isinstance(config_patch, dict):
+            config_patch = {}
+
+        env_patch = body.get("env")
+        if not isinstance(env_patch, dict):
+            env_patch = {}
+
+        if config_patch:
+            current = read_raw_config()
+            self._deep_merge(current, config_patch)
+            save_config(current)
+
+        for key, value in env_patch.items():
+            if value is None or value == "":
+                remove_env_value(str(key))
+            else:
+                save_env_value(str(key), str(value))
+
+        return web.json_response({"ok": True})
 
     # ------------------------------------------------------------------
     # Cron jobs API
@@ -1465,6 +2206,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1485,6 +2227,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -1789,6 +2532,23 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # Hermes workspace compatibility APIs
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/search", self._handle_search_sessions)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_update_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session_api)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_get_session_messages)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_get("/api/skills", self._handle_skills)
+            self._app.router.add_get("/api/skills/categories", self._handle_skill_categories)
+            self._app.router.add_get("/api/skills/{name}", self._handle_skill_view)
+            self._app.router.add_get("/api/memory", self._handle_memory)
+            self._app.router.add_get("/api/config", self._handle_config)
+            self._app.router.add_patch("/api/config", self._handle_config)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

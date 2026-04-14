@@ -200,6 +200,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "arcee": [
+        "trinity-large-thinking",
+        "trinity-large-preview",
+        "trinity-mini",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -529,6 +534,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("ai-gateway",     "AI Gateway",               "extended", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","extended", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "extended", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+    ProviderEntry("arcee",          "Arcee AI",                 "extended", "Arcee AI (Trinity models — direct API)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -553,6 +559,8 @@ _PROVIDER_ALIASES = {
     "moonshot": "kimi-coding",
     "kimi-cn": "kimi-coding-cn",
     "moonshot-cn": "kimi-coding-cn",
+    "arcee-ai": "arcee",
+    "arceeai": "arcee",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",

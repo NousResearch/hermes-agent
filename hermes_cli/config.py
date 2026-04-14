@@ -824,6 +824,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "ARCEEAI_API_KEY": {
+        "description": "Arcee AI API key",
+        "prompt": "Arcee AI API key",
+        "url": "https://chat.arcee.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "ARCEE_BASE_URL": {
+        "description": "Arcee AI base URL override",
+        "prompt": "Arcee base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

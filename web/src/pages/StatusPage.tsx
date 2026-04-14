@@ -39,7 +39,7 @@ function gatewayValue(
   status: StatusResponse,
   t: (key: string, vars?: Record<string, string | number>) => string,
 ): string {
-  if (status.gateway_running) return t("status.pid", { pid: status.gateway_pid });
+  if (status.gateway_running) return t("status.pid", { pid: status.gateway_pid ?? 0 });
   if (status.gateway_state === "startup_failed") return t("status.startFailed");
   return t("status.notRunning");
 }

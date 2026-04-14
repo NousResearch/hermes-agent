@@ -3,9 +3,10 @@ import { en } from "./locales/en";
 import { zh } from "./locales/zh";
 
 export type Locale = "en" | "zh";
-export type TranslationKeys = typeof en;
+type DeepStringify<T> = { [K in keyof T]: T[K] extends string ? string : DeepStringify<T[K]> };
+export type TranslationKeys = DeepStringify<typeof en>;
 
-const LOCALES: Record<Locale, TranslationKeys> = { en, zh };
+const LOCALES: Record<Locale, TranslationKeys> = { en, zh } as Record<Locale, TranslationKeys>;
 
 const STORAGE_KEY = "hermes-ui-lang";
 

@@ -8,7 +8,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
-import { useI18n, type Locale } from "@/lib/i18n";
+import { useI18n } from "@/lib/i18n";
 
 const NAV_KEYS = [
   { id: "status", labelKey: "nav.status", icon: Activity },
@@ -21,7 +21,7 @@ const NAV_KEYS = [
   { id: "env", labelKey: "nav.keys", icon: KeyRound },
 ] as const;
 
-type PageId = (typeof NAV_ITEMS)[number]["id"];
+type PageId = (typeof NAV_KEYS)[number]["id"];
 
 const PAGE_COMPONENTS: Record<PageId, React.FC> = {
   status: StatusPage,

@@ -257,7 +257,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         payload = {
             "url": webhook_url,
-            "events": ["new-message", "updated-message", "message"],
+            "events": ["new-message", "updated-message"],
         }
 
         try:

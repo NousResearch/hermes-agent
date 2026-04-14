@@ -219,6 +219,6 @@ docker restart hermes
 
 ```sh
 docker logs --tail 50 hermes          # Recent logs
-docker exec hermes hermes version     # Verify version
+docker run -it --rm nousresearch/hermes-agent:latest version     # Verify version
 docker stats hermes                    # Resource usage
 ```

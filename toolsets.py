@@ -449,7 +449,7 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
         if name in _get_plugin_toolset_names():
             try:
                 from tools.registry import registry
-                return [e.name for e in registry._tools.values() if e.toolset == name]
+                return registry.get_tool_names_for_toolset(name)
             except Exception:
                 pass
         return []
@@ -495,9 +495,9 @@ def _get_plugin_toolset_names() -> Set[str]:
     try:
         from tools.registry import registry
         return {
-            entry.toolset
-            for entry in registry._tools.values()
-            if entry.toolset not in TOOLSETS
+            toolset_name
+            for toolset_name in registry.get_registered_toolset_names()
+            if toolset_name not in TOOLSETS
         }
     except Exception:
         return set()
@@ -518,7 +518,7 @@ def get_all_toolsets() -> Dict[str, Dict[str, Any]]:
         if ts_name not in result:
             try:
                 from tools.registry import registry
-                tools = [e.name for e in registry._tools.values() if e.toolset == ts_name]
+                tools = registry.get_tool_names_for_toolset(ts_name)
                 result[ts_name] = {
                     "description": f"Plugin toolset: {ts_name}",
                     "tools": tools,

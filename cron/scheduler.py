@@ -482,8 +482,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
-def _build_job_prompt(job: dict) -> str:
-    """Build the effective prompt for a cron job, optionally loading one or more skills first."""
+def _build_job_prompt(job: dict) -> Optional[str]:
+    """Build the effective prompt for a cron job, optionally loading one or more skills first.
+
+    Returns None when the job has a pre-run script that succeeded with empty
+    output — signaling the caller to skip the model invocation entirely. The
+    script's empty output is the job's way of saying "nothing to do."
+    """
     prompt = job.get("prompt", "")
     skills = job.get("skills")
 
@@ -501,10 +506,7 @@ def _build_job_prompt(job: dict) -> str:
                     f"{prompt}"
                 )
             else:
-                prompt = (
-                    "[Script ran successfully but produced no output.]\n\n"
-                    f"{prompt}"
-                )
+                return None
         else:
             prompt = (
                 "## Script Error\n"
@@ -593,6 +595,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     job_id = job["id"]
     job_name = job["name"]
     prompt = _build_job_prompt(job)
+    if prompt is None:
+        # Pre-run script succeeded with empty output → nothing to do.
+        # Skip model invocation entirely and report a silent success so
+        # the delivery/bookkeeping path treats this like any other no-op run.
+        logger.info("Job '%s': pre-run script produced no output — skipping model invocation", job_name)
+        output = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"**Schedule:** {job.get('schedule_display', 'N/A')}\n\n"
+            f"## Response\n\n{SILENT_MARKER} (script produced no output, model not invoked)\n"
+        )
+        return True, output, SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 

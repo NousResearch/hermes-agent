@@ -113,6 +113,7 @@ AUTHOR_MAP = {
     "m@statecraft.systems": "mbierling",
     "balyan.sid@gmail.com": "balyansid",
     "oluwadareab12@gmail.com": "bennytimz",
+    "xowiekk@gmail.com": "Xowiek",
     # ── bulk addition: 75 emails resolved via API, PR salvage bodies, noreply
     #    crossref, and GH contributor list matching (April 2026 audit) ──
     "1115117931@qq.com": "aaronagent",

@@ -27,7 +27,7 @@ from agent.credential_pool import (
     load_pool,
 )
 import hermes_cli.auth as auth_mod
-from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth import DEFAULT_OPENAI_API_BASE_URL, PROVIDER_REGISTRY
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -83,9 +83,14 @@ def _normalize_provider(provider: str) -> str:
     return normalized
 
 
-def _provider_base_url(provider: str) -> str:
+def _provider_base_url(provider: str, auth_type: str = "", explicit_base_url: str = "") -> str:
+    explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
+    if explicit_base_url:
+        return explicit_base_url
     if provider == "openrouter":
         return OPENROUTER_BASE_URL
+    if provider == "openai-codex" and auth_type == AUTH_TYPE_API_KEY:
+        return DEFAULT_OPENAI_API_BASE_URL
     if provider.startswith(CUSTOM_POOL_PREFIX):
         from agent.credential_pool import _get_custom_provider_config
 
@@ -169,7 +174,11 @@ def auth_add_command(args) -> None:
             priority=0,
             source=SOURCE_MANUAL,
             access_token=token,
-            base_url=_provider_base_url(provider),
+            base_url=_provider_base_url(
+                provider,
+                AUTH_TYPE_API_KEY,
+                getattr(args, "base_url", None),
+            ),
         )
         pool.add_entry(entry)
         print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')

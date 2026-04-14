@@ -1425,53 +1425,135 @@ def _model_flow_nous(config, current_model="", args=None):
 
 
 def _model_flow_openai_codex(config, current_model=""):
-    """OpenAI Codex provider: ensure logged in, then pick model."""
+    """OpenAI Codex provider: support either OpenAI API keys or ChatGPT OAuth."""
     from hermes_cli.auth import (
         get_codex_auth_status, _prompt_model_selection, _save_model_choice,
         _update_config_for_provider, _login_openai_codex,
-        PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
+        PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL, DEFAULT_OPENAI_API_BASE_URL,
+        resolve_configured_codex_api_key_credentials, deactivate_provider,
     )
     from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.config import load_config, save_config, save_env_value
+    from hermes_cli.models import fetch_api_models
     import argparse
+    import getpass
 
     status = get_codex_auth_status()
     if not status.get("logged_in"):
-        print("Not logged into OpenAI Codex. Starting login...")
+        print("OpenAI Codex supports both API keys and ChatGPT OAuth.")
+        print("  1. OpenAI API key (Responses API)")
+        print("  2. ChatGPT login (device code)")
         print()
         try:
-            mock_args = argparse.Namespace()
-            _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
-        except SystemExit:
-            print("Login cancelled or failed.")
+            choice = input("Type [1/2]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
             return
-        except Exception as exc:
-            print(f"Login failed: {exc}")
-            return
+        if choice == "2":
+            try:
+                mock_args = argparse.Namespace()
+                _login_openai_codex(mock_args, PROVIDER_REGISTRY["openai-codex"])
+            except SystemExit:
+                print("Login cancelled or failed.")
+                return
+            except Exception as exc:
+                print(f"Login failed: {exc}")
+                return
+            status = get_codex_auth_status()
+            if not status.get("logged_in"):
+                print("Login cancelled or failed.")
+                return
+        else:
+            api_cfg = resolve_configured_codex_api_key_credentials(load_config())
+            existing_key = str(api_cfg.get("api_key") or "").strip()
+            base_url = str(api_cfg.get("base_url") or DEFAULT_OPENAI_API_BASE_URL).strip().rstrip("/")
+            if not existing_key:
+                print("Get an OpenAI API key at: https://platform.openai.com/api-keys")
+                print()
+                try:
+                    existing_key = getpass.getpass("OPENAI_API_KEY (or Enter to cancel): ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print()
+                    return
+                if not existing_key:
+                    print("Cancelled.")
+                    return
+            try:
+                override = input(f"Base URL [{base_url}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                override = ""
+            if override:
+                if not override.startswith(("http://", "https://")):
+                    print("Invalid base URL. Expected http:// or https://.")
+                    return
+                base_url = override.rstrip("/")
 
-    _codex_token = None
+            save_env_value("OPENAI_API_KEY", existing_key)
+            cfg = load_config()
+            model = cfg.get("model")
+            if not isinstance(model, dict):
+                model = {"default": model} if model else {}
+                cfg["model"] = model
+            model["provider"] = "openai-codex"
+            model["base_url"] = base_url or DEFAULT_OPENAI_API_BASE_URL
+            model["api_mode"] = "codex_responses"
+            save_config(cfg)
+            config["model"] = dict(model)
+            deactivate_provider()
+            print("API key saved.")
+            print()
+            status = {
+                "logged_in": True,
+                "auth_mode": "api_key",
+                "api_key": existing_key,
+                "base_url": base_url or DEFAULT_OPENAI_API_BASE_URL,
+            }
+
+    auth_mode = str(status.get("auth_mode") or "chatgpt").strip().lower()
+    _codex_token = str(status.get("api_key") or "").strip()
+    _codex_base_url = str(status.get("base_url") or "").strip().rstrip("/")
+
     # Prefer credential pool (where `hermes auth` stores device_code tokens),
     # fall back to legacy provider state.
-    try:
-        _codex_status = get_codex_auth_status()
-        if _codex_status.get("logged_in"):
-            _codex_token = _codex_status.get("api_key")
-    except Exception:
-        pass
-    if not _codex_token:
-        try:
-            from hermes_cli.auth import resolve_codex_runtime_credentials
-            _codex_creds = resolve_codex_runtime_credentials()
-            _codex_token = _codex_creds.get("api_key")
-        except Exception:
-            pass
-
-    codex_models = get_codex_model_ids(access_token=_codex_token)
+    if auth_mode == "api_key":
+        codex_models = fetch_api_models(_codex_token, _codex_base_url) or get_codex_model_ids()
+    else:
+        if not _codex_token:
+            try:
+                _codex_status = get_codex_auth_status()
+                if _codex_status.get("logged_in"):
+                    _codex_token = _codex_status.get("api_key")
+            except Exception:
+                pass
+        if not _codex_token:
+            try:
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+                _codex_creds = resolve_codex_runtime_credentials()
+                _codex_token = _codex_creds.get("api_key")
+            except Exception:
+                pass
+        codex_models = get_codex_model_ids(access_token=_codex_token)
 
     selected = _prompt_model_selection(codex_models, current_model=current_model)
     if selected:
         _save_model_choice(selected)
-        _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
-        print(f"Default model set to: {selected} (via OpenAI Codex)")
+        if auth_mode == "api_key":
+            cfg = load_config()
+            model = cfg.get("model")
+            if not isinstance(model, dict):
+                model = {"default": model} if model else {}
+                cfg["model"] = model
+            model["provider"] = "openai-codex"
+            model["base_url"] = _codex_base_url or DEFAULT_OPENAI_API_BASE_URL
+            model["api_mode"] = "codex_responses"
+            save_config(cfg)
+            config["model"] = dict(model)
+            deactivate_provider()
+            print(f"Default model set to: {selected} (via OpenAI API)")
+        else:
+            _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
+            print(f"Default model set to: {selected} (via OpenAI Codex)")
     else:
         print("No change.")
 

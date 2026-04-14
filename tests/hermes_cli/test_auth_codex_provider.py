@@ -11,6 +11,7 @@ import yaml
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    DEFAULT_OPENAI_API_BASE_URL,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
@@ -18,6 +19,7 @@ from hermes_cli.auth import (
     _import_codex_cli_tokens,
     get_codex_auth_status,
     get_provider_auth_state,
+    resolve_configured_codex_api_key_credentials,
     resolve_codex_runtime_credentials,
     resolve_provider,
 )
@@ -283,3 +285,56 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     assert creds["source"] == "hermes-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
+
+
+def test_resolve_configured_codex_api_key_credentials_from_env(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "openai-codex",
+                    "base_url": DEFAULT_OPENAI_API_BASE_URL,
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+
+    creds = resolve_configured_codex_api_key_credentials()
+
+    assert creds["selected"] is True
+    assert creds["configured"] is True
+    assert creds["api_key"] == "sk-openai-env"
+    assert creds["base_url"] == DEFAULT_OPENAI_API_BASE_URL
+    assert creds["source"] == "env:OPENAI_API_KEY"
+
+
+def test_get_codex_auth_status_prefers_configured_api_key_mode(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "provider": "openai-codex",
+                    "base_url": DEFAULT_OPENAI_API_BASE_URL,
+                }
+            },
+            sort_keys=False,
+        )
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+
+    status = get_codex_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["auth_mode"] == "api_key"
+    assert status["api_key"] == "sk-openai-env"
+    assert status["base_url"] == DEFAULT_OPENAI_API_BASE_URL

@@ -148,6 +148,32 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_codex_uses_configured_api_key_mode(monkeypatch):
+    def _unexpected_codex_runtime_credentials():
+        raise AssertionError("resolve_codex_runtime_credentials should not be called")
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openai-codex")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openai-codex",
+            "base_url": rp.DEFAULT_OPENAI_API_BASE_URL,
+        },
+    )
+    monkeypatch.setattr(rp, "resolve_codex_runtime_credentials", _unexpected_codex_runtime_credentials)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+
+    resolved = rp.resolve_runtime_provider(requested="openai-codex")
+
+    assert resolved["provider"] == "openai-codex"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == rp.DEFAULT_OPENAI_API_BASE_URL
+    assert resolved["api_key"] == "sk-openai-env"
+    assert resolved["source"] == "env:OPENAI_API_KEY"
+
+
 def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
     monkeypatch.setattr(

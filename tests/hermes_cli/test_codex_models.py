@@ -107,6 +107,41 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     assert captured["current_model"] == "openai/gpt-5.4"
 
 
+def test_model_command_uses_openai_api_key_mode_for_codex_list(monkeypatch):
+    from hermes_cli.main import _model_flow_openai_codex
+
+    captured = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.get_codex_auth_status",
+        lambda: {
+            "logged_in": True,
+            "auth_mode": "api_key",
+            "api_key": "sk-openai-env",
+            "base_url": "https://api.openai.com/v1",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url: captured.update(
+            {"api_key": api_key, "base_url": base_url}
+        ) or ["gpt-5.4", "gpt-5.4-mini"],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._prompt_model_selection",
+        lambda model_ids, current_model="": captured.update(
+            {"model_ids": list(model_ids), "current_model": current_model}
+        ) or None,
+    )
+
+    _model_flow_openai_codex({}, current_model="gpt-5.4")
+
+    assert captured["api_key"] == "sk-openai-env"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["model_ids"] == ["gpt-5.4", "gpt-5.4-mini"]
+    assert captured["current_model"] == "gpt-5.4"
+
+
 # ── Tests for _normalize_model_for_provider ──────────────────────────
 
 

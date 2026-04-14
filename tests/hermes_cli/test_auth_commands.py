@@ -184,6 +184,29 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+def test_auth_add_codex_api_key_uses_openai_api_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from hermes_cli.auth import DEFAULT_OPENAI_API_BASE_URL
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "api-key"
+        api_key = "sk-openai-test"
+        label = "api-key"
+        base_url = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    entry = next(item for item in entries if item["source"] == "manual")
+    assert entry["auth_type"] == "api_key"
+    assert entry["base_url"] == DEFAULT_OPENAI_API_BASE_URL
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources

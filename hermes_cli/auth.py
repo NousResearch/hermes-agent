@@ -67,6 +67,7 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
@@ -224,7 +225,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
-        name="Vercel AI Gateway",
+        name="AI Gateway",
         auth_type="api_key",
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),
@@ -374,6 +375,79 @@ def _resolve_api_key_provider_secret(
             return val, env_var
 
     return "", ""
+
+
+def resolve_configured_codex_api_key_credentials(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve the OpenAI API-key path for the ``openai-codex`` provider.
+
+    ``openai-codex`` historically meant the ChatGPT OAuth-backed Codex
+    endpoint.  Hermes now also supports the direct OpenAI Responses API when
+    the config explicitly selects ``model.provider: openai-codex`` with a
+    non-ChatGPT base URL (or an inline ``model.api_key``).
+
+    To avoid silently hijacking existing OAuth setups, ``OPENAI_API_KEY`` only
+    counts when the config has already selected the API-key mode for Codex.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+
+    provider = str(model_cfg.get("provider") or "").strip().lower()
+    cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+    cfg_api_key = ""
+    for field in ("api_key", "api"):
+        value = model_cfg.get(field)
+        if has_usable_secret(value):
+            cfg_api_key = str(value).strip()
+            break
+
+    base_url_points_to_api = bool(cfg_base_url and cfg_base_url != DEFAULT_CODEX_BASE_URL.rstrip("/"))
+    selected = provider == "openai-codex" and (base_url_points_to_api or bool(cfg_api_key))
+    base_url = cfg_base_url if base_url_points_to_api else DEFAULT_OPENAI_API_BASE_URL
+
+    if cfg_api_key:
+        return {
+            "selected": selected,
+            "configured": True,
+            "provider": "openai-codex",
+            "auth_mode": "api_key",
+            "api_key": cfg_api_key,
+            "base_url": base_url,
+            "source": "config:model.api_key",
+        }
+
+    env_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if selected and has_usable_secret(env_api_key):
+        return {
+            "selected": True,
+            "configured": True,
+            "provider": "openai-codex",
+            "auth_mode": "api_key",
+            "api_key": env_api_key,
+            "base_url": base_url,
+            "source": "env:OPENAI_API_KEY",
+        }
+
+    result = {
+        "selected": selected,
+        "configured": False,
+        "provider": "openai-codex",
+        "auth_mode": "api_key",
+        "api_key": "",
+        "base_url": base_url,
+        "source": "",
+    }
+    if selected:
+        result["error"] = "OPENAI_API_KEY is not set."
+    return result
 
 
 # =============================================================================
@@ -2320,8 +2394,11 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth.
     
     Checks the credential pool first (where `hermes auth` stores credentials),
-    then falls back to the legacy provider state.
+    then checks config-selected API-key mode, then falls back to the legacy
+    OAuth provider state.
     """
+    codex_api = resolve_configured_codex_api_key_credentials()
+
     # Check credential pool first — this is where `hermes auth` and
     # `hermes model` store device_code tokens.
     try:
@@ -2329,6 +2406,15 @@ def get_codex_auth_status() -> Dict[str, Any]:
         pool = load_pool("openai-codex")
         if pool and pool.has_credentials():
             entry = pool.select()
+            if entry is not None:
+                entry_auth_type = getattr(entry, "auth_type", "")
+                entry_base_url = (
+                    getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or ""
+                ).rstrip("/")
+                if codex_api.get("selected") and entry_auth_type != "api_key" and entry_base_url == DEFAULT_CODEX_BASE_URL.rstrip("/"):
+                    entry = None
             if entry is not None:
                 api_key = (
                     getattr(entry, "runtime_api_key", None)
@@ -2339,12 +2425,28 @@ def get_codex_auth_status() -> Dict[str, Any]:
                         "logged_in": True,
                         "auth_store": str(_auth_file_path()),
                         "last_refresh": getattr(entry, "last_refresh", None),
-                        "auth_mode": "chatgpt",
+                        "auth_mode": "api_key" if getattr(entry, "auth_type", "") == "api_key" else "chatgpt",
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
+                        "base_url": (
+                            getattr(entry, "runtime_base_url", None)
+                            or getattr(entry, "base_url", None)
+                            or ""
+                        ),
                     }
     except Exception:
         pass
+
+    if codex_api.get("selected"):
+        return {
+            "logged_in": bool(codex_api.get("configured")),
+            "auth_store": str(get_config_path()),
+            "auth_mode": "api_key",
+            "source": codex_api.get("source"),
+            "api_key": codex_api.get("api_key"),
+            "base_url": codex_api.get("base_url"),
+            "error": codex_api.get("error"),
+        }
 
     # Fall back to legacy provider state
     try:
@@ -2356,6 +2458,7 @@ def get_codex_auth_status() -> Dict[str, Any]:
             "auth_mode": creds.get("auth_mode"),
             "source": creds.get("source"),
             "api_key": creds.get("api_key"),
+            "base_url": creds.get("base_url"),
         }
     except AuthError as exc:
         return {

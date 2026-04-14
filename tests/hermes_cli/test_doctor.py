@@ -69,6 +69,23 @@ class TestDoctorToolAvailabilityOverrides:
         assert available == []
         assert unavailable == [honcho_entry]
 
+    def test_adds_image_gen_missing_vars_when_sdk_is_present_but_not_configured(self, monkeypatch):
+        monkeypatch.setattr(doctor, "_honcho_is_configured_for_doctor", lambda: False)
+        monkeypatch.setattr(doctor, "_image_gen_missing_vars_for_doctor", lambda: ["FAL_KEY"])
+
+        available, unavailable = doctor._apply_doctor_tool_availability_overrides(
+            [],
+            [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}],
+        )
+
+        assert available == []
+        assert unavailable == [{
+            "name": "image_gen",
+            "env_vars": [],
+            "tools": ["image_generate"],
+            "missing_vars": ["FAL_KEY"],
+        }]
+
 
 class TestHonchoDoctorConfigDetection:
     def test_reports_configured_when_enabled_with_api_key(self, monkeypatch):
@@ -119,6 +136,47 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+
+
+def test_run_doctor_reports_image_gen_as_missing_fal_key(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(doctor_mod, "_image_gen_missing_vars_for_doctor", lambda: ["FAL_KEY"])
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: (
+            ["terminal"],
+            [{"name": "image_gen", "env_vars": [], "tools": ["image_generate"]}],
+        ),
+        TOOLSET_REQUIREMENTS={
+            "terminal": {"name": "terminal"},
+            "image_gen": {"name": "image_gen"},
+        },
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "image_gen (missing FAL_KEY)" in out
+    assert "image_gen (system dependency not met)" not in out
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):

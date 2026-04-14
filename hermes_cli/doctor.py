@@ -97,18 +97,61 @@ def _honcho_is_configured_for_doctor() -> bool:
         return False
 
 
+def _image_gen_missing_vars_for_doctor() -> list[str] | None:
+    """Return actionable missing-vars hints for image generation in doctor output."""
+    try:
+        import fal_client  # noqa: F401 — SDK presence check for doctor messaging
+    except ImportError:
+        return None
+
+    if os.getenv("FAL_KEY"):
+        return None
+
+    try:
+        from hermes_cli.nous_subscription import get_nous_subscription_features
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+        features = get_nous_subscription_features()
+    except Exception:
+        return ["FAL_KEY"]
+
+    if features.image_gen.available:
+        return None
+
+    if managed_nous_tools_enabled():
+        if not features.nous_auth_present:
+            return ["FAL_KEY or Nous auth"]
+        return ["FAL_KEY or managed FAL gateway"]
+
+    return ["FAL_KEY"]
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
-    if not _honcho_is_configured_for_doctor():
+    honcho_configured = _honcho_is_configured_for_doctor()
+    image_gen_missing_vars = _image_gen_missing_vars_for_doctor()
+
+    if not honcho_configured and not image_gen_missing_vars:
         return available, unavailable
 
     updated_available = list(available)
     updated_unavailable = []
     for item in unavailable:
-        if item.get("name") == "honcho":
+        if item.get("name") == "honcho" and honcho_configured:
             if "honcho" not in updated_available:
                 updated_available.append("honcho")
             continue
+
+        if (
+            item.get("name") == "image_gen"
+            and not (item.get("missing_vars") or item.get("env_vars"))
+            and image_gen_missing_vars
+        ):
+            updated_item = dict(item)
+            updated_item["missing_vars"] = image_gen_missing_vars
+            updated_unavailable.append(updated_item)
+            continue
+
         updated_unavailable.append(item)
     return updated_available, updated_unavailable
 

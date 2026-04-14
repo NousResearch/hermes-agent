@@ -781,13 +781,14 @@ class AIAgent:
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         self._force_ascii_payload = False
         
-        # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
+        # Anthropic prompt caching: auto-enabled for Claude models on OpenRouter,
+        # native Anthropic, and any other OpenAI-compatible aggregator / proxy.
         # Reduces input costs by ~75% on multi-turn conversations by caching the
         # conversation prefix. Uses system_and_3 strategy (4 breakpoints).
         is_openrouter = self._is_openrouter_url()
         is_claude = "claude" in self.model.lower()
         is_native_anthropic = self.api_mode == "anthropic_messages" and self.provider == "anthropic"
-        self._use_prompt_caching = (is_openrouter and is_claude) or is_native_anthropic
+        self._use_prompt_caching = is_native_anthropic or self._supports_anthropic_prompt_caching(self.base_url, self.model)
         self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
         
         # Iteration budget: the LLM is only notified when it actually exhausts
@@ -1056,7 +1057,12 @@ class AIAgent:
         
         # Show prompt caching status
         if self._use_prompt_caching and not self.quiet_mode:
-            source = "native Anthropic" if is_native_anthropic else "Claude via OpenRouter"
+            if is_native_anthropic:
+                source = "native Anthropic"
+            elif is_openrouter:
+                source = "Claude via OpenRouter"
+            else:
+                source = f"Claude via custom endpoint ({self.base_url})"
             print(f"💾 Prompt caching: ENABLED ({source}, {self._cache_ttl} TTL)")
         
         # Session logging setup - auto-save conversation trajectories for debugging
@@ -1607,8 +1613,8 @@ class AIAgent:
         # ── Re-evaluate prompt caching ──
         is_native_anthropic = api_mode == "anthropic_messages" and new_provider == "anthropic"
         self._use_prompt_caching = (
-            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
-            or is_native_anthropic
+            is_native_anthropic
+            or self._supports_anthropic_prompt_caching(self.base_url, new_model)
         )
 
         # ── Update context compressor ──
@@ -1895,6 +1901,44 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    @staticmethod
+    def _supports_anthropic_prompt_caching(base_url: str, model: str) -> bool:
+        """Return True when the endpoint supports Anthropic-style prompt caching.
+
+        Caching is safe to enable when:
+        1. The model is a Claude model (``cache_control`` is an Anthropic-specific
+           feature — injecting it for non-Claude models is a no-op at best and
+           may cause validation errors at worst).
+        2. The endpoint is known to pass ``cache_control`` markers through to
+           Anthropic without stripping them.  This covers:
+           - OpenRouter  (proxies Anthropic and forwards cache hints)
+           - Native Anthropic API  (handled separately via ``api_mode``)
+           - Any other OpenAI-compatible aggregator / proxy — the vast majority
+             of LLM aggregation services (ZenMux, OpenRouter clones, etc.) pass
+             Anthropic-specific fields through transparently.  Enabling caching
+             for these endpoints costs nothing when it is unsupported (the field
+             is simply ignored) but saves ~75 % on input tokens when it is.
+
+        The ``native_anthropic`` path (``api_mode == "anthropic_messages"``) is
+        handled before this function is called and is therefore excluded here.
+        """
+        if not base_url:
+            return False
+        url_lower = base_url.lower()
+        is_claude = "claude" in model.lower()
+        if not is_claude:
+            return False
+        # Known aggregators / proxies that support cache_control pass-through.
+        # OpenRouter is the canonical case; all other custom OpenAI-compatible
+        # endpoints are included because the field is safely ignored when
+        # unsupported.  Exclude endpoints that are known NOT to support it
+        # (native OpenAI, GitHub Copilot) to avoid unexpected behaviour.
+        is_native_openai = "api.openai.com" in url_lower and "openrouter" not in url_lower
+        is_github_models = "models.github.ai" in url_lower or "api.githubcopilot.com" in url_lower
+        if is_native_openai or is_github_models:
+            return False
+        return True
 
     @staticmethod
     def _model_requires_responses_api(model: str) -> bool:
@@ -5680,8 +5724,8 @@ class AIAgent:
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages" and fb_provider == "anthropic"
             self._use_prompt_caching = (
-                ("openrouter" in fb_base_url.lower() and "claude" in fb_model.lower())
-                or is_native_anthropic
+                is_native_anthropic
+                or self._supports_anthropic_prompt_caching(fb_base_url, fb_model)
             )
 
             # Update context compressor limits for the fallback model.

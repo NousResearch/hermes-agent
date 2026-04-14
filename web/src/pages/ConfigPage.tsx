@@ -32,6 +32,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
+import { ModelInfoCard } from "@/components/ModelInfoCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,6 +88,7 @@ export default function ConfigPage() {
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>("");
+  const [modelInfoRefreshKey, setModelInfoRefreshKey] = useState(0);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -174,6 +176,7 @@ export default function ConfigPage() {
     try {
       await api.saveConfig(config);
       showToast("Configuration saved", "success");
+      setModelInfoRefreshKey((k) => k + 1);
     } catch (e) {
       showToast(`Failed to save: ${e}`, "error");
     } finally {
@@ -186,6 +189,7 @@ export default function ConfigPage() {
     try {
       await api.saveConfigRaw(yamlText);
       showToast("YAML config saved", "success");
+      setModelInfoRefreshKey((k) => k + 1);
       api.getConfig().then(setConfig).catch(() => {});
     } catch (e) {
       showToast(`Failed to save YAML: ${e}`, "error");
@@ -238,6 +242,7 @@ export default function ConfigPage() {
   const renderFields = (fields: [string, Record<string, unknown>][], showCategory = false) => {
     let lastSection = "";
     let lastCat = "";
+    const currentModel = config ? String(getNestedValue(config, "model") ?? "") : "";
     return fields.map(([key, s]) => {
       const parts = key.split(".");
       const section = parts.length > 1 ? parts[0] : "";
@@ -274,6 +279,12 @@ export default function ConfigPage() {
               onChange={(v) => setConfig(setNestedValue(config, key, v))}
             />
           </div>
+          {/* Inject model info card right after the model field */}
+          {key === "model" && currentModel && (
+            <div className="py-1">
+              <ModelInfoCard currentModel={currentModel} refreshKey={modelInfoRefreshKey} />
+            </div>
+          )}
         </div>
       );
     });

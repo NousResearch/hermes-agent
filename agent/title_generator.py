@@ -38,7 +38,7 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
         response = call_llm(
             task="title_generation",
             messages=messages,
-            max_tokens=30,
+            max_tokens=512,  # Increased from 30 to give reasoning models (GLM, R1, o1) headroom to think
             temperature=0.3,
             timeout=timeout,
         )

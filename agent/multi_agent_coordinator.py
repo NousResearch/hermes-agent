@@ -119,8 +119,6 @@ class SharedMemory:
 
     def publish(self, key: str, value: Any, event_type: str = "update") -> None:
         """写入共享数据（同步兼容）"""
-        # Note: asyncio.Lock can't be used in sync context, so we use a simple dict copy
-        # For full async publish, use publish_async()
         self._data[key] = value
         event = {
             "ts": time.time(),
@@ -237,7 +235,7 @@ class DAGWorkflow:
     def __init__(self, nodes: list[TaskNode]):
         self.nodes: dict[str, TaskNode] = {n.task_id: n for n in nodes}
         self._topo_order: list[str] = []
-        self._ready_queue: list[str] = []  # 准备执行的任务（依赖已满足）
+        self._ready_queue: list[str] = []
         self._completed: set[str] = set()
         self._failed: set[str] = set()
 
@@ -247,7 +245,6 @@ class DAGWorkflow:
         for task_id, node in self.nodes.items():
             if node.status != "pending":
                 continue
-            # 检查所有依赖是否已完成
             deps_done = all(
                 self.nodes[d].status == "completed"
                 for d in node.depends_on
@@ -354,12 +351,7 @@ class MultiAgentCoordinator:
 
         返回：TaskNode列表
         """
-        # 提示LLM分析并分解任务
-        decomposition_prompt = self._build_decomposition_prompt()
-        # 这里调用父Agent的LLM来分解任务
-        # 实际使用时通过delegate_task + 特殊context触发
-
-        nodes = self._llm_decompose(decomposition_prompt)
+        nodes = self._llm_decompose(self._build_decomposition_prompt())
         self.workflow = DAGWorkflow(nodes)
         logger.info(
             "Decomposed goal into %d tasks: %s",
@@ -397,17 +389,11 @@ Rules:
 Respond ONLY with valid JSON, no markdown, no explanation."""
 
     def _llm_decompose(self, prompt: str) -> list[TaskNode]:
-        """
-        通过父Agent的LLM进行任务分解。
-        
-        实现方式：构造一个特殊的delegate_task调用，
-        用预定义的"分解提示"让子Agent返回任务列表。
-        """
+        """通过父Agent的LLM进行任务分解"""
         import json as _json
+        import re
         from tools.delegate_tool import delegate_task
 
-        # 构造一个一次性分解任务
-        # 使用researcher角色，因为它有web工具可以辅助分析
         result = delegate_task(
             goal=prompt,
             context=(
@@ -421,7 +407,6 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
         )
 
         try:
-            # 尝试解析返回结果
             data = json.loads(result)
             if isinstance(data, dict) and "result" in data:
                 text = data["result"]
@@ -431,12 +416,8 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
                 text = str(data)
 
             # 提取JSON（可能在markdown代码块里）
-            import re
             match = re.search(r'\[[\s\S]*\]', text)
-            if match:
-                tasks_data = _json.loads(match.group())
-            else:
-                tasks_data = _json.loads(text)
+            tasks_data = _json.loads(match.group()) if match else _json.loads(text)
 
             nodes = []
             for t in tasks_data:
@@ -457,7 +438,6 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
 
         except Exception as e:
             logger.warning("Task decomposition failed, falling back to single task: %s", e)
-            # Fallback：退化为单任务
             return [
                 TaskNode(
                     task_id="main",
@@ -483,21 +463,19 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
         - 支持依赖等待
         - 集成CancellationToken，支持优雅取消
         """
-        import asyncio as _asyncio
-
         if not self.workflow:
             raise RuntimeError("Must call decompose() before execute_async()")
 
         self.started_at = time.time()
         results: dict[str, Any] = {}
         execution_log = []
-
-        # 用于跟踪运行中的任务
         running_tasks: dict[str, asyncio.Task] = {}
         semaphore = asyncio.Semaphore(self.max_concurrent)
 
         async def run_task(task: TaskNode) -> None:
+            """在信号量限制下运行单个任务，结果存入workflow.nodes[task_id].result"""
             async with semaphore:
+                # 进入临界区前检查取消
                 if cancel_token and cancel_token.is_cancelled():
                     self.workflow.mark_failed(task.task_id, "Cancelled")
                     return
@@ -509,10 +487,12 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
                     "started": time.time(),
                 }
 
-                # 在新线程池中运行同步的delegate_task
-                result = await _asyncio.get_event_loop().run_in_executor(
-                    None, self._execute_task_sync, task
+                # 在线程池中运行同步的delegate_task，等待结果写入workflow
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None, self._execute_task_sync, task, cancel_token
                 )
+                # 结果已在 self.workflow.nodes[task_id].result/.error 中
 
                 log_entry["completed"] = time.time()
                 execution_log.append(log_entry)
@@ -523,23 +503,17 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
                     except Exception:
                         pass
 
-        # 等待所有任务完成
-        pending = set()
-
+        # 主调度循环
         while not self.workflow.is_done():
-            # 检查取消
             if cancel_token and cancel_token.is_cancelled():
-                # 取消所有运行中的任务
                 for t in running_tasks.values():
                     t.cancel()
                 break
 
-            # 获取可以开始的任务
             ready_tasks = self.workflow.get_ready_tasks()
             if not ready_tasks:
                 running = [n for n in self.workflow.nodes.values() if n.status == "running"]
                 if running:
-                    # 等待一下再检查
                     await asyncio.sleep(0.1)
                     continue
                 else:
@@ -553,15 +527,14 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
 
             # 等待任意一个任务完成
             if running_tasks:
-                done, pending = await asyncio.wait(
+                done, _pending = await asyncio.wait(
                     running_tasks.values(),
                     timeout=0.1,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for d in done:
-                    # 找到对应的task_id
-                    for tid, t in list(running_tasks.items()):
-                        if t is d:
+                    for tid, t_ref in list(running_tasks.items()):
+                        if t_ref is d:
                             del running_tasks[tid]
                             break
 
@@ -598,29 +571,35 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
             "execution_log": execution_log,
         }
 
-    def _execute_task_sync(self, task: TaskNode) -> None:
+    def _execute_task_sync(self, task: TaskNode, cancel_token=None) -> None:
         """同步版本的任务执行（在线程池中运行）"""
-        self._execute_task(task, None)
+        self._execute_task(task, None, cancel_token)
 
-    def _execute_task(self, task: TaskNode, progress_callback: Optional[Callable]) -> None:
+    def _execute_task(
+        self,
+        task: TaskNode,
+        progress_callback: Optional[Callable],
+        cancel_token=None,
+    ) -> None:
         """在子线程中执行单个任务"""
         from tools.delegate_tool import delegate_task
+
+        # 检查取消
+        if cancel_token and cancel_token.is_cancelled():
+            self.workflow.mark_failed(task.task_id, "Cancelled")
+            return
 
         # 收集依赖结果作为context扩展
         dep_context_parts = []
         for dep_id in task.depends_on:
             dep_result = self.workflow.get_result_for(dep_id)
             if dep_result is not None:
-                dep_context_parts.append(
-                    f"[Input from {dep_id}]:\n{dep_result}\n"
-                )
+                dep_context_parts.append(f"[Input from {dep_id}]:\n{dep_result}\n")
 
-        # 构建任务context
         task_context = "\n".join(dep_context_parts)
         if task.context:
             task_context = f"{task_context}\n{task.context}" if task_context else task.context
 
-        # 角色特定提示
         role_prompt = ROLE_SYSTEM_PROMPTS.get(task.role, "")
         full_goal = f"{role_prompt}\n\nTASK:\n{task.goal}"
 
@@ -628,6 +607,7 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
             progress_callback(task.task_id, f"Starting {task.role.value} task")
 
         try:
+            # 执行子任务
             result = delegate_task(
                 goal=full_goal,
                 context=task_context,
@@ -647,7 +627,6 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
 
             # 写入共享内存
             self.shared_memory.publish(f"task:{task.task_id}", result_text)
-
             self.workflow.mark_completed(task.task_id, result_text)
 
             if progress_callback:
@@ -661,19 +640,21 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
             if progress_callback:
                 progress_callback(task.task_id, f"Failed: {error_msg}")
 
-    def synthesize(self, result: dict) -> str:
-        """
-        综合所有Agent的结果生成最终输出。
+    def execute_sync(self) -> dict:
+        """同步执行入口（内部用线程池运行execute_async）"""
+        import asyncio
 
-        实现策略：
-        - 读取所有task的结果
-        - 按依赖顺序拼接
-        - 让Synthesizer角色生成最终报告
-        """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(self.execute_async())
+        finally:
+            loop.close()
+
+    def synthesize(self, result: dict) -> str:
+        """综合所有Agent的结果生成最终输出"""
         summary = self.workflow.get_summary() if self.workflow else {}
         all_results = result.get("results", {})
 
-        # 按执行顺序排列结果
         ordered_results = []
         for task_id, data in all_results.items():
             ordered_results.append({
@@ -750,13 +731,11 @@ def coordinated_delegate(
         max_concurrent=max_concurrent,
     )
 
-    # 分解任务
     coordinator.decompose(role_hint=role_hint)
 
-    # 执行
-    exec_result = coordinator.execute()
+    # 使用同步执行（内部用线程池）
+    exec_result = coordinator.execute_sync()
 
-    # 综合
     if synthesize:
         final_output = coordinator.synthesize(exec_result)
         return json.dumps({

@@ -23,9 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import inspect
 from collections import defaultdict
-from dataclasses import dataclass, field
 from typing import Any, Callable, TypeVar
 
 T = TypeVar("T")
@@ -60,8 +58,6 @@ def after(source: str) -> Callable:
         @functools.wraps(func)
         def wrapper(self: Flow, *args: Any, **kwargs: Any) -> Any:
             return func(self, *args, **kwargs)
-        # Accumulate tags: first @after sets __flow_tags__ = [(src, name)],
-        # second @after reads that and appends
         prev = getattr(func, "__flow_tags__", [])
         wrapper.__flow_tags__ = prev + [(source, func.__name__)]
         return wrapper
@@ -94,9 +90,7 @@ class Flow:
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
-        print(f"cls={cls.__name__}, kwargs={kwargs}")
         nodes: dict[str, Callable] = {}
-        # edges: listener -> list of sources (reversed from typical DAG)
         edges: dict[str, list[str]] = defaultdict(list)
         starts: list[str] = []
 
@@ -105,7 +99,6 @@ class Flow:
                 continue
             tags = getattr(attr_value, "__flow_tags__", [])
             for src, my_name in tags:
-                # Multiple @after on same method = multiple incoming edges
                 if my_name not in nodes:
                     nodes[my_name] = attr_value
                 if src == "__entry__":
@@ -131,13 +124,12 @@ class Flow:
         """Topological sort into execution layers (Kahn's algorithm)."""
         meta = self._meta()
         nodes = set(meta["nodes"])
-        edges = meta["edges"]      # listener -> [sources]
-        starts = set(meta["starts"])  # entry point names
+        edges = meta["edges"]
+        starts = set(meta["starts"])
 
         if not nodes:
             return []
 
-        # in_degree[n] = how many unresolved sources n still needs
         in_degree: dict[str, int] = {}
         for n in nodes:
             sources = edges.get(n, [])
@@ -145,13 +137,11 @@ class Flow:
 
         layers, remaining = [], set(nodes)
         while remaining:
-            # All nodes with 0 unresolved deps go in this layer
             layer = sorted(n for n in remaining if in_degree.get(n, 0) == 0)
             if not layer:
                 layer = [next(iter(remaining))]
             layers.append(layer)
             remaining -= set(layer)
-            # For each node we just ran, reduce its listeners' in_degree
             for n in layer:
                 for listener, sources in edges.items():
                     if n in sources and listener in remaining:
@@ -160,7 +150,6 @@ class Flow:
         return layers
 
     def _sources_for(self, method_name: str) -> list[str]:
-        """Get the sources (upstream nodes) that feed into this method."""
         meta = self._meta()
         return meta["edges"].get(method_name, [])
 
@@ -280,3 +269,49 @@ class StatefulFlow(Flow):
 
         self._state = current
         return results
+
+
+# ---------------------------------------------------------------------------
+# AgentFlow — @entry/@after driving real agent execution
+# ---------------------------------------------------------------------------
+
+class AgentFlow(Flow):
+    """
+    A Flow subclass where @entry/@after methods are agent tasks.
+
+    Subclass defines steps using @entry and @after.
+    The coordinator calls step(goal, context) on each method,
+    which delegates to the real agent.
+
+    Usage:
+        class CodeReviewFlow(AgentFlow):
+            @entry
+            def start(self, goal):
+                return goal  # pass through
+
+            @after("start")
+            def review(self, context):
+                # Calls delegate_task with the reviewer role
+                return self.run_agent("review", context)
+
+            @after("review")
+            def synthesize(self, context):
+                return self.run_agent("synthesize", context)
+
+    Methods to override:
+        run_agent(role, goal, context) -> str
+    """
+
+    def run_agent(self, role: str, goal: str, context: str) -> str:
+        """
+        Override this to plug in actual agent execution.
+        Default: raise NotImplementedError.
+        """
+        raise NotImplementedError(
+            "AgentFlow.run_agent() must be overridden to execute real agents. "
+            "Use MultiAgentCoordinator for built-in agent execution."
+        )
+
+    def _step_result(self, step_name: str) -> str | None:
+        """Get result from a completed step (for chaining)."""
+        return None  # Override in subclass if steps need to read prior results

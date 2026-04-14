@@ -3,13 +3,16 @@ import threading
 import queue
 from run_agent import AIAgent
 
-def chat_interface(message, history):
+def chat_interface(message, history, provider, base_url, model_name, api_key):
     """
     Main chat logic integrating the AIAgent with Gradio.
     Since AIAgent.run_conversation blocks and doesn't natively yield to Gradio,
     we spawn a thread to run it and use a queue to pass streaming updates
     (text tokens and tool logs) back to the UI.
     """
+    if not model_name or not provider:
+        yield "⚠️ Please connect/load a model API in the settings panel before starting a chat."
+        return
 
     # We will use this queue to receive tokens/events from the agent
     q = queue.Queue()
@@ -41,12 +44,20 @@ def chat_interface(message, history):
             # Initialize the agent.
             # We configure quiet_mode=True to reduce terminal spam, as we are piping to the UI.
             # Using defaults for model/provider, but these can be extended with Gradio inputs later.
-            agent = AIAgent(
-                quiet_mode=True,
-                stream_delta_callback=stream_callback,
-                tool_progress_callback=tool_callback,
-                max_iterations=10 # Cap for webui
-            )
+            agent_kwargs = {
+                "quiet_mode": True,
+                "stream_delta_callback": stream_callback,
+                "tool_progress_callback": tool_callback,
+                "max_iterations": 10, # Cap for webui
+                "provider": provider,
+                "model": model_name
+            }
+            if base_url:
+                agent_kwargs["base_url"] = base_url
+            if api_key:
+                agent_kwargs["api_key"] = api_key
+
+            agent = AIAgent(**agent_kwargs)
 
             # Reconstruct conversation history in the format AIAgent expects.
             # Gradio history is a list of dicts: {"role": "user"/"assistant", "content": "..."}
@@ -120,13 +131,63 @@ with gr.Blocks(title="Hermes Agent") as app:
         """
     )
 
-    chat = gr.ChatInterface(
+    with gr.Accordion("⚙️ Model API Configuration", open=True):
+        gr.Markdown("Configure the API provider and model you want to use. You must load a model API before starting a chat.")
+        with gr.Row():
+            provider_dropdown = gr.Dropdown(
+                choices=["ollama", "openai", "openrouter", "anthropic", "custom"],
+                value="ollama",
+                label="Provider",
+                interactive=True
+            )
+            model_input = gr.Textbox(
+                label="Model Name",
+                placeholder="e.g. hermes3",
+                value="hermes3",
+                interactive=True
+            )
+        with gr.Row():
+            base_url_input = gr.Textbox(
+                label="Base URL (Optional)",
+                placeholder="e.g. http://localhost:11434/v1",
+                value="http://localhost:11434/v1",
+                interactive=True
+            )
+            api_key_input = gr.Textbox(
+                label="API Key (Optional)",
+                placeholder="Required for OpenAI/OpenRouter/Anthropic",
+                type="password",
+                interactive=True
+            )
+
+        connect_btn = gr.Button("Connect & Save", variant="primary")
+        status_text = gr.Markdown("*Status: Disconnected*")
+
+    def connect_model(provider, model_name, base_url, api_key):
+        if not provider or not model_name:
+            return gr.update(value="⚠️ *Error: Provider and Model Name are required.*", visible=True), gr.update(interactive=False)
+        return gr.update(value=f"✅ *Connected to {provider} ({model_name})*", visible=True), gr.update(interactive=True)
+
+
+    chat_box = gr.ChatInterface(
         fn=chat_interface,
+        additional_inputs=[provider_dropdown, base_url_input, model_input, api_key_input],
         examples=[
-            "Hello, who are you?",
-            "What directory am I currently in?",
-            "Can you write a simple python script to calculate fibonacci numbers and save it?"
+            ["Hello, who are you?", "ollama", "http://localhost:11434/v1", "hermes3", ""],
+            ["What directory am I currently in?", "ollama", "http://localhost:11434/v1", "hermes3", ""],
+            ["Can you write a simple python script to calculate fibonacci numbers and save it?", "ollama", "http://localhost:11434/v1", "hermes3", ""]
         ]
+    )
+
+    # We gray out the submit button initially or handle it via a connection check.
+    # We will use the connect_btn to establish that the user checked their settings.
+    # Note: `gr.ChatInterface` doesn't natively support full disabling of the chat box via a boolean update easily,
+    # but it will immediately yield an error message if the provider/model are empty.
+
+    connect_btn.click(
+        fn=connect_model,
+        inputs=[provider_dropdown, model_input, base_url_input, api_key_input],
+        outputs=[status_text]
     )
 
 if __name__ == "__main__":

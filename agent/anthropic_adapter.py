@@ -958,7 +958,17 @@ def convert_messages_to_anthropic(
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
                     if isinstance(converted_content, list):
-                        blocks.extend(converted_content)
+                        # Filter out empty text blocks — Bedrock (and strict
+                        # Anthropic-compatible endpoints) reject text blocks
+                        # where "text" is an empty or whitespace-only string.
+                        for blk in converted_content:
+                            if (
+                                isinstance(blk, dict)
+                                and blk.get("type") == "text"
+                                and not blk.get("text", "").strip()
+                            ):
+                                continue  # drop empty text block
+                            blocks.append(blk)
                 else:
                     blocks.append({"type": "text", "text": str(content)})
             for tc in m.get("tool_calls", []):

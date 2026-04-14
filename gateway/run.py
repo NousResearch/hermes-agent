@@ -9273,6 +9273,29 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         nonlocal _signal_initiated_shutdown
         _signal_initiated_shutdown = True
         logger.info("Received SIGTERM/SIGINT — initiating shutdown")
+        # Diagnostic: log all hermes-related processes so we can identify
+        # what triggered the signal (hermes update, hermes gateway restart,
+        # a stale detached subprocess, etc.).
+        try:
+            import subprocess as _sp
+            _ps = _sp.run(
+                ["ps", "aux"],
+                capture_output=True, text=True, timeout=3,
+            )
+            _hermes_procs = [
+                line for line in _ps.stdout.splitlines()
+                if ("hermes" in line.lower() or "gateway" in line.lower())
+                and str(os.getpid()) not in line.split()[1:2]  # exclude self
+            ]
+            if _hermes_procs:
+                logger.warning(
+                    "Shutdown diagnostic — other hermes processes running:\n  %s",
+                    "\n  ".join(_hermes_procs),
+                )
+            else:
+                logger.info("Shutdown diagnostic — no other hermes processes found")
+        except Exception:
+            pass
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():

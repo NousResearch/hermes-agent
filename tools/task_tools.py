@@ -8,6 +8,11 @@ from tools.registry import registry, tool_error
 
 TASK_MANAGER = TaskManager()
 
+SESSION_ID_PROPERTY = {
+    "type": "string",
+    "description": "Optional session identifier used to scope task access.",
+}
+
 
 def _error_response(exc: Exception) -> str:
     message = exc.args[0] if getattr(exc, "args", None) else str(exc)
@@ -43,6 +48,7 @@ TASK_CREATE_SCHEMA = {
                 "description": "Optional structured metadata.",
                 "additionalProperties": True,
             },
+            "session_id": SESSION_ID_PROPERTY,
         },
         "required": ["title"],
     },
@@ -72,6 +78,7 @@ TASK_UPDATE_SCHEMA = {
                 "description": "Optional replacement metadata object.",
                 "additionalProperties": True,
             },
+            "session_id": SESSION_ID_PROPERTY,
         },
         "required": ["task_id"],
     },
@@ -93,6 +100,7 @@ TASK_LIST_SCHEMA = {
                 "enum": ["local", "delegated", "system"],
                 "description": "Optional kind filter.",
             },
+            "session_id": SESSION_ID_PROPERTY,
         },
         "required": [],
     },
@@ -108,6 +116,7 @@ TASK_GET_SCHEMA = {
                 "type": "string",
                 "description": "Task identifier.",
             },
+            "session_id": SESSION_ID_PROPERTY,
         },
         "required": ["task_id"],
     },
@@ -123,6 +132,7 @@ TASK_CANCEL_SCHEMA = {
                 "type": "string",
                 "description": "Task identifier.",
             },
+            "session_id": SESSION_ID_PROPERTY,
         },
         "required": ["task_id"],
     },
@@ -130,6 +140,7 @@ TASK_CANCEL_SCHEMA = {
 
 
 def _handle_task_create(args: dict, **kwargs) -> str:
+    session_id = kwargs.get("session_id", "default")
     try:
         task = TASK_MANAGER.create(
             title=args.get("title"),
@@ -137,6 +148,7 @@ def _handle_task_create(args: dict, **kwargs) -> str:
             parent_task_id=args.get("parent_task_id"),
             assignee=args.get("assignee"),
             metadata=args.get("metadata"),
+            session_id=session_id,
         )
         return json.dumps(task, ensure_ascii=False)
     except (KeyError, ValueError) as exc:
@@ -144,12 +156,14 @@ def _handle_task_create(args: dict, **kwargs) -> str:
 
 
 def _handle_task_update(args: dict, **kwargs) -> str:
+    session_id = kwargs.get("session_id", "default")
     try:
         task = TASK_MANAGER.update(
             task_id=args.get("task_id"),
             status=args.get("status"),
             result_summary=args.get("result_summary"),
             metadata=args.get("metadata"),
+            session_id=session_id,
         )
         return json.dumps(task, ensure_ascii=False)
     except (KeyError, ValueError) as exc:
@@ -157,10 +171,12 @@ def _handle_task_update(args: dict, **kwargs) -> str:
 
 
 def _handle_task_list(args: dict, **kwargs) -> str:
+    session_id = kwargs.get("session_id", "default")
     try:
         tasks = TASK_MANAGER.list(
             status=args.get("status"),
             kind=args.get("kind"),
+            session_id=session_id,
         )
         return json.dumps({"tasks": tasks}, ensure_ascii=False)
     except ValueError as exc:
@@ -168,13 +184,15 @@ def _handle_task_list(args: dict, **kwargs) -> str:
 
 
 def _handle_task_get(args: dict, **kwargs) -> str:
-    task = TASK_MANAGER.get(args.get("task_id"))
+    session_id = kwargs.get("session_id", "default")
+    task = TASK_MANAGER.get(args.get("task_id"), session_id=session_id)
     return json.dumps({"task": task}, ensure_ascii=False)
 
 
 def _handle_task_cancel(args: dict, **kwargs) -> str:
+    session_id = kwargs.get("session_id", "default")
     try:
-        task = TASK_MANAGER.cancel(args.get("task_id"))
+        task = TASK_MANAGER.cancel(args.get("task_id"), session_id=session_id)
         return json.dumps(task, ensure_ascii=False)
     except (KeyError, ValueError) as exc:
         return _error_response(exc)

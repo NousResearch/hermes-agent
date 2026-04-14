@@ -76,6 +76,9 @@ class TaskManager:
     def _task_session_id(task: dict) -> str:
         return str(task.get("session_id") or "default")
 
+    def _resolve_session_id(self, session_id: str | None = None) -> str:
+        return str(session_id or self.session_id or "default")
+
     def create(
         self,
         title,
@@ -83,18 +86,20 @@ class TaskManager:
         parent_task_id: str | None = None,
         assignee: str | None = None,
         metadata: dict | None = None,
+        session_id: str | None = None,
     ) -> dict:
         title_text = str(title).strip()
         if not title_text:
             raise ValueError("title is required")
 
         now = self._now_iso()
+        resolved_session_id = self._resolve_session_id(session_id)
         task = {
             "task_id": str(uuid4()),
             "title": title_text,
             "status": "pending",
             "kind": self._validate_kind(kind),
-            "session_id": self.session_id,
+            "session_id": resolved_session_id,
             "created_at": now,
             "updated_at": now,
             "parent_task_id": str(parent_task_id).strip() if parent_task_id else None,
@@ -112,10 +117,12 @@ class TaskManager:
         status: str | None = None,
         result_summary: str | None = None,
         metadata: dict | None = None,
+        session_id: str | None = None,
     ) -> dict:
         task_key = str(task_id).strip()
+        resolved_session_id = self._resolve_session_id(session_id)
         task = self._tasks.get(task_key)
-        if task is None:
+        if task is None or self._task_session_id(task) != resolved_session_id:
             raise KeyError(f"Unknown task_id: {task_id}")
 
         updated = copy.deepcopy(task)
@@ -139,11 +146,17 @@ class TaskManager:
         self._save()
         return copy.deepcopy(updated)
 
-    def get(self, task_id, include_all: bool = False) -> dict | None:
+    def get(
+        self,
+        task_id,
+        include_all: bool = False,
+        session_id: str | None = None,
+    ) -> dict | None:
         task = self._tasks.get(str(task_id).strip())
         if task is None:
             return None
-        if not include_all and self._task_session_id(task) != self.session_id:
+        resolved_session_id = self._resolve_session_id(session_id)
+        if not include_all and self._task_session_id(task) != resolved_session_id:
             return None
         return copy.deepcopy(task)
 
@@ -152,13 +165,15 @@ class TaskManager:
         status: str | None = None,
         kind: str | None = None,
         include_all: bool = False,
+        session_id: str | None = None,
     ) -> list[dict]:
         normalized_status = self._validate_status(status) if status is not None else None
         normalized_kind = self._validate_kind(kind) if kind is not None else None
+        resolved_session_id = self._resolve_session_id(session_id)
 
         results = []
         for task in self._tasks.values():
-            if not include_all and self._task_session_id(task) != self.session_id:
+            if not include_all and self._task_session_id(task) != resolved_session_id:
                 continue
             if normalized_status is not None and task["status"] != normalized_status:
                 continue
@@ -167,8 +182,8 @@ class TaskManager:
             results.append(copy.deepcopy(task))
         return results
 
-    def cancel(self, task_id) -> dict:
-        return self.update(task_id, status="cancelled")
+    def cancel(self, task_id, session_id: str | None = None) -> dict:
+        return self.update(task_id, status="cancelled", session_id=session_id)
 
     def _save(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)

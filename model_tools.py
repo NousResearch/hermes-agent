@@ -517,6 +517,7 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+    resolved_session_id = function_args.get("session_id") or session_id
 
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
@@ -540,7 +541,7 @@ def handle_function_call(
                 tool_name=function_name,
                 args=function_args,
                 task_id=task_id or "",
-                session_id=session_id or "",
+                session_id=resolved_session_id or "",
                 tool_call_id=tool_call_id or "",
             ) or []
         except Exception as exc:
@@ -571,12 +572,14 @@ def handle_function_call(
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
+                session_id=resolved_session_id,
                 enabled_tools=sandbox_enabled,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
+                session_id=resolved_session_id,
                 user_task=user_task,
             )
 
@@ -590,7 +593,7 @@ def handle_function_call(
                 args=function_args,
                 result=result,
                 task_id=task_id or "",
-                session_id=session_id or "",
+                session_id=resolved_session_id or "",
                 tool_call_id=tool_call_id or "",
             ) or []
         except Exception:

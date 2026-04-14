@@ -24,10 +24,12 @@ Design:
 """
 
 import fcntl
+import importlib.util
 import json
 import logging
 import os
 import re
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -793,6 +795,32 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory type file {path}: {e}")
 
 
+_SMART_RECALL_CLASS = None
+
+
+def _load_smart_recall_class():
+    global _SMART_RECALL_CLASS
+    if _SMART_RECALL_CLASS is not None:
+        return _SMART_RECALL_CLASS
+
+    plugin_path = Path(__file__).resolve().parent.parent / "plugins" / "hongxing-enhancements" / "smart_recall.py"
+    if not plugin_path.is_file():
+        raise RuntimeError(f"smart_recall plugin not found at {plugin_path}")
+
+    module_name = "hongxing_smart_recall_memory_tool"
+    module = sys.modules.get(module_name)
+    if module is None:
+        spec = importlib.util.spec_from_file_location(module_name, plugin_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("Unable to load smart_recall plugin module.")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+
+    _SMART_RECALL_CLASS = module.SmartRecall
+    return _SMART_RECALL_CLASS
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -800,6 +828,9 @@ def memory_tool(
     old_text: str = None,
     memory_type: Optional[str] = None,
     group_by_type: bool = False,
+    query: Optional[str] = None,
+    top_k: int = 5,
+    types: Optional[List[str]] = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -809,6 +840,28 @@ def memory_tool(
     """
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
+
+    if action == "smart_recall":
+        if not query or not query.strip():
+            return tool_error("query is required for 'smart_recall' action.", success=False)
+        if types is not None and not isinstance(types, list):
+            return tool_error("types must be a list of strings for 'smart_recall' action.", success=False)
+
+        try:
+            resolved_top_k = 5 if top_k is None else int(top_k)
+        except (TypeError, ValueError):
+            return tool_error("top_k must be an integer for 'smart_recall' action.", success=False)
+
+        try:
+            smart_recall = _load_smart_recall_class()(store)
+        except Exception as exc:
+            return tool_error(f"smart_recall is unavailable: {exc}", success=False)
+
+        result = {
+            "success": True,
+            "results": smart_recall.recall(query, top_k=resolved_top_k, types=types),
+        }
+        return json.dumps(result, ensure_ascii=False)
 
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
@@ -834,7 +887,10 @@ def memory_tool(
         result = store.read(target, memory_type=memory_type, group_by_type=group_by_type)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove, read", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove, read, smart_recall",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -870,7 +926,8 @@ MEMORY_SCHEMA = {
         "- 'user': who the user is -- name, role, preferences, communication style, pet peeves\n"
         "- 'memory': your notes -- environment facts, project conventions, tool quirks, lessons learned\n\n"
         "ACTIONS: add (new entry), replace (update existing -- old_text identifies it), "
-        "remove (delete -- old_text identifies it), read (list current entries, optionally filtered by type).\n\n"
+        "remove (delete -- old_text identifies it), read (list current entries, optionally filtered by type), "
+        "smart_recall (recall relevant memories by query, optionally filtered by types).\n\n"
         "SKIP: trivial/obvious info, things easily re-discovered, raw data dumps, and temporary task state."
     ),
     "parameters": {
@@ -878,13 +935,13 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove", "read"],
+                "enum": ["add", "replace", "remove", "read", "smart_recall"],
                 "description": "The action to perform."
             },
             "target": {
                 "type": "string",
                 "enum": ["memory", "user"],
-                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile."
+                "description": "Which memory store: 'memory' for personal notes, 'user' for user profile. Required for add, replace, remove, and read."
             },
             "content": {
                 "type": "string",
@@ -910,8 +967,25 @@ MEMORY_SCHEMA = {
                     "type-based sections. Defaults to false for backward compatibility."
                 ),
             },
+            "query": {
+                "type": "string",
+                "description": "Required for 'smart_recall'. Free-text query used to recall relevant memories.",
+            },
+            "top_k": {
+                "type": "integer",
+                "default": 5,
+                "description": "Optional result limit for 'smart_recall'. Defaults to 5.",
+            },
+            "types": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": list(ALL_MEMORY_TYPES),
+                },
+                "description": "Optional type filter list for 'smart_recall'.",
+            },
         },
-        "required": ["action", "target"],
+        "required": ["action"],
     },
 }
 
@@ -930,9 +1004,11 @@ registry.register(
         old_text=args.get("old_text"),
         memory_type=args.get("type"),
         group_by_type=args.get("group_by_type", False),
+        query=args.get("query"),
+        top_k=args.get("top_k", 5),
+        types=args.get("types"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
     allowed_in_plan_mode_default=False,
 )
-

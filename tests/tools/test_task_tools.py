@@ -5,6 +5,7 @@ import json
 import pytest
 
 from agent.task_manager import TaskManager
+from model_tools import handle_function_call
 from tools import task_tools
 from tools.registry import registry
 
@@ -76,3 +77,42 @@ def test_task_cancel_tool(isolated_task_manager):
 
     assert payload["status"] == "cancelled"
     assert isolated_task_manager.get(created["task_id"])["status"] == "cancelled"
+
+
+def test_task_tools_isolate_tasks_by_session_id(isolated_task_manager):
+    first = json.loads(
+        handle_function_call(
+            "task_create",
+            {"title": "Session A task", "session_id": "session-a"},
+        )
+    )
+    second = json.loads(
+        handle_function_call(
+            "task_create",
+            {"title": "Session B task", "session_id": "session-b"},
+        )
+    )
+
+    first_list = json.loads(handle_function_call("task_list", {"session_id": "session-a"}))
+    second_list = json.loads(handle_function_call("task_list", {"session_id": "session-b"}))
+    cross_session_get = json.loads(
+        handle_function_call(
+            "task_get",
+            {"task_id": first["task_id"], "session_id": "session-b"},
+        )
+    )
+    cross_session_update = json.loads(
+        handle_function_call(
+            "task_update",
+            {
+                "task_id": first["task_id"],
+                "status": "running",
+                "session_id": "session-b",
+            },
+        )
+    )
+
+    assert [task["task_id"] for task in first_list["tasks"]] == [first["task_id"]]
+    assert [task["task_id"] for task in second_list["tasks"]] == [second["task_id"]]
+    assert cross_session_get["task"] is None
+    assert cross_session_update["success"] is False

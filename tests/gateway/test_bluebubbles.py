@@ -579,7 +579,7 @@ class TestBlueBubblesWebhookRegistration:
         """Crash resilience — existing registration is reused, no POST needed."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
                 {"id": 7, "url": url, "events": ["new-message"]},
@@ -627,7 +627,7 @@ class TestBlueBubblesWebhookRegistration:
     def test_unregister_removes_matching(self, monkeypatch):
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         adapter.client = self._mock_client(
             get_response={"status": 200, "data": [
                 {"id": 10, "url": url},
@@ -642,7 +642,7 @@ class TestBlueBubblesWebhookRegistration:
         """Multiple orphaned registrations for same URL — all get removed."""
         import asyncio
         adapter = _make_adapter(monkeypatch)
-        url = adapter._webhook_url
+        url = adapter._webhook_register_url
         deleted_ids = []
 
         async def mock_delete(*args, **kwargs):

@@ -904,3 +904,138 @@ class TestAnthropicStreamCallbacks:
         agent._interruptible_streaming_api_call({})
 
         assert touch_calls.count("receiving stream response") == len(events)
+
+
+# ── Test: CopilotACP streaming dispatch ──────────────────────────────────
+
+
+def _valid_acp_response(content="OK"):
+    """Minimal valid non-streaming API response for copilot-acp tests."""
+    msg = SimpleNamespace(
+        content=content,
+        tool_calls=None,
+        reasoning=None,
+        reasoning_content=None,
+        reasoning_details=None,
+    )
+    choice = SimpleNamespace(message=msg, finish_reason="stop")
+    return SimpleNamespace(
+        choices=[choice],
+        usage=SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=5,
+            total_tokens=15,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+        ),
+        model="gpt-5-mini",
+    )
+
+
+def _make_acp_agent(base_url="acp://copilot", provider="copilot-acp"):
+    """Create an AIAgent pre-configured for copilot-acp with display.streaming=true.
+
+    stream_delta_callback is always set so that _has_stream_consumers() returns
+    True.  This bypasses the ``isinstance(client, Mock)`` short-circuit in the
+    _use_streaming block and ensures the copilot-acp elif branch is the *only*
+    reason non-streaming is chosen — making the tests genuine regression guards.
+    """
+    from run_agent import AIAgent
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("agent.copilot_acp_client.CopilotACPClient"),
+    ):
+        return AIAgent(
+            model="gpt-5-mini",
+            api_key="copilot-acp",
+            base_url=base_url,
+            provider=provider,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: None,  # simulate display.streaming: true
+        )
+
+
+class TestCopilotACPStreamingDecision:
+    """Verify copilot-acp always routes through _interruptible_api_call.
+
+    CopilotACPClient communicates over a subprocess stdio protocol and
+    returns a plain SimpleNamespace — it is not an iterable stream.
+    Attempting to use the streaming path raises:
+        TypeError: 'types.SimpleNamespace' object is not iterable
+
+    These tests are regression guards for the fix in:
+        fix(copilot-acp): disable streaming path for CopilotACPClient
+
+    Root cause: a5bd56ea changed the streaming decision from the opt-in
+    ``if _has_stream_consumers()`` guard to always-on, and simultaneously
+    removed the non-streaming fallback that had been silently masking the
+    TypeError.  The fix adds an explicit copilot-acp elif branch that sets
+    _use_streaming = False before _has_stream_consumers() is ever checked.
+
+    All tests use stream_delta_callback (display.streaming: true) so that
+    _has_stream_consumers() returns True.  Without this, a coincidental
+    ``isinstance(client, Mock)`` check in the elif-not-has-stream-consumers
+    branch would accidentally disable streaming even on the buggy code,
+    producing false-passing tests that don't cover the actual fix.
+    """
+
+    def test_provider_name_triggers_non_streaming(self):
+        """provider='copilot-acp' routes to _interruptible_api_call, not streaming.
+
+        This is the primary trigger condition: the provider field alone is
+        sufficient to disable streaming, regardless of base_url.
+        """
+        agent = _make_acp_agent(provider="copilot-acp")
+        resp = _valid_acp_response()
+
+        with (
+            patch.object(agent, "_interruptible_api_call",
+                         return_value=resp) as mock_non_stream,
+            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
+        ):
+            agent.run_conversation("hello")
+
+        mock_non_stream.assert_called_once()
+        mock_stream.assert_not_called()
+
+    def test_acp_base_url_triggers_non_streaming(self):
+        """base_url='acp://copilot' routes to _interruptible_api_call.
+
+        Covers the case where the URL scheme is the identifier rather than
+        the provider field (e.g. custom provider config with acp:// URL).
+        """
+        agent = _make_acp_agent(base_url="acp://copilot")
+        resp = _valid_acp_response()
+
+        with (
+            patch.object(agent, "_interruptible_api_call",
+                         return_value=resp) as mock_non_stream,
+            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
+        ):
+            agent.run_conversation("hello")
+
+        mock_non_stream.assert_called_once()
+        mock_stream.assert_not_called()
+
+    def test_acp_tcp_url_triggers_non_streaming(self):
+        """base_url='acp+tcp://...' routes to _interruptible_api_call.
+
+        acp+tcp:// is the HTTP-transport variant used when connecting to a
+        long-running ACP daemon instead of spawning a subprocess.  It is
+        also not an iterable stream and must take the non-streaming path.
+        """
+        agent = _make_acp_agent(base_url="acp+tcp://127.0.0.1:3100")
+        resp = _valid_acp_response()
+
+        with (
+            patch.object(agent, "_interruptible_api_call",
+                         return_value=resp) as mock_non_stream,
+            patch.object(agent, "_interruptible_streaming_api_call") as mock_stream,
+        ):
+            agent.run_conversation("hello")
+
+        mock_non_stream.assert_called_once()
+        mock_stream.assert_not_called()

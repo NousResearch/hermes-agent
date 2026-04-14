@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -1568,6 +1569,40 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 
 
 # =============================================================================
+# Token validation helpers for gateway setup
+# =============================================================================
+
+_TELEGRAM_TOKEN_RE = re.compile(r"^\d+:[A-Za-z0-9_-]{25,50}$")
+_SLACK_BOT_TOKEN_RE = re.compile(r"^xoxb-")
+_DISCORD_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}$")
+
+
+def _validate_token(value: str, token_type: str) -> str | None:
+    """Validate a bot token format. Returns error message or None if valid."""
+    if token_type == "telegram":
+        if not _TELEGRAM_TOKEN_RE.match(value):
+            return (
+                "Invalid Telegram bot token format. "
+                "Expected: <numeric_bot_id>:<alphanumeric_token> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+    elif token_type == "discord":
+        if not _DISCORD_TOKEN_RE.match(value):
+            return (
+                "Invalid Discord bot token format. "
+                "Expected: three dot-separated base64 segments "
+                "(e.g., MTA...Abc.Def...Ghi)"
+            )
+    elif token_type == "slack":
+        if not _SLACK_BOT_TOKEN_RE.match(value):
+            return (
+                "Invalid Slack bot token. "
+                "Expected token to start with 'xoxb-'"
+            )
+    return None
+
+
+# =============================================================================
 # Gateway Setup (Interactive Messaging Platform Configuration)
 # =============================================================================
 
@@ -1587,6 +1622,7 @@ _PLATFORMS = [
         ],
         "vars": [
             {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "validate_type": "telegram",
              "help": "Paste the token from @BotFather (step 3 above)."},
             {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
              "is_allowlist": True,
@@ -1615,6 +1651,7 @@ _PLATFORMS = [
         ],
         "vars": [
             {"name": "DISCORD_BOT_TOKEN", "prompt": "Bot token", "password": True,
+             "validate_type": "discord",
              "help": "Paste the token from step 2 above."},
             {"name": "DISCORD_ALLOWED_USERS", "prompt": "Allowed user IDs or usernames (comma-separated)", "password": False,
              "is_allowlist": True,
@@ -1646,6 +1683,7 @@ _PLATFORMS = [
         ],
         "vars": [
             {"name": "SLACK_BOT_TOKEN", "prompt": "Bot Token (xoxb-...)", "password": True,
+             "validate_type": "slack",
              "help": "Paste the bot token from step 3 above."},
             {"name": "SLACK_APP_TOKEN", "prompt": "App Token (xapp-...)", "password": True,
              "help": "Paste the app-level token from step 4 above."},
@@ -2103,6 +2141,17 @@ def _setup_standard_platform(platform: dict):
 
         value = prompt(f"  {var['prompt']}", password=var.get("password", False))
         if value:
+            # Validate token format if a validation type is specified
+            validate_type = var.get("validate_type")
+            if validate_type:
+                error = _validate_token(value, validate_type)
+                if error:
+                    print_warning(f"  {error}")
+                    if not prompt_yes_no("  Save anyway?", False):
+                        print_info("  Skipped — configure later with 'hermes gateway setup'")
+                        if var["name"] == token_var:
+                            return
+                        continue
             save_env_value(var["name"], value)
             print_success(f"  Saved {var['name']}")
         elif var["name"] == token_var:

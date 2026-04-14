@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import re
 import shutil
 import sys
 import copy
@@ -1611,9 +1612,21 @@ def _setup_telegram():
             return
 
     print_info("Create a bot via @BotFather on Telegram")
-    token = prompt("Telegram bot token", password=True)
-    if not token:
-        return
+    while True:
+        token = prompt("Telegram bot token", password=True)
+        if not token:
+            return
+        # Validate Telegram token format: <numeric_id>:<alphanumeric_token>
+        if not re.match(r"^\d+:[A-Za-z0-9_-]{25,50}$", token):
+            print_warning(
+                "Invalid Telegram bot token format. "
+                "Expected: <numeric_bot_id>:<alphanumeric_token> "
+                "(e.g., 123456789:ABCdefGHI-jklMNOpqrSTUvwxYZ)"
+            )
+            if not prompt_yes_no("Enter a different token?", True):
+                return
+            continue
+        break
     save_env_value("TELEGRAM_BOT_TOKEN", token)
     print_success("Telegram token saved")
 

@@ -3653,6 +3653,14 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
+            # Schedule any background tasks queued during this agent turn.
+            try:
+                from agent.background_task import background_tasks
+                for entry in background_tasks.drain_pending():
+                    asyncio.create_task(self._run_detached_task(entry))
+            except Exception as e:
+                logger.error("Background task scheduling error: %s", e)
+
             # Drain watch pattern notifications that arrived during the agent run.
             # Watch events and completions share the same queue; completions are
             # already handled by the per-process watcher task above, so we only
@@ -7141,6 +7149,80 @@ class GatewayRunner:
                 return f"{prefix}\n\n{user_text}"
             return prefix
         return user_text
+
+    # ------------------------------------------------------------------
+    # Background task support (agent/background_task.py)
+    # ------------------------------------------------------------------
+
+    async def _inject_background_wake(self, origin, wake_text: str) -> None:
+        """Inject a background-task completion as a synthetic internal message.
+
+        Constructs a MessageEvent with ``internal=True`` (skips auth) and
+        routes it through the originating platform adapter so the agent runs
+        again and delivers the result to the user.
+        """
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from gateway.config import Platform
+
+        if not origin.chat_id:
+            logger.warning("background_task: no chat_id in origin, cannot wake session")
+            return
+
+        adapter = None
+        for p, a in self.adapters.items():
+            if p.value == origin.platform:
+                adapter = a
+                break
+        if adapter is None:
+            logger.warning("background_task: no adapter for platform %r, dropping wake", origin.platform)
+            return
+
+        try:
+            source = SessionSource(
+                platform=Platform(origin.platform),
+                chat_id=origin.chat_id,
+                thread_id=origin.thread_id or None,
+                user_id=origin.user_id or None,
+                user_name=origin.user_name or None,
+            )
+            event = MessageEvent(
+                text=wake_text,
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+            )
+            logger.info(
+                "background_task: waking session %.20s on %s",
+                origin.session_key, origin.platform,
+            )
+            await adapter.handle_message(event)
+        except Exception as exc:
+            logger.error("background_task: wake injection failed: %s", exc)
+
+    async def _run_detached_task(self, entry) -> None:
+        """Run a background task coroutine and inject the wake event on completion.
+
+        ``entry`` is a ``_PendingEntry`` from ``background_tasks.pending``.
+        The coroutine should return a string that becomes the wake message text.
+        Any unhandled exception is caught and converted to an error wake message.
+        """
+        from agent.background_task import background_tasks
+
+        handle = entry.handle
+        try:
+            wake_text = await entry.coro
+            if not isinstance(wake_text, str):
+                wake_text = f"[SYSTEM: Background task '{handle.label}' completed.]"
+            background_tasks._mark_done(handle, "succeeded")
+        except Exception as exc:
+            logger.error("background_task: task %s failed: %s", handle.task_id, exc, exc_info=True)
+            wake_text = f"[SYSTEM: Background task '{handle.label}' failed — {exc}]"
+            background_tasks._mark_done(handle, "failed")
+
+        await self._inject_background_wake(handle.origin, wake_text)
+
+    # ------------------------------------------------------------------
 
     async def _inject_watch_notification(self, synth_text: str, original_event) -> None:
         """Inject a watch-pattern notification as a synthetic message event.

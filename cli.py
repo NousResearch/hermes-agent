@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import json
+import asyncio
 import atexit
 import tempfile
 import time
@@ -1804,6 +1805,7 @@ class HermesCLI:
         # mode does not go through run().
         self._agent_running = False
         self._pending_input = queue.Queue()
+        self._pending_background_wakes = queue.Queue()
         self._interrupt_queue = queue.Queue()
         self._should_exit = False
         self._last_ctrl_c_time = 0
@@ -1847,6 +1849,84 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+
+    def _set_cli_session_env(self, session_key: Optional[str] = None) -> list:
+        """Set per-turn session context for CLI tool calls."""
+        from gateway.session_context import set_session_vars
+
+        effective_session_key = (session_key or self.session_id or "").strip()
+        return set_session_vars(
+            platform="cli",
+            chat_id=effective_session_key,
+            chat_name="CLI",
+            session_key=effective_session_key,
+        )
+
+    def _clear_cli_session_env(self, tokens: list) -> None:
+        """Restore CLI session contextvars after a turn completes."""
+        from gateway.session_context import clear_session_vars
+
+        clear_session_vars(tokens)
+
+    def _build_detached_task_followup(self, handle, wake_text: str) -> str | None:
+        """Create a synthetic system follow-up so the CLI agent can reply."""
+        if not wake_text or not isinstance(wake_text, str):
+            return None
+        return (
+            f"[SYSTEM: A background {handle.label} task has completed. "
+            "Reply to the user now with a brief update in your normal assistant voice. "
+            "If the result includes a saved local file path or MEDIA tag, include the exact path "
+            "so the user can find the generated file. Do not mention internal task machinery.\n\n"
+            f"Result:\n{wake_text}]"
+        )
+
+    def _queue_detached_task_followup(self, handle, wake_text: str) -> None:
+        """Queue a synthetic follow-up turn for detached CLI task completion."""
+        followup = self._build_detached_task_followup(handle, wake_text)
+        if not followup:
+            return
+        self._pending_background_wakes.put(followup)
+
+    def _drain_detached_task_followups(self) -> None:
+        """Move queued detached-task follow-ups into the normal CLI input queue."""
+        while not self._pending_background_wakes.empty():
+            try:
+                self._pending_input.put(self._pending_background_wakes.get_nowait())
+            except queue.Empty:
+                break
+
+    def _run_pending_detached_task(self, entry) -> None:
+        """Execute a detached tool task for CLI sessions."""
+        from agent.background_task import background_tasks
+
+        handle = entry.handle
+        try:
+            wake_text = asyncio.run(entry.coro)
+            if not isinstance(wake_text, str):
+                wake_text = f"[SYSTEM: Background task '{handle.label}' completed.]"
+            background_tasks._mark_done(handle, "succeeded")
+        except Exception as exc:
+            wake_text = f"[SYSTEM: Background task '{handle.label}' failed — {exc}]"
+            background_tasks._mark_done(handle, "failed")
+        finally:
+            self._background_tasks.pop(handle.task_id, None)
+
+        self._queue_detached_task_followup(handle, wake_text)
+
+    def _start_pending_detached_tasks(self) -> None:
+        """Drain CLI-detached tool tasks queued during the last agent turn."""
+        from agent.background_task import background_tasks
+
+        for entry in background_tasks.drain_pending():
+            handle = entry.handle
+            thread = threading.Thread(
+                target=self._run_pending_detached_task,
+                args=(entry,),
+                daemon=True,
+                name=f"tool-bg-{handle.task_id}",
+            )
+            self._background_tasks[handle.task_id] = thread
+            thread.start()
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -5717,10 +5797,16 @@ class HermesCLI:
 
                 bg_agent.thinking_callback = _bg_thinking
 
-                result = bg_agent.run_conversation(
-                    user_message=prompt,
-                    task_id=task_id,
-                )
+                tokens = self._set_cli_session_env(task_id)
+                try:
+                    result = bg_agent.run_conversation(
+                        user_message=prompt,
+                        task_id=task_id,
+                    )
+                finally:
+                    self._clear_cli_session_env(tokens)
+
+                self._start_pending_detached_tasks()
 
                 response = result.get("final_response", "") if result else ""
                 if not response and result and result.get("error"):
@@ -7676,6 +7762,7 @@ class HermesCLI:
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
+                tokens = self._set_cli_session_env()
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -7695,6 +7782,8 @@ class HermesCLI:
                         "failed": True,
                         "error": _summary,
                     }
+                finally:
+                    self._clear_cli_session_env(tokens)
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
@@ -7749,6 +7838,7 @@ class HermesCLI:
                     agent_thread.join(0.1)
 
             agent_thread.join()  # Ensure agent thread completes
+            self._start_pending_detached_tasks()
 
             # Proactively clean up async clients whose event loop is dead.
             # The agent thread may have created AsyncOpenAI clients bound
@@ -8229,6 +8319,7 @@ class HermesCLI:
         # State for async operation
         self._agent_running = False
         self._pending_input = queue.Queue()     # For normal input (commands + new queries)
+        self._pending_background_wakes = queue.Queue()  # For detached-task follow-up turns
         self._interrupt_queue = queue.Queue()   # For messages typed while agent is running
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
@@ -9489,6 +9580,7 @@ class HermesCLI:
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
+                            self._drain_detached_task_followups()
                             self._check_config_mcp_changes()
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
@@ -9638,6 +9730,7 @@ class HermesCLI:
                                     self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
+                        self._drain_detached_task_followups()
 
                 except Exception as e:
                     print(f"Error: {e}")

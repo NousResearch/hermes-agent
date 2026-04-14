@@ -238,6 +238,10 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
 
 def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
     _write_auth_store(
         tmp_path,
         {
@@ -281,6 +285,10 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
 
 def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
     _write_auth_store(
         tmp_path,
         {

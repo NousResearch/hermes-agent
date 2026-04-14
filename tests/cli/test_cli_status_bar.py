@@ -80,6 +80,24 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
 
+    def test_build_status_bar_text_shows_reasoning_and_fast_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
+        cli_obj.service_tier = "priority"
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "R:high" in text
+        assert "FAST" in text
+
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()
 
@@ -197,6 +215,25 @@ class TestCLIStatusBar:
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
+
+    def test_status_bar_fragments_show_reasoning_and_fast_when_enabled(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10000,
+            completion_tokens=2400,
+            total_tokens=12400,
+            api_calls=7,
+            context_tokens=12400,
+            context_length=200_000,
+        )
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj.service_tier = "priority"
+        cli_obj._status_bar_visible = True
+
+        joined = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+
+        assert "R:medium" in joined
+        assert "FAST" in joined
 
     def test_build_status_bar_text_handles_missing_agent(self):
         cli_obj = _make_cli()

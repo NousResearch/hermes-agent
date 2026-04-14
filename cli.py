@@ -1905,7 +1905,21 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "reasoning_label": None,
+            "fast_label": None,
         }
+
+        reasoning_config = getattr(self, "reasoning_config", None)
+        if isinstance(reasoning_config, dict):
+            if reasoning_config.get("enabled") is False:
+                snapshot["reasoning_label"] = "R:off"
+            elif reasoning_config.get("enabled"):
+                effort = str(reasoning_config.get("effort") or "on").strip().lower() or "on"
+                snapshot["reasoning_label"] = f"R:{effort}"
+
+        service_tier = getattr(self, "service_tier", None)
+        if service_tier == "priority":
+            snapshot["fast_label"] = "FAST"
 
         if not agent:
             return snapshot
@@ -2057,7 +2071,8 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            extras = [label for label in (snapshot.get("reasoning_label"), snapshot.get("fast_label")) if label]
+            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label, *extras]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -2115,10 +2130,22 @@ class HermesCLI:
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
+                    ]
+                    if snapshot.get("reasoning_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-dim", snapshot["reasoning_label"]),
+                        ])
+                    if snapshot.get("fast_label"):
+                        frags.extend([
+                            ("class:status-bar-dim", " │ "),
+                            ("class:status-bar-strong", snapshot["fast_label"]),
+                        ])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:

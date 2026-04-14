@@ -270,7 +270,10 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     if not preview:
         return None
     if max_len > 0 and len(preview) > max_len:
-        preview = preview[:max_len - 3] + "..."
+        if max_len <= 3:
+            preview = "." * max_len
+        else:
+            preview = preview[:max_len - 3] + "..."
     return preview
 
 

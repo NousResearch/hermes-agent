@@ -59,6 +59,14 @@ class TestBuildToolPreview:
         assert result is not None
         assert len(result) <= 43  # max_len + "..."
 
+    def test_tiny_max_len_stays_bounded(self):
+        """Tiny positive limits should still cap output length."""
+        long_cmd = "abcdefghijklmnopqrstuvwxyz"
+
+        assert build_tool_preview("terminal", {"command": long_cmd}, max_len=3) == "..."
+        assert build_tool_preview("terminal", {"command": long_cmd}, max_len=2) == ".."
+        assert build_tool_preview("terminal", {"command": long_cmd}, max_len=1) == "."
+
     def test_process_tool_with_none_args(self):
         """Process tool special case should also handle None args."""
         assert build_tool_preview("process", None) is None

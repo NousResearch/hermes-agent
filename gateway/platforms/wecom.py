@@ -146,6 +146,14 @@ class WeComAdapter(BasePlatformAdapter):
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
 
+    # Signals to ``GatewayStreamConsumer`` that this adapter uses a single
+    # native stream for the entire response — opened by send_typing() /
+    # send(streaming=True), continued by edit_message(), closed by
+    # finalize_stream(). Tool-boundary segment breaks must NOT close the
+    # stream, because WeCom's reply channel only allows one stream per
+    # reply_req_id (reopening triggers errcode 6000 "data version conflict").
+    native_streaming_unified = True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
 
@@ -182,6 +190,15 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
         self._last_chat_req_ids: Dict[str, str] = {}
+
+        # Active native-streaming sessions: message_id -> (reply_req_id, stream_id).
+        # Populated by send() when ``metadata["streaming"]`` is truthy, consumed
+        # by edit_message() / finalize_stream() to continue / close the stream.
+        #
+        # The message_id we use is ``reply_req_id`` itself — WeCom's reply
+        # channel only supports one stream per request, so this mapping is
+        # effectively reply_req_id -> stream_id.
+        self._active_streams: Dict[str, Tuple[str, str]] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -1216,6 +1233,44 @@ class WeComAdapter(BasePlatformAdapter):
         self._raise_for_wecom_error(response, "send reply markdown")
         return response
 
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        content: str,
+        stream_id: Optional[str] = None,
+        finish: bool = True,
+    ) -> Dict[str, Any]:
+        """Send one chunk of WeCom's native reply-mode stream.
+
+        Final chunks (``finish=True``) go through :meth:`_send_reply_request`
+        so the caller gets an ACK and any WeCom error is raised. Intermediate
+        chunks (``finish=False``) are fire-and-forget via :meth:`_send_json`
+        — WeCom AI Bot does not send per-chunk ACKs, and waiting for one
+        would stall the stream.
+        """
+        stream_id = stream_id or self._new_req_id("stream")
+        stream_payload = {
+            "msgtype": "stream",
+            "stream": {
+                "id": stream_id,
+                "finish": finish,
+                "content": content[:self.MAX_MESSAGE_LENGTH],
+            },
+        }
+        if finish:
+            response = await self._send_reply_request(reply_req_id, stream_payload)
+            self._raise_for_wecom_error(response, "send reply stream")
+            return response
+
+        await self._send_json(
+            {
+                "cmd": APP_CMD_RESPONSE,
+                "headers": {"req_id": str(reply_req_id).strip()},
+                "body": stream_payload,
+            }
+        )
+        return {"headers": {"req_id": reply_req_id}}
+
     async def _send_reply_media_message(
         self,
         reply_req_id: str,
@@ -1335,12 +1390,25 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        """Send markdown to a WeCom chat.
+
+        Uses passive reply-mode (``aibot_respond_msg``) when a reply context
+        exists, otherwise proactive ``aibot_send_msg``. When ``metadata``
+        contains ``{"streaming": True}`` and a reply context is available,
+        the first chunk is sent with ``finish=False`` and the stream id is
+        stashed in ``self._active_streams`` so later
+        :meth:`edit_message` / :meth:`finalize_stream` calls can continue
+        the same native WebSocket stream (no client-visible message edits).
+
+        Native streaming is a WeCom reply-channel feature; proactive sends
+        ignore the ``streaming`` flag and always deliver as a single message.
+        """
+        streaming = bool(metadata.get("streaming")) if metadata else False
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
+        stream_id: Optional[str] = None
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
@@ -1348,7 +1416,16 @@ class WeComAdapter(BasePlatformAdapter):
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
+                if streaming:
+                    stream_id = self._new_req_id("stream")
+                    response = await self._send_reply_stream(
+                        reply_req_id,
+                        content,
+                        stream_id=stream_id,
+                        finish=False,
+                    )
+                else:
+                    response = await self._send_reply_markdown(reply_req_id, content)
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1368,11 +1445,89 @@ class WeComAdapter(BasePlatformAdapter):
         if error:
             return SendResult(success=False, error=error)
 
+        # In streaming reply-mode, reuse ``reply_req_id`` as the message_id so
+        # ``edit_message`` / ``finalize_stream`` can look up the active stream.
+        if streaming and stream_id and reply_req_id:
+            self._active_streams[reply_req_id] = (reply_req_id, stream_id)
+            message_id = reply_req_id
+        else:
+            message_id = self._payload_req_id(response) or uuid.uuid4().hex[:12]
+
         return SendResult(
             success=True,
-            message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            message_id=message_id,
             raw_response=response,
         )
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Continue an active native stream by sending another (non-final) chunk.
+
+        WeCom has no "edit an already-delivered message" API; instead, its
+        AI Bot protocol supports a multi-chunk stream identified by a
+        ``stream_id`` on the reply channel. We map the gateway's generic
+        ``edit_message`` to that protocol: each call delivers one more
+        ``finish=False`` chunk under the existing ``stream_id``.
+
+        Returns ``SendResult(success=False, ...)`` if the message_id has no
+        active stream (e.g. because the reply window has already been
+        finalized, or the message was sent via the proactive path which
+        does not support streaming).
+        """
+        del chat_id
+        stream_info = self._active_streams.get(message_id)
+        if not stream_info:
+            return SendResult(success=False, error="no active stream for message")
+
+        reply_req_id, stream_id = stream_info
+        try:
+            await self._send_reply_stream(
+                reply_req_id, content, stream_id=stream_id, finish=False,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as exc:
+            logger.error("[%s] Stream edit failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
+
+    async def finalize_stream(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+    ) -> SendResult:
+        """Close an active native stream with a final (``finish=True``) chunk.
+
+        The stream entry is removed from ``self._active_streams`` regardless
+        of outcome to prevent leaks. Called by ``GatewayStreamConsumer`` at
+        the end of a stream, on segment break, or on cancellation.
+        """
+        del chat_id
+        stream_info = self._active_streams.pop(message_id, None)
+        if not stream_info:
+            return SendResult(success=False, error="no active stream for message")
+
+        reply_req_id, stream_id = stream_info
+        # WeCom AI Bot errcode 6000 ("more than one callers at the same time")
+        # fires when the finish=True frame arrives while the server is still
+        # processing the previous fire-and-forget chunk. A short grace period
+        # lets the server settle before we close the stream. The user has
+        # already seen every chunk on their client; this only affects the
+        # finalize ACK.
+        await asyncio.sleep(0.25)
+        try:
+            response = await self._send_reply_stream(
+                reply_req_id, content, stream_id=stream_id, finish=True,
+            )
+            return SendResult(success=True, message_id=message_id, raw_response=response)
+        except Exception as exc:
+            logger.error("[%s] Stream finalize failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
 
     async def send_image(
         self,
@@ -1464,7 +1619,16 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
+        """WeCom does not expose typing indicators in this adapter.
+
+        The AI Bot reply-channel protocol can render a ``<think></think>``
+        animation as the first frame of a stream, but because the stream
+        bubble is pinned to its initial position in the chat timeline, a
+        subsequent real reply would appear ABOVE any tool-progress messages
+        delivered via the proactive send channel. That is worse UX than no
+        animation at all, so we leave this as a no-op and rely on the
+        streaming delta itself as the "is responding" signal.
+        """
         del chat_id, metadata
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

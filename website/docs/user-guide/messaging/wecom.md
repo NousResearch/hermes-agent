@@ -226,9 +226,15 @@ Files exceeding the absolute 20 MB limit are rejected with an informational mess
 
 ## Reply-Mode Stream Responses
 
-When the bot receives a message via the WeCom callback, the adapter remembers the inbound request ID. If a response is sent while the request context is still active, the adapter uses WeCom's reply-mode (`aibot_respond_msg`) with streaming to correlate the response directly to the inbound message. This provides a more natural conversation experience in the WeCom client.
+When the bot receives a message via the WeCom callback, the adapter remembers the inbound request ID. If a response is sent while the request context is still active, the adapter uses WeCom's reply-mode (`aibot_respond_msg`) with streaming to correlate the response directly to the inbound message.
 
-If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg`.
+### Progressive (Typewriter) Streaming
+
+When `display.platforms.wecom.streaming` is `true`, assistant replies stream into the WeCom client word-by-word as the model generates them — the same experience users get on Telegram and Discord. Under the hood the adapter uses WeCom's native reply-channel stream protocol (`msgtype: stream`) so no client-visible message edits are required.
+
+Tool-call boundaries do NOT break the stream into separate bubbles on WeCom: the whole response is delivered as a single progressively-updated message. See `docs/wecom-streaming.md` for the protocol details and design rationale.
+
+If the inbound request context has expired or is unavailable, the adapter falls back to proactive message sending via `aibot_send_msg` (no streaming in that case — WeCom's native stream is a reply-channel feature).
 
 Reply-mode also works for media: uploaded media can be sent as a reply to the originating message.
 

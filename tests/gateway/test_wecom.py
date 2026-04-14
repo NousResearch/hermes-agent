@@ -172,6 +172,185 @@ class TestWeComReplyMode:
         assert args[1] == {"msgtype": "image", "image": {"media_id": "media-1"}}
 
 
+class TestWeComNativeStreaming:
+    """Native WebSocket streaming on the reply channel.
+
+    WeCom AI Bot cannot edit an already-delivered message, but its reply
+    protocol supports a multi-chunk stream identified by a shared stream_id.
+    The adapter maps the gateway's generic send/edit_message/finalize_stream
+    cycle onto ``finish=False``/``finish=False``/``finish=True`` chunks.
+    """
+
+    @pytest.mark.asyncio
+    async def test_streaming_first_send_uses_finish_false(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123", "first chunk",
+            reply_to="msg-1",
+            metadata={"streaming": True},
+        )
+
+        assert result.success is True
+        # Streaming first chunk must be fire-and-forget (_send_json), not
+        # ACK'd (_send_reply_request), so the stream stays open.
+        adapter._send_reply_request.assert_not_called()
+        adapter._send_json.assert_awaited_once()
+        payload = adapter._send_json.await_args.args[0]
+        assert payload["body"]["msgtype"] == "stream"
+        assert payload["body"]["stream"]["finish"] is False
+        assert payload["body"]["stream"]["content"] == "first chunk"
+        # message_id must equal reply_req_id so edit_message can find it.
+        assert result.message_id == "req-1"
+        assert "req-1" in adapter._active_streams
+        stored_reply, stored_stream = adapter._active_streams["req-1"]
+        assert stored_reply == "req-1"
+        assert stored_stream == payload["body"]["stream"]["id"]
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_send_does_not_touch_active_streams(self):
+        """Plain (non-streaming) reply sends must not register a stream.
+
+        Non-streaming replies go through the existing markdown helper — the
+        stream machinery is reserved for metadata={"streaming": True}.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        await adapter.send("chat-123", "hello", reply_to="msg-1")
+
+        assert adapter._active_streams == {}
+        payload = adapter._send_reply_request.await_args.args[1]
+        assert payload["msgtype"] == "markdown"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_continues_same_stream_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        first = await adapter.send(
+            "chat-123", "chunk-1",
+            reply_to="msg-1",
+            metadata={"streaming": True},
+        )
+        first_stream_id = adapter._send_json.await_args.args[0]["body"]["stream"]["id"]
+
+        edit_result = await adapter.edit_message("chat-123", first.message_id, "chunk-1 + 2")
+
+        assert edit_result.success is True
+        # Second call should reuse the same stream_id and still be finish=False.
+        assert adapter._send_json.await_count == 2
+        second_payload = adapter._send_json.await_args.args[0]
+        assert second_payload["body"]["stream"]["id"] == first_stream_id
+        assert second_payload["body"]["stream"]["finish"] is False
+        assert second_payload["body"]["stream"]["content"] == "chunk-1 + 2"
+        # Still not finalized, so the stream entry must remain.
+        assert first.message_id in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_edit_message_returns_failure_when_no_active_stream(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        result = await adapter.edit_message("chat-123", "unknown-id", "payload")
+        assert result.success is False
+        assert "no active stream" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_finalize_stream_sends_finish_true_and_clears_entry(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_json = AsyncMock()
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+
+        first = await adapter.send(
+            "chat-123", "chunk-1",
+            reply_to="msg-1",
+            metadata={"streaming": True},
+        )
+        opened_stream_id = adapter._send_json.await_args.args[0]["body"]["stream"]["id"]
+
+        result = await adapter.finalize_stream("chat-123", first.message_id, "final full text")
+
+        assert result.success is True
+        # Final chunk must go through the ACK'd reply request, not fire-and-forget.
+        adapter._send_reply_request.assert_awaited_once()
+        final_payload = adapter._send_reply_request.await_args.args[1]
+        assert final_payload["stream"]["finish"] is True
+        assert final_payload["stream"]["id"] == opened_stream_id
+        assert final_payload["stream"]["content"] == "final full text"
+        # Entry cleaned up so a retry cannot accidentally reuse it.
+        assert first.message_id not in adapter._active_streams
+
+    @pytest.mark.asyncio
+    async def test_finalize_stream_returns_failure_when_no_active_stream(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        result = await adapter.finalize_stream("chat-123", "unknown-id", "payload")
+        assert result.success is False
+        assert "no active stream" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_streaming_ignored_for_proactive_send(self):
+        """No reply context → no reply_req_id → native streaming is unavailable.
+
+        The adapter must still deliver the message as a single ``aibot_send_msg``
+        and must NOT populate ``_active_streams`` (otherwise edit_message would
+        incorrectly try to stream to a chat that has no reply channel).
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "send-1"}, "errcode": 0}
+        )
+
+        result = await adapter.send(
+            "chat-123", "hello",
+            reply_to=None,
+            metadata={"streaming": True},
+        )
+
+        assert result.success is True
+        assert adapter._active_streams == {}
+
+
+class TestWeComUnifiedStreamFlag:
+    @pytest.mark.asyncio
+    async def test_adapter_flags_unified_native_streaming(self):
+        """``GatewayStreamConsumer`` reads this attribute to decide whether
+        tool-boundary segment breaks should close the current stream. WeCom's
+        reply channel cannot reopen a stream once finalized (errcode 6000),
+        so this flag must stay ``True``.
+        """
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.native_streaming_unified is True
+
+
 class TestExtractText:
     def test_extracts_plain_text(self):
         from gateway.platforms.wecom import WeComAdapter

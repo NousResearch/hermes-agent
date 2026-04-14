@@ -12347,6 +12347,7 @@ class GatewayRunner:
                                 if progress_queue is not None
                                 else None
                             ),
+                            reply_to=event_message_id,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

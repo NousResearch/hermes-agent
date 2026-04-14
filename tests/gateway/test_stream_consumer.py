@@ -170,6 +170,134 @@ class TestEditMessageFinalizeSignature:
         )
 
 
+class TestNativeStreamingIntegration:
+    """Consumer hooks for adapters with native WebSocket streaming (e.g. WeCom).
+
+    These adapters cannot edit delivered messages; instead they keep a
+    ``finish=False`` stream open, accept continuation chunks via
+    ``edit_message``, and close the stream via ``finalize_stream``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_first_send_passes_reply_to_and_streaming_metadata(self):
+        """Streaming adapters need reply_to (to pick the stream channel) and
+        ``streaming=True`` metadata (to open the stream instead of sending once).
+        """
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="req-1"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_123",
+            metadata={"thread_id": "t-1"},
+            reply_to="user-msg-42",
+        )
+        await consumer._send_or_edit("first chunk of streamed response")
+
+        adapter.send.assert_awaited_once()
+        kwargs = adapter.send.call_args.kwargs
+        assert kwargs["reply_to"] == "user-msg-42"
+        assert kwargs["metadata"]["streaming"] is True
+        # Pre-existing metadata must be preserved, not replaced.
+        assert kwargs["metadata"]["thread_id"] == "t-1"
+
+    @pytest.mark.asyncio
+    async def test_finalize_native_stream_succeeds(self):
+        adapter = MagicMock()
+        adapter.finalize_stream = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="req-1")
+        )
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "req-1"
+
+        ok = await consumer._finalize_native_stream("final accumulated text")
+
+        assert ok is True
+        adapter.finalize_stream.assert_awaited_once_with(
+            "chat_123", "req-1", "final accumulated text",
+        )
+
+    @pytest.mark.asyncio
+    async def test_finalize_native_stream_returns_false_without_adapter_support(self):
+        """Adapters that don't implement finalize_stream must not be called and
+        the helper must report False so callers fall back to send/edit."""
+        adapter = MagicMock(spec=["send", "edit_message", "MAX_MESSAGE_LENGTH"])
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "msg_1"
+
+        ok = await consumer._finalize_native_stream("text")
+
+        assert ok is False
+        # Adapter had no finalize_stream attribute — nothing to assert_not_called.
+
+    @pytest.mark.asyncio
+    async def test_finalize_native_stream_ignores_no_edit_sentinel(self):
+        """``__no_edit__`` is a sentinel for platforms (Signal, github_comment
+        webhook) that accepted the send but have no editable message id.
+        finalize_stream must be skipped for that sentinel."""
+        adapter = MagicMock()
+        adapter.finalize_stream = AsyncMock()
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "__no_edit__"
+
+        ok = await consumer._finalize_native_stream("text")
+
+        assert ok is False
+        adapter.finalize_stream.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_segment_break_skips_finalize_for_unified_stream_adapter(self):
+        """WeCom-style adapters reuse one stream for the whole response. The
+        consumer must not call finalize_stream at tool boundaries (that would
+        close the stream, and the next send would try to open a second one
+        against the same reply_req_id — WeCom rejects this with errcode 6000)."""
+        adapter = MagicMock()
+        adapter.native_streaming_unified = True
+        adapter.finalize_stream = AsyncMock()
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="req-1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer.on_delta("before tool call ")
+        consumer.on_delta(None)  # tool boundary
+        consumer.on_delta("after tool call")
+        consumer.finish()
+        await consumer.run()
+
+        # finalize_stream should be called exactly once — at the end of the
+        # response (got_done), not at the tool-boundary segment_break.
+        assert adapter.finalize_stream.await_count == 1
+        final_call_args = adapter.finalize_stream.await_args.args
+        assert final_call_args[0] == "chat_123"
+        assert final_call_args[1] == "req-1"
+        # Final call carries the full accumulated text across the tool boundary.
+        assert "before tool call" in final_call_args[2]
+        assert "after tool call" in final_call_args[2]
+        # send was called exactly once (first chunk opens the stream); no
+        # second send at segment_break, because message_id stayed set.
+        assert adapter.send.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_finalize_native_stream_swallows_adapter_exception(self):
+        """Adapter exceptions must not bubble — callers treat this as a signal
+        to try the generic send_or_edit fallback."""
+        adapter = MagicMock()
+        adapter.finalize_stream = AsyncMock(side_effect=RuntimeError("network down"))
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        consumer._message_id = "req-1"
+
+        ok = await consumer._finalize_native_stream("text")
+
+        assert ok is False
+
+
 class TestSendOrEditMediaStripping:
     """Verify _send_or_edit strips MEDIA: before sending to the platform."""
 

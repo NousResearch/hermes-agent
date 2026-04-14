@@ -848,7 +848,7 @@ class SessionDB:
                 ) AS last_active
             FROM sessions s
             {where_sql}
-            ORDER BY s.started_at DESC
+            ORDER BY last_active DESC
             LIMIT ? OFFSET ?
         """
         params.extend([limit, offset])

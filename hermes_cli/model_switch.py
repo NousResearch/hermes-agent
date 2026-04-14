@@ -1084,3 +1084,54 @@ def list_authenticated_providers(
     return results
 
 
+def list_authenticated_picker_entries(
+    current_provider: str = "",
+    current_model: str = "",
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+    max_models: int = 8,
+) -> List[dict]:
+    """Return a shared picker-entry schema for CLI and gateway pickers."""
+    from hermes_cli.models import openrouter_picker_groups, openrouter_vendor_label
+
+    providers = list_authenticated_providers(
+        current_provider=current_provider,
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=max_models,
+    )
+    if not providers:
+        return []
+
+    expanded: List[dict] = []
+    current_openrouter_model = normalize_model_for_provider(current_model, "openrouter") if current_provider == "openrouter" else ""
+
+    for provider in providers:
+        if provider.get("slug") != "openrouter":
+            expanded.append({
+                "id": provider["slug"],
+                "slug": provider["slug"],
+                "switch_provider": provider["slug"],
+                "name": provider["name"],
+                "is_current": provider["is_current"],
+                "models": provider.get("models", []),
+                "total_models": provider.get("total_models", len(provider.get("models", []))),
+                "source": provider.get("source", "built-in"),
+            })
+            continue
+
+        for vendor, models in openrouter_picker_groups():
+            model_list = list(models)
+            expanded.append({
+                "id": f"openrouter:{vendor}",
+                "slug": f"openrouter:{vendor}",
+                "switch_provider": "openrouter",
+                "name": f"OpenRouter / {openrouter_vendor_label(vendor)}",
+                "is_current": bool(current_provider == "openrouter" and current_openrouter_model.startswith(f"{vendor}/")),
+                "models": model_list,
+                "total_models": len(model_list),
+                "source": provider.get("source", "built-in"),
+            })
+
+    expanded.sort(key=lambda r: (not r["is_current"], -r["total_models"], r["name"]))
+    return expanded

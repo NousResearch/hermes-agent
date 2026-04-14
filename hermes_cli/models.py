@@ -20,6 +20,23 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+_OPENROUTER_VENDOR_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "arcee-ai": "Arcee",
+    "deepseek": "DeepSeek",
+    "google": "Google",
+    "meta-llama": "Meta Llama",
+    "minimax": "MiniMax",
+    "moonshotai": "Moonshot",
+    "nvidia": "Nvidia",
+    "openai": "OpenAI",
+    "qwen": "Qwen",
+    "stepfun": "StepFun",
+    "x-ai": "X.AI",
+    "xiaomi": "Xiaomi",
+    "z-ai": "Z.AI",
+}
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
@@ -56,6 +73,23 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+
+
+def openrouter_vendor_label(vendor_slug: str) -> str:
+    """Return a human-friendly label for an OpenRouter vendor slug."""
+    label = _OPENROUTER_VENDOR_LABELS.get(vendor_slug)
+    if label:
+        return label
+    bits = [part for part in vendor_slug.replace("_", "-").split("-") if part]
+    return " ".join(part[:1].upper() + part[1:] for part in bits) or vendor_slug
+
+
+def _openrouter_picker_sort_key(model_id: str) -> tuple[str, int, str]:
+    if "/" in model_id:
+        vendor, bare = model_id.split("/", 1)
+    else:
+        vendor, bare = "", model_id
+    return (vendor, 1 if bare.endswith(":free") else 0, bare)
 
 
 def _codex_curated_models() -> list[str]:
@@ -619,14 +653,28 @@ def fetch_openrouter_models(
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
-    """Return the curated OpenRouter picker list, refreshed from the live catalog when possible."""
+    """Return the canonical OpenRouter picker catalog, refreshed from the live API when possible."""
     global _openrouter_catalog_cache
 
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
-    fallback = list(OPENROUTER_MODELS)
-    preferred_ids = [mid for mid, _ in fallback]
+    models_dev_fallback: list[tuple[str, str]] = []
+    try:
+        from agent.models_dev import list_agentic_models
+
+        models_dev_ids = sorted(
+            {
+                mid for mid in list_agentic_models("openrouter")
+                if isinstance(mid, str) and mid.strip()
+            },
+            key=_openrouter_picker_sort_key,
+        )
+        models_dev_fallback = [(mid, "") for mid in models_dev_ids]
+    except Exception:
+        models_dev_fallback = []
+
+    fallback = models_dev_fallback or list(OPENROUTER_MODELS)
 
     try:
         req = urllib.request.Request(
@@ -642,35 +690,65 @@ def fetch_openrouter_models(
     if not isinstance(live_items, list):
         return list(_openrouter_catalog_cache or fallback)
 
-    live_by_id: dict[str, dict[str, Any]] = {}
+    curated: list[tuple[str, str]] = []
     for item in live_items:
         if not isinstance(item, dict):
             continue
         mid = str(item.get("id") or "").strip()
         if not mid:
             continue
-        live_by_id[mid] = item
-
-    curated: list[tuple[str, str]] = []
-    for preferred_id in preferred_ids:
-        live_item = live_by_id.get(preferred_id)
-        if live_item is None:
+        supported_parameters = {
+            str(param).strip().lower()
+            for param in (item.get("supported_parameters") or [])
+            if str(param).strip()
+        }
+        if "tools" not in supported_parameters and "tool_choice" not in supported_parameters:
             continue
-        desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
-        curated.append((preferred_id, desc))
+        architecture = item.get("architecture")
+        if not isinstance(architecture, dict):
+            continue
+        input_modalities = {
+            str(modality).strip().lower()
+            for modality in (architecture.get("input_modalities") or [])
+            if str(modality).strip()
+        }
+        output_modalities = {
+            str(modality).strip().lower()
+            for modality in (architecture.get("output_modalities") or [])
+            if str(modality).strip()
+        }
+        if "text" not in input_modalities or "text" not in output_modalities:
+            continue
+        if mid in {"openrouter/free", "openrouter/auto"}:
+            continue
+        desc = "free" if _openrouter_model_is_free(item.get("pricing")) else ""
+        curated.append((mid, desc))
 
     if not curated:
         return list(_openrouter_catalog_cache or fallback)
 
-    first_id, _ = curated[0]
-    curated[0] = (first_id, "recommended")
+    curated.sort(key=lambda item: _openrouter_picker_sort_key(item[0]))
     _openrouter_catalog_cache = curated
     return list(curated)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:
-    """Return just the OpenRouter model-id strings."""
+    """Return just the OpenRouter picker model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
+
+
+def openrouter_picker_groups(*, force_refresh: bool = False) -> list[tuple[str, tuple[str, ...]]]:
+    """Return ``[(vendor_slug, (model_ids...)), ...]`` for OpenRouter pickers."""
+    grouped: dict[str, list[str]] = {}
+    for model_id in model_ids(force_refresh=force_refresh):
+        if "/" not in model_id:
+            continue
+        vendor, _bare = model_id.split("/", 1)
+        grouped.setdefault(vendor, []).append(model_id)
+    return [
+        (vendor, tuple(models))
+        for vendor, models in sorted(grouped.items(), key=lambda item: item[0])
+    ]
 
 
 

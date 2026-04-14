@@ -4623,7 +4623,7 @@ class HermesCLI:
                     current_base_url=self.base_url or "",
                     current_api_key=self.api_key or "",
                     is_global=persist_global,
-                    explicit_provider=provider_data.get("slug"),
+                    explicit_provider=provider_data.get("switch_provider") or provider_data.get("id"),
                     user_providers=state.get("user_provs"),
                     custom_providers=state.get("custom_provs"),
                 )
@@ -4642,7 +4642,7 @@ class HermesCLI:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
+        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_picker_entries
         from hermes_cli.providers import get_label
 
         # Parse args from the original command
@@ -4671,8 +4671,9 @@ class HermesCLI:
                 pass
 
             try:
-                providers = list_authenticated_providers(
+                providers = list_authenticated_picker_entries(
                     current_provider=self.provider or "",
+                    current_model=self.model or "",
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=50,

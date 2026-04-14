@@ -4,6 +4,7 @@ from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
+    openrouter_picker_groups,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
@@ -11,7 +12,7 @@ from hermes_cli.models import (
 import hermes_cli.models as _models_mod
 
 LIVE_OPENROUTER_MODELS = [
-    ("anthropic/claude-opus-4.6", "recommended"),
+    ("anthropic/claude-opus-4.6", ""),
     ("qwen/qwen3.6-plus", ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
 ]
@@ -69,24 +70,51 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+                return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]}},{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text"],"output_modalities":["text"]}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text"],"output_modalities":["text"]}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
-            ("anthropic/claude-opus-4.6", "recommended"),
-            ("qwen/qwen3.6-plus", ""),
+            ("anthropic/claude-opus-4.6", ""),
             ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+            ("qwen/qwen3.6-plus", ""),
         ]
 
     def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("agent.models_dev.list_agentic_models", side_effect=RuntimeError("no models.dev")), \
+             patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS
+
+    def test_falls_back_to_models_dev_when_live_fetch_fails(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("agent.models_dev.list_agentic_models", return_value=["openai/gpt-5.4", "anthropic/claude-opus-4.6"]), \
+             patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [
+            ("anthropic/claude-opus-4.6", ""),
+            ("openai/gpt-5.4", ""),
+        ]
+
+
+class TestOpenRouterPickerGroups:
+    def test_groups_models_by_vendor(self):
+        with patch("hermes_cli.models.model_ids", return_value=[
+            "anthropic/claude-opus-4.6",
+            "anthropic/claude-sonnet-4.6",
+            "openai/gpt-5.4",
+        ]):
+            groups = openrouter_picker_groups()
+
+        assert groups == [
+            ("anthropic", ("anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6")),
+            ("openai", ("openai/gpt-5.4",)),
+        ]
 
 
 class TestFindOpenrouterSlug:

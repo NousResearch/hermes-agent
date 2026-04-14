@@ -262,6 +262,53 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- skill registration -------------------------------------------------
+
+    def register_skill(
+        self,
+        name: str,
+        path: Path,
+        description: str = "",
+    ) -> None:
+        """Register a read-only skill provided by this plugin.
+
+        The skill becomes resolvable as ``'<plugin_name>:<name>'`` via
+        ``skill_view()``.  It does **not** enter the flat
+        ``~/.hermes/skills/`` tree and is **not** listed in the system
+        prompt's ``<available_skills>`` index — plugin skills are
+        opt-in explicit loads only.
+
+        Raises:
+            ValueError: if *name* contains ``':'`` or invalid characters.
+            FileNotFoundError: if *path* does not exist.
+        """
+        from agent.skill_utils import _NAMESPACE_RE
+
+        if ":" in name:
+            raise ValueError(
+                f"Skill name '{name}' must not contain ':' "
+                f"(the namespace is derived from the plugin name "
+                f"'{self.manifest.name}' automatically)."
+            )
+        if not name or not _NAMESPACE_RE.match(name):
+            raise ValueError(
+                f"Invalid skill name '{name}'. Must match [a-zA-Z0-9_-]+."
+            )
+        if not path.exists():
+            raise FileNotFoundError(f"SKILL.md not found at {path}")
+
+        qualified = f"{self.manifest.name}:{name}"
+        self._manager._plugin_skills[qualified] = {
+            "path": path,
+            "plugin": self.manifest.name,
+            "bare_name": name,
+            "description": description,
+        }
+        logger.debug(
+            "Plugin %s registered skill: %s",
+            self.manifest.name, qualified,
+        )
+
 
 # ---------------------------------------------------------------------------
 # PluginManager
@@ -278,6 +325,8 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        # Plugin skill registry: qualified name → metadata dict.
+        self._plugin_skills: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -553,6 +602,28 @@ class PluginManager:
                 }
             )
         return result
+
+    # -----------------------------------------------------------------------
+    # Plugin skill lookups
+    # -----------------------------------------------------------------------
+
+    def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
+        """Return the ``Path`` to a plugin skill's SKILL.md, or ``None``."""
+        entry = self._plugin_skills.get(qualified_name)
+        return entry["path"] if entry else None
+
+    def list_plugin_skills(self, plugin_name: str) -> List[str]:
+        """Return sorted bare names of all skills registered by *plugin_name*."""
+        prefix = f"{plugin_name}:"
+        return sorted(
+            e["bare_name"]
+            for qn, e in self._plugin_skills.items()
+            if qn.startswith(prefix)
+        )
+
+    def remove_plugin_skill(self, qualified_name: str) -> None:
+        """Remove a stale registry entry (silently ignores missing keys)."""
+        self._plugin_skills.pop(qualified_name, None)
 
 
 # ---------------------------------------------------------------------------

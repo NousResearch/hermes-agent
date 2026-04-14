@@ -11,6 +11,8 @@ def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj.reasoning_config = None
+    cli_obj.service_tier = None
     return cli_obj
 
 
@@ -72,8 +74,10 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=120)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=120)
 
+        assert "main" in text
         assert "claude-sonnet-4-20250514" in text
         assert "12.4K/200K" in text
         assert "6%" in text
@@ -93,8 +97,10 @@ class TestCLIStatusBar:
         cli_obj.reasoning_config = {"enabled": True, "effort": "high"}
         cli_obj.service_tier = "priority"
 
-        text = cli_obj._build_status_bar_text(width=120)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=120)
 
+        assert "main" in text
         assert "R:high" in text
         assert "FAST" in text
 
@@ -209,9 +215,11 @@ class TestCLIStatusBar:
             context_length=200_000,
         )
 
-        text = cli_obj._build_status_bar_text(width=60)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=60)
 
         assert "⚕" in text
+        assert "main" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
         assert "200K" not in text
@@ -230,17 +238,22 @@ class TestCLIStatusBar:
         cli_obj.service_tier = "priority"
         cli_obj._status_bar_visible = True
 
-        joined = "".join(text for _, text in cli_obj._get_status_bar_fragments())
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"), \
+             patch.object(HermesCLI, "_get_tui_terminal_width", return_value=160):
+            joined = "".join(text for _, text in cli_obj._get_status_bar_fragments())
 
+        assert "main" in joined
         assert "R:medium" in joined
         assert "FAST" in joined
 
     def test_build_status_bar_text_handles_missing_agent(self):
         cli_obj = _make_cli()
 
-        text = cli_obj._build_status_bar_text(width=100)
+        with patch("hermes_cli.profiles.get_active_profile_name", return_value="main"):
+            text = cli_obj._build_status_bar_text(width=100)
 
         assert "⚕" in text
+        assert "main" in text
         assert "claude-sonnet-4-20250514" in text
 
     def test_minimal_tui_chrome_threshold(self):

@@ -22,7 +22,7 @@ import asyncio
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, AsyncIterator
 from collections import defaultdict
 
 from agent.flow import Flow, StatefulFlow, AgentFlow, entry, after
@@ -94,6 +94,14 @@ class TaskNode:
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     agent_id: Optional[str] = None  # 执行这个任务的子agent标识
+    _interim_results: list[Any] = field(default_factory=list)  # 流式中间结果（Phase3）
+
+    def publish_stream_result(self, partial: Any) -> None:
+        """记录一个流式中间结果，供下游任务立即消费"""
+        self._interim_results.append(partial)
+
+    def get_stream_results(self) -> list[Any]:
+        return list(self._interim_results)
 
 
 @dataclass
@@ -221,6 +229,65 @@ class SharedMemory:
 
     def get_events(self, since_ts: float = 0) -> list[dict]:
         """获取事件日志（用于调试和trace）"""
+
+    # ----------------------------------------------------------------------
+    # Phase3: 流式中间结果发布/订阅（agent间实时通信）
+    # ----------------------------------------------------------------------
+
+    def publish_stream(self, task_id: str, partial: Any) -> None:
+        """发布任务的流式中间结果（同步兼容）"""
+        stream_key = f"stream:{task_id}"
+        if stream_key not in self._data:
+            self._data[stream_key] = []
+        self._data[stream_key].append({
+            "ts": time.time(),
+            "value": partial,
+        })
+        event = {
+            "ts": time.time(),
+            "type": "stream",
+            "key": stream_key,
+            "value": repr(partial)[:200] if not isinstance(partial, str) else partial[:200],
+        }
+        self._events.append(event)
+        if len(self._events) > self._max_events:
+            self._events = self._events[-self._max_events:]
+        for callback in self._subscribers.get(stream_key, []) + self._subscribers.get("stream:*", []):
+            try:
+                callback(task_id, partial)
+            except Exception as e:
+                logger.debug("Stream subscriber error: %s", e)
+
+    async def subscribe_stream_async(self, task_id: str) -> AsyncIterator[Any]:
+        """异步迭代获取任务的流式结果（供下游消费者用）"""
+        stream_key = f"stream:{task_id}"
+        last_len = 0
+        while True:
+            async with self._lock:
+                stream_list = self._data.get(stream_key, [])
+                if len(stream_list) > last_len:
+                    yield stream_list[last_len]["value"]
+                    last_len = len(stream_list)
+                    continue
+            event = asyncio.Event()
+            def _notify(tid: str, val: Any) -> None:
+                del tid
+                event.set()
+            async with self._lock:
+                self._subscribers.setdefault(stream_key, []).append(_notify)
+            try:
+                await asyncio.wait_for(event.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                break
+            finally:
+                async with self._lock:
+                    if _notify in self._subscribers.get(stream_key, []):
+                        self._subscribers[stream_key].remove(_notify)
+
+    def get_stream_results(self, task_id: str) -> list[Any]:
+        """同步读取任务的所有流式中间结果"""
+        stream_key = f"stream:{task_id}"
+        return [e["value"] for e in self._data.get(stream_key, [])]
         return [e for e in self._events if e["ts"] > since_ts]
 
 
@@ -241,8 +308,12 @@ class DAGWorkflow:
         self._completed: set[str] = set()
         self._failed: set[str] = set()
 
-    def get_ready_tasks(self) -> list[TaskNode]:
-        """返回所有依赖已满足且未执行的任务"""
+    def get_ready_tasks(self, stream_enabled: bool = False) -> list[TaskNode]:
+        """返回所有依赖已满足且未执行的任务
+
+        Args:
+            stream_enabled: 若为True，下游任务可在上游有流式中间结果时提前启动
+        """
         ready = []
         for task_id, node in self.nodes.items():
             if node.status != "pending":
@@ -253,7 +324,17 @@ class DAGWorkflow:
             )
             if deps_done:
                 ready.append(node)
+            elif stream_enabled:
+                # 部分依赖已有流式结果，提前启动下游
+                has_stream = any(
+                    len(self.nodes[d].get_stream_results()) > 0
+                    for d in node.depends_on
+                    if self.nodes[d].status in ("running", "completed")
+                )
+                if has_stream:
+                    ready.append(node)
         return ready
+
 
     def mark_running(self, task_id: str) -> None:
         self.nodes[task_id].status = "running"
@@ -542,7 +623,20 @@ Respond ONLY with valid JSON, no markdown, no explanation."""
                     t.cancel()
                 break
 
-            ready_tasks = self.workflow.get_ready_tasks()
+            # ------------------------------------------------------------------
+            # Phase3: 轮询运行中任务的流式中间结果，传播给下游任务
+            # ------------------------------------------------------------------
+            for tid, node in self.workflow.nodes.items():
+                if node.status == "running":
+                    stream_results = self.shared_memory.get_stream_results(tid)
+                    new_results = stream_results[len(node._interim_results):]
+                    for partial in new_results:
+                        node.publish_stream_result(partial)
+                        for downstream in self.workflow.nodes.values():
+                            if tid in downstream.depends_on:
+                                downstream.publish_stream_result(partial)
+
+            ready_tasks = self.workflow.get_ready_tasks(stream_enabled=True)
             if not ready_tasks:
                 running = [n for n in self.workflow.nodes.values() if n.status == "running"]
                 if running:

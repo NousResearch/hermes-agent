@@ -2201,7 +2201,12 @@ class AIAgent:
         "anything that would matter for the next session on this project\n\n"
         "If anything is worth remembering, use the memory tool to save it "
         "(target=memory for facts, target=user for personal info about the user).\n"
-        "If nothing is worth saving, say 'Nothing to save.' and stop."
+        "If nothing is worth saving, say 'Nothing to save.' and stop.\n\n"
+        "KNOWLEDGE GAPS:\n"
+        "If during review you realize you don't know something (unfamiliar tool, "
+        "unclear concept, ambiguous user intent), DO NOT guess. Call web_search "
+        "with a precise query to verify before saving anything. Incorporate the "
+        "search results directly into your conclusion."
     )
 
     _SKILL_REVIEW_PROMPT = (
@@ -2218,7 +2223,12 @@ class AIAgent:
         "What did that teach you about their preferences?\n\n"
         "If something is reusable: check if a relevant skill already exists using skill_view, "
         "then either update it (skill_manage patch) or create a new one (skill_manage create).\n"
-        "If nothing is worth saving, say 'Nothing to save.' and stop."
+        "If nothing is worth saving, say 'Nothing to save.' and stop.\n\n"
+        "KNOWLEDGE GAPS:\n"
+        "If during review you realize you don't know something (unfamiliar tool, "
+        "unclear concept, ambiguous user intent), DO NOT guess. Call web_search "
+        "with a precise query to verify before saving anything. Incorporate the "
+        "search results directly into your conclusion."
     )
 
     _COMBINED_REVIEW_PROMPT = (
@@ -2236,7 +2246,12 @@ class AIAgent:
         "4. USER CORRECTIONS: any feedback that changed your approach?\n\n"
         "Act on anything genuinely worth saving — use memory tool for facts/user info, "
         "skill_manage for reusable approaches.\n"
-        "If nothing stands out, say 'Nothing to save.' and stop."
+        "If nothing stands out, say 'Nothing to save.' and stop.\n\n"
+        "KNOWLEDGE GAPS:\n"
+        "If during review you realize you don't know something (unfamiliar tool, "
+        "unclear concept, ambiguous user intent), DO NOT guess. Call web_search "
+        "with a precise query to verify before saving anything. Incorporate the "
+        "search results directly into your conclusion."
     )
 
     def _spawn_background_review(

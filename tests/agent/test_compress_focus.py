@@ -25,6 +25,11 @@ def _make_compressor():
     compressor._previous_summary = None
     compressor._summary_failure_cooldown_until = 0.0
     compressor.summary_model = None
+    compressor.model = "test-model"
+    compressor.provider = "test-provider"
+    compressor.base_url = None
+    compressor.api_key = "test-key"
+    compressor.api_mode = "test-mode"
     return compressor
 
 
@@ -85,7 +90,6 @@ def test_compress_passes_focus_to_generate_summary():
 
     # Track what _generate_summary receives
     received_kwargs = {}
-    original_generate = compressor._generate_summary
 
     def tracking_generate(turns, **kwargs):
         received_kwargs.update(kwargs)
@@ -111,7 +115,7 @@ def test_compress_passes_focus_to_generate_summary():
 
 
 def test_compress_none_focus_by_default():
-    """compress() passes None focus_topic by default."""
+    """compress() auto-derives focus_topic from recent user messages when none given."""
     compressor = _make_compressor()
 
     received_kwargs = {}
@@ -136,4 +140,6 @@ def test_compress_none_focus_by_default():
 
     compressor.compress(messages, current_tokens=100000)
 
-    assert received_kwargs.get("focus_topic") is None
+    # Auto-derived from last 1-3 user messages; last user msg is "fourth"
+    assert received_kwargs.get("focus_topic") is not None
+    assert "fourth" in received_kwargs["focus_topic"]

@@ -3918,6 +3918,111 @@ class HermesCLI:
         print()
         return True
 
+    def _handle_tasks_command(self, cmd_original: str) -> None:
+        """Handle /tasks [args] — display a rich session history panel.
+
+        Supports:
+            /tasks              show all sessions (default 20)
+            /tasks --title foo  filter by title keyword
+            /tasks --limit 50   override default limit
+        """
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        # Parse optional --title and --limit flags
+        parts = cmd_original.split()
+        title_filter = None
+        limit = 20
+
+        for i, part in enumerate(parts[1:], 1):
+            if part == "--title" and i + 1 < len(parts):
+                title_filter = parts[i + 1].strip()
+            elif part == "--limit" and i + 1 < len(parts):
+                try:
+                    limit = int(parts[i + 1])
+                    limit = max(1, min(limit, 200))
+                except ValueError:
+                    _cprint("  Invalid --limit value, using default (20).")
+
+        # Fetch sessions (exclude tool sessions, include CLI sessions)
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                exclude_sources=["tool"],
+                limit=limit,
+            )
+        except Exception as e:
+            _cprint(f"  Error fetching sessions: {e}")
+            return
+
+        # Apply in-memory title filter if specified
+        if title_filter:
+            sessions = [
+                s for s in sessions
+                if title_filter.lower() in (s.get("title") or "").lower()
+            ]
+
+        if not sessions:
+            if title_filter:
+                _cprint(f"  No sessions found matching title: {title_filter}")
+            else:
+                _cprint("  No sessions found.")
+            return
+
+        from rich.console import Console as RichConsole
+        from rich.table import Table
+        from rich.text import Text
+        from hermes_cli.main import _relative_time
+
+        console = RichConsole()
+        table = Table(
+            title="Task History",
+            title_style="bold cyan",
+            border_style="dim",
+            box=None,
+            pad_edge=False,
+            show_lines=False,
+            header_style="bold",
+        )
+        table.add_column("#", justify="right", style="dim", width=3)
+        table.add_column("Title", style="cyan", max_width=28)
+        table.add_column("Status", justify="center", width=8)
+        table.add_column("Last Active", style="dim", width=12)
+        table.add_column("Msgs", justify="right", style="dim", width=4)
+        table.add_column("Session ID", style="dim", width=16, no_wrap=True)
+
+        for idx, s in enumerate(sessions, 1):
+            sid = s.get("id", "")
+            title = (s.get("title") or "—")[:27]
+            last_active = _relative_time(s.get("last_active"))
+            msg_count = s.get("message_count") or 0
+
+            # Determine status
+            if s.get("ended_at"):
+                status = Text("ended", style="red")
+            else:
+                status = Text("active", style="green")
+
+            table.add_row(
+                str(idx),
+                title,
+                status,
+                last_active,
+                str(msg_count),
+                sid[:16],
+            )
+
+        console.print()
+        console.print(table)
+
+        current = f" (current: {self.session_id[:16]}...)" if self.session_id else ""
+        filter_part = f" [title ∋ '{title_filter}']" if title_filter else ""
+        count_part = f" showing {len(sessions)} of {limit}+ sessions"
+        console.print(
+            f"[dim]  /resume <id> to restore  ·  /tasks{filter_part} to refresh{count_part}{current}[/dim]"
+        )
+        console.print()
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -4140,6 +4245,98 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_delete_command(self, cmd_original: str) -> None:
+        """Handle /delete <session_id_or_title> — permanently delete a session.
+
+        Cannot delete the current active session. Use /new to switch first.
+        """
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        parts = cmd_original.split(None, 1)
+        target = parts[1].strip() if len(parts) > 1 else ""
+
+        if not target:
+            _cprint("  Usage: /delete <session_id_or_title>")
+            _cprint("  Use /tasks to see available sessions.")
+            return
+
+        # Resolve title or ID
+        from hermes_cli.main import _resolve_session_by_name_or_id
+        resolved = _resolve_session_by_name_or_id(target)
+        target_id = resolved or target
+
+        # Verify session exists
+        session_meta = self._session_db.get_session(target_id)
+        if not session_meta:
+            _cprint(f"  Session not found: {target}")
+            return
+
+        # Guard: prevent deleting current active session
+        if target_id == self.session_id:
+            _cprint("  Cannot delete the current session. Use /new to switch first.")
+            return
+
+        title_part = f" \"{session_meta.get('title', '')}\" " if session_meta.get("title") else " "
+
+        # Confirm before destructive action
+        try:
+            confirm = input(
+                f"  Delete session{title_part}({target_id[:16]}...)? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            _cprint("  Cancelled.")
+            return
+
+        if confirm != "y":
+            _cprint("  Cancelled.")
+            return
+
+        # Delete
+        if self._session_db.delete_session(target_id):
+            _cprint(f"  ✅ Deleted session{title_part}{target_id[:16]}...")
+        else:
+            _cprint(f"  Failed to delete session {target_id}")
+
+    def _handle_purge_command(self) -> None:
+        """Handle /purge — delete all ended sessions from the database."""
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        # List ended sessions first
+        try:
+            all_sessions = self._session_db.list_sessions_rich(exclude_sources=[], limit=500)
+            ended = [s for s in all_sessions if s.get("ended_at")]
+        except Exception:
+            _cprint("  Could not retrieve sessions.")
+            return
+
+        if not ended:
+            _cprint("  No ended sessions to purge.")
+            return
+
+        count = len(ended)
+        try:
+            confirm = input(
+                f"  Delete {count} ended session{'s' if count != 1 else ''}? [y/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            _cprint("  Cancelled.")
+            return
+
+        if confirm != "y":
+            _cprint("  Cancelled.")
+            return
+
+        deleted = 0
+        for s in ended:
+            if self._session_db.delete_session(s["id"]):
+                deleted += 1
+
+        _cprint(f"  ✅ Purged {deleted}/{count} ended sessions.")
+
     def _handle_branch_command(self, cmd_original: str) -> None:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
@@ -4331,7 +4528,118 @@ class HermesCLI:
         print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
-    
+        print(f"  {remaining} message(s) remaining in history.")
+    def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
+        """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
+        import threading
+        from hermes_cli.curses_ui import curses_single_select
+    def _handle_undo_command(self):
+        """Handle /undo — restore the last file modification from snapshot via undo_file tool."""
+        from model_tools import handle_function_call
+
+        # Determine task_id: prefer the running agent's effective task_id
+        task_id = "default"
+        running_agent = getattr(self, 'agent', None)
+        if running_agent and hasattr(running_agent, '_current_effective_task_id'):
+            task_id = running_agent._current_effective_task_id
+
+        try:
+            result = handle_function_call(
+                function_name="undo_file",
+                function_args={"task_id": task_id},
+                task_id=task_id,
+            )
+            # Parse result JSON and print meaningful output
+            import json
+            try:
+                parsed = json.loads(result)
+                if "error" in parsed:
+                    _cprint(f"  [red]Undo failed:[/] {parsed['error']}")
+                elif parsed.get("success"):
+                    action = parsed.get("action", "restored")
+                    msg = parsed.get("message", "")
+                    _cprint(f"  [green]↩️  Undo successful ({action}):[/] {msg}")
+                else:
+                    _cprint(f"  [yellow]↩️  Undo:[/] {result}")
+            except (json.JSONDecodeError, TypeError):
+                _cprint(f"  [yellow]↩️  Undo result:[/] {result}")
+        except Exception as e:
+            _cprint(f"  [red]Undo error:[/] {e}")
+
+    def _handle_redo_command(self):
+        """Handle /redo — redo the last undone file operation via redo_file tool."""
+        from model_tools import handle_function_call
+
+        task_id = "default"
+        running_agent = getattr(self, 'agent', None)
+        if running_agent and hasattr(running_agent, '_current_effective_task_id'):
+            task_id = running_agent._current_effective_task_id
+
+        try:
+            result = handle_function_call(
+                function_name="redo_file",
+                function_args={"task_id": task_id},
+                task_id=task_id,
+            )
+            import json
+            try:
+                parsed = json.loads(result)
+                if "error" in parsed:
+                    _cprint(f"  [red]Redo failed:[/] {parsed['error']}")
+                elif parsed.get("success"):
+                    action = parsed.get("action", "restored")
+                    msg = parsed.get("message", "")
+                    _cprint(f"  [green]↪️  Redo successful ({action}):[/] {msg}")
+                else:
+                    _cprint(f"  [yellow]↪️  Redo:[/] {result}")
+            except (json.JSONDecodeError, TypeError):
+                _cprint(f"  [yellow]↪️  Redo result:[/] {result}")
+        except Exception as e:
+            _cprint(f"  [red]Redo error:[/] {e}")
+
+    def _handle_diff_command(self, cmd_original: str) -> None:
+        """Handle /diff [path] — show diff between current file and last undo snapshot."""
+        from model_tools import handle_function_call
+
+        task_id = "default"
+        running_agent = getattr(self, 'agent', None)
+        if running_agent and hasattr(running_agent, '_current_effective_task_id'):
+            task_id = running_agent._current_effective_task_id
+
+        # Parse optional path
+        parts = cmd_original.split(None, 1)
+        path_arg = parts[1].strip() if len(parts) > 1 else None
+
+        try:
+            result = handle_function_call(
+                function_name="diff_file",
+                function_args={"path": path_arg, "task_id": task_id},
+                task_id=task_id,
+            )
+            import json
+            try:
+                parsed = json.loads(result)
+                if "error" in parsed:
+                    _cprint(f"  [red]Diff failed:[/] {parsed['error']}")
+                elif parsed.get("success"):
+                    if not parsed.get("changed", True):
+                        _cprint(f"  [dim]No changes:[/] {parsed.get('message', '')}")
+                    else:
+                        diff_text = parsed.get("diff", "")
+                        path_info = parsed.get("path", "")
+                        _cprint(f"  [green]📄 Diff:[/] {path_info}")
+                        if diff_text:
+                            for line in diff_text.rstrip("\n").splitlines():
+                                _cprint(line)
+                        else:
+                            _cprint(f"  [dim]  (no diff output)[/]")
+                else:
+                    _cprint(f"  [yellow]Diff:[/] {result}")
+            except (json.JSONDecodeError, TypeError):
+                _cprint(f"  [yellow]Diff result:[/] {result}")
+        except Exception as e:
+            _cprint(f"  [red]Diff error:[/] {e}")
+
     def _run_curses_picker(self, title: str, items: list[str], default_index: int = 0) -> int | None:
         """Run curses_single_select via run_in_terminal so prompt_toolkit handles terminal ownership cleanly."""
         import threading
@@ -5311,6 +5619,8 @@ class HermesCLI:
                     pass
         elif canonical == "history":
             self.show_history()
+        elif canonical == "tasks":
+            self._handle_tasks_command(cmd_original)
         elif canonical == "title":
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
@@ -5365,6 +5675,14 @@ class HermesCLI:
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
+        elif canonical == "redo":
+            self._handle_redo_command()
+        elif canonical == "diff":
+            self._handle_diff_command(cmd_original)
+        elif canonical == "delete":
+            self._handle_delete_command(cmd_original)
+        elif canonical == "purge":
+            self._handle_purge_command()
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":
@@ -5381,7 +5699,7 @@ class HermesCLI:
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
-            self.undo_last()
+            self._handle_undo_command()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
@@ -5403,6 +5721,8 @@ class HermesCLI:
             self._toggle_verbose()
         elif canonical == "yolo":
             self._toggle_yolo()
+        elif canonical == "permissions":
+            self._handle_permissions_command(cmd_original)
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
         elif canonical == "fast":
@@ -6159,6 +6479,41 @@ class HermesCLI:
         else:
             os.environ["HERMES_YOLO_MODE"] = "1"
             self.console.print("  ⚡ YOLO mode [bold green]ON[/] — all commands auto-approved. Use with caution.")
+
+    def _handle_permissions_command(self, cmd: str):
+        """Handle /permissions — show or set permission mode (bounded|unrestricted).
+
+        Usage:
+            /permissions              Show current mode
+            /permissions status       Same as above
+            /permissions bounded      Require approval for dangerous commands
+            /permissions unrestricted Auto-approve all commands (YOLO mode)
+        """
+        import os
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        is_yolo = bool(os.environ.get("HERMES_YOLO_MODE"))
+        current_mode = "unrestricted" if is_yolo else "bounded"
+
+        if not arg or arg == "status":
+            self.console.print(f"  {_ACCENT}Permission mode:  {current_mode}{_RST}")
+            if is_yolo:
+                self.console.print(f"  {_DIM}(All commands auto-approved){_RST}")
+            else:
+                self.console.print(f"  {_DIM}(Dangerous commands require approval){_RST}")
+            self.console.print(f"  {_DIM}Usage: /permissions [bounded|unrestricted]{_RST}")
+            return
+
+        if arg == "bounded":
+            os.environ.pop("HERMES_YOLO_MODE", None)
+            self.console.print("  ⚠ Permission mode set to [bold]bounded[/] — dangerous commands will require approval.")
+        elif arg == "unrestricted":
+            os.environ["HERMES_YOLO_MODE"] = "1"
+            self.console.print("  ⚡ Permission mode set to [bold]unrestricted[/] — all commands auto-approved. Use with caution.")
+        else:
+            self.console.print(f"  [red]Unknown permission mode:[/] {arg}")
+            self.console.print(f"  {_DIM}Valid options: bounded, unrestricted (current: {current_mode}){_RST}")
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.

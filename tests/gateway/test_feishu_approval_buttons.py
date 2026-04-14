@@ -38,6 +38,7 @@ def _ensure_feishu_mocks():
 
 _ensure_feishu_mocks()
 
+import gateway.platforms.feishu as feishu_module
 from gateway.config import PlatformConfig
 from gateway.platforms.feishu import FeishuAdapter
 
@@ -374,7 +375,7 @@ class TestFeishuUpdateApprovalCard:
     async def test_updates_card_on_approve(self):
         adapter = _make_adapter()
 
-        mock_update = AsyncMock()
+        adapter._client.im.v1.message.patch = MagicMock()
         adapter._client.im.v1.message.update = MagicMock()
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
@@ -383,13 +384,15 @@ class TestFeishuUpdateApprovalCard:
             )
 
         mock_thread.assert_called_once()
-        # Verify the update request was built
         call_args = mock_thread.call_args
-        assert call_args[0][0] == adapter._client.im.v1.message.update
+        assert call_args[0][0] == adapter._client.im.v1.message.patch
+        assert call_args[0][0] != adapter._client.im.v1.message.update
 
     @pytest.mark.asyncio
     async def test_updates_card_on_deny(self):
         adapter = _make_adapter()
+        adapter._client.im.v1.message.patch = MagicMock()
+        adapter._client.im.v1.message.update = MagicMock()
 
         with patch("asyncio.to_thread", new_callable=AsyncMock) as mock_thread:
             await adapter._update_approval_card(
@@ -397,6 +400,40 @@ class TestFeishuUpdateApprovalCard:
             )
 
         mock_thread.assert_called_once()
+        call_args = mock_thread.call_args
+        assert call_args[0][0] == adapter._client.im.v1.message.patch
+        assert call_args[0][0] != adapter._client.im.v1.message.update
+
+    def test_patch_body_uses_content_only(self, monkeypatch):
+        class FakePatchMessageRequestBody:
+            @staticmethod
+            def builder():
+                class Builder:
+                    def __init__(self):
+                        self.value = None
+
+                    def msg_type(self, _msg_type):
+                        raise AssertionError("PatchMessageRequestBody must not set msg_type")
+
+                    def content(self, value):
+                        self.value = value
+                        return self
+
+                    def build(self):
+                        return SimpleNamespace(content=self.value)
+
+                return Builder()
+
+        monkeypatch.setattr(
+            feishu_module,
+            "PatchMessageRequestBody",
+            FakePatchMessageRequestBody,
+            raising=False,
+        )
+
+        body = FeishuAdapter._build_patch_message_body(content="{}")
+
+        assert body.content == "{}"
 
     @pytest.mark.asyncio
     async def test_skips_update_when_not_connected(self):

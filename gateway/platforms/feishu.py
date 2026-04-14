@@ -68,6 +68,8 @@ try:
         P2ImMessageMessageReadV1,
         ReplyMessageRequest,
         ReplyMessageRequestBody,
+        PatchMessageRequest,
+        PatchMessageRequestBody,
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
@@ -1493,8 +1495,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _update_approval_card(
         self, message_id: str, label: str, user_name: str, choice: str,
     ) -> None:
-        """Replace the approval card with a resolved status card."""
-        if not self._client or not message_id:
+        """Patch the approval card with a resolved status card."""
+        if not self._client:
+            logger.warning("[Feishu] Cannot update approval card %s: not connected", message_id)
+            return
+        if not message_id:
+            logger.warning("[Feishu] Cannot update approval card: missing message_id")
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
@@ -1512,9 +1518,9 @@ class FeishuAdapter(BasePlatformAdapter):
         }
         try:
             payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            body = self._build_patch_message_body(content=payload)
+            request = self._build_patch_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.patch, request)
         except Exception as exc:
             logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
@@ -3523,6 +3529,27 @@ class FeishuAdapter(BasePlatformAdapter):
         if "UpdateMessageRequest" in globals():
             return (
                 UpdateMessageRequest.builder()
+                .message_id(message_id)
+                .request_body(request_body)
+                .build()
+            )
+        return SimpleNamespace(message_id=message_id, request_body=request_body)
+
+    @staticmethod
+    def _build_patch_message_body(*, content: str) -> Any:
+        if "PatchMessageRequestBody" in globals():
+            return (
+                PatchMessageRequestBody.builder()
+                .content(content)
+                .build()
+            )
+        return SimpleNamespace(content=content)
+
+    @staticmethod
+    def _build_patch_message_request(message_id: str, request_body: Any) -> Any:
+        if "PatchMessageRequest" in globals():
+            return (
+                PatchMessageRequest.builder()
                 .message_id(message_id)
                 .request_body(request_body)
                 .build()

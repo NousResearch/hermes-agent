@@ -823,6 +823,8 @@ def run_doctor(args):
             if env_vars:
                 vars_str = ", ".join(env_vars)
                 check_warn(item["name"], f"(missing {vars_str})")
+            elif item.get("diagnostic_hint"):
+                check_warn(item["name"], f"({item['diagnostic_hint']})")
             else:
                 check_warn(item["name"], "(system dependency not met)")
 

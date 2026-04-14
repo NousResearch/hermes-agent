@@ -490,3 +490,53 @@ class TestThreadSafety:
         toolsets = result_holder["value"]
         assert "gated" in toolsets
         assert toolsets["gated"]["available"] is True
+
+
+class TestDiagnosticHint:
+    """Verify diagnostic_hint propagation through registry."""
+
+    def test_diagnostic_hint_stored_on_entry(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler, diagnostic_hint="need KEY",
+        )
+        assert reg._tools["t"].diagnostic_hint == "need KEY"
+
+    def test_diagnostic_hint_defaults_to_none(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="t", toolset="s", schema=_make_schema(),
+            handler=_dummy_handler,
+        )
+        assert reg._tools["t"].diagnostic_hint is None
+
+    def test_diagnostic_hint_in_check_tool_availability(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="img",
+            toolset="image_gen",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+            requires_env=[],
+            diagnostic_hint="missing FAL_KEY or Nous auth",
+        )
+        available, unavailable = reg.check_tool_availability()
+        assert "image_gen" not in available
+        assert len(unavailable) == 1
+        assert unavailable[0]["diagnostic_hint"] == "missing FAL_KEY or Nous auth"
+
+    def test_no_diagnostic_hint_omitted_from_unavailable(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="brw",
+            toolset="browser",
+            schema=_make_schema(),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+            requires_env=[],
+        )
+        available, unavailable = reg.check_tool_availability()
+        assert len(unavailable) == 1
+        assert "diagnostic_hint" not in unavailable[0]

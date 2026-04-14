@@ -972,7 +972,14 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        # WeCom aeskey commonly arrives as unpadded base64 (length 43).
+        # Normalize padding first, then fall back to urlsafe decode if needed.
+        aes_key_clean = aes_key.strip()
+        aes_key_padded = aes_key_clean + "=" * (-len(aes_key_clean) % 4)
+        try:
+            key = base64.b64decode(aes_key_padded)
+        except Exception:
+            key = base64.urlsafe_b64decode(aes_key_padded)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

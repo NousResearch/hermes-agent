@@ -8,7 +8,7 @@ description: "Running Hermes Agent in Docker and using Docker as a terminal back
 
 There are two distinct ways Docker intersects with Hermes Agent:
 
-1. **Running Hermes IN Docker** — the agent itself runs inside a container (this page's primary focus)
+1. **Running Hermes IN Docker** — the agent itself runs inside a container (this page’s primary focus)
 2. **Docker as a terminal backend** — the agent runs on your host but executes commands inside a Docker sandbox (see [Configuration → terminal.backend](./configuration.md))
 
 This page covers option 1. The container stores all user data (config, API keys, sessions, skills, memories) in a single directory mounted from the host at `/opt/data`. The image itself is stateless and can be upgraded by pulling a new version without losing any configuration.
@@ -50,7 +50,7 @@ docker run -it --rm \
 
 ## Persistent volumes
 
-The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host's `~/.hermes/` directory and contains:
+The `/opt/data` volume is the single source of truth for all Hermes state. It maps to your host’s `~/.hermes/` directory and contains:
 
 | Path | Contents |
 |------|----------|
@@ -81,7 +81,7 @@ docker run -it --rm \
   nousresearch/hermes-agent
 ```
 
-Direct `-e` flags override values from `.env`. This is useful for CI/CD or secrets-manager integrations where you don't want keys on disk.
+Direct `-e` flags override values from `.env`. This is useful for CI/CD or secrets-manager integrations where you don’t want keys on disk.
 
 ## Docker Compose example
 
@@ -99,9 +99,9 @@ services:
       - ~/.hermes:/opt/data
     # Uncomment to forward specific env vars instead of using .env file:
     # environment:
-    #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-    #   - OPENAI_API_KEY=${OPENAI_API_KEY}
-    #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    #   - ANTHROPIC_API_KEY=${ANTH...EY}
+    #   - OPENAI_API_KEY=${OPEN...EY}
+    #   - TELEGRAM_BOT_TOKEN=${TELE...EN}
     deploy:
       resources:
         limits:
@@ -121,7 +121,7 @@ The Hermes container needs moderate resources. Recommended minimums:
 | CPU | 1 core | 2 cores |
 | Disk (data volume) | 500 MB | 2+ GB (grows with sessions/skills) |
 
-Browser automation (Playwright/Chromium) is the most memory-hungry feature. If you don't need browser tools, 1 GB is sufficient. With browser tools active, allocate at least 2 GB.
+Browser automation (Playwright/Chromium) is the most memory-hungry feature. If you don’t need browser tools, 1 GB is sufficient. With browser tools active, allocate at least 2 GB.
 
 Set limits in Docker:
 
@@ -187,7 +187,7 @@ Check logs: `docker logs hermes`. Common causes:
 - Missing or invalid `.env` file — run interactively first to complete setup
 - Port conflicts if running with exposed ports
 
-### "Permission denied" errors
+### “Permission denied” errors
 
 The container runs as root by default. If your host `~/.hermes/` was created by a non-root user, permissions should work. If you get errors, ensure the data directory is writable:
 

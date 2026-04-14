@@ -4,11 +4,12 @@ Tests the fix for local file uploads and remote URL handling in viking_add_resou
 """
 
 import os
+import io
 import json
 import pytest
 from unittest.mock import MagicMock, patch
 
-from plugins.memory.openviking import OpenVikingMemoryProvider
+from plugins.memory.openviking import OpenVikingMemoryProvider, _VikingClient
 
 
 class FakeOpenVikingClient:
@@ -193,3 +194,98 @@ class TestOpenVikingAddResource:
         last_call = provider._client.post_calls[-1]
         assert last_call["json"]["reason"] == "Custom reason"
         assert last_call["json"]["wait"] is True
+
+
+class TestVikingClientFilesKwarg:
+    """Integration tests for _VikingClient.post() files= kwarg handling.
+
+    These tests exercise the real _VikingClient code path with a mocked httpx layer,
+    verifying the json/files conflict fix from the PR review.
+    """
+
+    def test_viking_client_post_with_files_omits_json(self):
+        """_VikingClient.post(files=) must not pass json= to httpx.
+
+        httpx raises ValueError when both json= and files= are passed simultaneously
+        ('Multipart payloads cannot be combined with json'). The fix routes around
+        this by skipping json= when files= is present.
+        """
+        client = _VikingClient("https://example.com", api_key="test-key")
+
+        captured_kwargs = {}
+        def capture_httpx_post(url, **kwargs):
+            captured_kwargs.update(kwargs)
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"temp_file_id": "test123"}
+            mock_resp.raise_for_status = MagicMock()
+            return mock_resp
+
+        with patch.object(client._httpx, "post", side_effect=capture_httpx_post):
+            result = client.post(
+                "/api/v1/resources/temp_upload",
+                files={"file": ("test.txt", io.BytesIO(b"hello"))}
+            )
+
+        # httpx.post was called with files= present
+        assert "files" in captured_kwargs
+        # json= must NOT be present -- that was the bug
+        assert "json" not in captured_kwargs, (
+            "json= should not be passed when files= is present; "
+            "httpx raises ValueError: Multipart payloads cannot be combined with json"
+        )
+        assert result == {"temp_file_id": "test123"}
+
+    def test_viking_client_post_with_files_removes_content_type_header(self):
+        """When files= is present, Content-Type header should not be set.
+
+        httpx sets multipart Content-Type automatically with the correct boundary.
+        Manually setting it causes a mismatch.
+        """
+        client = _VikingClient("https://example.com", api_key="test-key")
+
+        captured_headers = {}
+        def capture_httpx_post(url, **kwargs):
+            if "headers" in kwargs:
+                captured_headers.update(kwargs["headers"])
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {}
+            mock_resp.raise_for_status = MagicMock()
+            return mock_resp
+
+        with patch.object(client._httpx, "post", side_effect=capture_httpx_post):
+            client.post(
+                "/api/v1/resources/temp_upload",
+                files={"file": ("test.txt", io.BytesIO(b"hello"))}
+            )
+
+        # Content-Type should not be manually set for multipart
+        assert "Content-Type" not in captured_headers, (
+            "Content-Type header should not be set manually for multipart uploads; "
+            "httpx sets it automatically with the correct boundary"
+        )
+
+    def test_viking_client_post_without_files_uses_json(self):
+        """_VikingClient.post() without files= should still pass json= normally."""
+        client = _VikingClient("https://example.com", api_key="test-key")
+
+        captured_kwargs = {}
+        def capture_httpx_post(url, **kwargs):
+            captured_kwargs.update(kwargs)
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"status": "ok"}
+            mock_resp.raise_for_status = MagicMock()
+            return mock_resp
+
+        with patch.object(client._httpx, "post", side_effect=capture_httpx_post):
+            result = client.post(
+                "/api/v1/resources",
+                payload={"path": "https://example.com/doc.md", "reason": "test"}
+            )
+
+        # json= should be present (not files=)
+        assert "json" in captured_kwargs
+        assert "files" not in captured_kwargs
+        assert captured_kwargs["json"]["path"] == "https://example.com/doc.md"

@@ -262,9 +262,10 @@ WRITE_SCHEMA = {
                 "type": "string",
                 "description": "The text to persist under the URI.",
             },
-            "metadata": {
-                "type": "object",
-                "description": "Optional metadata or tags to associate with the entry.",
+            "mode": {
+                "type": "string",
+                "enum": ["replace", "append"],
+                "description": "Write mode: 'replace' (default) or 'append'.",
             },
         },
         "required": ["uri", "content"],
@@ -282,15 +283,15 @@ LINK_SCHEMA = {
         "properties": {
             "source": {
                 "type": "string",
-                "description": "URI of the source entry (e.g., entity or note).",
+                "description": "URI of the source entry (from_uri).",
             },
             "target": {
                 "type": "string",
-                "description": "URI of the related entry (e.g., project, event, skill).",
+                "description": "URI of the related entry (to_uri).",
             },
-            "relation": {
+            "reason": {
                 "type": "string",
-                "description": "Relation name, such as 'related', 'author', or 'part_of'.",
+                "description": "Why these entries are related (improves graph quality).",
             },
         },
         "required": ["source", "target"],
@@ -306,14 +307,18 @@ GREP_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {"type": "string", "description": "Term or regex to match."},
-            "scope": {
+            "pattern": {"type": "string", "description": "Term or regex pattern to match."},
+            "uri": {
                 "type": "string",
                 "description": "URI prefix to limit the search (default: viking://).",
             },
-            "limit": {"type": "integer", "description": "Max entries to return."},
+            "case_insensitive": {
+                "type": "boolean",
+                "description": "Case-insensitive match (default: false).",
+            },
+            "limit": {"type": "integer", "description": "Max entries to return (node_limit)."},
         },
-        "required": ["query"],
+        "required": ["pattern"],
     },
 }
 
@@ -327,7 +332,11 @@ GLOB_SCHEMA = {
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Glob pattern like viking://docs/*.md."},
-            "limit": {"type": "integer", "description": "Max results (default: 20)."},
+            "uri": {
+                "type": "string",
+                "description": "Root URI to search under (default: viking://).",
+            },
+            "limit": {"type": "integer", "description": "Max results (node_limit)."},
         },
         "required": ["pattern"],
     },
@@ -336,8 +345,8 @@ GLOB_SCHEMA = {
 EXTRACT_SCHEMA = {
     "name": "viking_extract",
     "description": (
-        "Force extraction on an ongoing OpenViking session so writes become searchable "
-        "before the session commits."
+        "Force memory extraction on an ongoing OpenViking session so memories become "
+        "searchable before the session commits."
     ),
     "parameters": {
         "type": "object",
@@ -346,65 +355,7 @@ EXTRACT_SCHEMA = {
                 "type": "string",
                 "description": "Session ID to extract (defaults to current session).",
             },
-            "categories": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Optional list of categories to limit extraction (e.g., ['events']).",
-            },
         },
-    },
-}
-
-WRITE_SCHEMA = {
-    "name": "viking_write",
-    "description": (
-        "Write structured content directly to a viking:// URI. "
-        "Use this when you already know where the entry should live "
-        "and want to store exact text without waiting for session extraction."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "uri": {
-                "type": "string",
-                "description": "Target viking:// URI to write the content to.",
-            },
-            "content": {
-                "type": "string",
-                "description": "The text to persist under the URI.",
-            },
-            "metadata": {
-                "type": "object",
-                "description": "Optional metadata or tags to associate with the entry.",
-            },
-        },
-        "required": ["uri", "content"],
-    },
-}
-
-LINK_SCHEMA = {
-    "name": "viking_link",
-    "description": (
-        "Create a semantic relation between two OpenViking entries. "
-        "This lets the knowledge graph understand how entities, events, and resources connect."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "source": {
-                "type": "string",
-                "description": "URI of the source entry (e.g., entity or note).",
-            },
-            "target": {
-                "type": "string",
-                "description": "URI of the related entry (e.g., project, event, skill).",
-            },
-            "relation": {
-                "type": "string",
-                "description": "Relation name, such as 'related', 'author', or 'part_of'.",
-            },
-        },
-        "required": ["source", "target"],
     },
 }
 
@@ -808,17 +759,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         }, ensure_ascii=False)
 
     def _tool_write(self, args: dict) -> str:
+        # POST /api/v1/content/write — WriteContentRequest (extra="forbid")
+        # Accepted fields: uri, content, mode, wait, timeout, telemetry
         uri = args.get("uri", "")
         content = args.get("content", "")
         if not uri or not content:
             return tool_error("uri and content are required")
 
-        payload: Dict[str, Any] = {
-            "uri": uri,
-            "content": content,
-        }
-        if args.get("metadata"):
-            payload["metadata"] = args["metadata"]
+        payload: Dict[str, Any] = {"uri": uri, "content": content}
+        if args.get("mode"):
+            payload["mode"] = args["mode"]
 
         resp = self._client.post("/api/v1/content/write", payload)
         result = resp.get("result", {})
@@ -826,22 +776,22 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return json.dumps({
             "status": "written",
             "uri": uri,
-            "metadata": result.get("metadata"),
-            "message": "Content written directly to OpenViking.",
+            "result": result,
         }, ensure_ascii=False)
 
     def _tool_link(self, args: dict) -> str:
+        # POST /api/v1/relations/link — LinkRequest: from_uri, to_uris, reason
         source = args.get("source", "")
         target = args.get("target", "")
         if not source or not target:
             return tool_error("source and target are required")
 
-        relation = args.get("relation", "related")
-        payload = {
+        payload: Dict[str, Any] = {
             "from_uri": source,
-            "to_uri": target,
-            "relation": relation,
+            "to_uris": target,
         }
+        if args.get("reason"):
+            payload["reason"] = args["reason"]
 
         resp = self._client.post("/api/v1/relations/link", payload)
         data = resp.get("result", {})
@@ -850,20 +800,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
             "status": "linked",
             "source": source,
             "target": target,
-            "relation": relation,
             "details": data,
         }, ensure_ascii=False)
 
     def _tool_grep(self, args: dict) -> str:
-        query = args.get("query", "")
-        if not query:
-            return tool_error("query is required")
+        # POST /api/v1/search/grep — GrepRequest: uri (required), pattern (required),
+        # case_insensitive, node_limit, level_limit
+        pattern = args.get("pattern", "")
+        if not pattern:
+            return tool_error("pattern is required")
 
-        payload: Dict[str, Any] = {"query": query}
-        if args.get("scope"):
-            payload["uri_prefix"] = args["scope"]
+        payload: Dict[str, Any] = {
+            "uri": args.get("uri", "viking://"),
+            "pattern": pattern,
+        }
+        if args.get("case_insensitive"):
+            payload["case_insensitive"] = args["case_insensitive"]
         if args.get("limit"):
-            payload["top_k"] = args["limit"]
+            payload["node_limit"] = args["limit"]
 
         resp = self._client.post("/api/v1/search/grep", payload)
         result = resp.get("result", [])
@@ -879,13 +833,16 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return json.dumps({"results": formatted}, ensure_ascii=False)
 
     def _tool_glob(self, args: dict) -> str:
+        # POST /api/v1/search/glob — GlobRequest: pattern (required), uri, node_limit
         pattern = args.get("pattern", "")
         if not pattern:
             return tool_error("pattern is required")
 
-        payload = {"pattern": pattern}
+        payload: Dict[str, Any] = {"pattern": pattern}
+        if args.get("uri"):
+            payload["uri"] = args["uri"]
         if args.get("limit"):
-            payload["limit"] = args["limit"]
+            payload["node_limit"] = args["limit"]
 
         resp = self._client.post("/api/v1/search/glob", payload)
         result = resp.get("result", [])
@@ -894,15 +851,12 @@ class OpenVikingMemoryProvider(MemoryProvider):
         return json.dumps({"entries": entries}, ensure_ascii=False)
 
     def _tool_extract(self, args: dict) -> str:
+        # POST /api/v1/sessions/{session_id}/extract — no request body
         session_id = args.get("session_id", self._session_id)
         if not session_id:
             return tool_error("session_id is required")
 
-        payload: Dict[str, Any] = {}
-        if args.get("categories"):
-            payload["categories"] = args["categories"]
-
-        resp = self._client.post(f"/api/v1/sessions/{session_id}/extract", payload)
+        resp = self._client.post(f"/api/v1/sessions/{session_id}/extract")
         result = resp.get("result", {})
 
         return json.dumps({

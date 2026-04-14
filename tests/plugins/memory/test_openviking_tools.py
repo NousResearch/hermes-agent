@@ -99,11 +99,11 @@ def test_viking_link_success(provider):
     result = json.loads(
         provider.handle_tool_call(
             "viking_link",
-            {"source": "viking://a", "target": "viking://b", "relation": "related"},
+            {"source": "viking://a", "target": "viking://b", "reason": "dependency"},
         )
     )
     assert result["status"] == "linked"
-    assert result["relation"] == "related"
+    assert result["source"] == "viking://a"
 
 
 def test_viking_link_missing_args(provider):
@@ -117,15 +117,15 @@ def test_viking_link_missing_args(provider):
 
 def test_viking_grep_success(provider):
     result = json.loads(
-        provider.handle_tool_call("viking_grep", {"query": "foo"})
+        provider.handle_tool_call("viking_grep", {"pattern": "foo"})
     )
     assert "results" in result
     assert result["results"][0]["uri"] == "viking://a"
 
 
-def test_viking_grep_missing_query(provider):
+def test_viking_grep_missing_pattern(provider):
     result = json.loads(provider.handle_tool_call("viking_grep", {}))
-    assert "error" in result or "query" in str(result)
+    assert "error" in result or "pattern" in str(result)
 
 
 # ---------------------------------------------------------------------------

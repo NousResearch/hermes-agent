@@ -56,9 +56,6 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 # display_hermes_home imported lazily at call site (stale-module safety during hermes update)
 
 
-def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
-    """Backward-compatible no-op after minisweagent_path.py removal."""
-    return
 
 
 # =============================================================================
@@ -140,7 +137,6 @@ def set_approval_callback(cb):
 
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
-    check_dangerous_command as _check_dangerous_command_impl,
     check_all_command_guards as _check_all_guards_impl,
 )
 
@@ -937,29 +933,6 @@ def is_persistent_env(task_id: str) -> bool:
     return bool(getattr(env, "_persistent", False))
 
 
-def get_active_environments_info() -> Dict[str, Any]:
-    """Get information about currently active environments."""
-    info = {
-        "count": len(_active_environments),
-        "task_ids": list(_active_environments.keys()),
-        "workdirs": {},
-    }
-    
-    # Calculate total disk usage (per-task to avoid double-counting)
-    total_size = 0
-    for task_id in _active_environments:
-        scratch_dir = _get_scratch_dir()
-        pattern = f"hermes-*{task_id[:8]}*"
-        import glob
-        for path in glob.glob(str(scratch_dir / pattern)):
-            try:
-                size = sum(f.stat().st_size for f in Path(path).rglob('*') if f.is_file())
-                total_size += size
-            except OSError as e:
-                logger.debug("Could not stat path %s: %s", path, e)
-    
-    info["total_disk_usage_mb"] = round(total_size / (1024 * 1024), 2)
-    return info
 
 
 def cleanup_all_environments():

@@ -43,12 +43,6 @@ class TestTerminalRequirements:
             "is_managed_tool_gateway_ready",
             lambda _vendor: True,
         )
-        monkeypatch.setattr(
-            terminal_tool_module,
-            "ensure_minisweagent_on_path",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-        )
-
         tools = get_tool_definitions(enabled_toolsets=["terminal", "code_execution"], quiet_mode=True)
         names = {tool["function"]["name"] for tool in tools}
 

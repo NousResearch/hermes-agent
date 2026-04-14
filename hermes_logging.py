@@ -78,15 +78,6 @@ def set_session_context(session_id: str) -> None:
     _session_context.session_id = session_id
 
 
-def clear_session_context() -> None:
-    """Clear the session ID for the current thread.
-
-    Optional — ``set_session_context()`` overwrites the previous value,
-    so explicit clearing is only needed if the thread is reused for
-    non-conversation work after ``run_conversation()`` returns.
-    """
-    _session_context.session_id = None
-
 
 # ---------------------------------------------------------------------------
 # Record factory — injects session_tag into every LogRecord at creation

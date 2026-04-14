@@ -13,11 +13,9 @@ from tools.skills_tool import (
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
-    _estimate_tokens,
     _find_all_skills,
     skill_matches_platform,
     skills_list,
-    skills_categories,
     skill_view,
     MAX_DESCRIPTION_LENGTH,
 )
@@ -188,18 +186,6 @@ class TestGetCategoryFromPath:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
             skill_md = tmp_path / "other" / "SKILL.md"
             assert _get_category_from_path(skill_md) is None
-
-
-# ---------------------------------------------------------------------------
-# _estimate_tokens
-# ---------------------------------------------------------------------------
-
-
-class TestEstimateTokens:
-    def test_estimate(self):
-        assert _estimate_tokens("1234") == 1
-        assert _estimate_tokens("12345678") == 2
-        assert _estimate_tokens("") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -542,32 +528,6 @@ class TestSkillViewSecureSetupOnLoad:
         assert called["value"] is False
         assert "local cli" in result["gateway_setup_hint"].lower()
         assert result["content"].startswith("---")
-
-
-# ---------------------------------------------------------------------------
-# skills_categories
-# ---------------------------------------------------------------------------
-
-
-class TestSkillsCategories:
-    def test_lists_categories(self, tmp_path):
-        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
-            _make_skill(tmp_path, "s1", category="devops")
-            _make_skill(tmp_path, "s2", category="mlops")
-            raw = skills_categories()
-        result = json.loads(raw)
-        assert result["success"] is True
-        names = {c["name"] for c in result["categories"]}
-        assert "devops" in names
-        assert "mlops" in names
-
-    def test_empty_skills_dir(self, tmp_path):
-        skills_dir = tmp_path / "skills"
-        with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
-            raw = skills_categories()
-        result = json.loads(raw)
-        assert result["success"] is True
-        assert result["categories"] == []
 
 
 # ---------------------------------------------------------------------------

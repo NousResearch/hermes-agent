@@ -449,38 +449,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         return tool_error(str(e))
 
 
-def get_read_files_summary(task_id: str = "default") -> list:
-    """Return a list of files read in this session for the given task.
-
-    Used by context compression to preserve file-read history across
-    compression boundaries.
-    """
-    with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id, {})
-        read_history = task_data.get("read_history", set())
-        seen_paths: dict = {}
-        for (path, offset, limit) in read_history:
-            if path not in seen_paths:
-                seen_paths[path] = []
-            seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
-        return [
-            {"path": p, "regions": regions}
-            for p, regions in sorted(seen_paths.items())
-        ]
-
-
-def clear_read_tracker(task_id: str = None):
-    """Clear the read tracker.
-
-    Call with a task_id to clear just that task, or without to clear all.
-    Should be called when a session is destroyed to prevent memory leaks
-    in long-running gateway processes.
-    """
-    with _read_tracker_lock:
-        if task_id:
-            _read_tracker.pop(task_id, None)
-        else:
-            _read_tracker.clear()
 
 
 def reset_file_dedup(task_id: str = None):
@@ -719,12 +687,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return tool_error(str(e))
 
 
-FILE_TOOLS = [
-    {"name": "read_file", "function": read_file_tool},
-    {"name": "write_file", "function": write_file_tool},
-    {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
-]
 
 
 # ---------------------------------------------------------------------------

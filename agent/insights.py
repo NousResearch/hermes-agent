@@ -27,7 +27,6 @@ from agent.usage_pricing import (
     DEFAULT_PRICING,
     estimate_usage_cost,
     format_duration_compact,
-    get_pricing,
     has_known_pricing,
 )
 

@@ -12,7 +12,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,7 +20,6 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
-    get_plugin_cli_commands,
 )
 
 
@@ -62,18 +61,6 @@ class TestRegisterCliCommand:
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("nocb", "test", MagicMock())
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
-
-
-class TestGetPluginCliCommands:
-    def test_returns_dict(self):
-        mgr = PluginManager()
-        mgr._cli_commands["foo"] = {"name": "foo", "help": "bar"}
-        with patch("hermes_cli.plugins.get_plugin_manager", return_value=mgr):
-            cmds = get_plugin_cli_commands()
-        assert cmds == {"foo": {"name": "foo", "help": "bar"}}
-        # Top-level is a copy — adding to result doesn't affect manager
-        cmds["new"] = {"name": "new"}
-        assert "new" not in mgr._cli_commands
 
 
 # ── Memory plugin CLI discovery ───────────────────────────────────────────

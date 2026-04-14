@@ -7,7 +7,6 @@ Provides options for:
 """
 
 import os
-import platform
 import shutil
 import subprocess
 from pathlib import Path

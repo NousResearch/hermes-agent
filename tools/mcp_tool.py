@@ -162,6 +162,7 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
+_MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
 # Environment variables that are safe to pass to stdio subprocesses
@@ -984,6 +985,7 @@ class MCPServerTask:
                 self.name,
             )
         retries = 0
+        initial_retries = 0
         backoff = 1.0
 
         while True:
@@ -997,11 +999,37 @@ class MCPServerTask:
             except Exception as exc:
                 self.session = None
 
-                # If this is the first connection attempt, report the error
+                # If this is the first connection attempt, retry with backoff
+                # before giving up. A transient DNS/network blip at startup
+                # should not permanently kill the server.
+                # (Ported from Kilo Code's MCP resilience fix.)
                 if not self._ready.is_set():
-                    self._error = exc
-                    self._ready.set()
-                    return
+                    initial_retries += 1
+                    if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
+                        logger.warning(
+                            "MCP server '%s' failed initial connection after "
+                            "%d attempts, giving up: %s",
+                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
+                        )
+                        self._error = exc
+                        self._ready.set()
+                        return
+
+                    logger.warning(
+                        "MCP server '%s' initial connection failed "
+                        "(attempt %d/%d), retrying in %.0fs: %s",
+                        self.name, initial_retries,
+                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+
+                    # Check if shutdown was requested during the sleep
+                    if self._shutdown_event.is_set():
+                        self._error = exc
+                        self._ready.set()
+                        return
+                    continue
 
                 # If shutdown was requested, don't reconnect
                 if self._shutdown_event.is_set():

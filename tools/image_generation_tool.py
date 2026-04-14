@@ -61,7 +61,6 @@ ASPECT_RATIO_MAP = {
     "square": "square_hd",
     "portrait": "portrait_16_9"
 }
-VALID_ASPECT_RATIOS = list(ASPECT_RATIO_MAP.keys())
 
 # Configuration for automatic upscaling
 UPSCALER_MODEL = "fal-ai/clarity-upscaler"
@@ -563,15 +562,6 @@ def check_image_generation_requirements() -> bool:
     except ImportError:
         return False
 
-
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
 
 
 if __name__ == "__main__":

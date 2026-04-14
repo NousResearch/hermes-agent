@@ -100,74 +100,6 @@ class TestGatewayIntegration(unittest.TestCase):
         self.assertIn("hermes-feishu", TOOLSETS["hermes-gateway"]["includes"])
 
 
-class TestFeishuPostParsing(unittest.TestCase):
-    def test_parse_post_content_extracts_text_mentions_and_media_refs(self):
-        from gateway.platforms.feishu import parse_feishu_post_content
-
-        result = parse_feishu_post_content(
-            json.dumps(
-                {
-                    "en_us": {
-                        "title": "Rich message",
-                        "content": [
-                            [{"tag": "img", "image_key": "img_1", "alt": "diagram"}],
-                            [{"tag": "at", "user_name": "Alice", "open_id": "ou_alice"}],
-                            [{"tag": "media", "file_key": "file_1", "file_name": "spec.pdf"}],
-                        ],
-                    }
-                }
-            )
-        )
-
-        self.assertEqual(result.text_content, "Rich message\n[Image: diagram]\n@Alice\n[Attachment: spec.pdf]")
-        self.assertEqual(result.image_keys, ["img_1"])
-        self.assertEqual(result.mentioned_ids, ["ou_alice"])
-        self.assertEqual(len(result.media_refs), 1)
-        self.assertEqual(result.media_refs[0].file_key, "file_1")
-        self.assertEqual(result.media_refs[0].file_name, "spec.pdf")
-        self.assertEqual(result.media_refs[0].resource_type, "file")
-
-    def test_parse_post_content_uses_fallback_when_invalid(self):
-        from gateway.platforms.feishu import FALLBACK_POST_TEXT, parse_feishu_post_content
-
-        result = parse_feishu_post_content("not-json")
-
-        self.assertEqual(result.text_content, FALLBACK_POST_TEXT)
-        self.assertEqual(result.image_keys, [])
-        self.assertEqual(result.media_refs, [])
-        self.assertEqual(result.mentioned_ids, [])
-
-    def test_parse_post_content_preserves_rich_text_semantics(self):
-        from gateway.platforms.feishu import parse_feishu_post_content
-
-        result = parse_feishu_post_content(
-            json.dumps(
-                {
-                    "en_us": {
-                        "title": "Plan *v2*",
-                        "content": [
-                            [
-                                {"tag": "text", "text": "Bold", "style": {"bold": True}},
-                                {"tag": "text", "text": " "},
-                                {"tag": "text", "text": "Italic", "style": {"italic": True}},
-                                {"tag": "text", "text": " "},
-                                {"tag": "text", "text": "Code", "style": {"code": True}},
-                            ],
-                            [{"tag": "text", "text": "line1"}, {"tag": "br"}, {"tag": "text", "text": "line2"}],
-                            [{"tag": "hr"}],
-                            [{"tag": "code_block", "language": "python", "text": "print('hi')"}],
-                        ],
-                    }
-                }
-            )
-        )
-
-        self.assertEqual(
-            result.text_content,
-            "Plan *v2*\n**Bold** *Italic* `Code`\nline1\nline2\n---\n```python\nprint('hi')\n```",
-        )
-
-
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from gateway.platforms.feishu import normalize_feishu_message
@@ -804,15 +736,6 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_reaction_event("im.message.reaction.created_v1", data)
 
         run_threadsafe.assert_not_called()
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_normalize_inbound_text_strips_feishu_mentions(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        cleaned = adapter._normalize_inbound_text("hi @_user_1  there @_user_2")
-        self.assertEqual(cleaned, "hi there")
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_requires_mentions_even_when_policy_open(self):

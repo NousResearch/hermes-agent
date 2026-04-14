@@ -430,14 +430,6 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
-def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
-    try:
-        parsed = json.loads(raw_content) if raw_content else {}
-    except json.JSONDecodeError:
-        return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
-    return parse_feishu_post_payload(parsed)
-
-
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:
@@ -2687,12 +2679,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if preferred == "document":
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT
-
-    def _normalize_inbound_text(self, text: str) -> str:
-        """Strip Feishu mention placeholders from inbound text."""
-        text = _MENTION_RE.sub(" ", text or "")
-        text = _MULTISPACE_RE.sub(" ", text)
-        return text.strip()
 
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
         if not cached_path or not media_type.startswith("text/"):

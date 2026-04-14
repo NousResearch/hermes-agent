@@ -163,25 +163,6 @@ def resolve_display_setting(
     return fallback
 
 
-def get_platform_defaults(platform_key: str) -> dict[str, Any]:
-    """Return the built-in default display settings for a platform.
-
-    Falls back to ``_GLOBAL_DEFAULTS`` for unknown platforms.
-    """
-    return dict(_PLATFORM_DEFAULTS.get(platform_key, _GLOBAL_DEFAULTS))
-
-
-def get_effective_display(user_config: dict, platform_key: str) -> dict[str, Any]:
-    """Return the fully-resolved display settings for a platform.
-
-    Useful for status commands that want to show all effective settings.
-    """
-    return {
-        key: resolve_display_setting(user_config, platform_key, key)
-        for key in OVERRIDEABLE_KEYS
-    }
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

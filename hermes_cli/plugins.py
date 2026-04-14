@@ -31,7 +31,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
-import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -583,19 +582,6 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
-
-def get_plugin_tool_names() -> Set[str]:
-    """Return the set of tool names registered by plugins."""
-    return get_plugin_manager()._plugin_tool_names
-
-
-def get_plugin_cli_commands() -> Dict[str, dict]:
-    """Return CLI commands registered by general plugins.
-
-    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
-    suitable for wiring into argparse subparsers.
-    """
-    return dict(get_plugin_manager()._cli_commands)
 
 
 def get_plugin_context_engine():

@@ -343,12 +343,12 @@ export default function ConfigPage() {
         </Card>
       ) : (
         /* ═══════════════ Form Mode ═══════════════ */
-        <div className="flex gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
-          {/* ---- Sidebar ---- */}
-          <div className="w-52 shrink-0">
-            <div className="sticky top-[72px] flex flex-col gap-1">
+        <div className="flex flex-col sm:flex-row gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
+          {/* ---- Sidebar — horizontal scroll on mobile, fixed column on sm+ ---- */}
+          <div className="sm:w-52 sm:shrink-0">
+            <div className="sm:sticky sm:top-[72px] flex flex-col gap-1">
               {/* Search */}
-              <div className="relative mb-2">
+              <div className="relative mb-2 hidden sm:block">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   className="pl-8 h-8 text-xs"
@@ -367,8 +367,9 @@ export default function ConfigPage() {
                 )}
               </div>
 
-              {/* Category nav */}
-              {categories.map((cat) => {
+              {/* Category nav — horizontal scroll on mobile */}
+              <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none pb-1 sm:pb-0">
+                {categories.map((cat) => {
                 const isActive = !isSearching && activeCategory === cat;
                 return (
                   <button
@@ -395,6 +396,7 @@ export default function ConfigPage() {
                   </button>
                 );
               })}
+              </div>
             </div>
           </div>
 

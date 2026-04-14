@@ -69,12 +69,14 @@ DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
+DEFAULT_SENSEAUDIO_STT_MODEL = os.getenv("STT_SENSEAUDIO_MODEL", "senseaudio-asr-1.5-260319")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
+SENSEAUDIO_BASE_URL = os.getenv("STT_SENSEAUDIO_BASE_URL", "https://api.senseaudio.cn/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
@@ -83,6 +85,12 @@ MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 # Known model sets for auto-correction
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
+SENSEAUDIO_MODELS = {
+    "senseaudio-asr-lite-1.5-260319",
+    "senseaudio-asr-1.5-260319",
+    "senseaudio-asr-pro-1.5-260319",
+    "senseaudio-asr-deepthink-1.5-260319",
+}
 
 # Singleton for the local model — loaded once, reused across calls
 _local_model: Optional[object] = None
@@ -254,9 +262,18 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "senseaudio":
+            if _HAS_OPENAI and os.getenv("SENSEAUDIO_API_KEY"):
+                return "senseaudio"
+            logger.warning(
+                "STT provider 'senseaudio' configured but openai package not installed "
+                "or SENSEAUDIO_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > senseaudio -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -271,6 +288,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
         logger.info("No local STT available, using Mistral Voxtral Transcribe API")
         return "mistral"
+    if _HAS_OPENAI and os.getenv("SENSEAUDIO_API_KEY"):
+        logger.info("No standard STT available, using SenseAudio provider")
+        return "senseaudio"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -586,6 +606,61 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Provider: senseaudio
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_senseaudio(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using SenseAudio STT API (OpenAI-compatible)."""
+    stt_config = _load_stt_config()
+    senseaudio_cfg = stt_config.get("senseaudio", {})
+    api_key = senseaudio_cfg.get("api_key") or os.getenv("SENSEAUDIO_API_KEY")
+    base_url = senseaudio_cfg.get("base_url") or SENSEAUDIO_BASE_URL
+
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "SENSEAUDIO_API_KEY not set"}
+
+    if not _HAS_OPENAI:
+        return {"success": False, "transcript": "", "error": "openai package not installed"}
+
+    # Auto-correct model if caller passed a non-SenseAudio model
+    if model_name not in SENSEAUDIO_MODELS:
+        logger.info("Model %s not available on SenseAudio, using %s", model_name, DEFAULT_SENSEAUDIO_STT_MODEL)
+        model_name = DEFAULT_SENSEAUDIO_STT_MODEL
+
+    try:
+        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
+        try:
+            with open(file_path, "rb") as audio_file:
+                transcription = client.audio.transcriptions.create(
+                    model=model_name,
+                    file=audio_file,
+                    response_format="text",
+                )
+            transcript_text = str(transcription).strip()
+            logger.info("Transcribed %s via SenseAudio API (%s, %d chars)",
+                        Path(file_path).name, model_name, len(transcript_text))
+            return {"success": True, "transcript": transcript_text, "provider": "senseaudio"}
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except APIConnectionError as e:
+        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
+    except APITimeoutError as e:
+        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
+    except APIError as e:
+        return {"success": False, "transcript": "", "error": f"API error: {e}"}
+    except Exception as e:
+        logger.error("SenseAudio transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -651,6 +726,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
         return _transcribe_mistral(file_path, model_name)
 
+    if provider == "senseaudio":
+        senseaudio_cfg = stt_config.get("senseaudio", {})
+        model_name = model or senseaudio_cfg.get("model", DEFAULT_SENSEAUDIO_STT_MODEL)
+        return _transcribe_senseaudio(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -659,8 +739,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "Voxtral Transcribe, set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY for the "
+            "OpenAI Whisper API, or set SENSEAUDIO_API_KEY for the SenseAudio provider."
         ),
     }
 

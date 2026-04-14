@@ -79,6 +79,43 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _collect_ephemeral_hook_context(results: List[Any]) -> str:
+    """Collect context returned by an injectable plugin hook."""
+    chunks = []
+    for result in results or []:
+        if isinstance(result, str) and result.strip():
+            chunks.append(result.strip())
+        elif isinstance(result, dict):
+            context = result.get("context")
+            if isinstance(context, str) and context.strip():
+                chunks.append(context.strip())
+    return "\n\n".join(chunks)
+
+
+def _inject_request_scoped_context(api_kwargs: Dict[str, Any], context: str) -> None:
+    """Append *context* to the latest user message without mutating retry state."""
+    if not context:
+        return
+    key = "messages" if isinstance(api_kwargs.get("messages"), list) else "input"
+    request_messages = api_kwargs.get(key)
+    if not isinstance(request_messages, list):
+        return
+    copied_messages = list(request_messages)
+    for idx in range(len(copied_messages) - 1, -1, -1):
+        message = copied_messages[idx]
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content", "")
+        if not isinstance(content, str):
+            return
+        copied_messages[idx] = {
+            **message,
+            "content": content + "\n\n" + context,
+        }
+        api_kwargs[key] = copied_messages
+        return
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -1231,7 +1268,7 @@ def run_conversation(
                         # provider client.  New consumers should read the
                         # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
-                        _invoke_hook(
+                        _pre_request_results = _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             turn_id=turn_id,
@@ -1239,6 +1276,7 @@ def run_conversation(
                             session_id=agent.session_id or "",
                             user_message=original_user_message,
                             conversation_history=list(messages),
+                            is_first_turn=(not bool(conversation_history)),
                             platform=agent.platform or "",
                             model=agent.model,
                             provider=agent.provider,
@@ -1256,6 +1294,10 @@ def run_conversation(
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),
                             request=_request_payload,
+                        )
+                        _inject_request_scoped_context(
+                            api_kwargs,
+                            _collect_ephemeral_hook_context(_pre_request_results),
                         )
                 except Exception:
                     pass

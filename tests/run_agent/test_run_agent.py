@@ -4060,6 +4060,7 @@ class TestRunConversation:
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert all(isinstance(call["is_first_turn"], bool) for call in pre_request_calls)
         assert all(call["turn_id"] == pre_request_calls[0]["turn_id"] for call in pre_request_calls + post_request_calls)
         assert [call["api_request_id"] for call in pre_request_calls] == [
             call["api_request_id"] for call in post_request_calls
@@ -4069,6 +4070,58 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
+
+    def test_pre_api_request_context_is_fresh_and_retry_repairs_survive(self, agent):
+        self._setup_agent(agent)
+
+        class ImageTooLargeError(RuntimeError):
+            status_code = 400
+
+        agent.client.chat.completions.create.side_effect = [
+            ImageTooLargeError("image exceeds 5 MB maximum"),
+            _mock_response(content="Recovered", finish_reason="stop"),
+        ]
+        hook_attempt = 0
+
+        def _hook(name, **_kwargs):
+            nonlocal hook_attempt
+            if name != "pre_api_request":
+                return []
+            hook_attempt += 1
+            return [{"context": f"request snapshot {hook_attempt}"}]
+
+        def _repair_retry_payload(messages, **_kwargs):
+            user = next(message for message in messages if message.get("role") == "user")
+            user["content"] += " [repaired image payload]"
+            return True
+
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(
+                agent,
+                "_try_shrink_image_parts_in_messages",
+                side_effect=_repair_retry_payload,
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("inspect this image")
+
+        assert result["final_response"] == "Recovered"
+        first_messages = agent.client.chat.completions.create.call_args_list[0].kwargs["messages"]
+        second_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        first_user = next(message for message in first_messages if message["role"] == "user")
+        second_user = next(message for message in second_messages if message["role"] == "user")
+        assert "request snapshot 1" in first_user["content"]
+        assert "request snapshot 2" not in first_user["content"]
+        assert "[repaired image payload]" in second_user["content"]
+        assert "request snapshot 2" in second_user["content"]
+        assert "request snapshot 1" not in second_user["content"]
 
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False

@@ -1028,3 +1028,52 @@ class TestDiscordSkillCommands:
             assert len(name) <= _CMD_NAME_LIMIT, (
                 f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
             )
+
+
+# ---------------------------------------------------------------------------
+# Regression: @ context completions crash (issue #9817)
+# _context_completions was @staticmethod but referenced self
+# ---------------------------------------------------------------------------
+
+class TestContextCompletions:
+    def test_context_completions_is_instance_method(self):
+        """_context_completions must be an instance method, not @staticmethod.
+
+        Regression for issue #9817: @ completions crashed with
+        'name self is not defined' because _context_completions was decorated
+        as @staticmethod but called self._fuzzy_file_completions().
+        """
+        import inspect
+        from hermes_cli.commands import SlashCommandCompleter
+
+        # Verify the method accepts self (is not a staticmethod)
+        method = getattr(SlashCommandCompleter, "_context_completions")
+        sig = inspect.signature(method)
+        params = list(sig.parameters.keys())
+        assert "self" in params, (
+            f"_context_completions should have 'self' as first parameter, "
+            f"got params: {params}"
+        )
+
+    def test_context_completions_callable_on_instance(self):
+        """Calling _context_completions on an instance should not raise NameError."""
+        from hermes_cli.commands import SlashCommandCompleter
+
+        completer = SlashCommandCompleter()
+        # Should not raise NameError: name 'self' is not defined
+        results = list(completer._context_completions("@", limit=5))
+        # Should return at least the static refs like @diff, @staged, etc.
+        assert len(results) > 0
+
+    def test_at_completion_via_get_completions(self):
+        """Full integration: typing @ in input should not crash."""
+        from hermes_cli.commands import SlashCommandCompleter
+
+        completer = SlashCommandCompleter()
+        # Simulate typing @ in the CLI input
+        results = list(completer.get_completions(
+            Document(text="@"),
+            CompleteEvent(completion_requested=True),
+        ))
+        # Should yield completions without crashing
+        assert len(results) > 0

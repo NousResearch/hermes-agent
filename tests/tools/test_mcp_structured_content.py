@@ -11,11 +11,20 @@ from tools import mcp_tool
 
 
 class _FakeContentBlock:
-    """Minimal content block with .text and .type attributes."""
+    """Minimal text content block with .text and .type attributes."""
 
     def __init__(self, text: str, block_type: str = "text"):
         self.text = text
         self.type = block_type
+
+
+class _FakeImageContentBlock:
+    """Minimal image content block with .data and .mimeType attributes."""
+
+    def __init__(self, data, mime_type: str = "image/png"):
+        self.data = data
+        self.mimeType = mime_type
+        self.type = "image"
 
 
 class _FakeCallToolResult:
@@ -129,3 +138,21 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data["result"] == payload
+
+    def test_image_block_is_preserved_as_media(self, _patch_mcp_server):
+        """When an MCP tool returns image blocks, Hermes should cache them and emit MEDIA tags."""
+        session = _patch_mcp_server
+        png_b64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7r3h8AAAAASUVORK5CYII="
+        )
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeImageContentBlock(png_b64, "image/png")],
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+        assert data["result"].startswith("MEDIA:")
+        assert data["media"]
+        assert data["media"][0].endswith(".png")

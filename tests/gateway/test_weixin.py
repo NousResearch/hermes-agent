@@ -364,6 +364,46 @@ class TestWeixinChunkDelivery:
 
 
 class TestWeixinRemoteMediaSafety:
+    def test_send_image_file_accepts_standard_image_path_keyword(self):
+        adapter = _make_adapter()
+        adapter.send_document = AsyncMock(return_value="ok")
+
+        result = asyncio.run(
+            adapter.send_image_file(
+                chat_id="wxid_test123",
+                image_path="/tmp/chart.png",
+                caption="图表",
+                metadata={"foo": "bar"},
+            )
+        )
+
+        assert result == "ok"
+        adapter.send_document.assert_awaited_once_with(
+            "wxid_test123",
+            file_path="/tmp/chart.png",
+            caption="图表",
+            metadata={"foo": "bar"},
+        )
+
+    def test_send_image_file_keeps_backward_compatibility_for_path_keyword(self):
+        adapter = _make_adapter()
+        adapter.send_document = AsyncMock(return_value="ok")
+
+        result = asyncio.run(
+            adapter.send_image_file(
+                chat_id="wxid_test123",
+                path="/tmp/chart.png",
+            )
+        )
+
+        assert result == "ok"
+        adapter.send_document.assert_awaited_once_with(
+            "wxid_test123",
+            file_path="/tmp/chart.png",
+            caption="",
+            metadata=None,
+        )
+
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()
 

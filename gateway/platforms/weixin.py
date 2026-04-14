@@ -1542,11 +1542,17 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        image_path: Optional[str] = None,
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
+        path = image_path or kwargs.pop("path", None)
+        if kwargs:
+            raise TypeError(f"Unexpected keyword arguments: {', '.join(sorted(kwargs))}")
+        if not path:
+            raise TypeError("send_image_file() missing required argument: 'image_path'")
         return await self.send_document(chat_id, file_path=path, caption=caption, metadata=metadata)
 
     async def send_document(

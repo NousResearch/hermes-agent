@@ -26,7 +26,7 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
-from hermes_cli.config import get_compatible_custom_providers, load_config
+from hermes_cli.config import get_compatible_custom_providers, load_config, _normalize_custom_provider_entry
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -275,46 +275,43 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             return None
 
     config = load_config()
-    
+
     # First check providers: dict (new-style user-defined providers)
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
-            if not isinstance(entry, dict):
+            normalized = _normalize_custom_provider_entry(entry, provider_key=str(ep_name))
+            if not normalized:
                 continue
-            # Match exact name or normalized name
-            name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
-            if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+            provider_key = str(normalized.get("provider_key") or ep_name).strip()
+            provider_key_norm = _normalize_custom_provider_name(provider_key)
+            display_name = str(normalized.get("name") or ep_name).strip()
+            display_norm = _normalize_custom_provider_name(display_name)
+            key_env = str(normalized.get("key_env", "") or "").strip()
+            resolved_api_key = str(normalized.get("api_key", "") or "").strip()
+            if key_env and not resolved_api_key:
+                resolved_api_key = os.getenv(key_env, "").strip()
 
-            if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
-                # Found match by provider key
-                base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-                if base_url:
-                    return {
-                        "name": entry.get("name", ep_name),
-                        "base_url": base_url.strip(),
-                        "api_key": resolved_api_key,
-                        "model": entry.get("default_model", ""),
-                    }
-            # Also check the 'name' field if present
-            display_name = entry.get("name", "")
-            if display_name:
-                display_norm = _normalize_custom_provider_name(display_name)
-                if requested_norm in {display_name, display_norm, f"custom:{display_norm}"}:
-                    # Found match by display name
-                    base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
-                    if base_url:
-                        return {
-                            "name": display_name,
-                            "base_url": base_url.strip(),
-                            "api_key": resolved_api_key,
-                            "model": entry.get("default_model", ""),
-                        }
+            if requested_norm in {
+                provider_key,
+                provider_key_norm,
+                f"custom:{provider_key_norm}",
+                display_name,
+                display_norm,
+                f"custom:{display_norm}",
+            }:
+                result = {
+                    "name": display_name,
+                    "base_url": str(normalized["base_url"]).strip(),
+                    "api_key": resolved_api_key,
+                    "model": str(normalized.get("model", "") or "").strip(),
+                }
+                if key_env:
+                    result["key_env"] = key_env
+                api_mode = str(normalized.get("api_mode", "") or "").strip()
+                if api_mode:
+                    result["api_mode"] = api_mode
+                return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")

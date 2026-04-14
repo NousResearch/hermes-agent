@@ -15,6 +15,7 @@ This module provides:
 import os
 import platform
 import re
+import logging
 import stat
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+from urllib.parse import urlparse
 
 from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
@@ -58,6 +60,8 @@ _EXTRA_ENV_KEYS = frozenset({
 import yaml
 
 from hermes_cli.colors import Colors, color
+
+logger = logging.getLogger(__name__)
 from hermes_cli.default_soul import DEFAULT_SOUL_MD
 
 
@@ -1643,12 +1647,46 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    provider_label = provider_key.strip() or str(entry.get("name") or "").strip() or "<unknown>"
+    entry = dict(entry)
+
+    alias_fields = {
+        "apiKey": "api_key",
+        "baseUrl": "base_url",
+        "apiMode": "api_mode",
+        "keyEnv": "key_env",
+        "defaultModel": "default_model",
+        "contextLength": "context_length",
+        "rateLimitDelay": "rate_limit_delay",
+    }
+    for alias, canonical in alias_fields.items():
+        if canonical not in entry and alias in entry:
+            entry[canonical] = entry[alias]
+            logger.warning(
+                "providers.%s uses deprecated field '%s'; use '%s' instead",
+                provider_label,
+                alias,
+                canonical,
+            )
+
+    def _is_valid_base_url(value: str) -> bool:
+        parsed = urlparse(value)
+        return bool(parsed.scheme and parsed.netloc)
+
     base_url = ""
     for url_key in ("api", "url", "base_url"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
-            base_url = raw_url.strip()
-            break
+            candidate = raw_url.strip()
+            if _is_valid_base_url(candidate):
+                base_url = candidate
+                break
+            logger.warning(
+                "Ignoring non-URL value for providers.%s.%s: %r",
+                provider_label,
+                url_key,
+                candidate,
+            )
     if not base_url:
         return None
 

@@ -531,6 +531,63 @@ class TestCustomProviderCompatibility:
             }
         ]
 
+    def test_compatible_custom_providers_accepts_camel_case_aliases(self, tmp_path, caplog):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "nvidia": {
+                            "name": "NVIDIA",
+                            "api": "openai-reverse-proxy",
+                            "baseUrl": "https://integrate.api.nvidia.com/v1",
+                            "apiKey": "${NVIDIA_API_KEY}",
+                            "apiMode": "chat_completions",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == [
+            {
+                "name": "NVIDIA",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+                "provider_key": "nvidia",
+                "api_key": "${NVIDIA_API_KEY}",
+                "api_mode": "chat_completions",
+            }
+        ]
+        assert "openai-reverse-proxy" in caplog.text
+
+    def test_compatible_custom_providers_rejects_non_url_api_without_fallback(self, tmp_path, caplog):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 17,
+                    "providers": {
+                        "broken": {
+                            "name": "Broken Provider",
+                            "api": "openai-reverse-proxy",
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            compatible = get_compatible_custom_providers()
+
+        assert compatible == []
+        assert "openai-reverse-proxy" in caplog.text
+
     def test_dedup_across_legacy_and_providers(self, tmp_path):
         """Same name+url in both schemas should not produce duplicates."""
         config_path = tmp_path / "config.yaml"

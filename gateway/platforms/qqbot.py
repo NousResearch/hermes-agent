@@ -756,7 +756,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
 
@@ -801,7 +801,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
 
@@ -846,7 +846,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
 
@@ -887,7 +887,7 @@ class QQAdapter(BasePlatformAdapter):
             message_id=msg_id,
             media_urls=image_urls,
             media_types=image_media_types,
-            timestamp=datetime.now(tz=timezone.utc),
+            timestamp=self._parse_qq_timestamp(timestamp),
         )
         await self.handle_message(event)
 
@@ -1901,6 +1901,24 @@ class QQAdapter(BasePlatformAdapter):
             if normalized == "*" or normalized == normalized_target:
                 return True
         return False
+
+    def _parse_qq_timestamp(self, raw: str) -> datetime:
+        """Parse QQ API timestamp (ISO 8601 string or integer ms).
+
+        The QQ API changed from integer milliseconds to ISO 8601 strings.
+        This handles both formats gracefully.
+        """
+        if not raw:
+            return datetime.now(tz=timezone.utc)
+        try:
+            return datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            pass
+        try:
+            return datetime.fromtimestamp(int(raw) / 1000, tz=timezone.utc)
+        except (ValueError, TypeError):
+            pass
+        return datetime.now(tz=timezone.utc)
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()

@@ -93,7 +93,7 @@ class TestQQAdapterInit:
 
     def test_name_property(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter.name == "QQBOT"
+        assert adapter.name == "QQBot"
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { stopCapturingEarlyInput } from '../../utils/earlyInput.js'
 import { isMouseClicksDisabled } from '../../utils/fullscreen.js'
 import { logError } from '../../utils/log.js'
+import type { DOMElement } from '../dom.js'
 import { EventEmitter } from '../events/emitter.js'
 import { InputEvent } from '../events/input-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
@@ -67,6 +68,9 @@ type Props = {
   // No-op (returns false) outside fullscreen mode (Ink.dispatchClick
   // gates on altScreenActive).
   readonly onClickAt: (col: number, row: number) => boolean
+  readonly onMouseDownAt: (col: number, row: number, button: number) => DOMElement | undefined
+  readonly onMouseUpAt: (target: DOMElement, col: number, row: number, button: number) => void
+  readonly onMouseDragAt: (target: DOMElement, col: number, row: number, button: number) => void
   // Dispatch hover (onMouseEnter/onMouseLeave) as the pointer moves over
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
@@ -155,6 +159,7 @@ export default class App extends PureComponent<Props, State> {
   // repeat events (drag-then-release at same cell, etc.).
   lastHoverCol = -1
   lastHoverRow = -1
+  mouseCaptureTarget: DOMElement | undefined
 
   // Timestamp of last stdin chunk. Used to detect long gaps (tmux attach,
   // ssh reconnect, laptop wake) and trigger terminal mode re-assert.
@@ -578,6 +583,11 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
 
   if (m.action === 'press') {
     if ((m.button & 0x20) !== 0 && baseButton === 3) {
+      if (app.mouseCaptureTarget) {
+        app.props.onMouseUpAt(app.mouseCaptureTarget, col, row, baseButton)
+        app.mouseCaptureTarget = undefined
+      }
+
       // Mode-1003 motion with no button held. Dispatch hover; skip the
       // rest of this handler (no selection, no click-count side effects).
       // Lost-release recovery: no-button motion while isDragging=true means
@@ -611,6 +621,12 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     }
 
     if ((m.button & 0x20) !== 0) {
+      if (app.mouseCaptureTarget) {
+        app.props.onMouseDragAt(app.mouseCaptureTarget, col, row, baseButton)
+
+        return
+      }
+
       // Drag motion: mode-aware extension (char/word/line). onSelectionDrag
       // calls notifySelectionChange internally — no extra onSelectionChange.
       app.props.onSelectionDrag(col, row)
@@ -626,6 +642,15 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (sel.isDragging) {
       finishSelection(sel)
       app.props.onSelectionChange()
+    }
+
+    const capture = app.props.onMouseDownAt(col, row, baseButton)
+
+    if (capture) {
+      app.mouseCaptureTarget = capture
+      app.clickCount = 0
+
+      return
     }
 
     // Fresh left press. Detect multi-click HERE (not on release) so the
@@ -677,6 +702,13 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   // isDragging=true and leave drag-to-scroll's timer running until the
   // scroll boundary. Only act on non-left releases when we ARE dragging
   // (so an unrelated middle/right click-release doesn't touch selection).
+  if (app.mouseCaptureTarget) {
+    app.props.onMouseUpAt(app.mouseCaptureTarget, col, row, baseButton)
+    app.mouseCaptureTarget = undefined
+
+    return
+  }
+
   if (baseButton !== 0) {
     if (!sel.isDragging) {
       return

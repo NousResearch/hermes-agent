@@ -190,6 +190,7 @@ export const ToolTrail = memo(function ToolTrail({
     if (!tools.length || (detailsMode === 'collapsed' && !openTools)) {
       return
     }
+
     const id = setInterval(() => setNow(Date.now()), 500)
 
     return () => clearInterval(id)

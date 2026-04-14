@@ -22,7 +22,7 @@ import * as dom from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
-import { dispatchClick, dispatchHover } from './hit-test.js'
+import { dispatchClick, dispatchHover, dispatchMouse } from './hit-test.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
@@ -1538,6 +1538,42 @@ export default class Ink {
 
     return dispatchClick(this.rootNode, col, row, blank)
   }
+  dispatchMouseDown(col: number, row: number, button: number): dom.DOMElement | undefined {
+    if (!this.altScreenActive) {
+      return undefined
+    }
+
+    return dispatchMouse(
+      this.rootNode,
+      col,
+      row,
+      'onMouseDown',
+      button,
+      isEmptyCellAt(this.frontFrame.screen, col, row)
+    )
+  }
+  dispatchMouseUp(target: dom.DOMElement, col: number, row: number, button: number): void {
+    if (!this.altScreenActive) {
+      return
+    }
+
+    dispatchMouse(this.rootNode, col, row, 'onMouseUp', button, isEmptyCellAt(this.frontFrame.screen, col, row), target)
+  }
+  dispatchMouseDrag(target: dom.DOMElement, col: number, row: number, button: number): void {
+    if (!this.altScreenActive) {
+      return
+    }
+
+    dispatchMouse(
+      this.rootNode,
+      col,
+      row,
+      'onMouseDrag',
+      button,
+      isEmptyCellAt(this.frontFrame.screen, col, row),
+      target
+    )
+  }
   dispatchHover(col: number, row: number): void {
     if (!this.altScreenActive) {
       return
@@ -1764,6 +1800,9 @@ export default class Ink {
         onCursorDeclaration={this.setCursorDeclaration}
         onExit={this.unmount}
         onHoverAt={this.dispatchHover}
+        onMouseDownAt={this.dispatchMouseDown}
+        onMouseDragAt={this.dispatchMouseDrag}
+        onMouseUpAt={this.dispatchMouseUp}
         onMultiClick={this.handleMultiClick}
         onOpenHyperlink={this.openHyperlink}
         onSelectionChange={this.notifySelectionChange}

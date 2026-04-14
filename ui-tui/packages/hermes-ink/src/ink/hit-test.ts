@@ -1,6 +1,7 @@
 import type { DOMElement } from './dom.js'
 import { ClickEvent } from './events/click-event.js'
 import type { EventHandlerProps } from './events/event-handlers.js'
+import { MouseEvent } from './events/mouse-event.js'
 import { nodeCache } from './node-cache.js'
 
 /**
@@ -96,6 +97,51 @@ export function dispatchClick(root: DOMElement, col: number, row: number, cellIs
     }
 
     target = target.parentNode
+  }
+
+  return handled
+}
+
+type MouseHandler = 'onMouseDown' | 'onMouseUp' | 'onMouseDrag'
+
+export function dispatchMouse(
+  root: DOMElement,
+  col: number,
+  row: number,
+  handlerName: MouseHandler,
+  button: number,
+  cellIsBlank = false,
+  target?: DOMElement
+): DOMElement | undefined {
+  let node: DOMElement | undefined = target ?? hitTest(root, col, row) ?? undefined
+
+  if (!node) {
+    return undefined
+  }
+
+  const event = new MouseEvent(col, row, cellIsBlank, button)
+  let handled: DOMElement | undefined
+
+  while (node) {
+    const handler = node._eventHandlers?.[handlerName] as ((event: MouseEvent) => void) | undefined
+
+    if (handler) {
+      handled ??= node
+      const rect = nodeCache.get(node)
+
+      if (rect) {
+        event.localCol = col - rect.x
+        event.localRow = row - rect.y
+      }
+
+      handler(event)
+
+      if (event.didStopImmediatePropagation()) {
+        return handled
+      }
+    }
+
+    node = node.parentNode
   }
 
   return handled

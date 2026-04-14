@@ -339,6 +339,7 @@ export function TextInput({
     if (!focus) {
       return
     }
+
     const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
     setCur(next)
     curRef.current = next

@@ -3626,9 +3626,9 @@ class HermesCLI:
             _err_lines = traceback.format_exc().strip().split("\n")
             _err_msg = _err_lines[-1] if _err_lines else str(e)
             _cprint(f"  {e.__class__.__name__}: {_err_msg}")
-            _cprint(f"  Picker failed, falling back to pager.")
-            # Fallback: less pager
-            import shutil as _shutil, subprocess as _subprocess
+            _cprint(f"  Picker failed, showing session list below.")
+            # Fallback: print directly (less is broken inside the TUI)
+            import shutil as _shutil
             from hermes_cli.main import _relative_time
 
             W = min(_shutil.get_terminal_size().columns, 120)
@@ -3645,19 +3645,7 @@ class HermesCLI:
                     f"{(s.get('preview') or '')[:prev_w - 1]:<{prev_w}} {s['id']}\n"
                 )
             rows.append("\n  /resume <id or title>  to continue a session\n")
-            output = "".join(rows)
-            pager = _shutil.which("less")
-            if pager:
-                try:
-                    proc = _subprocess.Popen(
-                        [pager, "-R", "--no-init", "--quit-if-one-screen"],
-                        stdin=_subprocess.PIPE,
-                    )
-                    proc.communicate(output.encode("utf-8", errors="replace"))
-                    return
-                except Exception:
-                    pass
-            print(output)
+            print("".join(rows))
 
     def show_history_full(self) -> None:
         """Show full conversation history newest-first, piped through a pager.

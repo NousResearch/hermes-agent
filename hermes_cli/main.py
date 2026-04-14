@@ -495,8 +495,10 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         curses.wrapper(_curses_browse)
         return result_holder[0]
 
-    except Exception:
-        pass
+    except Exception as e:
+        import traceback
+        print(f"\n  Session browser failed: {e.__class__.__name__}: {e}")
+        traceback.print_exc()
 
     # Fallback: numbered list (Windows without curses, etc.)
     print("\n  Browse sessions  (enter number to resume, q to cancel)\n")

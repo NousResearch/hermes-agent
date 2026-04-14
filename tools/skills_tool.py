@@ -245,6 +245,9 @@ def _get_required_environment_variables(
         if isinstance(required_for, str) and required_for.strip():
             normalized["required_for"] = required_for.strip()
 
+        if entry.get("optional"):
+            normalized["optional"] = True
+
         seen.add(env_name)
         required.append(normalized)
 
@@ -378,6 +381,8 @@ def _remaining_required_environment_names(
     remaining = []
     for entry in required_env_vars:
         name = entry["name"]
+        if entry.get("optional"):
+            continue
         if name in missing_names or not _is_env_var_persisted(name, env_snapshot):
             remaining.append(name)
     return remaining
@@ -1042,7 +1047,8 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         missing_required_env_vars = [
             e
             for e in required_env_vars
-            if not _is_env_var_persisted(e["name"], env_snapshot)
+            if not e.get("optional")
+            and not _is_env_var_persisted(e["name"], env_snapshot)
         ]
         capture_result = _capture_required_environment_variables(
             skill_name,

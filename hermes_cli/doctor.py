@@ -133,6 +133,14 @@ def _doctor_tool_availability_detail(toolset: str) -> str:
     return ""
 
 
+# Toolsets with multiple setup paths cannot expose a single missing env var.
+# Give those toolsets an actionable fallback instead of misclassifying them as
+# missing a system dependency.
+_TOOLSET_SETUP_HINTS: dict[str, str] = {
+    "image_gen": "(no image generation provider available; configure one with 'hermes tools')",
+}
+
+
 def _apply_doctor_tool_availability_overrides(available: list[str], unavailable: list[dict]) -> tuple[list[str], list[dict]]:
     """Adjust runtime-gated tool availability for doctor diagnostics."""
     updated_available = list(available)
@@ -212,10 +220,14 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
 
 
 def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable API-key toolsets to those enabled for the CLI."""
+    """Filter unavailable setup-gated toolsets to those enabled for the CLI."""
     api_key_unavailable = [
         item for item in unavailable
-        if item.get("missing_vars") or item.get("env_vars")
+        if (
+            item.get("missing_vars")
+            or item.get("env_vars")
+            or item.get("name") in _TOOLSET_SETUP_HINTS
+        )
     ]
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     if enabled_toolsets is None:
@@ -2190,7 +2202,8 @@ def run_doctor(args):
                 vars_str = ", ".join(env_vars)
                 check_warn(item["name"], f"(missing {vars_str})")
             else:
-                check_warn(item["name"], "(system dependency not met)")
+                hint = _TOOLSET_SETUP_HINTS.get(item.get("name"))
+                check_warn(item["name"], hint or "(system dependency not met)")
 
         # Count missing API-key requirements only for toolsets enabled in the
         # current CLI platform. Default-off or explicitly disabled toolsets may

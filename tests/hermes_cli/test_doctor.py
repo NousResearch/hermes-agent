@@ -56,6 +56,7 @@ class TestDoctorToolAvailabilitySummary:
         unavailable = [
             {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
             {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+            {"name": "image_gen", "env_vars": []},
         ]
         monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: {"web"})
 
@@ -67,12 +68,13 @@ class TestDoctorToolAvailabilitySummary:
         unavailable = [
             {"name": "rl", "missing_vars": ["TINKER_API_KEY"]},
             {"name": "web", "missing_vars": ["EXA_API_KEY"]},
+            {"name": "image_gen", "env_vars": []},
         ]
         monkeypatch.setattr(doctor, "_enabled_cli_toolsets_for_doctor", lambda: None)
 
         filtered = doctor._missing_api_key_toolsets_for_summary(unavailable)
 
-        assert [item["name"] for item in filtered] == ["rl", "web"]
+        assert [item["name"] for item in filtered] == ["rl", "web", "image_gen"]
 
 
 class TestDoctorEnvFileEncoding:
@@ -695,6 +697,59 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def test_run_doctor_image_gen_hint_uses_real_provider_discovery(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(
+        doctor_mod,
+        "_enabled_cli_toolsets_for_doctor",
+        lambda: {"image_gen"},
+    )
+
+    import model_tools
+    import tools.image_generation_tool as image_tool
+    from agent.image_gen_registry import list_providers
+    from hermes_cli.plugins import _ensure_plugins_discovered
+
+    _ensure_plugins_discovered()
+    monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: False)
+    for provider in list_providers():
+        monkeypatch.setattr(provider, "is_available", lambda: False)
+
+    assert image_tool.check_image_generation_requirements() is False
+    requirements = model_tools.TOOLSET_REQUIREMENTS["image_gen"]
+    image_gen = {
+        "name": "image_gen",
+        "env_vars": requirements["env_vars"],
+        "tools": requirements["tools"],
+    }
+    assert image_gen["env_vars"] == []
+    monkeypatch.setattr(
+        model_tools,
+        "check_tool_availability",
+        lambda: ([], [image_gen]),
+    )
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    image_line = next(line for line in out.splitlines() if "image_gen (" in line)
+    assert "no image generation provider available" in image_line
+    assert "hermes tools" in image_line
+    assert "system dependency not met" not in image_line
+    assert "hermes setup" in out
 
 
 def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, tmp_path):

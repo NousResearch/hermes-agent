@@ -325,6 +325,11 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "nextcloud_talk": (
+        "You are in a Nextcloud Talk conversation. Keep formatting simple and "
+        "prefer plain text or light markdown. Native file/media delivery is "
+        "not implemented for this platform yet, so do not rely on MEDIA: paths."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

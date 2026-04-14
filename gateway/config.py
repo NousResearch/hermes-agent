@@ -55,6 +55,7 @@ class Platform(Enum):
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
     MATRIX = "matrix"
+    NEXTCLOUD_TALK = "nextcloud_talk"
     HOMEASSISTANT = "homeassistant"
     EMAIL = "email"
     SMS = "sms"
@@ -283,6 +284,10 @@ class GatewayConfig:
                 connected.append(platform)
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
+                connected.append(platform)
+            # Nextcloud Talk uses a shared bot secret; backend URL can come
+            # from config or from inbound webhook headers.
+            elif platform == Platform.NEXTCLOUD_TALK and config.token:
                 connected.append(platform)
             # API Server uses enabled flag only (no token needed)
             elif platform == Platform.API_SERVER:
@@ -703,6 +708,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.NEXTCLOUD_TALK: "NEXTCLOUD_TALK_SECRET",
         Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
@@ -890,6 +896,39 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.MATRIX,
             chat_id=matrix_home,
             name=os.getenv("MATRIX_HOME_ROOM_NAME", "Home"),
+        )
+
+    # Nextcloud Talk
+    nextcloud_talk_secret = os.getenv("NEXTCLOUD_TALK_SECRET")
+    nextcloud_talk_base_url = os.getenv("NEXTCLOUD_TALK_BASE_URL", "").strip().rstrip("/")
+    if nextcloud_talk_secret:
+        if Platform.NEXTCLOUD_TALK not in config.platforms:
+            config.platforms[Platform.NEXTCLOUD_TALK] = PlatformConfig()
+        config.platforms[Platform.NEXTCLOUD_TALK].enabled = True
+        config.platforms[Platform.NEXTCLOUD_TALK].token = nextcloud_talk_secret
+        if nextcloud_talk_base_url:
+            config.platforms[Platform.NEXTCLOUD_TALK].extra["base_url"] = nextcloud_talk_base_url
+        nextcloud_talk_host = os.getenv("NEXTCLOUD_TALK_WEBHOOK_HOST", "")
+        if nextcloud_talk_host:
+            config.platforms[Platform.NEXTCLOUD_TALK].extra["host"] = nextcloud_talk_host
+        nextcloud_talk_port = os.getenv("NEXTCLOUD_TALK_WEBHOOK_PORT", "")
+        if nextcloud_talk_port:
+            try:
+                config.platforms[Platform.NEXTCLOUD_TALK].extra["port"] = int(nextcloud_talk_port)
+            except ValueError:
+                pass
+        nextcloud_talk_path = os.getenv("NEXTCLOUD_TALK_WEBHOOK_PATH", "")
+        if nextcloud_talk_path:
+            config.platforms[Platform.NEXTCLOUD_TALK].extra["path"] = nextcloud_talk_path
+        nextcloud_talk_chat_type = os.getenv("NEXTCLOUD_TALK_CHAT_TYPE", "")
+        if nextcloud_talk_chat_type:
+            config.platforms[Platform.NEXTCLOUD_TALK].extra["chat_type"] = nextcloud_talk_chat_type
+    nextcloud_talk_home = os.getenv("NEXTCLOUD_TALK_HOME_CHANNEL")
+    if nextcloud_talk_home and Platform.NEXTCLOUD_TALK in config.platforms:
+        config.platforms[Platform.NEXTCLOUD_TALK].home_channel = HomeChannel(
+            platform=Platform.NEXTCLOUD_TALK,
+            chat_id=nextcloud_talk_home,
+            name=os.getenv("NEXTCLOUD_TALK_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Home Assistant

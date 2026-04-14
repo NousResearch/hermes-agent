@@ -1493,7 +1493,8 @@ class GatewayRunner:
                        "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
                        "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
-                       "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
+                       "MATRIX_ALLOWED_USERS", "NEXTCLOUD_TALK_ALLOWED_USERS",
+                       "DINGTALK_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
                        "WECOM_ALLOWED_USERS",
                        "WECOM_CALLBACK_ALLOWED_USERS",
@@ -1508,7 +1509,8 @@ class GatewayRunner:
                        "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                        "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
-                       "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
+                       "MATRIX_ALLOW_ALL_USERS", "NEXTCLOUD_TALK_ALLOW_ALL_USERS",
+                       "DINGTALK_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
                        "WECOM_ALLOW_ALL_USERS",
                        "WECOM_CALLBACK_ALLOW_ALL_USERS",
@@ -2234,6 +2236,16 @@ class GatewayRunner:
                 return None
             return MatrixAdapter(config)
 
+        elif platform == Platform.NEXTCLOUD_TALK:
+            from gateway.platforms.nextcloud_talk import (
+                NextcloudTalkAdapter,
+                check_nextcloud_talk_requirements,
+            )
+            if not check_nextcloud_talk_requirements():
+                logger.warning("Nextcloud Talk: aiohttp not installed")
+                return None
+            return NextcloudTalkAdapter(config)
+
         elif platform == Platform.API_SERVER:
             from gateway.platforms.api_server import APIServerAdapter, check_api_server_requirements
             if not check_api_server_requirements():
@@ -2299,6 +2311,7 @@ class GatewayRunner:
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
             Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+            Platform.NEXTCLOUD_TALK: "NEXTCLOUD_TALK_ALLOWED_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
@@ -2317,6 +2330,7 @@ class GatewayRunner:
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
             Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+            Platform.NEXTCLOUD_TALK: "NEXTCLOUD_TALK_ALLOW_ALL_USERS",
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",

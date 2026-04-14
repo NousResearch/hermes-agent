@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import ssl
 import time
 
@@ -68,7 +69,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'nextcloud_talk:conversation-token'"
             },
             "message": {
                 "type": "string",
@@ -154,6 +155,7 @@ def _handle_send(args):
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
         "matrix": Platform.MATRIX,
+        "nextcloud_talk": Platform.NEXTCLOUD_TALK,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
@@ -417,6 +419,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
+        elif platform == Platform.NEXTCLOUD_TALK:
+            result = await _send_nextcloud_talk(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
             result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
@@ -840,6 +844,49 @@ async def _send_matrix(token, extra, chat_id, message):
         return {"success": True, "platform": "matrix", "chat_id": chat_id, "message_id": data.get("event_id")}
     except Exception as e:
         return _error(f"Matrix send failed: {e}")
+
+
+async def _send_nextcloud_talk(token, extra, chat_id, message):
+    """Send via the Nextcloud Talk bot API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        from gateway.platforms.nextcloud_talk import _sign_payload, _sanitize_chat_id
+
+        secret_value = token or os.getenv("NEXTCLOUD_TALK_SECRET", "")
+        base_url = (extra.get("base_url") or os.getenv("NEXTCLOUD_TALK_BASE_URL", "")).strip().rstrip("/")
+        if not secret_value:
+            return {"error": "Nextcloud Talk not configured (NEXTCLOUD_TALK_SECRET required)"}
+        if not base_url:
+            return {"error": "Nextcloud Talk not configured (NEXTCLOUD_TALK_BASE_URL required for direct sends)"}
+
+        safe_chat_id = _sanitize_chat_id(str(chat_id))
+        if not safe_chat_id:
+            return _error(f"Invalid Talk conversation token: {chat_id!r}")
+
+        payload = {"message": message}
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        random_header = secrets.token_hex(32)
+        # Talk Bot API signs: HMAC(secret, random + message_text), NOT random + json_body
+        signature = _sign_payload(secret_value, random_header, message.encode("utf-8"))
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "OCS-APIRequest": "true",
+            "X-Nextcloud-Talk-Bot-Random": random_header,
+            "X-Nextcloud-Talk-Bot-Signature": signature,
+        }
+        url = f"{base_url}/ocs/v2.php/apps/spreed/api/v1/bot/{safe_chat_id}/message"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+            async with session.post(url, data=body, headers=headers) as resp:
+                resp_text = await resp.text()
+                if resp.status not in (200, 201):
+                    return _error(f"Nextcloud Talk API error ({resp.status}): {resp_text}")
+        return {"success": True, "platform": "nextcloud_talk", "chat_id": safe_chat_id}
+    except Exception as e:
+        return _error(f"Nextcloud Talk send failed: {e}")
 
 
 async def _send_homeassistant(token, extra, chat_id, message):

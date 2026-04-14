@@ -297,6 +297,7 @@ def show_status(args):
         "WhatsApp": ("WHATSAPP_ENABLED", None),
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
+        "Nextcloud Talk": ("NEXTCLOUD_TALK_SECRET", "NEXTCLOUD_TALK_HOME_CHANNEL"),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
         "DingTalk": ("DINGTALK_CLIENT_ID", None),

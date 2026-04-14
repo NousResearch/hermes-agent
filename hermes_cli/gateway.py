@@ -1725,6 +1725,32 @@ _PLATFORMS = [
         "token_var": "SIGNAL_HTTP_URL",
     },
     {
+        "key": "nextcloud_talk",
+        "label": "Nextcloud Talk",
+        "emoji": "☁️",
+        "token_var": "NEXTCLOUD_TALK_SECRET",
+        "setup_instructions": [
+            "1. Expose Hermes on a reachable HTTPS URL for Nextcloud to call",
+            "2. Choose a long shared secret (40+ chars) for Talk bot signing",
+            "3. Set the public Nextcloud base URL so Hermes can send replies back",
+            "4. Install the bot on your Nextcloud server with:",
+            "   ./occ talk:bot:install -f webhook -f response <name> <secret> https://your-hermes-host:8645/nextcloud-talk [description]",
+            "5. Add the bot to one or more Talk conversations",
+            "6. Allowed users should match Talk actor IDs such as users/alice",
+        ],
+        "vars": [
+            {"name": "NEXTCLOUD_TALK_BASE_URL", "prompt": "Nextcloud base URL (e.g. https://cloud.example.com)", "password": False,
+             "help": "The public base URL of your Nextcloud server. Hermes uses this for direct sends and fallback replies."},
+            {"name": "NEXTCLOUD_TALK_SECRET", "prompt": "Bot shared secret", "password": True,
+             "help": "Use the same secret you pass to 'occ talk:bot:install'."},
+            {"name": "NEXTCLOUD_TALK_ALLOWED_USERS", "prompt": "Allowed Talk actor IDs (comma-separated, e.g. users/alice)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which Talk participants can interact with Hermes."},
+            {"name": "NEXTCLOUD_TALK_HOME_CHANNEL", "prompt": "Home conversation token (optional, for cron/notifications)", "password": False,
+             "help": "Talk conversation token for scheduled results and notifications."},
+        ],
+    },
+    {
         "key": "email",
         "label": "Email",
         "emoji": "📧",
@@ -1968,6 +1994,13 @@ def _platform_status(platform: dict) -> str:
         if all([val, pwd, imap, smtp]):
             return "configured"
         if any([val, pwd, imap, smtp]):
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "nextcloud_talk":
+        base_url = get_env_value("NEXTCLOUD_TALK_BASE_URL")
+        if val and base_url:
+            return "configured"
+        if val or base_url:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "matrix":

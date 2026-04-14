@@ -245,6 +245,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "matrix": Platform.MATRIX,
+        "nextcloud_talk": Platform.NEXTCLOUD_TALK,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,

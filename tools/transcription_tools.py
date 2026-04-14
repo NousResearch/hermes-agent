@@ -154,7 +154,52 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
+def get_stt_model_from_config() -> Optional[str]:
+    """Read the effective STT model name from config.
+
+    Prefers provider-specific config first:
+      - stt.local.model when provider is local/local_command
+      - stt.openai.model when provider is openai
+      - stt.groq.model when provider is groq (future-compatible)
+
+    Falls back to the legacy top-level ``stt.model`` only when no provider-specific
+    model is configured. Returns ``None`` on any config error.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        stt_config = read_raw_config().get("stt", {})
+        provider = stt_config.get("provider")
+
+        if provider in {"local", "local_command"}:
+            local_model = stt_config.get("local", {}).get("model")
+            if local_model:
+                return local_model
+
+        if provider == "openai":
+            openai_model = stt_config.get("openai", {}).get("model")
+            if openai_model:
+                return openai_model
+
+        if provider == "groq":
+            groq_model = stt_config.get("groq", {}).get("model")
+            if groq_model:
+                return groq_model
+
+        return stt_config.get("model")
+    except Exception:
+        pass
+    return None
+
+
 def _normalize_local_command_model(model_name: Optional[str]) -> str:
+    if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
+        return DEFAULT_LOCAL_MODEL
+    return model_name
+
+
+def _normalize_local_model(model_name: Optional[str]) -> str:
+    """Map cloud-only/empty model names to a valid faster-whisper local model."""
     if not model_name or model_name in OPENAI_MODELS or model_name in GROQ_MODELS:
         return DEFAULT_LOCAL_MODEL
     return model_name
@@ -285,6 +330,8 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
 
     if not _HAS_FASTER_WHISPER:
         return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+
+    model_name = _normalize_local_model(model_name)
 
     try:
         from faster_whisper import WhisperModel
@@ -596,7 +643,9 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
 
     if provider == "local":
         local_cfg = stt_config.get("local", {})
-        model_name = model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        model_name = _normalize_local_model(
+            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
+        )
         return _transcribe_local(file_path, model_name)
 
     if provider == "local_command":

@@ -784,6 +784,16 @@ class TestTranscribeAudioDispatch:
 
         assert mock_local.call_args[0][1] == "large-v3"
 
+    def test_openai_model_override_is_normalized_for_local_provider(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import DEFAULT_LOCAL_MODEL, transcribe_audio
+            transcribe_audio(sample_ogg, model="whisper-1")
+
+        assert mock_local.call_args[0][1] == DEFAULT_LOCAL_MODEL
+
     def test_default_model_used_when_none(self, sample_ogg):
         with patch("tools.transcription_tools._load_stt_config", return_value={}), \
              patch("tools.transcription_tools._get_provider", return_value="groq"), \
@@ -995,3 +1005,55 @@ class TestTranscribeAudioMistralDispatch:
             transcribe_audio(sample_ogg, model="voxtral-mini-2602")
 
         assert mock_mistral.call_args[0][1] == "voxtral-mini-2602"
+
+
+class TestGetSttModelFromConfig:
+    def test_returns_legacy_model_from_config(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("""stt:
+  model: whisper-large-v3
+""")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.transcription_tools import get_stt_model_from_config
+        assert get_stt_model_from_config() == "whisper-large-v3"
+
+    def test_prefers_local_model_for_local_provider(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            """stt:
+  provider: local
+  model: whisper-1
+  local:
+    model: base
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.transcription_tools import get_stt_model_from_config
+        assert get_stt_model_from_config() == "base"
+
+    def test_prefers_openai_model_for_openai_provider(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            """stt:
+  provider: openai
+  model: base
+  openai:
+    model: gpt-4o-mini-transcribe
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.transcription_tools import get_stt_model_from_config
+        assert get_stt_model_from_config() == "gpt-4o-mini-transcribe"
+
+    def test_returns_none_when_no_stt_section(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("""tts:
+  provider: edge
+""")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.transcription_tools import get_stt_model_from_config
+        assert get_stt_model_from_config() is None

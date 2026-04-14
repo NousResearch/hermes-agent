@@ -5,6 +5,7 @@ import { LONG_MSG, ROLE } from '../constants.js'
 import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, userDisplay } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode, Msg } from '../types.js'
+
 import { Md } from './markdown.js'
 import { ToolTrail } from './thinking.js'
 
@@ -12,12 +13,14 @@ export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
+  isStreaming = false,
   msg,
   t
 }: {
   cols: number
   compact?: boolean
   detailsMode?: DetailsMode
+  isStreaming?: boolean
   msg: Msg
   t: Theme
 }) {
@@ -33,7 +36,8 @@ export const MessageLine = memo(function MessageLine({
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
         <Text color={t.color.dim} wrap="truncate-end">
-          {compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14)) || '(empty tool result)'}
+          {compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14)) ||
+            '(empty tool result)'}
         </Text>
       </Box>
     )
@@ -44,16 +48,27 @@ export const MessageLine = memo(function MessageLine({
   const showDetails = detailsMode !== 'hidden' && (Boolean(msg.tools?.length) || Boolean(thinking))
 
   const content = (() => {
-    if (msg.kind === 'slash') return <Text color={t.color.dim}>{msg.text}</Text>
-    if (msg.role !== 'user' && hasAnsi(msg.text)) return <Ansi>{msg.text}</Ansi>
-    if (msg.role === 'assistant') return <Md compact={compact} t={t} text={msg.text} />
+    if (msg.kind === 'slash') {
+      return <Text color={t.color.dim}>{msg.text}</Text>
+    }
+
+    if (msg.role !== 'user' && hasAnsi(msg.text)) {
+      return <Ansi>{msg.text}</Ansi>
+    }
+
+    if (msg.role === 'assistant') {
+      return isStreaming ? <Text color={body}>{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
+    }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
+
       return (
         <Text color={body}>
           {head}
-          <Text color={t.color.dim} dimColor>[long message]</Text>
+          <Text color={t.color.dim} dimColor>
+            [long message]
+          </Text>
           {rest.join('')}
         </Text>
       )
@@ -76,7 +91,9 @@ export const MessageLine = memo(function MessageLine({
 
       <Box>
         <NoSelect flexShrink={0} fromLeftEdge width={3}>
-          <Text bold={msg.role === 'user'} color={prefix}>{glyph}{' '}</Text>
+          <Text bold={msg.role === 'user'} color={prefix}>
+            {glyph}{' '}
+          </Text>
         </NoSelect>
 
         <Box width={Math.max(20, cols - 5)}>{content}</Box>

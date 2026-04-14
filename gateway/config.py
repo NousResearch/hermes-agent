@@ -66,6 +66,7 @@ class Platform(Enum):
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
+    QQBOT = "qqbot"
 
 
 @dataclass
@@ -302,6 +303,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # QQBot uses extra dict for app credentials
+            elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
         return connected
     
@@ -621,6 +625,11 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+                ignored_threads = telegram_cfg.get("ignored_threads")
+                if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
+                    if isinstance(ignored_threads, list):
+                        ignored_threads = ",".join(str(v) for v in ignored_threads)
+                    os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
                 if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
 
@@ -1108,6 +1117,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
         )
+
+    # QQ (Official Bot API v2)
+    qq_app_id = os.getenv("QQ_APP_ID")
+    qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
+    if qq_app_id or qq_client_secret:
+        if Platform.QQBOT not in config.platforms:
+            config.platforms[Platform.QQBOT] = PlatformConfig()
+        config.platforms[Platform.QQBOT].enabled = True
+        extra = config.platforms[Platform.QQBOT].extra
+        if qq_app_id:
+            extra["app_id"] = qq_app_id
+        if qq_client_secret:
+            extra["client_secret"] = qq_client_secret
+        qq_allowed_users = os.getenv("QQ_ALLOWED_USERS", "").strip()
+        if qq_allowed_users:
+            extra["allow_from"] = qq_allowed_users
+        qq_group_allowed = os.getenv("QQ_GROUP_ALLOWED_USERS", "").strip()
+        if qq_group_allowed:
+            extra["group_allow_from"] = qq_group_allowed
+        qq_home = os.getenv("QQ_HOME_CHANNEL", "").strip()
+        if qq_home:
+            config.platforms[Platform.QQBOT].home_channel = HomeChannel(
+                platform=Platform.QQBOT,
+                chat_id=qq_home,
+                name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

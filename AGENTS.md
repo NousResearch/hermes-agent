@@ -55,7 +55,7 @@ hermes-agent/
 ├── gateway/              # Messaging platform gateway
 │   ├── run.py            # Main loop, slash commands, message dispatch
 │   ├── session.py        # SessionStore — conversation persistence
-│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal
+│   └── platforms/        # Adapters: telegram, discord, slack, whatsapp, homeassistant, signal, qqbot
 ├── ui-tui/               # Ink (React) terminal UI — `hermes --tui`
 │   ├── src/entry.tsx        # TTY gate + render()
 │   ├── src/app.tsx          # Main state machine and UI

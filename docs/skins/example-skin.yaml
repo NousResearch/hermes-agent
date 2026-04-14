@@ -41,6 +41,14 @@ colors:
   session_label: "#DAA520"        # Session label
   session_border: "#8B8682"       # Session ID dim color
 
+  # TUI surfaces
+  status_bar_bg: "#1a1a2e"              # Status / usage bar background
+  voice_status_bg: "#1a1a2e"            # Voice-mode badge background
+  completion_menu_bg: "#1a1a2e"         # Completion list background
+  completion_menu_current_bg: "#333355" # Active completion row background
+  completion_menu_meta_bg: "#1a1a2e"    # Completion meta column background
+  completion_menu_meta_current_bg: "#333355"  # Active completion meta background
+
 # ── Spinner ─────────────────────────────────────────────────────────────────
 # Customize the animated spinner shown during API calls and tool execution.
 spinner:

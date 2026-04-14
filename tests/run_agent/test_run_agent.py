@@ -1442,7 +1442,7 @@ class TestConcurrentToolExecution:
                 tool_call_id=None,
                 session_id=agent.session_id,
                 enabled_tools=list(agent.valid_tool_names),
-
+                skip_pre_tool_call_hook=True,
             )
             assert result == "result"
 
@@ -1488,6 +1488,73 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_blocked_returns_error_and_skips_execution(self, agent, monkeypatch):
+        """_invoke_tool should return error JSON when a plugin blocks the tool."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by test policy",
+        )
+        with patch("tools.todo_tool.todo_tool", side_effect=AssertionError("should not run")) as mock_todo:
+            result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert json.loads(result) == {"error": "Blocked by test policy"}
+        mock_todo.assert_not_called()
+
+    def test_invoke_tool_blocked_skips_handle_function_call(self, agent, monkeypatch):
+        """Blocked registry tools should not reach handle_function_call."""
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked",
+        )
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
+
+        assert json.loads(result) == {"error": "Blocked"}
+
+    def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
+        """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
+        tool_call = _mock_tool_call(name="write_file",
+                                    arguments='{"path":"test.txt","content":"hello"}',
+                                    call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked by policy",
+        )
+        agent._checkpoint_mgr.enabled = True
+        agent._checkpoint_mgr.ensure_checkpoint = MagicMock(
+            side_effect=AssertionError("checkpoint should not run")
+        )
+
+        starts = []
+        agent.tool_start_callback = lambda *a: starts.append(a)
+
+        with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
+        assert starts == []
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+        assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
+        """Blocked memory tool should not reset the nudge counter."""
+        agent._turns_since_memory = 5
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: "Blocked",
+        )
+        with patch("tools.memory_tool.memory_tool", side_effect=AssertionError("should not run")):
+            result = agent._invoke_tool(
+                "memory", {"action": "add", "target": "memory", "content": "x"}, "task-1",
+            )
+
+        assert json.loads(result) == {"error": "Blocked"}
+        assert agent._turns_since_memory == 5
 
 
 class TestPathsOverlap:

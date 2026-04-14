@@ -176,8 +176,10 @@ function offsetFromPosition(value: string, row: number, col: number, cols: numbe
       if (line === targetRow) {
         return index
       }
+
       line++
       column = 0
+
       continue
     }
 
@@ -187,6 +189,7 @@ function offsetFromPosition(value: string, row: number, col: number, cols: numbe
       if (line === targetRow) {
         return index
       }
+
       line++
       column = 0
     }
@@ -333,7 +336,9 @@ export function TextInput({
   }, [cur, display, focus, placeholder])
 
   const clickCursor = (e: { localRow?: number; localCol?: number }) => {
-    if (!focus) return
+    if (!focus) {
+      return
+    }
     const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
     setCur(next)
     curRef.current = next
@@ -442,7 +447,6 @@ export function TextInput({
         k.upArrow ||
         k.downArrow ||
         (k.ctrl && inp === 'c') ||
-        (k.ctrl && inp === 't') ||
         k.tab ||
         (k.shift && k.tab) ||
         k.pageUp ||
@@ -568,7 +572,7 @@ export function TextInput({
   // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <Box ref={boxRef} onClick={clickCursor}>
+    <Box onClick={clickCursor} ref={boxRef}>
       <Text wrap="wrap">{rendered}</Text>
     </Box>
   )

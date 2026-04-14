@@ -958,6 +958,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 sync_data = await client.sync(
                     since=next_batch, timeout=30000,
                 )
+
+                # nio returns SyncError objects (not exceptions) for auth
+                # failures like M_UNKNOWN_TOKEN.  Detect and stop immediately.
+                _sync_msg = getattr(sync_data, "message", None)
+                if _sync_msg and isinstance(_sync_msg, str):
+                    _lower = _sync_msg.lower()
+                    if "m_unknown_token" in _lower or "unknown_token" in _lower:
+                        logger.error("Matrix: permanent auth error from sync: %s — stopping", _sync_msg)
+                        return
+
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})

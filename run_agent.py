@@ -1538,6 +1538,68 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
+    def _get_runtime_config_context_length(self) -> int | None:
+        """Resolve the active model's explicit context_length override.
+
+        Keep runtime model switches aligned with the startup path: prefer
+        per-model overrides from ``custom_providers`` for the active provider /
+        base_url + model, otherwise fall back to the persisted top-level
+        ``model.context_length`` override captured at init time.
+        """
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.providers import custom_provider_slug
+
+            cfg = load_config()
+            custom_providers = get_compatible_custom_providers(cfg)
+            if isinstance(custom_providers, list):
+                current_provider = (self.provider or "").strip().lower()
+                current_url = (self.base_url or "").rstrip("/")
+
+                for match_mode in ("provider", "url"):
+                    for entry in custom_providers:
+                        if not isinstance(entry, dict):
+                            continue
+
+                        display_name = (entry.get("name") or "").strip()
+                        entry_name = display_name.lower()
+                        entry_slug = custom_provider_slug(display_name) if display_name else ""
+                        entry_url = (
+                            entry.get("base_url", "")
+                            or entry.get("url", "")
+                            or entry.get("api", "")
+                            or ""
+                        ).rstrip("/")
+
+                        provider_match = bool(current_provider) and current_provider in {entry_name, entry_slug}
+                        url_match = bool(current_url and entry_url and current_url == entry_url)
+                        if match_mode == "provider" and not provider_match:
+                            continue
+                        if match_mode == "url" and provider_match:
+                            continue
+                        if match_mode == "url" and not url_match:
+                            continue
+
+                        models = entry.get("models", {})
+                        if not isinstance(models, dict):
+                            continue
+                        model_cfg = models.get(self.model, {})
+                        if not isinstance(model_cfg, dict):
+                            continue
+
+                        context_length = model_cfg.get("context_length")
+                        if context_length is None:
+                            continue
+
+                        try:
+                            return int(context_length)
+                        except (TypeError, ValueError):
+                            continue
+        except Exception:
+            pass
+
+        return getattr(self, "_config_context_length", None)
+
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
 
@@ -1619,7 +1681,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=self._get_runtime_config_context_length(),
             )
             self.context_compressor.update_model(
                 model=self.model,

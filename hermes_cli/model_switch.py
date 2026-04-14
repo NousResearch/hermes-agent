@@ -240,7 +240,66 @@ class ModelSwitchResult:
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
+    display_context_length: Optional[int] = None
     is_global: bool = False
+
+
+def _coerce_positive_int(value) -> Optional[int]:
+    """Return a positive int or None for invalid/empty values."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _resolve_custom_provider_display_context_length(
+    *,
+    target_provider: str,
+    new_model: str,
+    base_url: str,
+    custom_providers: list | None,
+) -> Optional[int]:
+    """Return per-model context_length from custom_providers for display."""
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_norm = (target_provider or "").strip().lower()
+    model_name = (new_model or "").strip()
+    base_norm = (base_url or "").strip().rstrip("/")
+    if not model_name:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+
+        display_name = (entry.get("name") or "").strip()
+        entry_name_norm = display_name.lower()
+        entry_slug = custom_provider_slug(display_name) if display_name else ""
+        entry_url = (
+            entry.get("base_url", "")
+            or entry.get("url", "")
+            or entry.get("api", "")
+            or ""
+        ).strip().rstrip("/")
+
+        provider_match = bool(target_norm) and target_norm in {entry_name_norm, entry_slug}
+        url_match = bool(base_norm and entry_url and base_norm == entry_url)
+        if not provider_match and not url_match:
+            continue
+
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            return None
+
+        model_cfg = models.get(model_name)
+        if not isinstance(model_cfg, dict):
+            return None
+
+        return _coerce_positive_int(model_cfg.get("context_length"))
+
+    return None
 
 
 @dataclass
@@ -722,6 +781,12 @@ def switch_model(
 
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
+    display_context_length = _resolve_custom_provider_display_context_length(
+        target_provider=target_provider,
+        new_model=new_model,
+        base_url=base_url,
+        custom_providers=custom_providers,
+    )
 
     # --- Collect warnings ---
     warnings: list[str] = []
@@ -745,6 +810,7 @@ def switch_model(
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
         model_info=model_info,
+        display_context_length=display_context_length,
         is_global=is_global,
     )
 

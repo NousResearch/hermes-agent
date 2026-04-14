@@ -4421,9 +4421,11 @@ class GatewayRunner:
                         lines = [f"Model switched to `{result.new_model}`"]
                         lines.append(f"Provider: {plabel}")
                         mi = result.model_info
+                        if result.display_context_length:
+                            lines.append(f"Context: {result.display_context_length:,} tokens")
+                        elif mi and mi.context_window:
+                            lines.append(f"Context: {mi.context_window:,} tokens")
                         if mi:
-                            if mi.context_window:
-                                lines.append(f"Context: {mi.context_window:,} tokens")
                             if mi.max_output:
                                 lines.append(f"Max output: {mi.max_output:,} tokens")
                             if mi.has_cost_data():
@@ -4558,15 +4560,11 @@ class GatewayRunner:
 
         # Rich metadata from models.dev
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                lines.append(f"Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                lines.append(f"Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                lines.append(f"Cost: {mi.format_cost()}")
-            lines.append(f"Capabilities: {mi.format_capabilities()}")
-        else:
+        if result.display_context_length:
+            lines.append(f"Context: {result.display_context_length:,} tokens")
+        elif mi and mi.context_window:
+            lines.append(f"Context: {mi.context_window:,} tokens")
+        elif not mi:
             try:
                 from agent.model_metadata import get_model_context_length
                 ctx = get_model_context_length(
@@ -4578,6 +4576,12 @@ class GatewayRunner:
                 lines.append(f"Context: {ctx:,} tokens")
             except Exception:
                 pass
+        if mi:
+            if mi.max_output:
+                lines.append(f"Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                lines.append(f"Cost: {mi.format_cost()}")
+            lines.append(f"Capabilities: {mi.format_capabilities()}")
 
         # Cache notice
         cache_enabled = (

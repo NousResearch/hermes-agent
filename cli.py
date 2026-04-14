@@ -4538,15 +4538,11 @@ class HermesCLI:
         _cprint(f"    Provider: {provider_label}")
 
         mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
+        if result.display_context_length:
+            _cprint(f"    Context: {result.display_context_length:,} tokens")
+        elif mi and mi.context_window:
+            _cprint(f"    Context: {mi.context_window:,} tokens")
+        elif not mi:
             try:
                 from agent.model_metadata import get_model_context_length
                 ctx = get_model_context_length(
@@ -4558,6 +4554,13 @@ class HermesCLI:
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
                 pass
+
+        if mi:
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         cache_enabled = (
             ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())

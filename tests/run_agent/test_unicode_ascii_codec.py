@@ -268,9 +268,9 @@ class TestApiKeyClientSync:
             agent.client.api_key = _clean_key
 
         # All three locations should now hold the clean key
-        assert agent.api_key == "sk-proj-abcdef"
-        assert agent._client_kwargs["api_key"] == "sk-proj-abcdef"
-        assert agent.client.api_key == "sk-proj-abcdef"
+        assert agent.api_key == "***"
+        assert agent._client_kwargs["api_key"] == "***"
+        assert agent.client.api_key == "***"
         # The bad char should be gone from all of them
         assert "\u028b" not in agent.api_key
         assert "\u028b" not in agent._client_kwargs["api_key"]
@@ -294,3 +294,64 @@ class TestApiKeyClientSync:
 
         assert agent.api_key == "sk-proj-"
         assert agent.client is None  # should not have been touched
+
+
+class TestApiMessagesAndApiKwargsSanitized:
+    """Regression tests for #6843 follow-up: api_messages and api_kwargs must
+    be sanitized alongside messages during ASCII-codec recovery.
+
+    The original fix only sanitized the canonical `messages` list.
+    api_messages is a separate API-copy built before the retry loop; it may
+    carry extra fields (reasoning_content, extra_body) with non-ASCII chars
+    that are not present in `messages`.  Without sanitizing api_messages and
+    api_kwargs, the retry still raises UnicodeEncodeError even after the
+    'System encoding is ASCII — stripped...' log line appears.
+    """
+
+    def test_api_messages_with_reasoning_content_is_sanitized(self):
+        """api_messages may contain reasoning_content not in messages."""
+        api_messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "Sure!",
+                # reasoning_content is injected by the API-copy builder and
+                # is NOT present in the canonical messages list
+                "reasoning_content": "Let me think \xab step by step \xbb",
+            },
+        ]
+        found = _sanitize_messages_non_ascii(api_messages)
+        assert found is True
+        assert "\xab" not in api_messages[2]["reasoning_content"]
+        assert "\xbb" not in api_messages[2]["reasoning_content"]
+
+    def test_api_kwargs_with_non_ascii_extra_body_is_sanitized(self):
+        """api_kwargs may contain non-ASCII in extra_body or other fields."""
+        api_kwargs = {
+            "model": "glm-5.1",
+            "messages": [{"role": "user", "content": "ok"}],
+            "extra_body": {
+                "system": "Think carefully \u2192 answer",
+            },
+        }
+        found = _sanitize_structure_non_ascii(api_kwargs)
+        assert found is True
+        assert "\u2192" not in api_kwargs["extra_body"]["system"]
+
+    def test_messages_clean_but_api_messages_dirty_both_get_sanitized(self):
+        """Even when canonical messages are clean, api_messages may be dirty."""
+        messages = [{"role": "user", "content": "hello"}]
+        api_messages = [
+            {"role": "user", "content": "hello"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_content": "step \xab done",
+            },
+        ]
+        # messages sanitize returns False (nothing to clean)
+        assert _sanitize_messages_non_ascii(messages) is False
+        # api_messages sanitize must catch the dirty reasoning_content
+        assert _sanitize_messages_non_ascii(api_messages) is True
+        assert "\xab" not in api_messages[1]["reasoning_content"]

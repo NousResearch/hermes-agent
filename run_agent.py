@@ -6890,6 +6890,18 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # Check plugin hooks for a block directive before executing anything.
+        block_message: Optional[str] = None
+        try:
+            from hermes_cli.plugins import get_pre_tool_call_block_message
+            block_message = get_pre_tool_call_block_message(
+                function_name, function_args, task_id=effective_task_id or "",
+            )
+        except Exception:
+            pass
+        if block_message is not None:
+            return json.dumps({"error": block_message}, ensure_ascii=False)
+
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -6954,6 +6966,7 @@ class AIAgent:
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                skip_pre_tool_call_hook=True,
             )
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -7184,12 +7197,6 @@ class AIAgent:
 
             function_name = tool_call.function.name
 
-            # Reset nudge counters when the relevant tool is actually used
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
-
             try:
                 function_args = json.loads(tool_call.function.arguments)
             except json.JSONDecodeError as e:
@@ -7197,6 +7204,27 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+
+            # Check plugin hooks for a block directive before executing.
+            _block_msg: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                _block_msg = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
+
+            if _block_msg is not None:
+                # Tool blocked by plugin policy — skip counter resets.
+                # Execution is handled below in the tool dispatch chain.
+                pass
+            else:
+                # Reset nudge counters when the relevant tool is actually used
+                if function_name == "memory":
+                    self._turns_since_memory = 0
+                elif function_name == "skill_manage":
+                    self._iters_since_skill = 0
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -7207,33 +7235,35 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
 
-            self._current_tool = function_name
-            self._touch_activity(f"executing tool: {function_name}")
+            if _block_msg is None:
+                self._current_tool = function_name
+                self._touch_activity(f"executing tool: {function_name}")
 
             # Set activity callback for long-running tool execution (terminal
             # commands, etc.) so the gateway's inactivity monitor doesn't kill
             # the agent while a command is running.
-            try:
-                from tools.environments.base import set_activity_callback
-                set_activity_callback(self._touch_activity)
-            except Exception:
-                pass
+            if _block_msg is None:
+                try:
+                    from tools.environments.base import set_activity_callback
+                    set_activity_callback(self._touch_activity)
+                except Exception:
+                    pass
 
-            if self.tool_progress_callback:
+            if _block_msg is None and self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(function_name, function_args)
                     self.tool_progress_callback("tool.started", function_name, preview, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-            if self.tool_start_callback:
+            if _block_msg is None and self.tool_start_callback:
                 try:
                     self.tool_start_callback(tool_call.id, function_name, function_args)
                 except Exception as cb_err:
                     logging.debug(f"Tool start callback error: {cb_err}")
 
             # Checkpoint: snapshot working dir before file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            if _block_msg is None and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -7245,7 +7275,7 @@ class AIAgent:
                     pass  # never block tool execution
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if _block_msg is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -7258,7 +7288,11 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if function_name == "todo":
+            if _block_msg is not None:
+                # Tool blocked by plugin policy — return error without executing.
+                function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+                tool_duration = 0.0
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
@@ -7401,6 +7435,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
                     )
                     _spinner_result = function_result
                 except Exception as tool_error:
@@ -7420,6 +7455,7 @@ class AIAgent:
                         tool_call_id=tool_call.id,
                         session_id=self.session_id or "",
                         enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
+                        skip_pre_tool_call_hook=True,
                     )
                 except Exception as tool_error:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"

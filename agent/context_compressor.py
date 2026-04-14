@@ -17,7 +17,9 @@ Improvements over v2:
   - Richer tool call/result detail in summarizer input
 """
 
+import json
 import logging
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +57,125 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+
+def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
+    """Create an informative 1-line summary of a tool call + result.
+
+    Used during the pre-compression pruning pass to replace large tool
+    outputs with a short but useful description of what the tool did,
+    rather than a generic placeholder that carries zero information.
+
+    Returns strings like::
+
+        [terminal] ran `npm test` -> exit 0, 47 lines output
+        [read_file] read config.py from line 1 (1,200 chars)
+        [search_files] content search for 'compress' in agent/ -> 12 matches
+    """
+    try:
+        args = json.loads(tool_args) if tool_args else {}
+    except (json.JSONDecodeError, TypeError):
+        args = {}
+
+    content = tool_content or ""
+    content_len = len(content)
+    line_count = content.count("\n") + 1 if content.strip() else 0
+
+    if tool_name == "terminal":
+        cmd = args.get("command", "")
+        if len(cmd) > 80:
+            cmd = cmd[:77] + "..."
+        exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
+        exit_code = exit_match.group(1) if exit_match else "?"
+        return f"[terminal] ran `{cmd}` -> exit {exit_code}, {line_count} lines output"
+
+    if tool_name == "read_file":
+        path = args.get("path", "?")
+        offset = args.get("offset", 1)
+        return f"[read_file] read {path} from line {offset} ({content_len:,} chars)"
+
+    if tool_name == "write_file":
+        path = args.get("path", "?")
+        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        return f"[write_file] wrote to {path} ({written_lines} lines)"
+
+    if tool_name == "search_files":
+        pattern = args.get("pattern", "?")
+        path = args.get("path", ".")
+        target = args.get("target", "content")
+        match_count = re.search(r'"total_count"\s*:\s*(\d+)', content)
+        count = match_count.group(1) if match_count else "?"
+        return f"[search_files] {target} search for '{pattern}' in {path} -> {count} matches"
+
+    if tool_name == "patch":
+        path = args.get("path", "?")
+        mode = args.get("mode", "replace")
+        return f"[patch] {mode} in {path} ({content_len:,} chars result)"
+
+    if tool_name in ("browser_navigate", "browser_click", "browser_snapshot",
+                     "browser_type", "browser_scroll", "browser_vision"):
+        url = args.get("url", "")
+        ref = args.get("ref", "")
+        detail = f" {url}" if url else (f" ref={ref}" if ref else "")
+        return f"[{tool_name}]{detail} ({content_len:,} chars)"
+
+    if tool_name == "web_search":
+        query = args.get("query", "?")
+        return f"[web_search] query='{query}' ({content_len:,} chars result)"
+
+    if tool_name == "web_extract":
+        url = args.get("url", "?")
+        return f"[web_extract] {url} ({content_len:,} chars)"
+
+    if tool_name == "delegate_task":
+        goal = args.get("goal", "")
+        if len(goal) > 60:
+            goal = goal[:57] + "..."
+        return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
+
+    if tool_name == "execute_code":
+        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
+        if len(args.get("code", "")) > 60:
+            code_preview += "..."
+        return f"[execute_code] `{code_preview}` ({line_count} lines output)"
+
+    if tool_name in ("skill_view", "skills_list", "skill_manage"):
+        name = args.get("name", "?")
+        return f"[{tool_name}] name={name} ({content_len:,} chars)"
+
+    if tool_name == "vision_analyze":
+        question = args.get("question", "")[:50]
+        return f"[vision_analyze] '{question}' ({content_len:,} chars)"
+
+    if tool_name == "memory":
+        action = args.get("action", "?")
+        target = args.get("target", "?")
+        return f"[memory] {action} on {target}"
+
+    if tool_name == "todo":
+        return "[todo] updated task list"
+
+    if tool_name == "clarify":
+        return "[clarify] asked user a question"
+
+    if tool_name == "text_to_speech":
+        return f"[text_to_speech] generated audio ({content_len:,} chars)"
+
+    if tool_name == "cronjob":
+        action = args.get("action", "?")
+        return f"[cronjob] {action}"
+
+    if tool_name == "process":
+        action = args.get("action", "?")
+        sid = args.get("session_id", "?")
+        return f"[process] {action} session={sid}"
+
+    # Generic fallback
+    first_arg = ""
+    for k, v in list(args.items())[:2]:
+        sv = str(v)[:40]
+        first_arg += f" {k}={sv}"
+    return f"[{tool_name}]{first_arg} ({content_len:,} chars result)"
 
 
 class ContextCompressor(ContextEngine):
@@ -187,7 +308,15 @@ class ContextCompressor(ContextEngine):
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
     ) -> tuple[List[Dict[str, Any]], int]:
-        """Replace old tool result contents with a short placeholder.
+        """Replace old tool result contents with informative 1-line summaries.
+
+        Instead of a generic placeholder, generates a summary like::
+
+            [terminal] ran `npm test` -> exit 0, 47 lines output
+            [read_file] read config.py from line 1 (3,400 chars)
+
+        The summary is derived from the preceding assistant message's
+        ``tool_calls`` entry that matches the tool result's ``tool_call_id``.
 
         Walks backward from the end, protecting the most recent messages that
         fall within ``protect_tail_tokens`` (when provided) OR the last
@@ -202,6 +331,22 @@ class ContextCompressor(ContextEngine):
 
         result = [m.copy() for m in messages]
         pruned = 0
+
+        # Build index: tool_call_id -> (tool_name, arguments_json)
+        call_id_to_tool: Dict[str, tuple] = {}
+        for msg in result:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        cid = tc.get("id", "")
+                        fn = tc.get("function", {})
+                        call_id_to_tool[cid] = (fn.get("name", "unknown"), fn.get("arguments", ""))
+                    else:
+                        cid = getattr(tc, "id", "") or ""
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "unknown") if fn else "unknown"
+                        args_str = getattr(fn, "arguments", "") if fn else ""
+                        call_id_to_tool[cid] = (name, args_str)
 
         # Determine the prune boundary
         if protect_tail_tokens is not None and protect_tail_tokens > 0:
@@ -233,9 +378,15 @@ class ContextCompressor(ContextEngine):
             content = msg.get("content", "")
             if not content or content == _PRUNED_TOOL_PLACEHOLDER:
                 continue
+            # Skip already-summarized results (from a previous prune pass)
+            if content.startswith("[") and len(content) < 200:
+                continue
             # Only prune if the content is substantial (>200 chars)
             if len(content) > 200:
-                result[i] = {**msg, "content": _PRUNED_TOOL_PLACEHOLDER}
+                call_id = msg.get("tool_call_id", "")
+                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+                summary = _summarize_tool_result(tool_name, tool_args, content)
+                result[i] = {**msg, "content": summary}
                 pruned += 1
 
         return result, pruned

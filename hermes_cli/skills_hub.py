@@ -617,36 +617,68 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
-    """Re-run security scan on installed hub skills."""
-    from tools.skills_hub import HubLockFile, SKILLS_DIR
-    from tools.skills_guard import scan_skill, format_scan_report
+    """Audit installed skills for structural quality issues.
+
+    Checks frontmatter completeness, referenced file paths, and trigger fields.
+    Covers ALL installed skills (hub and local), not just hub-installed ones.
+    """
+    import json
+    from tools.skills_tool import audit_skills
 
     c = console or _console
-    lock = HubLockFile()
-    installed = lock.list_installed()
 
-    if not installed:
-        c.print("[dim]No hub-installed skills to audit.[/]\n")
+    c.print("[bold]🔍 Running skill quality audit...[/]\n")
+
+    result_json = audit_skills(name=name)
+    result = json.loads(result_json)
+
+    if not result.get("success"):
+        c.print(f"[bold red]Error:[/] {result.get('error', 'Unknown error')}\n")
         return
 
-    targets = installed
-    if name:
-        targets = [e for e in installed if e["name"] == name]
-        if not targets:
-            c.print(f"[bold red]Error:[/] '{name}' is not a hub-installed skill.\n")
-            return
-
-    c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
-
-    for entry in targets:
-        skill_path = SKILLS_DIR / entry["install_path"]
-        if not skill_path.exists():
-            c.print(f"[yellow]Warning:[/] {entry['name']} — path missing: {entry['install_path']}")
-            continue
-
-        result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
-        c.print(format_scan_report(result))
+    # Summary by category
+    if result.get("skills_by_category"):
+        c.print("[bold]Summary by category:[/]")
+        header = f"  {'Category':<25} {'Skills':>8} {'Errors':>8} {'Warnings':>10}"
+        c.print(header)
+        c.print(f"  {'-'*25} {'-'*8} {'-'*8} {'-'*10}")
+        for cat, stats in sorted(result["skills_by_category"].items()):
+            c.print(
+                f"  {cat:<25} {stats['total']:>8} "
+                f"[red]{stats['errors']:>8}[/red] "
+                f"[yellow]{stats['warnings']:>10}[/yellow]"
+            )
         c.print()
+
+    # Errors
+    errors = result.get("issues", {}).get("errors", [])
+    if errors:
+        c.print(f"[bold red]✗ {len(errors)} Error(s):[/]")
+        for err in errors[:30]:
+            c.print(f"  [red]•[/red] [{err['skill']}] {err['issue']}")
+        if len(errors) > 30:
+            c.print(f"  [dim](...and {len(errors) - 30} more errors)[/]")
+        c.print()
+
+    # Warnings
+    warnings = result.get("issues", {}).get("warnings", [])
+    if warnings:
+        c.print(f"[bold yellow]⚠ {len(warnings)} Warning(s):[/]")
+        for warn in warnings[:30]:
+            c.print(f"  [yellow]•[/yellow] [{warn['skill']}] {warn['issue']}")
+        if len(warnings) > 30:
+            c.print(f"  [dim](...and {len(warnings) - 30} more warnings)[/]")
+        c.print()
+
+    # Final verdict
+    total_errors = len(errors)
+    total_warnings = len(warnings)
+    c.print(
+        f"[bold]Audit complete.[/] "
+        f"{result['audited']} skill(s) audited — "
+        f"[red]{total_errors} error(s)[/red], "
+        f"[yellow]{total_warnings} warning(s)[/yellow]\n"
+    )
 
 
 def do_uninstall(name: str, console: Optional[Console] = None,

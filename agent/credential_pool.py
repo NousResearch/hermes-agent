@@ -18,7 +18,6 @@ import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
-    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _auth_store_lock,
     _codex_access_token_is_expiring,
@@ -289,6 +288,14 @@ def _iter_custom_providers(config: Optional[dict] = None):
         return
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
+        # Fall back to the v12+ providers dict via the compatibility layer
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return
+    if not custom_providers:
         return
     for entry in custom_providers:
         if not isinstance(entry, dict):

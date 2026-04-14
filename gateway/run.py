@@ -1754,7 +1754,7 @@ class GatewayRunner:
         logger.info("Press Ctrl+C to stop")
 
         # Send startup notification to Feishu home channel if configured
-        self._send_startup_notification()
+        asyncio.create_task(self._send_startup_notification())
 
         return True
 

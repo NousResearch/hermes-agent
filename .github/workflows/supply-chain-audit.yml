@@ -183,7 +183,7 @@ jobs:
           ---
           *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+          gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs — GITHUB_TOKEN is read-only)"
 
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'

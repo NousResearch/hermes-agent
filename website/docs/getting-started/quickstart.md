@@ -51,6 +51,7 @@ hermes setup       # Or configure everything at once
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
+| **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
 | **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
 | **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
@@ -152,9 +153,7 @@ Want microphone input in the CLI or spoken replies in messaging?
 
 ```bash
 pip install "hermes-agent[voice]"
-
-# Optional but recommended for free local speech-to-text
-pip install faster-whisper
+# Includes faster-whisper for free local speech-to-text
 ```
 
 Then start Hermes and enable it inside the CLI:

@@ -1,7 +1,7 @@
 """Tests for hermes_cli/tips.py — random tip display at session start."""
 
 import pytest
-from hermes_cli.tips import TIPS, get_random_tip, get_tip_count
+from hermes_cli.tips import TIPS, get_random_tip
 
 
 class TestTipsCorpus:
@@ -52,11 +52,6 @@ class TestGetRandomTip:
             seen.add(get_random_tip())
         # With 200+ tips and 50 draws, we should see at least 10 unique
         assert len(seen) >= 10, f"Only got {len(seen)} unique tips in 50 draws"
-
-
-class TestGetTipCount:
-    def test_matches_corpus_length(self):
-        assert get_tip_count() == len(TIPS)
 
 
 class TestTipIntegrationInCLI:

@@ -290,6 +290,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
     }
 
     existing = _read_json_file(lock_path)
+    if existing is None and lock_path.exists():
+        # Lock file exists but is empty or contains invalid JSON — treat as
+        # stale.  This happens when a previous process was killed between
+        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
+        # during rapid Slack reconnect retries).
+        try:
+            lock_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     if existing:
         try:
             existing_pid = int(existing["pid"])

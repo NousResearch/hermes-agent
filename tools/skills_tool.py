@@ -447,10 +447,6 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     return None
 
 
-# Token estimation — use the shared implementation from model_metadata.
-from agent.model_metadata import estimate_tokens_rough as _estimate_tokens
-
-
 def _parse_tags(tags_value) -> List[str]:
     """
     Parse tags from frontmatter value.
@@ -627,85 +623,6 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             "Error parsing category description %s: %s", desc_file, e, exc_info=True
         )
         return None
-
-
-def skills_categories(verbose: bool = False, task_id: str = None) -> str:
-    """
-    List available skill categories with descriptions (progressive disclosure tier 0).
-
-    Returns category names and descriptions for efficient discovery before drilling down.
-    Categories can have a DESCRIPTION.md file with a description frontmatter field
-    or first paragraph to explain what skills are in that category.
-
-    Args:
-        verbose: If True, include skill counts per category (default: False, but currently always included)
-        task_id: Optional task identifier used to probe the active backend
-
-    Returns:
-        JSON string with list of categories and their descriptions
-    """
-    try:
-        # Use module-level SKILLS_DIR (respects monkeypatching) + external dirs
-        all_dirs = [SKILLS_DIR] if SKILLS_DIR.exists() else []
-        try:
-            from agent.skill_utils import get_external_skills_dirs
-            all_dirs.extend(d for d in get_external_skills_dirs() if d.exists())
-        except Exception:
-            pass
-        if not all_dirs:
-            return json.dumps(
-                {
-                    "success": True,
-                    "categories": [],
-                    "message": "No skills directory found.",
-                },
-                ensure_ascii=False,
-            )
-
-        category_dirs = {}
-        category_counts: Dict[str, int] = {}
-        for scan_dir in all_dirs:
-            for skill_md in scan_dir.rglob("SKILL.md"):
-                if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
-                    continue
-
-                try:
-                    frontmatter, _ = _parse_frontmatter(
-                        skill_md.read_text(encoding="utf-8")[:4000]
-                    )
-                except Exception:
-                    frontmatter = {}
-
-                if not skill_matches_platform(frontmatter):
-                    continue
-
-                category = _get_category_from_path(skill_md)
-                if category:
-                    category_counts[category] = category_counts.get(category, 0) + 1
-                    if category not in category_dirs:
-                        category_dirs[category] = skill_md.parent.parent
-
-        categories = []
-        for name in sorted(category_dirs.keys()):
-            category_dir = category_dirs[name]
-            description = _load_category_description(category_dir)
-
-            cat_entry = {"name": name, "skill_count": category_counts[name]}
-            if description:
-                cat_entry["description"] = description
-            categories.append(cat_entry)
-
-        return json.dumps(
-            {
-                "success": True,
-                "categories": categories,
-                "hint": "If a category is relevant to your task, use skills_list with that category to see available skills",
-            },
-            ensure_ascii=False,
-        )
-
-    except Exception as e:
-        return tool_error(str(e), success=False)
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -1240,19 +1157,6 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
-# Tool description for model_tools.py
-SKILLS_TOOL_DESCRIPTION = """Access skill documents providing specialized instructions, guidelines, and executable knowledge.
-
-Progressive disclosure workflow:
-1. skills_list() - Returns metadata (name, description, tags, linked_file_count) for all skills
-2. skill_view(name) - Loads full SKILL.md content + shows available linked_files
-3. skill_view(name, file_path) - Loads specific linked file (e.g., 'references/api.md', 'scripts/train.py')
-
-Skills may include:
-- references/: Additional documentation, API specs, examples
-- templates/: Output formats, config files, boilerplate code
-- assets/: Supplementary files (agentskills.io standard)
-- scripts/: Executable helpers (Python, shell scripts)"""
 
 
 if __name__ == "__main__":
@@ -1296,6 +1200,181 @@ if __name__ == "__main__":
         print(f"Preview: {result['content'][:150]}...")
     else:
         print(f"Error: {result['error']}")
+
+
+# ---------------------------------------------------------------------------
+# Skill Quality Audit
+# ---------------------------------------------------------------------------
+
+def audit_skills(name: str = None) -> str:
+    """
+    Audit installed skills for structural quality issues.
+
+    Checks:
+    - Frontmatter completeness (required fields: name, description, category)
+    - Referenced file paths exist (templates/, references/, scripts/)
+    - Empty or missing trigger fields
+    - YAML frontmatter parse errors
+
+    Args:
+        name: Optional skill name to audit a single skill. If None, audits all.
+
+    Returns:
+        JSON string with audit results (success, total_skills, issues by category)
+    """
+    import re as _re
+    from typing import List, Dict, Any
+
+    # Required frontmatter fields
+    REQUIRED_FM = ["name", "description", "category"]
+    RECOMMENDED_FM = ["triggers", "version"]
+
+    results: Dict[str, Any] = {
+        "success": True,
+        "total_skills": 0,
+        "audited": 0,
+        "issues": {
+            "errors": [],   # Must fix (broken references, parse errors)
+            "warnings": [], # Should fix (missing recommended fields)
+        },
+        "skills_by_category": {},
+    }
+
+    # If single skill, resolve path
+    if name:
+        all_skills = _find_all_skills(skip_disabled=True)
+        matched = [s for s in all_skills if s.get("name") == name]
+        if not matched:
+            return json.dumps({
+                "success": False,
+                "error": f"Skill '{name}' not found or disabled.",
+                "issues": results["issues"],
+            })
+        # Build scan paths from matched skills
+        scan_paths = []
+        for m in matched:
+            skill_dir = SKILLS_DIR
+            if "/" in m.get("category", ""):
+                skill_dir = skill_dir / m.get("category", "")
+            scan_paths.append(skill_dir / m.get("name", name))
+    else:
+        # Scan all skills directories
+        scan_paths = [SKILLS_DIR]
+        if not SKILLS_DIR.exists():
+            return json.dumps({
+                "success": False,
+                "error": f"Skills directory not found: {SKILLS_DIR}",
+                "issues": results["issues"],
+            })
+
+    skill_md_files = []
+    seen = set()
+    for scan_dir in scan_paths:
+        if not scan_dir.exists():
+            continue
+        for skill_md in scan_dir.rglob("SKILL.md"):
+            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_md.parts):
+                continue
+            skill_dir = skill_md.parent
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, _ = _parse_frontmatter(content)
+                if not skill_matches_platform(frontmatter):
+                    continue
+                skill_name = frontmatter.get("name") or skill_dir.name
+                if skill_name in seen:
+                    continue
+                seen.add(skill_name)
+                skill_md_files.append((skill_md, skill_dir, frontmatter))
+            except Exception:
+                continue
+
+    results["total_skills"] = len(skill_md_files)
+
+    for skill_md, skill_dir, frontmatter in skill_md_files:
+        skill_name = frontmatter.get("name") or skill_dir.name
+        rel_path = str(skill_dir.relative_to(SKILLS_DIR))
+        fm = frontmatter
+
+        # --- ERRORS ---
+
+        # YAML parse errors already caught above by _parse_frontmatter
+        # Check for missing required fields
+        for field in REQUIRED_FM:
+            val = fm.get(field)
+            if not val or (isinstance(val, str) and not val.strip()):
+                results["issues"]["errors"].append({
+                    "skill": rel_path,
+                    "issue": f"missing required frontmatter field: '{field}'",
+                    "severity": "error",
+                })
+
+        # Check for empty triggers
+        triggers = fm.get("triggers") or fm.get("trigger") or ""
+        if isinstance(triggers, str) and not triggers.strip():
+            results["issues"]["warnings"].append({
+                "skill": rel_path,
+                "issue": "triggers field is empty",
+                "severity": "warning",
+            })
+
+        # --- WARNINGS ---
+
+        for field in RECOMMENDED_FM:
+            if field not in fm or not fm.get(field):
+                results["issues"]["warnings"].append({
+                    "skill": rel_path,
+                    "issue": f"missing recommended frontmatter field: '{field}'",
+                    "severity": "warning",
+                })
+
+        # Check referenced files exist
+        try:
+            full_content = skill_md.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        for subdir in ("templates", "references", "scripts", "assets"):
+            # Match patterns like (templates/foo.md) or [templates/foo.md]
+            pattern = _re.compile(
+                rf"[\(\[][^\)\]]*?{_re.escape(subdir)}/[^\)\]]*?[\)\]]"
+            )
+            for match in pattern.finditer(full_content):
+                ref = match.group().strip("()[]")
+                # Handle markdown links with fragment: file.md#section
+                ref_path = ref.split("#")[0].split()[0]
+                if not ref_path:
+                    continue
+                file_path = skill_dir / ref_path
+                if not file_path.exists():
+                    results["issues"]["errors"].append({
+                        "skill": rel_path,
+                        "issue": f"references '{ref_path}' but file does not exist",
+                        "severity": "error",
+                    })
+
+        # Track by category
+        cat = fm.get("category")
+        if not cat:
+            # Try to derive from path
+            parts = rel_path.split("/")
+            cat = parts[0] if len(parts) >= 2 else "uncategorized"
+        if cat not in results["skills_by_category"]:
+            results["skills_by_category"][cat] = {"total": 0, "errors": 0, "warnings": 0}
+        results["skills_by_category"][cat]["total"] += 1
+
+        # Count issues for this skill
+        skill_errors = sum(
+            1 for i in results["issues"]["errors"] if i["skill"] == rel_path
+        )
+        skill_warnings = sum(
+            1 for i in results["issues"]["warnings"] if i["skill"] == rel_path
+        )
+        results["skills_by_category"][cat]["errors"] += skill_errors
+        results["skills_by_category"][cat]["warnings"] += skill_warnings
+        results["audited"] += 1
+
+    return json.dumps(results, ensure_ascii=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1355,4 +1434,28 @@ registry.register(
     ),
     check_fn=check_skills_requirements,
     emoji="📚",
+)
+
+AUDIT_SKILLS_SCHEMA = {
+    "name": "audit_skills",
+    "description": "Audit installed skills for structural quality issues — missing frontmatter fields, broken file references, empty triggers. Run without arguments to audit all skills, or pass a skill name to audit a single skill.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Optional: audit a single skill by name. If omitted, audits all installed skills.",
+            },
+        },
+        "required": [],
+    },
+}
+
+registry.register(
+    name="audit_skills",
+    toolset="skills",
+    schema=AUDIT_SKILLS_SCHEMA,
+    handler=lambda args, **kw: audit_skills(name=args.get("name")),
+    check_fn=check_skills_requirements,
+    emoji="🔍",
 )

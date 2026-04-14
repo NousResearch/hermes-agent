@@ -15,7 +15,7 @@ from typing import List, Optional, Set
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color
-from hermes_cli.platforms import PLATFORMS as _PLATFORMS, platform_label
+from hermes_cli.platforms import PLATFORMS as _PLATFORMS
 
 # Backward-compatible view: {key: label_string} so existing code that
 # iterates ``PLATFORMS.items()`` or calls ``PLATFORMS.get(key)`` keeps

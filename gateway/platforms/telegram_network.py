@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import os
 import socket
 from typing import Iterable, Optional
 

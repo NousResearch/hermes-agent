@@ -768,14 +768,22 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
       /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
       /opt/hermes                 -> /opt/hermes  (kept as-is)
+
+    Note: this function intentionally does NOT resolve symlinks. A venv's
+    ``bin/python`` is typically a symlink to the base interpreter (e.g. a
+    uv-managed CPython at ``~/.local/share/uv/python/.../python3.11``);
+    resolving that symlink swaps the unit's ``ExecStart`` to a bare Python
+    that has none of the venv's site-packages, so the service crashes on
+    the first ``import``. Keep the symlinked path so the venv activates
+    its own environment. Lexical expansion only via ``expanduser``.
     """
-    current_home = Path.home().resolve()
-    resolved = Path(path).resolve()
+    current_home = Path.home()
+    p = Path(path).expanduser()
     try:
-        relative = resolved.relative_to(current_home)
+        relative = p.relative_to(current_home)
         return str(Path(target_home_dir) / relative)
     except ValueError:
-        return str(resolved)
+        return str(p)
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
@@ -1626,7 +1634,7 @@ _PLATFORMS = [
             "   Create an App-Level Token with scope: connections:write → copy xapp-... token",
             "3. Add Bot Token Scopes: Features → OAuth & Permissions → Scopes",
             "   Required: chat:write, app_mentions:read, channels:history, channels:read,",
-            "   groups:history, im:history, im:read, im:write, users:read, files:write",
+            "   groups:history, im:history, im:read, im:write, users:read, files:read, files:write",
             "4. Subscribe to Events: Features → Event Subscriptions → Enable",
             "   Required events: message.im, message.channels, app_mention",
             "   Optional: message.groups (for private channels)",

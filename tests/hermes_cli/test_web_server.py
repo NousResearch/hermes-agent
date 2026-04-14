@@ -814,6 +814,7 @@ class TestModelContextLength:
                 "default": "anthropic/claude-opus-4.6",
                 "provider": "openrouter",
                 "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "codex_responses",
             }
         })
 
@@ -829,6 +830,7 @@ class TestModelContextLength:
         assert result["model"]["default"] == "MiniMax-M2.7"
         assert result["model"]["provider"] == "minimax-cn"
         assert "base_url" not in result["model"]
+        assert "api_mode" not in result["model"]
 
     def test_denormalize_does_not_redetect_when_model_unchanged(self):
         from hermes_cli.web_server import _denormalize_config_from_web

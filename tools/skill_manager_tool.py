@@ -585,6 +585,41 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 # Main entry point
 # =============================================================================
 
+def _check_taint_approval(action: str) -> Optional[str]:
+    """If the session is tainted and the action is a write, require approval.
+
+    Returns a JSON error string if blocked, or None if the action is allowed.
+    """
+    if action not in ("create", "edit", "patch", "write_file"):
+        return None
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        security = config.get("security", {}) or {}
+        if not security.get("require_approval_on_tainted_writes", True):
+            return None
+    except Exception:
+        pass
+    try:
+        from tools.taint_context import is_tainted, get_taint
+        from tools.approval import get_current_session_key
+        session_key = get_current_session_key()
+        if is_tainted(session_key):
+            taint = get_taint(session_key)
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Skill write blocked: session is {taint.summary()}. "
+                    f"Untrusted external content was loaded in this session. "
+                    f"Start a new session (/new) or ask the user to confirm this write."
+                ),
+                "taint": taint.summary(),
+            })
+    except Exception:
+        pass
+    return None
+
+
 def skill_manage(
     action: str,
     name: str,
@@ -601,6 +636,11 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Gate writes behind taint approval when the session has seen untrusted content
+    taint_block = _check_taint_approval(action)
+    if taint_block:
+        return taint_block
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)

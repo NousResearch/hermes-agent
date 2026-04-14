@@ -460,6 +460,41 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def _check_memory_taint_approval(action: str) -> Optional[str]:
+    """If the session is tainted and the action is a write, require approval.
+
+    Returns a JSON error string if blocked, or None if the action is allowed.
+    """
+    if action not in ("add", "replace"):
+        return None
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        security = config.get("security", {}) or {}
+        if not security.get("require_approval_on_tainted_writes", True):
+            return None
+    except Exception:
+        pass
+    try:
+        from tools.taint_context import is_tainted, get_taint
+        from tools.approval import get_current_session_key
+        session_key = get_current_session_key()
+        if is_tainted(session_key):
+            taint = get_taint(session_key)
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Memory write blocked: session is {taint.summary()}. "
+                    f"Untrusted external content was loaded in this session. "
+                    f"Start a new session (/new) or ask the user to confirm this write."
+                ),
+                "taint": taint.summary(),
+            })
+    except Exception:
+        pass
+    return None
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -477,6 +512,11 @@ def memory_tool(
 
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+
+    # Gate writes behind taint approval when the session has seen untrusted content
+    taint_block = _check_memory_taint_approval(action)
+    if taint_block:
+        return taint_block
 
     if action == "add":
         if not content:

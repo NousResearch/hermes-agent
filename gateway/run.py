@@ -3207,6 +3207,13 @@ class GatewayRunner:
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
+
+        # Mark session as tainted — inbound platform messages are untrusted
+        try:
+            from tools.taint_context import mark_tainted, TaintSource
+            mark_tainted(session_key, TaintSource.INBOUND_MSG, "gateway_inbound")
+        except Exception:
+            pass
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -4066,6 +4073,13 @@ class GatewayRunner:
         try:
             from tools.credential_files import clear_credential_files
             clear_credential_files()
+        except Exception:
+            pass
+
+        # Clear taint tracking for the old session
+        try:
+            from tools.taint_context import clear_taint
+            clear_taint(session_key)
         except Exception:
             pass
 

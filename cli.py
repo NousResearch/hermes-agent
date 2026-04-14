@@ -4119,6 +4119,14 @@ class HermesCLI:
         self._pending_title = None
         self._resumed = False
 
+        # Clear taint tracking for the old session
+        try:
+            from tools.taint_context import clear_taint
+            if old_session_id:
+                clear_taint(old_session_id)
+        except Exception:
+            pass
+
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start

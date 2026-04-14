@@ -6996,15 +6996,9 @@ class AIAgent:
             return
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
-        parsed_calls = []  # list of (tool_call, function_name, function_args)
+        parsed_calls = []  # list of (tool_call, function_name, function_args, plugin_block_msg)
         for tool_call in tool_calls:
             function_name = tool_call.function.name
-
-            # Reset nudge counters
-            if function_name == "memory":
-                self._turns_since_memory = 0
-            elif function_name == "skill_manage":
-                self._iters_since_skill = 0
 
             try:
                 function_args = json.loads(tool_call.function.arguments)
@@ -7013,8 +7007,24 @@ class AIAgent:
             if not isinstance(function_args, dict):
                 function_args = {}
 
-            # Checkpoint for file-mutating tools
-            if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
+            plugin_block_msg: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                plugin_block_msg = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
+
+            # Match sequential path: blocked tools do not reset nudge counters.
+            if plugin_block_msg is None:
+                if function_name == "memory":
+                    self._turns_since_memory = 0
+                elif function_name == "skill_manage":
+                    self._iters_since_skill = 0
+
+            # Checkpoint for file-mutating tools (skip when plugin blocks)
+            if plugin_block_msg is None and function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
                 try:
                     file_path = function_args.get("path", "")
                     if file_path:
@@ -7024,7 +7034,7 @@ class AIAgent:
                     pass
 
             # Checkpoint before destructive terminal commands
-            if function_name == "terminal" and self._checkpoint_mgr.enabled:
+            if plugin_block_msg is None and function_name == "terminal" and self._checkpoint_mgr.enabled:
                 try:
                     cmd = function_args.get("command", "")
                     if _is_destructive_command(cmd):
@@ -7035,13 +7045,13 @@ class AIAgent:
                 except Exception:
                     pass
 
-            parsed_calls.append((tool_call, function_name, function_args))
+            parsed_calls.append((tool_call, function_name, function_args, plugin_block_msg))
 
         # ── Logging / callbacks ──────────────────────────────────────────
-        tool_names_str = ", ".join(name for _, name, _ in parsed_calls)
+        tool_names_str = ", ".join(name for _, name, _, _ in parsed_calls)
         if not self.quiet_mode:
             print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-            for i, (tc, name, args) in enumerate(parsed_calls, 1):
+            for i, (tc, name, args, plugin_block_msg) in enumerate(parsed_calls, 1):
                 args_str = json.dumps(args, ensure_ascii=False)
                 if self.verbose_logging:
                     print(f"  📞 Tool {i}: {name}({list(args.keys())})")
@@ -7050,7 +7060,9 @@ class AIAgent:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-        for tc, name, args in parsed_calls:
+        for tc, name, args, plugin_block_msg in parsed_calls:
+            if plugin_block_msg is not None:
+                continue
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
@@ -7058,7 +7070,9 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
 
-        for tc, name, args in parsed_calls:
+        for tc, name, args, plugin_block_msg in parsed_calls:
+            if plugin_block_msg is not None:
+                continue
             if self.tool_start_callback:
                 try:
                     self.tool_start_callback(tc.id, name, args)
@@ -7096,12 +7110,18 @@ class AIAgent:
             max_workers = min(num_tools, _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = []
-                for i, (tc, name, args) in enumerate(parsed_calls):
+                for i, (tc, name, args, plugin_block_msg) in enumerate(parsed_calls):
+                    if plugin_block_msg is not None:
+                        function_result = json.dumps({"error": plugin_block_msg}, ensure_ascii=False)
+                        is_err, _ = _detect_tool_failure(name, function_result)
+                        results[i] = (name, args, function_result, 0.0, is_err)
+                        continue
                     f = executor.submit(_run_tool, i, tc, name, args)
                     futures.append(f)
 
                 # Wait for all to complete (exceptions are captured inside _run_tool)
-                concurrent.futures.wait(futures)
+                if futures:
+                    concurrent.futures.wait(futures)
         finally:
             if spinner:
                 # Build a summary message for the spinner stop
@@ -7110,12 +7130,14 @@ class AIAgent:
                 spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
         # ── Post-execution: display per-tool results ─────────────────────
-        for i, (tc, name, args) in enumerate(parsed_calls):
+        for i, (tc, name, args, plugin_block_msg) in enumerate(parsed_calls):
             r = results[i]
+            plugin_blocked = plugin_block_msg is not None
             if r is None:
                 # Shouldn't happen, but safety fallback
                 function_result = f"Error executing tool '{name}': thread did not return a result"
                 tool_duration = 0.0
+                is_error = True
             else:
                 function_name, function_args, function_result, tool_duration, is_error = r
 
@@ -7123,7 +7145,7 @@ class AIAgent:
                     result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
-                if self.tool_progress_callback:
+                if self.tool_progress_callback and not plugin_blocked:
                     try:
                         self.tool_progress_callback(
                             "tool.completed", function_name, None, None,
@@ -7149,9 +7171,10 @@ class AIAgent:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
-            self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+            if not plugin_blocked:
+                self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
 
-            if self.tool_complete_callback:
+            if self.tool_complete_callback and not plugin_blocked:
                 try:
                     self.tool_complete_callback(tc.id, name, args, function_result)
                 except Exception as cb_err:
@@ -7480,23 +7503,26 @@ class AIAgent:
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 
-            if self.tool_progress_callback:
-                try:
-                    self.tool_progress_callback(
-                        "tool.completed", function_name, None, None,
-                        duration=tool_duration, is_error=_is_error_result,
-                    )
-                except Exception as cb_err:
-                    logging.debug(f"Tool progress callback error: {cb_err}")
+            # Plugin-blocked tools never fire tool.started; skip completion callbacks too.
+            if _block_msg is None:
+                if self.tool_progress_callback:
+                    try:
+                        self.tool_progress_callback(
+                            "tool.completed", function_name, None, None,
+                            duration=tool_duration, is_error=_is_error_result,
+                        )
+                    except Exception as cb_err:
+                        logging.debug(f"Tool progress callback error: {cb_err}")
 
             self._current_tool = None
-            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+            if _block_msg is None:
+                self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
                 logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
-            if self.tool_complete_callback:
+            if _block_msg is None and self.tool_complete_callback:
                 try:
                     self.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
                 except Exception as cb_err:

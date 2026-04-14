@@ -1513,7 +1513,7 @@ class TestConcurrentToolExecution:
         assert json.loads(result) == {"error": "Blocked"}
 
     def test_sequential_blocked_tool_skips_checkpoints_and_callbacks(self, agent, monkeypatch):
-        """Sequential path: blocked tool should not trigger checkpoints or start callbacks."""
+        """Sequential path: blocked tool should not trigger checkpoints or progress callbacks."""
         tool_call = _mock_tool_call(name="write_file",
                                     arguments='{"path":"test.txt","content":"hello"}',
                                     call_id="c1")
@@ -1531,15 +1531,55 @@ class TestConcurrentToolExecution:
 
         starts = []
         agent.tool_start_callback = lambda *a: starts.append(a)
+        progress_events = []
+        agent.tool_progress_callback = lambda ev, *a, **kw: progress_events.append(ev)
+        completes = []
+        agent.tool_complete_callback = lambda *a: completes.append(a)
 
         with patch("run_agent.handle_function_call", side_effect=AssertionError("should not run")):
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
         agent._checkpoint_mgr.ensure_checkpoint.assert_not_called()
         assert starts == []
+        assert progress_events == []
+        assert completes == []
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
         assert json.loads(messages[0]["content"]) == {"error": "Blocked by policy"}
+
+    def test_concurrent_blocked_tool_skips_start_and_completion_callbacks(self, agent, monkeypatch):
+        """Concurrent path: plugin-blocked tools must not pair with started/completed callbacks."""
+        def _policy(name, args, task_id=""):
+            if args.get("query") == "b":
+                return "policy block"
+            return None
+
+        monkeypatch.setattr("hermes_cli.plugins.get_pre_tool_call_block_message", _policy)
+        tc1 = _mock_tool_call(name="web_search", arguments='{"query":"a"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"query":"b"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        progress = []
+
+        def _prog(event, *args, **kwargs):
+            progress.append(event)
+
+        starts = []
+        completes = []
+        agent.tool_progress_callback = _prog
+        agent.tool_start_callback = lambda tid, n, a: starts.append((tid, n))
+        agent.tool_complete_callback = lambda tid, n, a, r: completes.append(tid)
+
+        with patch("run_agent.handle_function_call", return_value='{"ok":1}') as hfc:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert hfc.call_count == 1
+        assert progress == ["tool.started", "tool.completed"]
+        assert starts == [("c1", "web_search")]
+        assert completes == ["c1"]
+        assert len(messages) == 2
+        assert json.loads(messages[0]["content"]) == {"ok": 1}
+        assert json.loads(messages[1]["content"]) == {"error": "policy block"}
 
     def test_blocked_memory_tool_does_not_reset_counter(self, agent, monkeypatch):
         """Blocked memory tool should not reset the nudge counter."""

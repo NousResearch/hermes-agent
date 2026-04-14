@@ -237,6 +237,26 @@ def _get_cdp_override() -> str:
     return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
 
 
+def _auto_detect_local_chrome() -> str:
+    """Probe localhost:9222 for a live Chrome CDP endpoint.
+
+    When the user has Chrome running with ``--remote-debugging-port=9222``
+    but hasn't explicitly run ``/browser connect`` or set a CDP URL in config,
+    auto-detect it so browser_navigate connects to the real Chrome instead of
+    launching a separate headless Chromium via Playwright.
+    """
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(("127.0.0.1", 9222))
+        s.close()
+    except (OSError, socket.timeout):
+        return ""
+
+    return _resolve_cdp_override("http://localhost:9222")
+
+
 # ============================================================================
 # Cloud Provider Registry
 # ============================================================================
@@ -839,7 +859,15 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     else:
         provider = _get_cloud_provider()
         if provider is None:
-            session_info = _create_local_session(task_id)
+            # Auto-detect live Chrome on port 9222 before falling to
+            # headless Chromium launch — so the agent can connect to the
+            # user's real browser without needing ``/browser connect``.
+            auto_cdp = _auto_detect_local_chrome()
+            if auto_cdp:
+                logger.info("Auto-detected Chrome CDP at %s", auto_cdp)
+                session_info = _create_cdp_session(task_id, auto_cdp)
+            else:
+                session_info = _create_local_session(task_id)
         else:
             session_info = provider.create_session(task_id)
             if session_info.get("cdp_url"):
@@ -1064,7 +1092,14 @@ def _run_browser_command(
                 path_parts.insert(0, part)
 
         browser_env["PATH"] = ":".join(path_parts)
-        browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
+
+        # Only set AGENT_BROWSER_SOCKET_DIR in local (--session) mode.
+        # In CDP mode (--cdp), the socket daemon hangs because agent-browser
+        # tries to use Unix socket IPC which doesn't work properly when
+        # connecting to an external browser via CDP.  We still create the
+        # directory below for stdout/stderr temp files.
+        if not session_info.get("cdp_url"):
+            browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

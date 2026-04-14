@@ -1,11 +1,22 @@
 const BASE = "";
 
-// Ephemeral session token for protected endpoints (reveal).
-// Fetched once on first reveal request and cached in memory.
+// Ephemeral session token for protected endpoints.
+// Injected into index.html by the server — never fetched via API.
+declare global {
+  interface Window {
+    __HERMES_SESSION_TOKEN__?: string;
+  }
+}
 let _sessionToken: string | null = null;
 
 async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${url}`, init);
+  // Inject the session token into all /api/ requests.
+  const headers = new Headers(init?.headers);
+  const token = window.__HERMES_SESSION_TOKEN__;
+  if (token && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const res = await fetch(`${BASE}${url}`, { ...init, headers });
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`${res.status}: ${text}`);
@@ -15,9 +26,12 @@ async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
 
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
-  const resp = await fetchJSON<{ token: string }>("/api/auth/session-token");
-  _sessionToken = resp.token;
-  return _sessionToken;
+  const injected = window.__HERMES_SESSION_TOKEN__;
+  if (injected) {
+    _sessionToken = injected;
+    return _sessionToken;
+  }
+  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
 }
 
 export const api = {

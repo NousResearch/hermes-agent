@@ -42,6 +42,7 @@ _PROVIDER_ENV_HINTS = (
     "ZAI_API_KEY",
     "Z_AI_API_KEY",
     "KIMI_API_KEY",
+    "KIMI_CN_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -749,7 +750,7 @@ def run_doctor(args):
             print(f"  Checking {_pname} API...", end="", flush=True)
             try:
                 import httpx
-                _base = os.getenv(_base_env, "")
+                _base = os.getenv(_base_env, "") if _base_env else ""
                 # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"

@@ -362,7 +362,7 @@ def _run_post_setup(post_setup_key: str):
             _print_warning("    Node.js not found - browser tools require: npm install (in hermes-agent directory)")
 
     elif post_setup_key == "camofox":
-        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camoufox-browser"
+        camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         if not camofox_dir.exists() and shutil.which("npm"):
             _print_info("    Installing Camofox browser server...")
             import subprocess
@@ -376,7 +376,7 @@ def _run_post_setup(post_setup_key: str):
                 _print_warning("    npm install failed - run manually: npm install")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
-            _print_info("      npx @askjo/camoufox-browser")
+            _print_info("      npx @askjo/camofox-browser")
             _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):

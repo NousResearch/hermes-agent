@@ -306,34 +306,48 @@ with open(_DATA_FILE) as f:
     _DATA = yaml.safe_load(f)
 ```
 
-### Bundle a skill
+### Bundle skills
 
-Include a `skill.md` file and install it during registration:
+Plugins can ship skill files that the agent loads via `skill_view("plugin:skill")`. Register them in your `__init__.py`:
+
+```
+~/.hermes/plugins/my-plugin/
+├── __init__.py
+├── plugin.yaml
+└── skills/
+    ├── my-workflow/
+    │   └── SKILL.md
+    └── my-checklist/
+        └── SKILL.md
+```
 
 ```python
-import shutil
 from pathlib import Path
 
-def _install_skill():
-    """Copy our skill to ~/.hermes/skills/ on first load."""
-    try:
-        from hermes_cli.config import get_hermes_home
-        dest = get_hermes_home() / "skills" / "my-plugin" / "SKILL.md"
-    except Exception:
-        dest = Path.home() / ".hermes" / "skills" / "my-plugin" / "SKILL.md"
-
-    if dest.exists():
-        return  # don't overwrite user edits
-
-    source = Path(__file__).parent / "skill.md"
-    if source.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-
 def register(ctx):
-    ctx.register_tool(...)
-    _install_skill()
+    skills_dir = Path(__file__).parent / "skills"
+    for child in sorted(skills_dir.iterdir()):
+        skill_md = child / "SKILL.md"
+        if child.is_dir() and skill_md.exists():
+            ctx.register_skill(child.name, skill_md)
 ```
+
+The agent can now load your skills with their namespaced name:
+
+```python
+skill_view("my-plugin:my-workflow")   # → plugin's version
+skill_view("my-workflow")              # → built-in version (unchanged)
+```
+
+**Key properties:**
+- Plugin skills are **read-only** — they don't enter `~/.hermes/skills/` and can't be edited via `skill_manage`.
+- Plugin skills are **not** listed in the system prompt's `<available_skills>` index — they're opt-in explicit loads.
+- Bare skill names are unaffected — the namespace prevents collisions with built-in skills.
+- When the agent loads a plugin skill, a bundle context banner is prepended listing sibling skills from the same plugin.
+
+:::tip Legacy pattern
+The old `shutil.copy2` pattern (copying a skill into `~/.hermes/skills/`) still works but creates name collision risk with built-in skills. Prefer `ctx.register_skill()` for new plugins.
+:::
 
 ### Gate on environment variables
 

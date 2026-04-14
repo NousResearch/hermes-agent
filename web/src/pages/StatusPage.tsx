@@ -53,7 +53,8 @@ export default function StatusPage() {
   };
 
   function gatewayValue(): string {
-    if (status!.gateway_running) return `${t.status.pid} ${status!.gateway_pid}`;
+    if (status!.gateway_running && status!.gateway_pid) return `${t.status.pid} ${status!.gateway_pid}`;
+    if (status!.gateway_running) return t.status.runningRemote;
     if (status!.gateway_state === "startup_failed") return t.status.startFailed;
     return t.status.notRunning;
   }

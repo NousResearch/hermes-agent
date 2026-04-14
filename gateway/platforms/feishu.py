@@ -72,7 +72,10 @@ try:
         UpdateMessageRequestBody,
     )
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-    from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
+    from lark_oapi.event.callback.model.p2_card_action_trigger import (
+        CallBackCard,
+        P2CardActionTriggerResponse,
+    )
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
 
@@ -80,6 +83,7 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
+    CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
@@ -169,6 +173,19 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+
+_APPROVAL_CHOICE_MAP: Dict[str, str] = {
+    "approve_once": "once",
+    "approve_session": "session",
+    "approve_always": "always",
+    "deny": "deny",
+}
+_APPROVAL_LABEL_MAP: Dict[str, str] = {
+    "once": "Approved once",
+    "session": "Approved for session",
+    "always": "Approved permanently",
+    "deny": "Denied",
+}
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
@@ -1490,14 +1507,12 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    async def _update_approval_card(
-        self, message_id: str, label: str, user_name: str, choice: str,
-    ) -> None:
-        """Replace the approval card with a resolved status card."""
-        if not self._client or not message_id:
-            return
+    @staticmethod
+    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
+        """Build raw card JSON for a resolved approval action."""
         icon = "❌" if choice == "deny" else "✅"
-        card = {
+        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
+        return {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
@@ -1510,13 +1525,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 },
             ],
         }
-        try:
-            payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
-        except Exception as exc:
-            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
     async def send_voice(
         self,
@@ -1845,19 +1853,81 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Schedule Feishu card actions on the adapter loop and acknowledge immediately."""
+        """Handle card-action callback from the Feishu SDK (synchronous).
+
+        For approval actions: parses the event once, returns the resolved card
+        inline (the only reliable way to sync all clients), and schedules a
+        lightweight async method to actually unblock the agent.
+
+        For other card actions: delegates to ``_handle_card_action_event``.
+        """
         loop = self._loop
-        if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
+        if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
-        else:
-            future = asyncio.run_coroutine_threadsafe(
-                self._handle_card_action_event(data),
-                loop,
-            )
-            future.add_done_callback(self._log_background_failure)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        event = getattr(data, "event", None)
+        action = getattr(event, "action", None)
+        action_value = getattr(action, "value", {}) or {}
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+
+        if hermes_action:
+            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+
+        self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
+
+    @staticmethod
+    def _loop_accepts_callbacks(loop: Any) -> bool:
+        """Return True when the adapter loop can accept thread-safe submissions."""
+        return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
+
+    def _submit_on_loop(self, loop: Any, coro: Any) -> None:
+        """Schedule background work on the adapter loop with shared failure logging."""
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        future.add_done_callback(self._log_background_failure)
+
+    def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule approval resolution and build the synchronous callback response."""
+        approval_id = action_value.get("approval_id")
+        if approval_id is None:
+            logger.debug("[Feishu] Card action missing approval_id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        user_name = self._get_cached_sender_name(open_id) or open_id
+
+        self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name))
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        response = P2CardActionTriggerResponse()
+        if CallBackCard is not None:
+            card = CallBackCard()
+            card.type = "raw"
+            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
+            response.card = card
+        return response
+
+    async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
+        """Pop approval state and unblock the waiting agent thread."""
+        state = self._approval_state.pop(approval_id, None)
+        if not state:
+            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
+            return
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(state["session_key"], choice)
+            logger.info(
+                "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count, state["session_key"], choice, user_name,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -1949,51 +2019,6 @@ class FeishuAdapter(BasePlatformAdapter):
         action = getattr(event, "action", None)
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
-
-        # --- Exec approval button intercept ---
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-        if hermes_action:
-            approval_id = action_value.get("approval_id")
-            state = self._approval_state.pop(approval_id, None)
-            if not state:
-                logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-                return
-
-            choice_map = {
-                "approve_once": "once",
-                "approve_session": "session",
-                "approve_always": "always",
-                "deny": "deny",
-            }
-            choice = choice_map.get(hermes_action, "deny")
-
-            label_map = {
-                "once": "Approved once",
-                "session": "Approved for session",
-                "always": "Approved permanently",
-                "deny": "Denied",
-            }
-            label = label_map.get(choice, "Resolved")
-
-            # Resolve sender name for the status card
-            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
-            sender_profile = await self._resolve_sender_profile(sender_id)
-            user_name = sender_profile.get("user_name") or open_id
-
-            # Resolve the approval — unblocks the agent thread
-            try:
-                from tools.approval import resolve_gateway_approval
-                count = resolve_gateway_approval(state["session_key"], choice)
-                logger.info(
-                    "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                    count, state["session_key"], choice, user_name,
-                )
-            except Exception as exc:
-                logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
-
-            # Update the card to show the decision
-            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
-            return
 
         synthetic_text = f"/card {action_tag}"
         if action_value:
@@ -2897,6 +2922,19 @@ class FeishuAdapter(BasePlatformAdapter):
             "user_id_alt": union_id,
         }
 
+    def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
+        """Return a cached sender name only while its TTL is still valid."""
+        if not sender_id:
+            return None
+        cached = self._sender_name_cache.get(sender_id)
+        if cached is None:
+            return None
+        name, expire_at = cached
+        if time.time() < expire_at:
+            return name
+        self._sender_name_cache.pop(sender_id, None)
+        return None
+
     async def _resolve_sender_name_from_api(self, sender_id: Optional[str]) -> Optional[str]:
         """Fetch the sender's display name from the Feishu contact API with a 10-minute cache.
 
@@ -2909,11 +2947,9 @@ class FeishuAdapter(BasePlatformAdapter):
         if not trimmed:
             return None
         now = time.time()
-        cached = self._sender_name_cache.get(trimmed)
-        if cached is not None:
-            name, expire_at = cached
-            if now < expire_at:
-                return name
+        cached_name = self._get_cached_sender_name(trimmed)
+        if cached_name is not None:
+            return cached_name
         try:
             from lark_oapi.api.contact.v3 import GetUserRequest  # lazy import
             if trimmed.startswith("ou_"):

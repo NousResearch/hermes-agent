@@ -80,6 +80,7 @@ export const zh: Translations = {
     notRunning: "未运行",
     startFailed: "启动失败",
     pid: "进程",
+    runningRemote: "运行中（远程）",
     noneRunning: "无",
     gatewayFailedToStart: "网关启动失败",
     lastUpdate: "最后更新",

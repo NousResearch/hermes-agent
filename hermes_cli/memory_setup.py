@@ -324,6 +324,9 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+                    # Also write to .env if this field has an env_var
+                    if env_var and env_var not in env_writes:
+                        env_writes[env_var] = val
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name
@@ -409,12 +412,13 @@ def cmd_status(args) -> None:
                     else:
                         print(f"  Status:    not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
-                        secrets = [f for f in schema if f.get("secret")]
-                        if secrets:
+                        # Check all fields that have env_var (both secret and non-secret)
+                        required_fields = [f for f in schema if f.get("env_var")]
+                        if required_fields:
                             print(f"  Missing:")
-                            for s in secrets:
-                                env_var = s.get("env_var", "")
-                                url = s.get("url", "")
+                            for f in required_fields:
+                                env_var = f.get("env_var", "")
+                                url = f.get("url", "")
                                 is_set = bool(os.environ.get(env_var))
                                 mark = "✓" if is_set else "✗"
                                 line = f"    {mark} {env_var}"

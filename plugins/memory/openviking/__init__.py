@@ -509,19 +509,24 @@ class OpenVikingMemoryProvider(MemoryProvider):
         result = resp.get("result", {})
 
         # Format results for the model — keep it concise
-        formatted = []
+        scored_entries = []
         for ctx_type in ("memories", "resources", "skills"):
             items = result.get(ctx_type, [])
             for item in items:
+                raw_score = item.get("score")
+                sort_score = raw_score if raw_score is not None else 0.0
                 entry = {
                     "uri": item.get("uri", ""),
                     "type": ctx_type.rstrip("s"),
-                    "score": round(item.get("score", 0), 3),
+                    "score": round(raw_score, 3) if raw_score is not None else 0.0,
                     "abstract": item.get("abstract", ""),
                 }
                 if item.get("relations"):
                     entry["related"] = [r.get("uri") for r in item["relations"][:3]]
-                formatted.append(entry)
+                scored_entries.append((sort_score, entry))
+
+        scored_entries.sort(key=lambda x: x[0], reverse=True)
+        formatted = [entry for _, entry in scored_entries]
 
         return json.dumps({
             "results": formatted,

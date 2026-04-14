@@ -44,6 +44,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("minimax/minimax-m2.7",            ""),
     ("minimax/minimax-m2.5",            ""),
     ("z-ai/glm-5.1",                    ""),
+    ("z-ai/glm-5v-turbo",               ""),
     ("z-ai/glm-5-turbo",                ""),
     ("moonshotai/kimi-k2.5",            ""),
     ("x-ai/grok-4.20",                  ""),
@@ -89,6 +90,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "minimax/minimax-m2.7",
         "minimax/minimax-m2.5",
         "z-ai/glm-5.1",
+        "z-ai/glm-5v-turbo",
         "z-ai/glm-5-turbo",
         "moonshotai/kimi-k2.5",
         "x-ai/grok-4.20-beta",
@@ -134,6 +136,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "zai": [
         "glm-5.1",
         "glm-5",
+        "glm-5v-turbo",
         "glm-5-turbo",
         "glm-4.7",
         "glm-4.5",

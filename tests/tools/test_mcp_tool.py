@@ -2837,7 +2837,7 @@ class TestRegistryCollisionWarning:
     """registry.register() warns when a tool name is overwritten by a different toolset."""
 
     def test_overwrite_different_toolset_logs_warning(self, caplog):
-        """Overwriting a tool from a different toolset emits a warning."""
+        """Overwriting a tool from a different toolset is REJECTED with an error."""
         from tools.registry import ToolRegistry
         import logging
 
@@ -2847,11 +2847,13 @@ class TestRegistryCollisionWarning:
 
         reg.register(name="my_tool", toolset="builtin", schema=schema, handler=handler)
 
-        with caplog.at_level(logging.WARNING, logger="tools.registry"):
+        with caplog.at_level(logging.ERROR, logger="tools.registry"):
             reg.register(name="my_tool", toolset="mcp-ext", schema=schema, handler=handler)
 
-        assert any("collision" in r.message.lower() for r in caplog.records)
+        assert any("rejected" in r.message.lower() for r in caplog.records)
         assert any("builtin" in r.message and "mcp-ext" in r.message for r in caplog.records)
+        # The original tool should still be from 'builtin', not overwritten
+        assert reg.get_toolset_for_tool("my_tool") == "builtin"
 
     def test_overwrite_same_toolset_no_warning(self, caplog):
         """Re-registering within the same toolset is silent (e.g. reconnect)."""

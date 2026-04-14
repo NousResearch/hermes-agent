@@ -4421,6 +4421,7 @@ def cmd_dashboard(args):
         host=args.host,
         port=args.port,
         open_browser=not args.no_open,
+        allow_public=getattr(args, "insecure", False),
     )
 
 
@@ -5932,6 +5933,10 @@ Examples:
     dashboard_parser.add_argument("--port", type=int, default=9119, help="Port (default 9119)")
     dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host (default 127.0.0.1)")
     dashboard_parser.add_argument("--no-open", action="store_true", help="Don't open browser automatically")
+    dashboard_parser.add_argument(
+        "--insecure", action="store_true",
+        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
     dashboard_parser.set_defaults(func=cmd_dashboard)
 
     # =========================================================================

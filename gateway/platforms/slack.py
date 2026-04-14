@@ -184,12 +184,12 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_message_event(event, say):
                 await self._handle_slack_message(event)
 
-            # Acknowledge app_mention events to prevent Bolt 404 errors.
-            # The "message" handler above already processes @mentions in
-            # channels, so this is intentionally a no-op to avoid duplicates.
+            # Process app_mention events through the normal message pipeline.
+            # This keeps channel @mentions working even when Slack delivers
+            # app_mention without a matching message.channels event.
             @self._app.event("app_mention")
             async def handle_app_mention(event, say):
-                pass
+                await self._handle_slack_message(event)
 
             @self._app.event("assistant_thread_started")
             async def handle_assistant_thread_started(event, say):
@@ -249,6 +249,52 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    def _thread_parent_summary(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """Build a short boss-mode summary for surfacing a new lane in-channel.
+
+        Used for top-level channel kickoff messages: the detailed response stays
+        in-thread, while the parent channel gets a brief summary only.
+        Prefer the explicit boss-mode headings first, then fall back to the
+        first few non-empty lines.
+        """
+        if not metadata or not metadata.get("slack_parent_summary"):
+            return None
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if not lines:
+            return None
+
+        preferred_prefixes = ("結論", "現況", "下一步")
+        preferred: list[str] = []
+        for prefix in preferred_prefixes:
+            match = next(
+                (
+                    line for line in lines
+                    if not line.startswith("MEDIA:")
+                    and (line == prefix or line.startswith(f"{prefix}：") or line.startswith(f"{prefix}:"))
+                ),
+                None,
+            )
+            if match:
+                preferred.append(match)
+
+        summary_lines = preferred
+        if not summary_lines:
+            summary_lines = []
+            for line in lines:
+                if line.startswith("MEDIA:"):
+                    continue
+                summary_lines.append(line)
+                if len(summary_lines) >= 3:
+                    break
+
+        if not summary_lines:
+            return None
+
+        summary = "\n".join(summary_lines)
+        if len(summary) > 280:
+            summary = summary[:277].rstrip() + "..."
+        return summary
+
     async def send(
         self,
         chat_id: str,
@@ -273,6 +319,13 @@ class SlackAdapter(BasePlatformAdapter):
             # reply_broadcast: also post thread replies to the main channel.
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
+            parent_summary = self._thread_parent_summary(formatted, metadata)
+            if parent_summary and thread_ts:
+                await self._get_client(chat_id).chat_postMessage(
+                    channel=chat_id,
+                    text=parent_summary,
+                    mrkdwn=True,
+                )
 
             for i, chunk in enumerate(chunks):
                 kwargs = {
@@ -949,6 +1002,10 @@ class SlackAdapter(BasePlatformAdapter):
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
             allow_bots = str(allow_bots).lower().strip()
+            if allow_bots in {"", "0", "false", "off", "no"}:
+                allow_bots = "none"
+            elif allow_bots in {"1", "true", "on", "yes"}:
+                allow_bots = "all"
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
@@ -1479,11 +1536,21 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
 
     async def _handle_slash_command(self, command: dict) -> None:
-        """Handle /hermes slash command."""
+        """Handle /hermes slash command.
+
+        Keep slash commands anchored to the real Slack conversation context
+        whenever possible so channel threads behave like first-class shared
+        sessions instead of silently falling back to DM-like isolation.
+        """
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
         team_id = command.get("team_id", "")
+        thread_ts = (
+            command.get("thread_ts")
+            or command.get("message_ts")
+            or ((command.get("message") or {}).get("thread_ts") if isinstance(command.get("message"), dict) else None)
+        )
 
         # Track which workspace owns this channel
         if team_id and channel_id:
@@ -1504,10 +1571,16 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             text = "/help"
 
+        channel_type = command.get("channel_type", "")
+        if not channel_type:
+            channel_type = "im" if channel_id.startswith("D") else "channel"
+        is_dm = channel_type in ("im", "mpim")
+
         source = self.build_source(
             chat_id=channel_id,
-            chat_type="dm",  # Slash commands are always in DM-like context
+            chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            thread_id=thread_ts,
         )
 
         event = MessageEvent(

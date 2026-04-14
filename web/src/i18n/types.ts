@@ -117,6 +117,12 @@ export interface Translations {
     totalTokens: string;
     totalSessions: string;
     apiCalls: string;
+    cacheHit: string;
+    cacheHitRate: string;
+    cacheTokens: string;
+    cost: string;
+    estimated: string;
+    actual: string;
     dailyTokenUsage: string;
     dailyBreakdown: string;
     perModelBreakdown: string;
@@ -128,6 +134,7 @@ export interface Translations {
     date: string;
     model: string;
     tokens: string;
+    cache: string;
     perDayAvg: string;
     acrossModels: string;
     inOut: string;

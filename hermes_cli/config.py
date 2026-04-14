@@ -1193,9 +1193,9 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
     },
     "SLACK_BOT_TOKEN": {
-        "description": "Slack bot token (xoxb-). Get from OAuth & Permissions after installing your app. "
-                       "Required scopes: chat:write, app_mentions:read, channels:history, groups:history, "
-                       "im:history, im:read, im:write, users:read, files:read, files:write",
+        "description": "Slack 機器人 token（xoxb-）。請在安裝 App 後到 OAuth & Permissions 取得。"
+                       "需要 scopes：chat:write、app_mentions:read、channels:history、groups:history、"
+                       "im:history、im:read、im:write、users:read、files:read、files:write",
         "prompt": "Slack Bot Token (xoxb-...)",
         "url": "https://api.slack.com/apps",
         "password": True,

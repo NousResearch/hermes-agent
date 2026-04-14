@@ -266,10 +266,25 @@ def build_session_context_prompt(
         lines.append("")
         lines.append(
             "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "You do NOT have access to Slack-specific admin actions — do not promise to search arbitrary channel history, pin/unpin messages, manage channels, or list users unless the current Slack adapter explicitly supports it. "
+            "If the user asks, explain the current boundary clearly and stay within the live chat/thread context you actually received."
+        )
+        lines.append("")
+        lines.append(
+            "**Slack response style:** Default to Traditional Chinese and use boss-mode formatting. "
+            "Lead with a short conclusion, then current status, then the next decision/action. "
+            "Prefer short bullet sections over long prose. Hide raw IDs, enum names, and internal engineering jargon unless they are necessary for execution."
+        )
+        lines.append(
+            "**Slack thread-first rule:** In channels, treat each thread as one work lane / one shared session. "
+            "Keep detailed execution, debugging, and iterative back-and-forth inside the thread. "
+            "Only send short boss-mode summaries back to the parent channel when there is a new lane kickoff, a blocker that needs attention, an approval/decision request, or a closeout/result worth surfacing."
+        )
+        lines.append(
+            "**Slack kickoff formatting:** For a new top-level channel request, keep the first visible reply short and thread-oriented: 「結論 / 現況 / 下一步」, then continue the real work in-thread."
+        )
+        lines.append(
+            "**Slack decision formatting:** For approvals, blockers, or project updates, prefer this shape: 「結論 / 現況 / 你現在要決定什麼 / 批准後會發生什麼 / 若不同意會退回哪裡 / 下一步」."
         )
     elif context.source.platform == Platform.DISCORD:
         lines.append("")

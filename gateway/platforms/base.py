@@ -1516,6 +1516,14 @@ class BasePlatformAdapter(ABC):
                 )
                 try:
                     _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    if (
+                        self.platform == Platform.SLACK
+                        and event.source.chat_type != "dm"
+                        and event.source.thread_id
+                        and event.source.thread_id == event.message_id
+                    ):
+                        _thread_meta = dict(_thread_meta or {})
+                        _thread_meta["slack_parent_summary"] = True
                     response = await self._message_handler(event)
                     if response:
                         await self._send_with_retry(
@@ -1612,6 +1620,14 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+        if (
+            self.platform == Platform.SLACK
+            and event.source.chat_type != "dm"
+            and event.source.thread_id
+            and event.source.thread_id == event.message_id
+        ):
+            _thread_metadata = dict(_thread_metadata or {})
+            _thread_metadata["slack_parent_summary"] = True
         typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:

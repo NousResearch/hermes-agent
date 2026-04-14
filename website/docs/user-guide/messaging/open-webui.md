@@ -24,6 +24,44 @@ Open WebUI talks to Hermes server-to-server, so you do not need `API_SERVER_CORS
 
 ## Quick Setup
 
+### One-command local bootstrap (macOS/Linux, no Docker)
+
+If you want Hermes + Open WebUI wired together locally with a reusable launcher, run:
+
+```bash
+cd ~/.hermes/hermes-agent
+bash scripts/setup_open_webui.sh
+```
+
+What the script does:
+
+- ensures `~/.hermes/.env` contains `API_SERVER_ENABLED`, `API_SERVER_HOST`, `API_SERVER_KEY`, `API_SERVER_PORT`, and `API_SERVER_MODEL_NAME`
+- restarts the Hermes gateway so the API server comes up
+- installs Open WebUI into `~/.local/open-webui-venv`
+- writes a launcher at `~/.local/bin/start-open-webui-hermes.sh`
+- on macOS, installs a `launchd` user service; on Linux with `systemd --user`, installs a user service there
+
+Defaults:
+
+- Hermes API: `http://127.0.0.1:8642/v1`
+- Open WebUI: `http://127.0.0.1:8080`
+- model name advertised to Open WebUI: `Hermes Agent`
+
+Useful overrides:
+
+```bash
+OPEN_WEBUI_NAME='My Hermes UI' \
+OPEN_WEBUI_ENABLE_SIGNUP=true \
+HERMES_API_MODEL_NAME='My Hermes Agent' \
+bash scripts/setup_open_webui.sh
+```
+
+On Linux, automatic background service setup requires a working `systemd --user` session. If you are on a headless SSH box and want to skip service installation, run:
+
+```bash
+OPEN_WEBUI_ENABLE_SERVICE=false bash scripts/setup_open_webui.sh
+```
+
 ### 1. Enable the API server
 
 ```bash
@@ -124,7 +162,7 @@ If you prefer to configure the connection through the UI instead of environment 
 5. Click **+ Add New Connection**
 6. Enter:
    - **URL**: `http://host.docker.internal:8642/v1`
-   - **API Key**: your key or any non-empty value (e.g., `not-needed`)
+   - **API Key**: the exact same value as `API_SERVER_KEY` in Hermes
 7. Click the **checkmark** to verify the connection
 8. **Save**
 
@@ -218,6 +256,10 @@ Hermes Agent may be executing multiple tool calls (reading files, running comman
 ### "Invalid API key" errors
 
 Make sure your `OPENAI_API_KEY` in Open WebUI matches the `API_SERVER_KEY` in Hermes Agent.
+
+:::warning
+Open WebUI persists OpenAI-compatible connection settings in its own database after first launch. If you accidentally saved a wrong key in the Admin UI, fixing the environment variables alone is not enough — update or delete the saved connection in **Admin Settings → Connections**, or reset the Open WebUI data directory / database.
+:::
 
 ## Multi-User Setup with Profiles
 

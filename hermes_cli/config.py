@@ -327,6 +327,10 @@ DEFAULT_CONFIG = {
         # 0 = no drain, interrupt immediately.
         "restart_drain_timeout": 60,
         "service_tier": "",
+        # Thinking budget (token limit for extended thinking/reasoning).
+        # None = use provider default. Set to an integer to cap reasoning tokens.
+        # Maps to the "budget" field in provider reasoning API calls.
+        "thinking_budget": None,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

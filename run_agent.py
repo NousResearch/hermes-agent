@@ -91,6 +91,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
+from agent.tool_result_store import save_large_result
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.project_context import ProjectChangeTracker
@@ -125,6 +126,8 @@ from agent.trajectory import (
 )
 from utils import atomic_json_write, env_var_enabled
 
+# Large result persistence threshold (30KB)
+LARGE_RESULT_THRESHOLD = 30 * 1024
 
 
 class _SafeWriter:
@@ -4940,10 +4943,11 @@ class AIAgent:
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
 
-        Fires once per tool name when the streaming response begins producing
-        tool_call / tool_use tokens.  Gives the TUI a chance to show a spinner
-        or status line so the user isn't staring at a frozen screen while a
-        large tool payload (e.g. a 45 KB write_file) is being generated.
+        Fires once per tool name when the FIRST NAME CHUNK arrives during
+        streaming — before the full tool name or arguments are available.
+        This enables "streaming tool launch": the TUI shows a spinner the
+        moment the model starts typing "read_file" rather than waiting for
+        the complete tool_calls block.  The name may be partial (e.g. "read_fi").
         """
         cb = self.tool_gen_callback
         if cb is not None:
@@ -5114,7 +5118,7 @@ class AIAgent:
                             except Exception:
                                 pass
 
-                # Accumulate tool call deltas — notify display on first name
+                # Accumulate tool call deltas — fire notification on first name chunk
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         raw_idx = tc_delta.index if tc_delta.index is not None else 0
@@ -5157,9 +5161,20 @@ class AIAgent:
                             if hasattr(extra, "model_dump"):
                                 extra = extra.model_dump()
                             entry["extra_content"] = extra
-                        # Fire once per tool when the full name is available
+                        # ── Streaming Tool Launch ──────────────────────────────────────
+                        # Fire _fire_tool_gen_started on the FIRST name chunk, not
+                        # when the full name is complete.  This gives the TUI a
+                        # spinner the moment the model begins typing "read_file"
+                        # rather than making the user wait for the entire name +
+                        # opening brace + arguments before any visual feedback.
                         name = entry["function"]["name"]
-                        if name and idx not in tool_gen_notified:
+                        if tc_delta.function and tc_delta.function.name and idx not in tool_gen_notified:
+                            tool_gen_notified.add(idx)
+                            _fire_first_delta()
+                            self._fire_tool_gen_started(name)
+                        elif name and idx not in tool_gen_notified:
+                            # Fallback for providers that send the name in one shot
+                            # alongside the first delta.
                             tool_gen_notified.add(idx)
                             _fire_first_delta()
                             self._fire_tool_gen_started(name)
@@ -7079,12 +7094,16 @@ class AIAgent:
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
+            # Persist large results (>30KB) to disk to reduce context consumption
+            if len(result) > LARGE_RESULT_THRESHOLD:
+                return save_large_result(result, function_name, tool_call_id or str(uuid.uuid4()))
+            return result
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.

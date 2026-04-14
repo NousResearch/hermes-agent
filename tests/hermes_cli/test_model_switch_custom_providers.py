@@ -45,6 +45,30 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     )
 
 
+def test_list_authenticated_providers_uses_dynamic_openrouter_catalog(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"openrouter": {"env": ["OPENROUTER_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.openrouter_picker_model_ids",
+        lambda **_kwargs: ["vendor/new-hotness", "vendor/backup-model"],
+    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    openrouter = next(p for p in providers if p["slug"] == "openrouter")
+    assert openrouter["models"] == ["vendor/new-hotness", "vendor/backup-model"]
+    assert openrouter["total_models"] == 2
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

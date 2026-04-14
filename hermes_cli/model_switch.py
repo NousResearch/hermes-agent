@@ -761,9 +761,8 @@ def list_authenticated_providers(
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
+    Uses the curated model lists from hermes_cli/models.py for direct providers
+    and the automated OpenRouter picker catalog for OpenRouter itself.
 
     Returns a list of dicts, each with:
       - slug: str — the --provider value to use
@@ -783,7 +782,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -792,7 +791,7 @@ def list_authenticated_providers(
 
     # Build curated model lists keyed by hermes provider ID
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
-    curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
+    curated["openrouter"] = openrouter_picker_model_ids()
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
@@ -1086,5 +1085,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

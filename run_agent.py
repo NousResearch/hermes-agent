@@ -457,6 +457,15 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
                             if sanitized != fn_args:
                                 fn["arguments"] = sanitized
                                 found = True
+        # Sanitize any additional top-level string fields (e.g. reasoning_content)
+        for key, value in msg.items():
+            if key in {"content", "name", "tool_calls", "role"}:
+                continue
+            if isinstance(value, str):
+                sanitized = _strip_non_ascii(value)
+                if sanitized != value:
+                    msg[key] = sanitized
+                    found = True
     return found
 
 
@@ -9107,7 +9116,19 @@ class AIAgent:
                             # ASCII codec: the system encoding can't handle
                             # non-ASCII characters at all. Sanitize all
                             # non-ASCII content from messages/tool schemas and retry.
+                            # Sanitize both the canonical `messages` list and
+                            # `api_messages` (the API-copy built before the retry
+                            # loop, which may contain extra fields like
+                            # reasoning_content that are not in `messages`).
                             _messages_sanitized = _sanitize_messages_non_ascii(messages)
+                            if isinstance(api_messages, list):
+                                _sanitize_messages_non_ascii(api_messages)
+                            # Also sanitize the last api_kwargs if already built,
+                            # so a leftover non-ASCII value in a transformed field
+                            # (e.g. extra_body, reasoning_content) doesn't survive
+                            # into the next attempt via _build_api_kwargs cache paths.
+                            if isinstance(api_kwargs, dict):
+                                _sanitize_structure_non_ascii(api_kwargs)
                             _prefill_sanitized = False
                             if isinstance(getattr(self, "prefill_messages", None), list):
                                 _prefill_sanitized = _sanitize_messages_non_ascii(self.prefill_messages)

@@ -1,2 +1,2 @@
-Optional autonomous AI agent integrations — external coding agent CLIs
-that can be delegated to for independent coding tasks.
+Optional autonomous AI agent integrations — delegation bridges, memory backends,
+autonomy plugin stacks, and external agent companions.

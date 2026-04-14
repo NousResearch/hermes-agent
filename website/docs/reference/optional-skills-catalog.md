@@ -33,6 +33,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| **autonomy-stack** | Bootstrap a self-improving autonomy stack for Hermes by installing vetted community plugins, verifying plugin state, and leaning on Hermes's built-in skill creation and improvement loop. |
 | **blackbox** | Delegate coding tasks to Blackbox AI CLI agent. Multi-model agent with built-in judge that runs tasks through multiple LLMs and picks the best result. |
 | **honcho** | Configure and use Honcho memory with Hermes — cross-session user modeling, multi-profile peer isolation, observation config, and dialectic reasoning. |
 
@@ -47,6 +48,7 @@ hermes skills uninstall <skill-name>
 
 | Skill | Description |
 |-------|-------------|
+| **livekit-presence** | Bootstrap a LiveKit voice presence for Hermes. Clone the official Python starter, export Hermes persona into it, and prepare local env/config for realtime rooms or telephony. |
 | **one-three-one-rule** | Structured communication framework for proposals and decision-making. |
 
 ## Creative
@@ -80,6 +82,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | **fastmcp** | Build, test, inspect, install, and deploy MCP servers with FastMCP in Python. Covers wrapping APIs or databases as MCP tools, exposing resources or prompts, and deployment. |
+| **screenpipe** | Connect Hermes to local Screenpipe memory. Diagnose the local API, install Screenpipe's MCP server into Hermes config, and run quick searches against the local Screenpipe index. |
 
 ## Migration
 

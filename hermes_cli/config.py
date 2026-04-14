@@ -608,6 +608,10 @@ DEFAULT_CONFIG = {
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
+        "allowed_models": [],    # allowlist for subagent `model` overrides. Entries may be
+                                 # fnmatch strings (e.g. "anthropic/*") or dicts
+                                 # ({model: ..., provider: ...}) that pin a provider per model
+                                 # so the allowlist doubles as a router. Empty = no restriction.
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

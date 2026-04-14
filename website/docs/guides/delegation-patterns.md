@@ -158,6 +158,36 @@ Each subagent gets its own terminal session. They can work on the same project d
 
 ---
 
+## Pattern: Right-Size the Model
+
+Match model capability to task complexity to keep costs down by passing a `model` per task:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Audit the payment processing code for security vulnerabilities",
+        "context": "Project at /home/user/app. Payment code: src/payments/.",
+        "model": "anthropic/claude-opus-4.6",   # heavy reasoning
+        "toolsets": ["file"]
+    },
+    {
+        "goal": "Reformat CHANGELOG.md so each version header is an H2",
+        "context": "File at /home/user/app/CHANGELOG.md",
+        "model": "anthropic/claude-haiku-4.5",  # cheap, mechanical
+        "toolsets": ["file"]
+    },
+    {
+        "goal": "Find the latest stable release version of FastAPI",
+        "model": "google/gemini-2.5-flash",     # fast for web lookup
+        "toolsets": ["web"]
+    },
+])
+```
+
+By default the per-task `model` reuses the currently-resolved delegation provider. If you want each model to target a different provider, list them as `{model, provider}` dicts under `delegation.allowed_models` — the allowlist then doubles as a router. See [Model Override](/docs/user-guide/features/delegation#model-override).
+
+---
+
 ## Pattern: Gather Then Analyze
 
 Use `execute_code` for mechanical data gathering, then delegate the reasoning-heavy analysis:
@@ -221,6 +251,7 @@ Restricting toolsets keeps the subagent focused and prevents accidental side eff
 - **Separate terminals** — each subagent gets its own terminal session with separate working directory and state
 - **No conversation history** — subagents see only what you put in `goal` and `context`
 - **Default 50 iterations** — set `max_iterations` lower for simple tasks to save cost
+- **Model allowlist** — if `delegation.allowed_models` is configured, `model` values must match a listed pattern
 
 ---
 

@@ -1254,6 +1254,12 @@ delegation:
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
+  # allowed_models:                         # Model allowlist for delegate_task model param (empty = any model)
+  #   - "anthropic/*"                       # fnmatch string, reuses default provider
+  #   - model: "google/gemini-2.5-flash"    # dict form, pins provider per model
+  #     provider: "openrouter"
+  #   - model: "meta-llama/llama-4-scout"
+  #     provider: "nous"
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
@@ -1262,7 +1268,9 @@ delegation:
 
 The delegation provider uses the same credential resolution as CLI/gateway startup. All configured providers are supported: `openrouter`, `nous`, `copilot`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`. When a provider is set, the system automatically resolves the correct base URL, API key, and API mode — no manual credential wiring needed.
 
-**Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
+**Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). For model selection: per-task `model` field → top-level `model` param passed to `delegate_task` → `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
+
+**Allowed models:** When `delegation.allowed_models` is set, any `model` override passed to `delegate_task` must match one of its entries. Entries may be [fnmatch](https://docs.python.org/3/library/fnmatch.html) strings (e.g. `anthropic/*`) that reuse the default delegation provider, or `{model, provider}` dicts that pin a specific provider for a specific model — so the allowlist doubles as a model→provider router. Dict-routed tasks have their credentials re-resolved on demand via the same runtime provider system used by CLI/gateway startup. An empty list (the default) permits any model.
 
 ## Clarify
 

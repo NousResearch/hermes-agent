@@ -119,10 +119,9 @@ delegate_task(
 
 ## Batch Mode Details
 
-When you provide a `tasks` array, subagents run in **parallel** using a thread pool:
+When you provide a `tasks` array, subagents run in **parallel** via a `ThreadPoolExecutor`:
 
-- **Maximum concurrency:** 3 tasks (the `tasks` array is truncated to 3 if longer)
-- **Thread pool:** Uses `ThreadPoolExecutor` with `MAX_CONCURRENT_CHILDREN = 3` workers
+- **Maximum concurrency:** Default 3, configurable via `delegation.max_concurrent_children` in `config.yaml`. Exceeding the limit returns an error — split the batch or raise the limit.
 - **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
 - **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
@@ -131,16 +130,65 @@ Single-task delegation runs directly without thread pool overhead.
 
 ## Model Override
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+Subagents inherit the parent's model by default. You can route them to a different model at three levels:
 
-```yaml
-# In ~/.hermes/config.yaml
-delegation:
-  model: "google/gemini-flash-2.0"    # Cheaper model for subagents
-  provider: "openrouter"              # Optional: route subagents to a different provider
+```python
+# Per-call (highest precedence): pass `model` to delegate_task
+delegate_task(
+    goal="Summarize these release notes",
+    model="google/gemini-2.5-flash",
+    toolsets=["file"],
+)
+
+# Per-task in batch mode: each task chooses its own model (and toolsets)
+delegate_task(tasks=[
+    {
+        "goal": "Deep architectural review of src/auth/",
+        "model": "anthropic/claude-opus-4.6",   # heavy reasoning
+        "toolsets": ["file"],
+    },
+    {
+        "goal": "Fix typos in the README",
+        "model": "anthropic/claude-haiku-4.5",  # cheap, mechanical
+        "toolsets": ["file"],
+    },
+    {
+        "goal": "Find the latest stable FastAPI release version",
+        "model": "google/gemini-2.5-flash",     # fast for web lookup
+        "toolsets": ["web"],
+    },
+])
 ```
 
-If omitted, subagents use the same model as the parent.
+Or set a session-wide default in `config.yaml`:
+
+```yaml
+delegation:
+  model: "google/gemini-flash-2.0"    # default for all subagents
+  provider: "openrouter"              # optional provider override
+```
+
+**Resolution order:** per-task `model` → top-level `model` param → `delegation.model` → parent model. The resolved provider from config (or parent) is always reused; override `delegation.provider` if subagents need a different provider.
+
+### Allowed models
+
+To cap which models subagents can be sent to, configure an allowlist. Entries may be either [fnmatch](https://docs.python.org/3/library/fnmatch.html) strings that reuse the default delegation provider, or `{model, provider}` dicts that pin a provider per model — so the allowlist doubles as a model→provider router:
+
+```yaml
+delegation:
+  model: "anthropic/claude-sonnet-4.6"     # default model for subagents
+  provider: "anthropic"                    # default provider for subagents
+  allowed_models:
+    - "anthropic/*"                        # any Anthropic model, runs on the default provider
+    - model: "google/gemini-2.5-flash"     # exact match, routed to a specific provider
+      provider: "openrouter"
+    - model: "meta-llama/llama-4-scout"
+      provider: "nous"
+```
+
+With that config, a subagent asking for `anthropic/claude-opus-4.6` runs on the default Anthropic creds, while `google/gemini-2.5-flash` and `meta-llama/llama-4-scout` each get routed to their own provider bundle (base URL, API key, API mode are re-resolved on demand via the same runtime provider system used by CLI/gateway startup).
+
+When `allowed_models` is set, any `model` override that does not match returns an error before spawning. An empty list (the default) allows any model.
 
 ## Toolset Selection Tips
 
@@ -206,9 +254,12 @@ Delegation has a **depth limit of 2** — a parent (depth 0) can spawn children 
 # In ~/.hermes/config.yaml
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
-  default_toolsets: ["terminal", "file", "web"]  # Default toolsets
-  model: "google/gemini-3-flash-preview"             # Optional provider/model override
-  provider: "openrouter"                             # Optional built-in provider
+  model: "google/gemini-3-flash-preview"    # Optional default model for subagents
+  provider: "openrouter"                    # Optional default provider for subagents
+  allowed_models:                           # Optional model allowlist (empty = any model allowed)
+    - "anthropic/*"                         # fnmatch string: reuses default provider
+    - model: "google/gemini-2.5-flash"      # dict form: pins provider for that model
+      provider: "openrouter"
 
 # Or use a direct custom endpoint instead of provider:
 delegation:

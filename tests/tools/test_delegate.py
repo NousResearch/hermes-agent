@@ -29,6 +29,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _match_allowed_model,
 )
 
 
@@ -1276,6 +1277,197 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         )
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+
+
+def _run_ok(task_index=0):
+    return {
+        "task_index": task_index, "status": "completed",
+        "summary": "done", "api_calls": 1, "duration_seconds": 1.0,
+    }
+
+
+class TestModelOverride(unittest.TestCase):
+    """Tests for delegate_task `model` parameter (top-level + per-task)."""
+
+    def test_schema_has_model_fields(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", props)
+        self.assertIn("model", props["tasks"]["items"]["properties"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_top_level_model_forwarded_to_child(self, mock_run, mock_build, mock_cfg):
+        """Top-level `model` param overrides config's delegation.model."""
+        mock_cfg.return_value = {
+            "max_iterations": 50, "model": "config/fallback",
+            "provider": "", "allowed_models": [],
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = _run_ok()
+
+        delegate_task(
+            goal="do something",
+            model="per-call/override",
+            parent_agent=_make_mock_parent(),
+        )
+        self.assertEqual(mock_build.call_args[1]["model"], "per-call/override")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_per_task_model_overrides_top_level(self, mock_run, mock_build, mock_cfg):
+        """Each task's `model` field wins over the top-level `model` param;
+        tasks without a `model` field fall back to the top-level value."""
+        mock_cfg.return_value = {
+            "max_iterations": 50, "model": "",
+            "provider": "", "allowed_models": [],
+        }
+        mock_build.return_value = MagicMock()
+        mock_run.side_effect = [_run_ok(0), _run_ok(1)]
+
+        delegate_task(
+            tasks=[
+                {"goal": "Task A", "model": "anthropic/claude-haiku-4.5"},
+                {"goal": "Task B"},  # falls back to top-level
+            ],
+            model="top-level/model",
+            parent_agent=_make_mock_parent(),
+        )
+
+        calls = mock_build.call_args_list
+        self.assertEqual(calls[0][1]["model"], "anthropic/claude-haiku-4.5")
+        self.assertEqual(calls[1][1]["model"], "top-level/model")
+
+
+class TestAllowedModels(unittest.TestCase):
+    """Tests for delegation.allowed_models allowlist enforcement."""
+
+    def test_matcher_empty_allowlist_permits_any(self):
+        self.assertEqual(_match_allowed_model("anthropic/claude-opus-4.6", []), (None, None))
+
+    def test_matcher_wildcard_match_and_block(self):
+        self.assertEqual(
+            _match_allowed_model("anthropic/claude-haiku-4.5", ["anthropic/*"]),
+            (None, None),
+        )
+        err, prov = _match_allowed_model("openai/gpt-4o", ["anthropic/*"])
+        self.assertIsNotNone(err)
+        self.assertIn("openai/gpt-4o", err)
+        self.assertIn("allowed_models", err)
+        self.assertIsNone(prov)
+
+    def test_matcher_dict_entry_routes_to_provider(self):
+        """Dict entries pin a provider for their exact model."""
+        allowlist = [
+            "anthropic/*",
+            {"model": "google/gemini-2.5-flash", "provider": "openrouter"},
+            {"model": "meta-llama/llama-4-scout", "provider": "nous"},
+        ]
+        # Dict entries match exactly and return the routed provider
+        self.assertEqual(
+            _match_allowed_model("google/gemini-2.5-flash", allowlist),
+            (None, "openrouter"),
+        )
+        self.assertEqual(
+            _match_allowed_model("meta-llama/llama-4-scout", allowlist),
+            (None, "nous"),
+        )
+        # String patterns still match and return no provider override
+        self.assertEqual(
+            _match_allowed_model("anthropic/claude-opus-4.6", allowlist),
+            (None, None),
+        )
+        # Non-matches still produce an error
+        err, prov = _match_allowed_model("openai/gpt-4o", allowlist)
+        self.assertIsNotNone(err)
+        self.assertIsNone(prov)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_top_level_model_blocked_by_allowlist(self, mock_run, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 50, "model": "", "provider": "",
+            "allowed_models": ["anthropic/*"],
+        }
+        result = json.loads(delegate_task(
+            goal="do something",
+            model="openai/gpt-4o",
+            parent_agent=_make_mock_parent(),
+        ))
+        self.assertIn("error", result)
+        self.assertIn("openai/gpt-4o", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_per_task_model_blocked_by_allowlist(self, mock_run, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 50, "model": "", "provider": "",
+            "allowed_models": ["anthropic/*"],
+        }
+        result = json.loads(delegate_task(
+            tasks=[{"goal": "task A", "model": "openai/gpt-4o"}],
+            parent_agent=_make_mock_parent(),
+        ))
+        self.assertIn("error", result)
+        self.assertIn("Task 0", result["error"])
+        mock_run.assert_not_called()
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_dict_entry_reroutes_per_task_provider(
+        self, mock_run, mock_build, mock_cfg, mock_resolve
+    ):
+        """A dict allowlist entry re-resolves credentials for that provider."""
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "model": "",
+            "provider": "anthropic",
+            "allowed_models": [
+                "anthropic/*",
+                {"model": "google/gemini-2.5-flash", "provider": "openrouter"},
+            ],
+        }
+        anthropic_creds = {
+            "model": "", "provider": "anthropic",
+            "base_url": "https://api.anthropic.com", "api_key": "ak-anthropic",
+            "api_mode": "anthropic_messages",
+        }
+        openrouter_creds = {
+            "model": "google/gemini-2.5-flash", "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1", "api_key": "ak-openrouter",
+            "api_mode": "chat_completions",
+        }
+        # First call: initial delegation creds resolution (anthropic default)
+        # Second call: re-resolution for the routed openrouter task
+        mock_resolve.side_effect = [anthropic_creds, openrouter_creds]
+        mock_build.return_value = MagicMock()
+        mock_run.side_effect = [_run_ok(0), _run_ok(1)]
+
+        delegate_task(
+            tasks=[
+                {"goal": "Task A", "model": "anthropic/claude-opus-4.6"},
+                {"goal": "Task B", "model": "google/gemini-2.5-flash"},
+            ],
+            parent_agent=_make_mock_parent(),
+        )
+
+        # Two builds, one per task
+        self.assertEqual(mock_build.call_count, 2)
+        calls = mock_build.call_args_list
+        # Task A: anthropic model, keeps anthropic creds
+        self.assertEqual(calls[0][1]["model"], "anthropic/claude-opus-4.6")
+        self.assertEqual(calls[0][1]["override_provider"], "anthropic")
+        self.assertEqual(calls[0][1]["override_api_key"], "ak-anthropic")
+        # Task B: routed via dict entry to openrouter creds
+        self.assertEqual(calls[1][1]["model"], "google/gemini-2.5-flash")
+        self.assertEqual(calls[1][1]["override_provider"], "openrouter")
+        self.assertEqual(calls[1][1]["override_api_key"], "ak-openrouter")
+        # Only one extra resolve call (the cache should prevent more)
+        self.assertEqual(mock_resolve.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import fnmatch
 import json
 import logging
 logger = logging.getLogger(__name__)
@@ -620,11 +621,48 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+def _match_allowed_model(
+    model: str, allowed_models: list
+) -> "tuple[Optional[str], Optional[str]]":
+    """Match a requested model against `delegation.allowed_models`.
+
+    Entries may be either:
+      - A string fnmatch pattern (e.g. "anthropic/*") — permits any matching
+        model and reuses the default resolved delegation provider.
+      - A dict ``{"model": <exact model id>, "provider": <provider name>}`` —
+        permits that exact model and pins the named provider for it, so the
+        allowlist doubles as a model→provider router.
+
+    Returns ``(error, provider_override)``:
+      - ``(None, None)`` — permitted with no provider change (empty allowlist
+        or string-pattern match).
+      - ``(None, <provider>)`` — permitted; re-resolve credentials against
+        ``<provider>`` for this task.
+      - ``(<error_msg>, None)`` — not permitted.
+    """
+    if not allowed_models:
+        return None, None
+    for entry in allowed_models:
+        if isinstance(entry, dict):
+            if entry.get("model") == model:
+                prov = (entry.get("provider") or "").strip() or None
+                return None, prov
+        elif isinstance(entry, str):
+            if fnmatch.fnmatch(model, entry):
+                return None, None
+    return (
+        f"Model '{model}' is not in delegation.allowed_models "
+        f"({allowed_models}).",
+        None,
+    )
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -634,8 +672,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+      - Single: provide goal (+ optional context, toolsets, model)
+      - Batch:  provide tasks array [{goal, context, toolsets, model}, ...]
 
     Returns JSON with results array, one entry per task.
     """
@@ -656,6 +694,7 @@ def delegate_task(
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
+    allowed_models: list = cfg.get("allowed_models") or []
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -666,6 +705,22 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # Top-level model param overrides delegation.model from config.
+    # Per-task model fields (set below) override this further.
+    if model and model.strip():
+        creds = dict(creds)
+        creds["model"] = model.strip()
+
+    # Validate top-level model override against allowlist. A dict-form entry
+    # may route this model to a different provider; capture that as the
+    # default provider override for any task that inherits this model.
+    top_provider_override: Optional[str] = None
+    if creds.get("model") and allowed_models:
+        err, prov = _match_allowed_model(creds["model"], allowed_models)
+        if err:
+            return tool_error(err)
+        top_provider_override = prov
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -687,10 +742,25 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
+    # Validate each task has a goal, and check per-task model overrides
+    # against the allowlist. Capture any provider override produced by a
+    # dict-form entry so the build loop can re-resolve creds for it.
+    task_provider_overrides: Dict[int, str] = {}
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        task_model = (task.get("model") or "").strip()
+        if task_model:
+            if allowed_models:
+                err, prov = _match_allowed_model(task_model, allowed_models)
+                if err:
+                    return tool_error(f"Task {i}: {err}")
+                if prov:
+                    task_provider_overrides[i] = prov
+        elif top_provider_override:
+            # Task inherits the top-level model; also inherit its dict-routed
+            # provider so the child runs on the same routed credentials.
+            task_provider_overrides[i] = top_provider_override
 
     overall_start = time.monotonic()
     results = []
@@ -709,15 +779,40 @@ def delegate_task(
     # Wrapped in try/finally so the global is always restored even if a
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
+    # Cache provider re-resolution across tasks that share the same routed
+    # provider so we don't hit runtime_provider more than once per provider.
+    provider_creds_cache: Dict[str, dict] = {}
     try:
         for i, t in enumerate(task_list):
+            # Per-task model overrides the resolved creds, letting batch tasks
+            # each target a different model on the same provider.
+            task_model = (t.get("model") or "").strip() or creds["model"]
+
+            # If the allowlist routed this task to a different provider,
+            # re-resolve a full credential bundle for that provider once.
+            task_creds = creds
+            routed_provider = task_provider_overrides.get(i)
+            if routed_provider and routed_provider != creds.get("provider"):
+                if routed_provider not in provider_creds_cache:
+                    try:
+                        provider_creds_cache[routed_provider] = (
+                            _resolve_delegation_credentials(
+                                {"provider": routed_provider, "model": task_model},
+                                parent_agent,
+                            )
+                        )
+                    except ValueError as exc:
+                        return tool_error(f"Task {i}: {exc}")
+                task_creds = provider_creds_cache[routed_provider]
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=task_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
@@ -1019,6 +1114,14 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional model override for subagents (e.g. 'anthropic/claude-sonnet-4.6'). "
+                    "Overrides delegation.model from config; keeps the resolved provider. "
+                    "Must match delegation.allowed_models if that list is set."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -1030,6 +1133,13 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override. Takes priority over the top-level "
+                                "model param for this task only."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
@@ -1094,6 +1204,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

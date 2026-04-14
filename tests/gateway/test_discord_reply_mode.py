@@ -369,3 +369,16 @@ class TestReplyToText:
         event = reply_text_adapter.handle_message.await_args.args[0]
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
+
+    @pytest.mark.asyncio
+    async def test_reference_with_deleted_message(self, reply_text_adapter):
+        """Deleted messages lack .content — getattr guard should return None."""
+        resolved_deleted = SimpleNamespace(id=555)
+        ref = SimpleNamespace(message_id=555, resolved=resolved_deleted)
+        message = _make_message(reference=ref)
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_text is None

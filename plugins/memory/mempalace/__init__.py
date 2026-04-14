@@ -260,6 +260,10 @@ def _episode_get_recent(speaker: str = None, topic: str = None,
     """
     Retrieve recent episodic turns from ChromaDB 'episodes' collection.
     Returns JSON string with episodes list.
+
+    IMPORTANT: ChromaDB col.get(limit=N) returns the FIRST N items (oldest),
+    not the most recent. We fetch ALL and take the last N by timestamp to
+    get the actual newest episodes.
     """
     palace_s = _HERMES_PALACE.replace("'", "\\'")
     speaker_s = ("'" + speaker.replace("'", "\\'") + "'") if speaker else "None"
@@ -274,9 +278,10 @@ def _episode_get_recent(speaker: str = None, topic: str = None,
         "    where['speaker'] = SPEAKER_VAL\n"
         "if TOPIC_VAL is not None:\n"
         "    where['topic'] = TOPIC_VAL\n"
+        "# NOTE: col.get(limit=N) returns OLDEST N, not newest.\n"
+        "# Fetch all, sort by timestamp descending, take newest LIMIT_VAL.\n"
         "results = col.get(\n"
         "    where=where if where else None,\n"
-        "    limit=LIMIT_VAL,\n"
         "    include=['documents', 'metadatas']\n"
         ")\n"
         "episodes = []\n"
@@ -290,6 +295,9 @@ def _episode_get_recent(speaker: str = None, topic: str = None,
         "        'importance': meta.get('importance', 0.5),\n"
         "        'session_id': meta.get('session_id', ''),\n"
         "    })\n"
+        "# Sort by timestamp descending (newest first), take newest LIMIT_VAL\n"
+        "episodes.sort(key=lambda e: e.get('timestamp', ''), reverse=True)\n"
+        "episodes = episodes[:LIMIT_VAL]\n"
         "print(json.dumps({'episodes': episodes, 'count': len(episodes)}))\n"
     ).replace("REPLACEME_PALACE", palace_s).replace(
         "SPEAKER_VAL", speaker_s
@@ -1536,32 +1544,29 @@ class MemPalaceMemoryProvider(MemoryProvider):
         Restore the most recent episodic turns from ChromaDB into working memory.
         This is called on every initialize() so that fresh sessions still have
         recent conversational context without losing it across sessions.
-        Runs in a background thread to avoid blocking initialization.
+
+        Runs SYNCHRONOUSLY so that working memory is populated before
+        initialize() returns — the agent must have context before processing
+        its first message.
         """
-        import threading
-
-        def _do_restore():
-            try:
-                raw = _episode_get_recent(limit=MAX_WORKING_MEMORY_TURNS)
-                data = json.loads(raw)
-                episodes = data.get("episodes", [])
-                # Populate working memory (oldest first, newest last)
-                for ep in episodes:
-                    # Use internal add_turn but WITHOUT re-persisting to episodes
-                    # (avoid infinite loop and duplicate entries)
-                    _working_memory._add_turn_no_persist(
-                        role=ep.get("role", "user"),
-                        content=ep.get("content", ""),
-                        speaker=ep.get("speaker", "hermes"),
-                        topic=ep.get("topic", ""),
-                        importance=float(ep.get("importance", 0.5)),
-                        timestamp=ep.get("timestamp", ""),
-                    )
-            except Exception as e:
-                logger.warning("L3 episode restore failed: %s", e)
-
-        t = threading.Thread(target=_do_restore, daemon=True)
-        t.start()
+        try:
+            raw = _episode_get_recent(limit=MAX_WORKING_MEMORY_TURNS)
+            data = json.loads(raw)
+            episodes = data.get("episodes", [])
+            # Populate working memory (oldest first, newest last)
+            for ep in episodes:
+                # Use internal add_turn but WITHOUT re-persisting to episodes
+                # (avoid infinite loop and duplicate entries)
+                _working_memory._add_turn_no_persist(
+                    role=ep.get("role", "user"),
+                    content=ep.get("content", ""),
+                    speaker=ep.get("speaker", "hermes"),
+                    topic=ep.get("topic", ""),
+                    importance=float(ep.get("importance", 0.5)),
+                    timestamp=ep.get("timestamp", ""),
+                )
+        except Exception as e:
+            logger.warning("L3 episode restore failed: %s", e)
 
     def system_prompt_block(self) -> str:
         return (

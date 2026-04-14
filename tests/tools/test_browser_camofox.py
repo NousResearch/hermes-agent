@@ -16,6 +16,7 @@ from tools.browser_camofox import (
     camofox_press,
     camofox_scroll,
     camofox_snapshot,
+    camofox_takeover,
     camofox_type,
     camofox_vision,
     check_camofox_available,
@@ -100,6 +101,42 @@ class TestCamofoxSnapshot:
     def test_no_session_returns_error(self, monkeypatch):
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         result = json.loads(camofox_snapshot(task_id="no_such_task"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_reattaches_existing_tab_for_snapshot(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        mock_get.side_effect = [
+            _mock_response(json_data={
+                "tabs": [{"tabId": "tab_existing", "url": "https://example.com"}],
+            }),
+            _mock_response(json_data={
+                "snapshot": '- heading "Test" [e1]',
+                "refsCount": 1,
+            }),
+        ]
+
+        result = json.loads(camofox_snapshot(task_id="reattach_task"))
+        assert result["success"] is True
+        assert result["element_count"] == 1
+        tabs_call = mock_get.call_args_list[0]
+        assert tabs_call.args[0].endswith("/tabs")
+        assert tabs_call.kwargs["params"]["userId"].startswith("hermes_")
+
+    @patch("tools.browser_camofox.requests.get")
+    def test_does_not_reattach_when_multiple_tabs_exist(self, mock_get, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        mock_get.return_value = _mock_response(json_data={
+            "tabs": [
+                {"tabId": "tab_a", "url": "https://a.example"},
+                {"tabId": "tab_b", "url": "https://b.example"},
+            ],
+        })
+
+        result = json.loads(camofox_snapshot(task_id="ambiguous_task"))
         assert result["success"] is False
         assert "browser_navigate" in result["error"]
 
@@ -205,6 +242,53 @@ class TestCamofoxClose:
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         result = json.loads(camofox_close(task_id="nonexistent"))
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Takeover
+# ---------------------------------------------------------------------------
+
+
+class TestCamofoxTakeover:
+    @patch("tools.browser_camofox.requests.post")
+    def test_mints_takeover_link(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_TAKEOVER_MINT_URL", "http://helper.test/api/mint")
+        mock_post.side_effect = [
+            _mock_response(json_data={"tabId": "tab_takeover", "url": "https://x.com"}),
+            _mock_response(json_data={
+                "url": "https://takeover.test/session",
+                "expiresAt": "2026-04-15T00:00:00Z",
+                "agent": "test-agent",
+            }),
+        ]
+
+        camofox_navigate("https://x.com", task_id="takeover")
+        result = json.loads(camofox_takeover(reason="captcha", ttl_seconds=600, task_id="takeover"))
+        assert result["success"] is True
+        assert result["backend"] == "camofox"
+        assert result["url"] == "https://takeover.test/session"
+        assert result["ttl_seconds"] == 600
+        assert "instructions" in result
+        mint_call = mock_post.call_args
+        assert mint_call.args[0] == "http://helper.test/api/mint"
+        assert mint_call.kwargs["json"]["ttlSeconds"] == 600
+        assert mint_call.kwargs["json"]["reason"] == "captcha"
+        assert mint_call.kwargs["json"]["tabId"] == "tab_takeover"
+
+    def test_requires_existing_session(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_TAKEOVER_MINT_URL", "http://helper.test/api/mint")
+        result = json.loads(camofox_takeover(task_id="takeover_missing_session"))
+        assert result["success"] is False
+        assert "browser_navigate" in result["error"]
+
+    def test_requires_takeover_mint_url(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("CAMOFOX_TAKEOVER_MINT_URL", raising=False)
+        result = json.loads(camofox_takeover(task_id="takeover_missing"))
+        assert result["success"] is False
+        assert "mint" in result["error"].lower()
 
 
 # ---------------------------------------------------------------------------

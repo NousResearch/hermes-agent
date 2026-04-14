@@ -87,9 +87,19 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
 try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+    from tools.browser_camofox import (
+        check_camofox_takeover_available,
+        camofox_takeover,
+        is_camofox_mode as _is_camofox_mode,
+    )
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
+
+    def check_camofox_takeover_available() -> bool:
+        return False
+
+    def camofox_takeover(*args, **kwargs):
+        return json.dumps({"success": False, "error": "Camofox backend not available"})
 
 logger = logging.getLogger(__name__)
 
@@ -758,12 +768,30 @@ BROWSER_TOOL_SCHEMAS = [
             "properties": {
                 "clear": {
                     "type": "boolean",
-                    "default": False,
-                    "description": "If true, clear the message buffers after reading"
+                    "description": "If true, clear the message buffers after reading",
+                    "default": False
                 },
                 "expression": {
                     "type": "string",
                     "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
+                }
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "browser_takeover",
+        "description": "Mint a temporary live-browser takeover link so a human can view and control the current browser session. Use this when browser automation is blocked by login, CAPTCHA, MFA, or a step that needs manual intervention.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Optional short reason for requesting takeover, such as 'captcha' or 'finish login'."
+                },
+                "ttl_seconds": {
+                    "type": "integer",
+                    "description": "Optional link lifetime in seconds. Defaults to the configured Camofox takeover TTL."
                 }
             },
             "required": []
@@ -1702,6 +1730,20 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     }, ensure_ascii=False)
 
 
+def browser_takeover(
+    reason: Optional[str] = None,
+    ttl_seconds: Optional[int] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Mint a temporary live-browser takeover link for human intervention."""
+    if _is_camofox_mode():
+        return camofox_takeover(reason=reason or "", ttl_seconds=ttl_seconds, task_id=task_id)
+    return json.dumps({
+        "success": False,
+        "error": "Browser takeover is currently supported only for the Camofox backend.",
+    }, ensure_ascii=False)
+
+
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     if _is_camofox_mode():
@@ -2254,6 +2296,13 @@ def check_browser_requirements() -> bool:
     return True
 
 
+def check_browser_takeover_requirements() -> bool:
+    """Return whether the browser_takeover tool should be exposed."""
+    if not _is_camofox_mode():
+        return False
+    return check_camofox_takeover_available()
+
+
 # ============================================================================
 # Module Test
 # ============================================================================
@@ -2384,4 +2433,16 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_takeover",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_takeover"],
+    handler=lambda args, **kw: browser_takeover(
+        reason=args.get("reason"),
+        ttl_seconds=args.get("ttl_seconds"),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_takeover_requirements,
+    emoji="🛟",
 )

@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
+_DEFAULT_TAKEOVER_TTL = 900
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
@@ -90,6 +91,56 @@ def get_vnc_url() -> Optional[str]:
     return _vnc_url
 
 
+def _get_takeover_config() -> dict:
+    """Return the browser.camofox.takeover config block, or {}."""
+    try:
+        return load_config().get("browser", {}).get("camofox", {}).get("takeover", {}) or {}
+    except Exception as exc:
+        logger.debug("Could not load Camofox takeover config: %s", exc)
+        return {}
+
+
+def get_camofox_takeover_mint_url() -> str:
+    """Return the configured takeover mint endpoint, or empty string."""
+    env_url = os.getenv("CAMOFOX_TAKEOVER_MINT_URL", "").strip()
+    if env_url:
+        return env_url.rstrip("/")
+    cfg_url = str(_get_takeover_config().get("mint_url") or "").strip()
+    return cfg_url.rstrip("/")
+
+
+def get_camofox_takeover_default_ttl() -> int:
+    """Return the default TTL in seconds for takeover links."""
+    raw = os.getenv("CAMOFOX_TAKEOVER_DEFAULT_TTL", "").strip()
+    if not raw:
+        raw = str(_get_takeover_config().get("default_ttl_seconds") or "").strip()
+    try:
+        ttl = int(raw) if raw else _DEFAULT_TAKEOVER_TTL
+    except (TypeError, ValueError):
+        ttl = _DEFAULT_TAKEOVER_TTL
+    return max(60, min(ttl, 3600))
+
+
+def check_camofox_takeover_available() -> bool:
+    """Return True when Camofox takeover is configured and helper looks reachable."""
+    if not get_camofox_url() or not get_camofox_takeover_mint_url():
+        return False
+
+    mint_url = get_camofox_takeover_mint_url()
+    probe_url = None
+    if mint_url.endswith("/api/mint"):
+        probe_url = mint_url[:-len("/api/mint")] + "/health"
+
+    if not probe_url:
+        return True
+
+    try:
+        resp = requests.get(probe_url, timeout=5)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def _managed_persistence_enabled() -> bool:
     """Return whether Hermes-managed persistence is enabled for Camofox.
 
@@ -115,6 +166,32 @@ _sessions: Dict[str, Dict[str, Any]] = {}
 _sessions_lock = threading.Lock()
 
 
+def _try_reattach_existing_tab(session: Dict[str, Any]) -> Dict[str, Any]:
+    """Bind *session* to an existing server-side tab when local state is missing."""
+    if session.get("tab_id"):
+        return session
+    try:
+        tabs_data = _get("/tabs", params={"userId": session["user_id"]}, timeout=5)
+        tabs = tabs_data.get("tabs", []) or []
+        if len(tabs) == 1:
+            reused_tab = tabs[0]
+            session["tab_id"] = reused_tab.get("tabId") or reused_tab.get("targetId")
+            logger.info(
+                "Auto-reattached to existing Camofox tab %s (url: %s)",
+                session["tab_id"],
+                reused_tab.get("url", "?"),
+            )
+        elif len(tabs) > 1:
+            logger.warning(
+                "Skipping Camofox auto-reattach for user %s because %d tabs exist; refusing to guess.",
+                session["user_id"],
+                len(tabs),
+            )
+    except Exception as exc:
+        logger.debug("Auto-reattach check failed: %s", exc)
+    return session
+
+
 def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """Get or create a camofox session for the given task.
 
@@ -124,25 +201,25 @@ def _get_session(task_id: Optional[str]) -> Dict[str, Any]:
     """
     task_id = task_id or "default"
     with _sessions_lock:
-        if task_id in _sessions:
-            return _sessions[task_id]
-        if _managed_persistence_enabled():
-            identity = get_camofox_identity(task_id)
-            session = {
-                "user_id": identity["user_id"],
-                "tab_id": None,
-                "session_key": identity["session_key"],
-                "managed": True,
-            }
-        else:
-            session = {
-                "user_id": f"hermes_{uuid.uuid4().hex[:10]}",
-                "tab_id": None,
-                "session_key": f"task_{task_id[:16]}",
-                "managed": False,
-            }
-        _sessions[task_id] = session
-        return session
+        session = _sessions.get(task_id)
+        if session is None:
+            if _managed_persistence_enabled():
+                identity = get_camofox_identity(task_id)
+                session = {
+                    "user_id": identity["user_id"],
+                    "tab_id": None,
+                    "session_key": identity["session_key"],
+                    "managed": True,
+                }
+            else:
+                session = {
+                    "user_id": f"hermes_{uuid.uuid4().hex[:10]}",
+                    "tab_id": None,
+                    "session_key": f"task_{task_id[:16]}",
+                    "managed": False,
+                }
+            _sessions[task_id] = session
+    return _try_reattach_existing_tab(session)
 
 
 def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, Any]:
@@ -570,6 +647,85 @@ def camofox_vision(question: str, annotate: bool = False,
         })
     except Exception as e:
         return tool_error(str(e), success=False)
+
+
+def camofox_takeover(
+    reason: str = "",
+    ttl_seconds: Optional[int] = None,
+    task_id: Optional[str] = None,
+) -> str:
+    """Mint a temporary live-browser takeover link for the current Camofox session."""
+    mint_url = get_camofox_takeover_mint_url()
+    if not mint_url:
+        return tool_error(
+            "Camofox browser takeover is not configured. Set CAMOFOX_TAKEOVER_MINT_URL "
+            "or browser.camofox.takeover.mint_url.",
+            success=False,
+        )
+
+    task_id = task_id or "default"
+    with _sessions_lock:
+        existing = _sessions.get(task_id)
+    if existing is None:
+        return tool_error(
+            "No browser session. Call browser_navigate first before requesting takeover.",
+            success=False,
+        )
+
+    session = _try_reattach_existing_tab(existing)
+    if not session.get("tab_id"):
+        return tool_error(
+            "No live browser tab found for takeover. Call browser_navigate first.",
+            success=False,
+        )
+
+    ttl = ttl_seconds if ttl_seconds is not None else get_camofox_takeover_default_ttl()
+    try:
+        ttl = max(60, min(int(ttl), 3600))
+    except (TypeError, ValueError):
+        ttl = get_camofox_takeover_default_ttl()
+
+    payload: Dict[str, Any] = {
+        "ttlSeconds": ttl,
+        "userId": session.get("user_id"),
+        "tabId": session.get("tab_id"),
+    }
+    if reason:
+        payload["reason"] = reason
+
+    try:
+        data = requests.post(mint_url, json=payload, timeout=_DEFAULT_TIMEOUT)
+        data.raise_for_status()
+        body = data.json()
+    except Exception as exc:
+        return tool_error(f"Failed to mint Camofox takeover link: {exc}", success=False)
+
+    takeover_url = body.get("url") or body.get("takeoverUrl") or body.get("link")
+    if not takeover_url:
+        return tool_error(
+            f"Takeover mint endpoint did not return a URL: {body}",
+            success=False,
+        )
+
+    result: Dict[str, Any] = {
+        "success": True,
+        "backend": "camofox",
+        "url": takeover_url,
+        "ttl_seconds": ttl,
+        "instructions": "Share this link with the user so they can view and control the live browser.",
+    }
+    expires_at = body.get("expiresAt") or body.get("expires_at")
+    if expires_at:
+        result["expires_at"] = expires_at
+    if body.get("agent"):
+        result["agent"] = body["agent"]
+    if body.get("containerName") or body.get("container"):
+        result["container"] = body.get("containerName") or body.get("container")
+    if body.get("target"):
+        result["target"] = body["target"]
+    if reason:
+        result["reason"] = reason
+    return json.dumps(result)
 
 
 def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:

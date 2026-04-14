@@ -359,7 +359,7 @@ def get_pool_strategy(provider: str) -> str:
     return STRATEGY_FILL_FIRST
 
 
-DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
+DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 2
 
 
 class CredentialPool:

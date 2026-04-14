@@ -16,14 +16,14 @@ This adapter is for **personal WeChat accounts** (微信). If you need enterpris
 
 - A personal WeChat account
 - Python packages: `aiohttp` and `cryptography`
-- The `qrcode` package is optional (for terminal QR rendering during setup)
+- Terminal QR rendering is included when Hermes is installed with the `messaging` extra
 
 Install the required dependencies:
 
 ```bash
 pip install aiohttp cryptography
 # Optional: for terminal QR code display
-pip install qrcode
+pip install hermes-agent[messaging]
 ```
 
 ## Setup
@@ -296,4 +296,4 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
-| Terminal QR code doesn't render | Install `qrcode`: `pip install qrcode`. Alternatively, open the URL printed above the QR |
+| Terminal QR code doesn't render | Reinstall with the messaging extra: `pip install hermes-agent[messaging]`. Alternatively, open the URL printed above the QR |

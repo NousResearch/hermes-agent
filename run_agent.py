@@ -754,6 +754,7 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
         self._execution_thread_id: int | None = None  # Set at run_conversation() start
+        self._main_thread_id: int | None = None  # Set by delegate_tool before spawning
         self._client_lock = threading.RLock()
         
         # Subagent delegation state
@@ -2939,7 +2940,13 @@ class AIAgent:
         """Clear any pending interrupt request and the per-thread tool interrupt signal."""
         self._interrupt_requested = False
         self._interrupt_message = None
+        # Clear the interrupt on the worker's thread ID (set by run_conversation()).
         _set_interrupt(False, self._execution_thread_id)
+        # Also clear on the main thread ID in case an interrupt arrived on the
+        # main thread during delegate_task startup (before run_conversation set
+        # _execution_thread_id).  Both must be cleared to avoid stale state.
+        if self._main_thread_id is not None:
+            _set_interrupt(False, self._main_thread_id)
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -7065,6 +7072,11 @@ class AIAgent:
 
         def _run_tool(index, tool_call, function_name, function_args):
             """Worker function executed in a thread."""
+            # Check if interrupt arrived before this tool started.
+            # This mirrors the pre-tool check in _execute_tool_calls_sequential.
+            if self._interrupt_requested:
+                results[index] = (function_name, function_args, f"[Tool execution cancelled — {function_name} was skipped due to user interrupt]", 0.0, False)
+                return
             start = time.time()
             try:
                 result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)

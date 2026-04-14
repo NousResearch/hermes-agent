@@ -8441,6 +8441,7 @@ class AIAgent:
             thinking_sig_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
+            compression_restart_consumed_call = False
             restart_with_length_continuation = False
 
             finish_reason = "stop"
@@ -8841,6 +8842,7 @@ class AIAgent:
                                 )
                                 if compressed:
                                     conversation_history = None
+                                    compression_restart_consumed_call = True
                                     restart_with_compressed_messages = True
                                     break
 
@@ -9736,13 +9738,15 @@ class AIAgent:
                 break
 
             if restart_with_compressed_messages:
-                api_call_count -= 1
-                self.iteration_budget.refund()
+                if not compression_restart_consumed_call:
+                    api_call_count -= 1
+                    self.iteration_budget.refund()
                 # Count compression restarts toward the retry limit to prevent
                 # infinite loops when compression reduces messages but not enough
                 # to fit the context window.
                 retry_count += 1
                 restart_with_compressed_messages = False
+                compression_restart_consumed_call = False
                 continue
 
             if restart_with_length_continuation:
@@ -10332,8 +10336,7 @@ class AIAgent:
                             if compressed:
                                 compression_attempts += 1
                                 conversation_history = None
-                                restart_with_compressed_messages = True
-                                break
+                                continue
 
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1

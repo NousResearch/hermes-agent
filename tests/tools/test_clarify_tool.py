@@ -24,8 +24,6 @@ class TestClarifyToolBasics:
             return "blue"
 
         result = json.loads(clarify_tool("What color?", callback=mock_callback))
-        assert result["question"] == "What color?"
-        assert result["choices_offered"] is None
         assert result["user_response"] == "blue"
 
     def test_question_with_choices(self):
@@ -40,8 +38,6 @@ class TestClarifyToolBasics:
             choices=["1", "2", "3"],
             callback=mock_callback
         ))
-        assert result["question"] == "Pick a number"
-        assert result["choices_offered"] == ["1", "2", "3"]
         assert result["user_response"] == "2"
 
     def test_empty_question_returns_error(self):
@@ -193,3 +189,97 @@ class TestClarifySchema:
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
+
+
+class TestClarifyToolQuestionsMode:
+    """Tests for the advanced multi-question mode."""
+
+    def test_questions_mode_routes_to_callback(self):
+        received = {}
+        def mock_callback(question, choices=None, questions=None):
+            received["questions"] = questions
+            return json.dumps({"deploy_target": {"selected": ["staging"], "freeform": None}})
+
+        questions = [
+            {
+                "header": "deploy_target",
+                "question": "Deploy to which env?",
+                "options": [
+                    {"label": "staging", "description": "Test env", "recommended": True},
+                    {"label": "production", "description": "Prod env"},
+                ],
+            }
+        ]
+        result = json.loads(clarify_tool(questions=questions, callback=mock_callback))
+        assert "responses" in result
+        assert received["questions"] == questions
+
+    def test_questions_mode_ignores_question_and_choices(self):
+        received = {}
+        def mock_callback(question, choices=None, questions=None):
+            received["questions"] = questions
+            received["question"] = question
+            return json.dumps({"q1": {"selected": [], "freeform": "hi"}})
+
+        questions = [{"header": "q1", "question": "What?", "allowFreeformInput": True}]
+        clarify_tool(
+            question="ignored question",
+            choices=["ignored"],
+            questions=questions,
+            callback=mock_callback,
+        )
+        assert received["questions"] is not None
+        assert received["question"] is None
+
+    def test_questions_empty_list_returns_error(self):
+        result = json.loads(clarify_tool(questions=[], callback=lambda *a, **kw: ""))
+        assert "error" in result
+
+    def test_questions_missing_header_returns_error(self):
+        result = json.loads(clarify_tool(
+            questions=[{"question": "No header"}],
+            callback=lambda *a, **kw: "",
+        ))
+        assert "error" in result
+
+    def test_questions_missing_question_text_returns_error(self):
+        result = json.loads(clarify_tool(
+            questions=[{"header": "h1"}],
+            callback=lambda *a, **kw: "",
+        ))
+        assert "error" in result
+
+    def test_questions_duplicate_headers_returns_error(self):
+        result = json.loads(clarify_tool(
+            questions=[
+                {"header": "dup", "question": "Q1"},
+                {"header": "dup", "question": "Q2"},
+            ],
+            callback=lambda *a, **kw: "",
+        ))
+        assert "error" in result
+
+    def test_questions_header_max_length_enforced(self):
+        result = json.loads(clarify_tool(
+            questions=[{"header": "x" * 51, "question": "Q?"}],
+            callback=lambda *a, **kw: "",
+        ))
+        assert "error" in result
+
+
+class TestClarifySchemaQuestionsMode:
+    def test_schema_has_questions_property(self):
+        assert "questions" in CLARIFY_SCHEMA["parameters"]["properties"]
+
+    def test_schema_questions_is_array(self):
+        q = CLARIFY_SCHEMA["parameters"]["properties"]["questions"]
+        assert q["type"] == "array"
+
+    def test_schema_questions_items_have_header_and_question(self):
+        items = CLARIFY_SCHEMA["parameters"]["properties"]["questions"]["items"]
+        assert "header" in items["properties"]
+        assert "question" in items["properties"]
+        assert set(items["required"]) == {"header", "question"}
+
+    def test_schema_questions_not_required(self):
+        assert "questions" not in CLARIFY_SCHEMA["parameters"]["required"]

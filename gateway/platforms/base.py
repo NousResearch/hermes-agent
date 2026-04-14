@@ -988,6 +988,24 @@ class BasePlatformAdapter(ABC):
         """
         return SendResult(success=False, error="Not supported")
 
+    async def send_clarify_prompt(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list[str]] = None,
+        prompt_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        questions: Optional[list[dict]] = None,
+    ) -> SendResult:
+        """Send an interactive clarify prompt when the platform supports it.
+
+        When *questions* is provided (advanced form mode), platforms that support
+        Card V2 forms should render a structured form with dropdowns, text inputs,
+        and multi-select. Platforms without form support return ``success=False``
+        so callers can fall back to plain text.
+        """
+        return SendResult(success=False, error="Not supported")
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
         Send a typing indicator.

@@ -24,6 +24,7 @@ import signal
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
@@ -8057,6 +8058,10 @@ class GatewayRunner:
             if event_type not in ("tool.started",):
                 return
 
+            # Skip tools that have their own interactive UI (e.g. cards).
+            if tool_name in ("clarify",):
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
@@ -8504,6 +8509,83 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            def _clarify_callback_sync(question: str, choices=None, questions=None):
+                prompt_id = str(uuid.uuid4())
+                state = {
+                    "event": threading.Event(),
+                    "response": None,
+                    "question": question,
+                    "choices": list(choices or []),
+                    "questions": questions,
+                    "message_id": "",
+                }
+                adapter_state = getattr(_status_adapter, "_clarify_state", None)
+                if not isinstance(adapter_state, dict):
+                    raise RuntimeError("Adapter does not support clarify state")
+                adapter_state[prompt_id] = state
+
+                sent = False
+                if getattr(type(_status_adapter), "send_clarify_prompt", None) is not None:
+                    try:
+                        result = asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_clarify_prompt(
+                                chat_id=_status_chat_id,
+                                question=question or "",
+                                choices=list(choices or []),
+                                prompt_id=prompt_id,
+                                metadata=_status_thread_metadata,
+                                questions=questions,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=20)
+                        if result and getattr(result, "success", False):
+                            state["message_id"] = getattr(result, "message_id", "") or ""
+                            sent = True
+                    except Exception as _e:
+                        logger.warning("Clarify card prompt failed, falling back to text: %s", _e)
+
+                if not sent:
+                    if questions:
+                        lines = ["📋 请回答以下问题：", ""]
+                        for idx, q in enumerate(questions, 1):
+                            lines.append(f"**{idx}. {q.get('header', '')}** — {q.get('question', '')}")
+                            opts = q.get("options") or []
+                            for oi, opt in enumerate(opts, 1):
+                                label = opt.get("label", "")
+                                desc = opt.get("description", "")
+                                rec = " ⭐" if opt.get("recommended") else ""
+                                lines.append(f"   {oi}. {label}{rec}" + (f" — {desc}" if desc else ""))
+                            if q.get("allowFreeformInput"):
+                                lines.append("   (也可直接输入自定义内容)")
+                            lines.append("")
+                        msg = "\n".join(lines)
+                    else:
+                        choices_text = ""
+                        if choices:
+                            rendered = [f"{idx + 1}. {choice}" for idx, choice in enumerate(choices)]
+                            rendered.append(f"{len(rendered) + 1}. 其他（直接回复）")
+                            choices_text = "\n" + "\n".join(rendered)
+                        msg = f"❓ {question}{choices_text}"
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            msg,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    ).result(timeout=15)
+
+                if not state["event"].wait(timeout=1800):
+                    adapter_state.pop(prompt_id, None)
+                    raise TimeoutError("Timed out waiting for user clarification")
+                response = state.get("response")
+                adapter_state.pop(prompt_id, None)
+
+                if questions and isinstance(response, dict):
+                    return json.dumps(response, ensure_ascii=False)
+                return str(response or "").strip()
+
+            agent.clarify_callback = _clarify_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

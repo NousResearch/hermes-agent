@@ -6980,6 +6980,7 @@ class AIAgent:
             return _clarify_tool(
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
+                questions=function_args.get("questions"),
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
@@ -7392,6 +7393,7 @@ class AIAgent:
                 function_result = _clarify_tool(
                     question=function_args.get("question", ""),
                     choices=function_args.get("choices"),
+                    questions=function_args.get("questions"),
                     callback=self.clarify_callback,
                 )
                 tool_duration = time.time() - tool_start_time

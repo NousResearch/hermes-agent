@@ -19,10 +19,37 @@ from typing import List, Optional, Callable
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
 
+MAX_QUESTIONS = 10
+
+
+def _validate_questions(questions: list) -> Optional[str]:
+    if not questions:
+        return "questions array must not be empty."
+    if len(questions) > MAX_QUESTIONS:
+        return f"questions array exceeds maximum of {MAX_QUESTIONS}."
+    headers_seen: set = set()
+    for i, q in enumerate(questions):
+        if not isinstance(q, dict):
+            return f"questions[{i}] must be an object."
+        header = q.get("header")
+        if not header or not str(header).strip():
+            return f"questions[{i}]: header is required."
+        header = str(header).strip()
+        if len(header) > 50:
+            return f"questions[{i}]: header exceeds 50 characters."
+        if header in headers_seen:
+            return f"Duplicate header '{header}'."
+        headers_seen.add(header)
+        question_text = q.get("question")
+        if not question_text or not str(question_text).strip():
+            return f"questions[{i}]: question text is required."
+    return None
+
 
 def clarify_tool(
-    question: str,
+    question: str = "",
     choices: Optional[List[str]] = None,
+    questions: Optional[List[dict]] = None,
     callback: Optional[Callable] = None,
 ) -> str:
     """
@@ -32,6 +59,8 @@ def clarify_tool(
         question: The question text to present.
         choices:  Up to 4 predefined answer choices. When omitted the
                   question is purely open-ended.
+        questions: Advanced mode — structured multi-question form. When
+                   provided, question and choices are ignored.
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
@@ -39,6 +68,33 @@ def clarify_tool(
     Returns:
         JSON string with the user's response.
     """
+    # Advanced multi-question mode
+    if questions is not None:
+        err = _validate_questions(questions)
+        if err:
+            return tool_error(err)
+
+        if callback is None:
+            return json.dumps(
+                {"error": "Clarify tool is not available in this execution context."},
+                ensure_ascii=False,
+            )
+
+        try:
+            raw = callback(None, choices=None, questions=questions)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"Failed to get user input: {exc}"},
+                ensure_ascii=False,
+            )
+
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            parsed = raw
+
+        return json.dumps({"responses": parsed}, ensure_ascii=False)
+
     if not question or not question.strip():
         return tool_error("Question text is required.")
 
@@ -69,9 +125,8 @@ def clarify_tool(
         )
 
     return json.dumps({
-        "question": question,
-        "choices_offered": choices,
         "user_response": str(user_response).strip(),
+        "_note": "The user has made their selection. Continue the conversation based on this choice. Do NOT repeat the question, options, or the user's selection.",
     }, ensure_ascii=False)
 
 
@@ -88,16 +143,24 @@ CLARIFY_SCHEMA = {
     "name": "clarify",
     "description": (
         "Ask the user a question when you need clarification, feedback, or a "
-        "decision before proceeding. Supports two modes:\n\n"
+        "decision before proceeding. Supports three modes:\n\n"
         "1. **Multiple choice** — provide up to 4 choices. The user picks one "
         "or types their own answer via a 5th 'Other' option.\n"
         "2. **Open-ended** — omit choices entirely. The user types a free-form "
-        "response.\n\n"
+        "response.\n"
+        "3. **Advanced form** — provide a `questions` array for structured "
+        "multi-question forms with options, multi-select, and freeform input.\n\n"
         "Use this tool when:\n"
         "- The task is ambiguous and you need the user to choose an approach\n"
         "- You want post-task feedback ('How did that work out?')\n"
         "- You want to offer to save a skill or update memory\n"
         "- A decision has meaningful trade-offs the user should weigh in on\n\n"
+        "**IMPORTANT — After receiving the result:**\n"
+        "Treat the user's response as equivalent to a new user message. "
+        "Continue the conversation naturally based on their selection or "
+        "answer. Do NOT repeat the question, list of options, or the user's "
+        "choice back to them. Instead, proceed with the task, provide "
+        "relevant follow-up, or act on their decision directly.\n\n"
         "Do NOT use this tool for simple yes/no confirmation of dangerous "
         "commands (the terminal tool handles that). Prefer making a reasonable "
         "default choice yourself when the decision is low-stakes."
@@ -119,6 +182,50 @@ CLARIFY_SCHEMA = {
                     "automatically appends an 'Other (type your answer)' option."
                 ),
             },
+            "questions": {
+                "type": "array",
+                "description": (
+                    "Advanced mode: array of structured questions. Each renders as "
+                    "a form field. When provided, question and choices are ignored."
+                ),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "header": {
+                            "type": "string",
+                            "maxLength": 50,
+                            "description": "Short unique identifier for this question (used as form field key).",
+                        },
+                        "question": {
+                            "type": "string",
+                            "maxLength": 200,
+                            "description": "The question text displayed to the user.",
+                        },
+                        "multiSelect": {
+                            "type": "boolean",
+                            "description": "Allow multiple selections (default false).",
+                        },
+                        "allowFreeformInput": {
+                            "type": "boolean",
+                            "description": "Show a text input field for custom answers.",
+                        },
+                        "options": {
+                            "type": "array",
+                            "description": "Predefined answer options.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": {"type": "string", "description": "Option display text."},
+                                    "description": {"type": "string", "description": "Optional description."},
+                                    "recommended": {"type": "boolean", "description": "Mark as recommended."},
+                                },
+                                "required": ["label"],
+                            },
+                        },
+                    },
+                    "required": ["header", "question"],
+                },
+            },
         },
         "required": ["question"],
     },
@@ -135,6 +242,7 @@ registry.register(
     handler=lambda args, **kw: clarify_tool(
         question=args.get("question", ""),
         choices=args.get("choices"),
+        questions=args.get("questions"),
         callback=kw.get("callback")),
     check_fn=check_clarify_requirements,
     emoji="❓",

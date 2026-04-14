@@ -7183,7 +7183,7 @@ class HermesCLI:
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
-    def _clarify_callback(self, question, choices):
+    def _clarify_callback(self, question, choices=None, **kwargs):
         """
         Platform callback for the clarify tool. Called from the agent thread.
 

@@ -455,3 +455,37 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
     # sorted() must not raise TypeError
     sorted(enabled)
+
+
+# ---------------------------------------------------------------------------
+# Regression: KeyError 'sms' — platform missing from PLATFORMS registry (issue #9789)
+# ---------------------------------------------------------------------------
+
+def test_all_gateway_platforms_registered_in_platforms():
+    """Every platform used by gateway adapters must exist in PLATFORMS.
+
+    Regression for issue #9789: SMS gateway crashed with KeyError: 'sms'
+    because the platform was missing from the PLATFORMS registry in
+    hermes_cli/platforms.py.
+    """
+    from hermes_cli.platforms import PLATFORMS
+    from pathlib import Path
+    import re
+
+    # Discover all platform adapter files in gateway/platforms/
+    platforms_dir = Path(__file__).parent.parent.parent / "gateway" / "platforms"
+    platform_keys = set()
+    for py_file in platforms_dir.glob("*.py"):
+        if py_file.name == "__init__.py":
+            continue
+        content = py_file.read_text()
+        # Match platform = "..." pattern in adapter files
+        for match in re.finditer(r'platform\s*=\s*["\']([a-z_]+)["\']', content):
+            platform_keys.add(match.group(1))
+
+    # Verify each discovered platform key exists in PLATFORMS
+    missing = platform_keys - set(PLATFORMS.keys())
+    assert not missing, (
+        f"Platform(s) {missing} exist in gateway/platforms/ but are missing "
+        f"from PLATFORMS registry in hermes_cli/platforms.py"
+    )

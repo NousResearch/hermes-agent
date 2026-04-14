@@ -36,6 +36,10 @@ class TestProviderEnvDetection:
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"
         assert _has_provider_env_config(content)
 
+    def test_detects_kimi_cn_api_key(self):
+        content = "KIMI_CN_API_KEY=***\n"
+        assert _has_provider_env_config(content)
+
     def test_detects_custom_endpoint_without_openrouter_key(self):
         content = "OPENAI_BASE_URL=http://localhost:8080/v1\n"
         assert _has_provider_env_config(content)
@@ -223,6 +227,44 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+    def test_kimi_cn_probe_does_not_crash_when_base_env_is_none(self, monkeypatch, tmp_path):
+        for key in (
+            "OPENROUTER_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN",
+            "OPENAI_BASE_URL",
+            "NOUS_API_KEY",
+            "GLM_API_KEY",
+            "ZAI_API_KEY",
+            "Z_AI_API_KEY",
+            "KIMI_API_KEY",
+            "MINIMAX_API_KEY",
+            "MINIMAX_CN_API_KEY",
+            "KILOCODE_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "DASHSCOPE_API_KEY",
+            "KIMI_CN_API_KEY",
+            "HF_TOKEN",
+            "AI_GATEWAY_API_KEY",
+            "OPENCODE_ZEN_API_KEY",
+            "OPENCODE_GO_API_KEY",
+            "XIAOMI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        monkeypatch.setenv("KIMI_CN_API_KEY", "test-kimi-cn-key")
+        monkeypatch.setitem(
+            sys.modules,
+            "httpx",
+            SimpleNamespace(get=lambda *args, **kwargs: SimpleNamespace(status_code=200)),
+        )
+
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+        assert "Kimi / Moonshot (China)" in out
+        assert "TypeError" not in out
 
 
 def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):

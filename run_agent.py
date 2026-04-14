@@ -1258,12 +1258,18 @@ class AIAgent:
         compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
         compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
 
-        # Read explicit context_length override from model config
-        _model_cfg = _agent_cfg.get("model", {})
-        if isinstance(_model_cfg, dict):
-            _config_context_length = _model_cfg.get("context_length")
-        else:
-            _config_context_length = None
+        # Read explicit context_length override from model config.
+        # Priority: agent.model.context_length > top-level model.context_length
+        # (agent.model is the canonical location per config.yaml convention;
+        # top-level model section holds provider/base_url/default, not context)
+        _agent_model_cfg = _agent_section.get("model", {}) if isinstance(_agent_section, dict) else {}
+        if not isinstance(_agent_model_cfg, dict):
+            _agent_model_cfg = {}
+        _toplevel_model_cfg = _agent_cfg.get("model", {})
+        if not isinstance(_toplevel_model_cfg, dict):
+            _toplevel_model_cfg = {}
+        # Prefer agent.model.context_length; fall back to top-level model.context_length
+        _config_context_length = _agent_model_cfg.get("context_length") or _toplevel_model_cfg.get("context_length")
         if _config_context_length is not None:
             try:
                 _config_context_length = int(_config_context_length)
@@ -1437,8 +1443,7 @@ class AIAgent:
         # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
         self._ollama_num_ctx: int | None = None
         _ollama_num_ctx_override = None
-        if isinstance(_model_cfg, dict):
-            _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
+        _ollama_num_ctx_override = _agent_model_cfg.get("ollama_num_ctx") or _toplevel_model_cfg.get("ollama_num_ctx")
         if _ollama_num_ctx_override is not None:
             try:
                 self._ollama_num_ctx = int(_ollama_num_ctx_override)

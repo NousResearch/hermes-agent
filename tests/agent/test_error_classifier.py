@@ -580,6 +580,48 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    # ── vLLM / local inference server error messages ──
+
+    def test_vllm_max_model_len_overflow(self):
+        """vLLM's 'exceeds the max_model_len' error → context_overflow."""
+        e = MockAPIError(
+            "The engine prompt length 1327246 exceeds the max_model_len 131072. "
+            "Please reduce prompt.",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_vllm_prompt_length_exceeds(self):
+        """vLLM prompt length error → context_overflow."""
+        e = MockAPIError(
+            "prompt length 200000 exceeds maximum model length 131072",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_vllm_input_too_long(self):
+        """vLLM 'input is too long' error → context_overflow."""
+        e = MockAPIError("input is too long for model", status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_ollama_context_length_exceeded(self):
+        """Ollama 'context length exceeded' error → context_overflow."""
+        e = MockAPIError("context length exceeded", status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
+    def test_llamacpp_slot_context(self):
+        """llama.cpp / llama-server 'slot context' error → context_overflow."""
+        e = MockAPIError(
+            "slot context: 4096 tokens, prompt 8192 tokens — not enough space",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.context_overflow
+
     # ── Result metadata ──
 
     def test_provider_and_model_in_result(self):

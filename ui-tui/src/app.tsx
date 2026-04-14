@@ -406,6 +406,7 @@ function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<ScrollBoxH
     if (!s || !scrollable) {
       return
     }
+
     s.scrollTo(Math.round((Math.max(0, Math.min(travel, row - offset)) / travel) * Math.max(0, total - vp)))
   }
 
@@ -557,6 +558,28 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
+
+  const applyCompletion = useCallback(
+    (value = input) => {
+      const row = completions[compIdx]
+
+      if (!row?.text) {
+        return false
+      }
+
+      const text = value.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
+      const next = value.slice(0, compReplace) + text
+
+      if (next === value) {
+        return false
+      }
+
+      setInput(next)
+
+      return true
+    },
+    [compIdx, compReplace, completions, input]
+  )
 
   const pulseReasoningStreaming = useCallback(() => {
     if (reasoningStreamingTimerRef.current) {
@@ -1480,12 +1503,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (key.tab && completions.length) {
-      const row = completions[compIdx]
-
-      if (row?.text) {
-        const text = input.startsWith('/') && row.text.startsWith('/') && compReplace > 0 ? row.text.slice(1) : row.text
-        setInput(input.slice(0, compReplace) + text)
-      }
+      applyCompletion()
 
       return
     }
@@ -3122,6 +3140,17 @@ export function App({ gw }: { gw: GatewayClient }) {
     [dequeue, dispatchSubmission, inputBuf, sid]
   )
 
+  const submitOrComplete = useCallback(
+    (value: string) => {
+      if (value.startsWith('/') && completions.length && applyCompletion(value)) {
+        return
+      }
+
+      submit(value)
+    },
+    [applyCompletion, completions.length, submit]
+  )
+
   // ── Derived ──────────────────────────────────────────────────────
 
   const statusColor =
@@ -3389,7 +3418,7 @@ export function App({ gw }: { gw: GatewayClient }) {
                   columns={Math.max(20, cols - 3)}
                   onChange={setInput}
                   onPaste={handleTextPaste}
-                  onSubmit={submit}
+                  onSubmit={submitOrComplete}
                   placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : ''}
                   value={input}
                 />

@@ -24,6 +24,11 @@ from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
     get_nous_subscription_features,
 )
+from hermes_cli.minimax_provider import (
+    apply_minimax_provider_defaults,
+    describe_changes as describe_minimax_changes,
+    is_minimax_provider,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
 
@@ -843,9 +848,33 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         else:
             print_info(f"Keeping your existing TTS provider: {current_tts}")
 
+    # ── Apply MiniMax provider-native tool defaults ─────────────────────
+    # When the user picks MiniMax as their chat provider, wire the same
+    # credential into the tools MiniMax supports natively — TTS, image
+    # generation, and vision — so a single MINIMAX_API_KEY unlocks the
+    # whole multimodal surface.  Mirrors the Nous branch above.
+    minimax_selected = is_minimax_provider(config)
+    if minimax_selected:
+        minimax_changes = apply_minimax_provider_defaults(config)
+        if minimax_changes:
+            print()
+            print_success(
+                "Your MINIMAX_API_KEY also unlocks the following — "
+                "wired automatically:"
+            )
+            print(describe_minimax_changes(minimax_changes))
+        else:
+            print_info(
+                "MiniMax-native tools preserved your existing TTS / image / "
+                "vision choices."
+            )
+
     save_config(config)
 
-    if not quick and selected_provider != "nous":
+    # Skip the interactive TTS selector when the provider already owns it
+    # via its managed defaults (nous, minimax).  Users can still change
+    # TTS later via `hermes setup tools`.
+    if not quick and selected_provider != "nous" and not minimax_selected:
         _setup_tts_provider(config)
 
 

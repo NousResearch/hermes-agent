@@ -39,11 +39,46 @@ from urllib.parse import urlparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
+from tools.vision_minimax import describe_image as minimax_describe_image
 from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
 _debug = DebugSession("vision_tools", env_var="VISION_TOOLS_DEBUG")
+
+
+def _use_minimax_vision() -> bool:
+    """Route vision_analyze through the MiniMax VLM endpoint?
+
+    True when **all** of:
+      1. Active chat provider is MiniMax (``model.provider ∈
+         {minimax, minimax-cn}``).
+      2. ``MINIMAX_API_KEY`` is actually set.
+      3. The user hasn't explicitly pinned ``auxiliary.vision.provider``
+         to a different backend (``openrouter``, ``nous``, ``custom``,
+         etc.).  Only ``""`` / ``"auto"`` / ``"main"`` are treated as
+         "not explicit".
+
+    Explicit user configs always win.  Any exception in this resolution
+    falls through to the existing auxiliary-client path.
+    """
+    try:
+        from tools.vision_minimax import is_available
+        if not is_available():
+            return False
+        from hermes_cli.minimax_provider import is_minimax_provider
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        if not is_minimax_provider(cfg):
+            return False
+        aux = cfg.get("auxiliary") if isinstance(cfg.get("auxiliary"), dict) else {}
+        vision_cfg = aux.get("vision") if isinstance(aux.get("vision"), dict) else {}
+        explicit = str(vision_cfg.get("provider") or "").strip().lower()
+        if explicit and explicit not in {"auto", "main"}:
+            return False
+        return True
+    except Exception:
+        return False
 
 # Configurable HTTP download timeout for _download_image().
 # Separate from auxiliary.vision.timeout which governs the LLM API call.
@@ -465,7 +500,31 @@ async def vision_analyze_tool(
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
-        
+
+        # ── MiniMax VLM dispatch ───────────────────────────────────────
+        # When the main chat provider is MiniMax, route vision through
+        # MiniMax's dedicated VLM endpoint (/v1/coding_plan/vlm) instead
+        # of the general auxiliary-client vision path.  MiniMax's chat
+        # models (M2.7 et al.) do not accept multimodal content — image
+        # understanding is served by a separate VLM service that takes a
+        # prompt + image URL and returns a text description.
+        if _use_minimax_vision():
+            logger.info("vision_analyze: dispatching to MiniMax VLM")
+            vlm_result = minimax_describe_image(
+                prompt=user_prompt,
+                image_source=image_url,
+            )
+            if vlm_result.get("success"):
+                return json.dumps(vlm_result, ensure_ascii=False)
+            # Fall through to the default path only if the failure was
+            # a credential/config issue; errors from the VLM service
+            # (400/429/etc.) surface directly so the user sees them.
+            logger.warning(
+                "MiniMax VLM unavailable, falling back to auxiliary "
+                "vision path: %s",
+                vlm_result.get("error", "unknown"),
+            )
+
         # Determine if this is a local file path or a remote URL
         # Strip file:// scheme so file URIs resolve as local paths.
         resolved_url = image_url

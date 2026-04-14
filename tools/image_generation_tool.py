@@ -40,6 +40,10 @@ import fal_client
 from tools.debug_helpers import DebugSession
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.image_generation_minimax import (
+    check_minimax_image_requirements,
+    generate_minimax_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -348,7 +352,85 @@ def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
         return None
 
 
+def _resolve_image_backend() -> str:
+    """Determine which backend image_generate_tool should dispatch to.
+
+    Precedence:
+      1. ``image_gen.provider`` explicitly set in ~/.hermes/config.yaml
+         (``fal`` / ``minimax``).
+      2. Auto-detect: if ``MINIMAX_API_KEY`` is set AND the main chat
+         provider is MiniMax, prefer ``minimax``.
+      3. Default: ``fal``.
+
+    Returns "fal" on any config-load failure so the existing code path
+    always has a safe fallback.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception as exc:
+        logger.debug("image backend resolution: config load failed: %s", exc)
+        return "fal"
+
+    image_cfg = cfg.get("image_gen") or {}
+    if isinstance(image_cfg, dict):
+        explicit = str(image_cfg.get("provider") or "").strip().lower()
+        if explicit in ("minimax", "fal"):
+            return explicit
+        if explicit and explicit != "auto":
+            logger.warning(
+                "Unknown image_gen.provider=%r — falling back to FAL", explicit,
+            )
+            return "fal"
+
+    # Auto-detect from the main chat provider.
+    try:
+        from hermes_cli.minimax_provider import is_minimax_provider
+        if is_minimax_provider(cfg) and check_minimax_image_requirements():
+            return "minimax"
+    except Exception:
+        pass
+    return "fal"
+
+
 def image_generate_tool(
+    prompt: str,
+    aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
+    guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
+    num_images: int = DEFAULT_NUM_IMAGES,
+    output_format: str = DEFAULT_OUTPUT_FORMAT,
+    seed: Optional[int] = None
+) -> str:
+    """Generate image(s) via the configured backend.
+
+    Dispatches to MiniMax (image-01) when the user has selected MiniMax
+    as their chat provider (or set ``image_gen.provider: minimax``);
+    otherwise falls through to the existing FAL implementation.
+    """
+    backend = _resolve_image_backend()
+    if backend == "minimax":
+        logger.info("image_generate: dispatching to MiniMax image-01")
+        result = generate_minimax_image(
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            num_images=num_images,
+            output_format=output_format,
+        )
+        return json.dumps(result, ensure_ascii=False)
+    logger.debug("image_generate: dispatching to FAL (backend=%s)", backend)
+    return _image_generate_fal_tool(
+        prompt=prompt,
+        aspect_ratio=aspect_ratio,
+        num_inference_steps=num_inference_steps,
+        guidance_scale=guidance_scale,
+        num_images=num_images,
+        output_format=output_format,
+        seed=seed,
+    )
+
+
+def _image_generate_fal_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
     num_inference_steps: int = DEFAULT_NUM_INFERENCE_STEPS,
@@ -545,20 +627,31 @@ def check_fal_api_key() -> bool:
 
 def check_image_generation_requirements() -> bool:
     """
-    Check if all requirements for image generation tools are met.
-    
+    Check if at least one image-generation backend has valid credentials.
+
+    Tools.image_generate_tool() dispatches between FAL and MiniMax at
+    call time; either one being usable is enough to expose the tool.
+
     Returns:
-        bool: True if requirements are met, False otherwise
+        bool: True when MiniMax or FAL is configured, False otherwise.
     """
+    # MiniMax lights up whenever MINIMAX_API_KEY is present — it rides
+    # the same credential the chat path already validated.
     try:
-        # Check API key
+        if check_minimax_image_requirements():
+            return True
+    except Exception:
+        pass
+
+    # Existing FAL path
+    try:
         if not check_fal_api_key():
             return False
-        
+
         # Check if fal_client is available
         import fal_client  # noqa: F401 — SDK presence check
         return True
-        
+
     except ImportError:
         return False
 

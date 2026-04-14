@@ -702,6 +702,34 @@ class TestBackupEdgeCases:
         # Zip should still be created with the readable files
         assert out_zip.exists()
 
+    def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
+        """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        # Create a file with epoch timestamp (1970-01-01)
+        old_file = hermes_home / "ancient.txt"
+        old_file.write_text("old data")
+        os.utime(old_file, (0, 0))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "out.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        # Zip should still be created with the valid files
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "config.yaml" in names
+            # The pre-1980 file should be skipped, not crash the backup
+            assert "ancient.txt" not in names
+
     def test_skips_output_zip_inside_hermes(self, tmp_path, monkeypatch):
         """Backup skips its own output zip if it's inside hermes root."""
         hermes_home = tmp_path / ".hermes"

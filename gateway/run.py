@@ -1405,7 +1405,7 @@ class GatewayRunner:
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
-            "Use /retry after restart to continue."
+            "Send any message after restart to resume where it left off."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -8449,6 +8449,21 @@ class GatewayRunner:
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
                 message = _msn + "\n\n" + message
+
+            # Auto-continue: if the loaded history ends with a tool result,
+            # the previous agent turn was interrupted mid-work (gateway
+            # restart, crash, SIGTERM).  Prepend a system note so the model
+            # finishes processing the pending tool results before addressing
+            # the user's new message.  (#4493)
+            if agent_history and agent_history[-1].get("role") == "tool":
+                message = (
+                    "[System note: Your previous turn was interrupted before you could "
+                    "process the last tool result(s). The conversation history contains "
+                    "tool outputs you haven't responded to yet. Please finish processing "
+                    "those results and summarize what was accomplished, then address the "
+                    "user's new message below.]\n\n"
+                    + message
+                )
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

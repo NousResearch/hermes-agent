@@ -32,6 +32,7 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "tool_progress_style": "accumulate",  # "accumulate" = edit single msg; "separate" = one msg per tool
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -238,6 +239,9 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "tool_progress_style":
+        val = str(value).lower()
+        return val if val in ("accumulate", "separate") else "accumulate"
     if setting == "tool_preview_length":
         try:
             return int(value)

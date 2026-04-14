@@ -64,14 +64,21 @@ class TestTierResolution(unittest.TestCase):
     """Test resolve_tier_config() with various config shapes."""
 
     def test_flat_config_no_tiers(self):
-        """Config without tiers dict returns unchanged."""
+        """Config without tiers dict returns unchanged (except stripped tier keys)."""
         cfg = {"model": "gpt-5.4-mini", "reasoning_effort": "low"}
-        self.assertEqual(resolve_tier_config(cfg, tier="review"), cfg)
+        result = resolve_tier_config(cfg, tier="review")
+        self.assertEqual(result["model"], "gpt-5.4-mini")
+        self.assertEqual(result["reasoning_effort"], "low")
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
 
     def test_flat_config_empty_tiers(self):
-        """Config with empty tiers dict returns unchanged."""
+        """Config with empty tiers dict returns flat (tiers stripped)."""
         cfg = {"model": "gpt-5.4-mini", "tiers": {}}
-        self.assertEqual(resolve_tier_config(cfg, tier="review"), cfg)
+        result = resolve_tier_config(cfg, tier="review")
+        self.assertEqual(result["model"], "gpt-5.4-mini")
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
 
     def test_explicit_tier_overrides(self):
         """Explicit tier overrides model, reasoning, max_iterations."""
@@ -135,14 +142,15 @@ class TestTierResolution(unittest.TestCase):
         self.assertEqual(result["model"], "gpt-5.4-mini")
 
     def test_none_tier_returns_flat(self):
-        """None tier with no default_tier returns flat."""
+        """None tier with no default_tier returns flat (tiers stripped)."""
         cfg = {
             "model": "gpt-5.4-mini",
             "tiers": {"light": {"model": "x"}},
         }
         result = resolve_tier_config(cfg, tier=None)
-        # no default_tier, no explicit tier -> falls through to flat
-        self.assertEqual(result, cfg)
+        self.assertEqual(result["model"], "gpt-5.4-mini")
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
 
     def test_strips_tier_keys_from_result(self):
         """Result never contains 'tiers' or 'default_tier' keys."""
@@ -829,13 +837,15 @@ class TestTierEdgeCases(unittest.TestCase):
         self.assertEqual(result["model"], "light-model")
 
     def test_tier_entry_not_dict(self):
-        """Non-dict tier entry is ignored."""
+        """Non-dict tier entry falls back to flat (tiers stripped)."""
         cfg = {
             "model": "x",
             "tiers": {"review": "not-a-dict"},
         }
         result = resolve_tier_config(cfg, tier="review")
-        self.assertEqual(result, cfg)  # falls back to flat
+        self.assertEqual(result["model"], "x")
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
 
     def test_pool_with_malformed_entries(self):
         """Pool with malformed entries doesn't crash validation."""

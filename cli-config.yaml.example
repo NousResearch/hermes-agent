@@ -110,6 +110,25 @@ model:
 #     model: google/gemini-2.5-flash
 
 # =============================================================================
+# Automatic Delegation Tier Selection
+# =============================================================================
+# Opt-in runtime router for delegate_task. When enabled, Hermes can choose a
+# tier automatically from the task goal/context instead of relying on the model
+# to pick one explicitly.
+#
+# delegation:
+#   auto_tier_selection: false   # Master switch. OFF by default.
+#   auto_tier_strategy: "hybrid" # "heuristic" | "llm" | "hybrid"
+#   auto_tier_router:
+#     model: null                 # Router model override; null uses delegation.model
+#     provider: null              # Router provider override; null uses delegation.provider
+#     confidence_threshold: 0.75  # Minimum confidence required from the LLM router
+#     timeout_ms: 3000            # Router timeout in milliseconds
+#
+# When tier is set to "auto", Hermes will run the router (if enabled).
+# If routing is uncertain or fails, it falls back to the normal default_tier.
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

@@ -27,6 +27,11 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 
+try:
+    from openai import OpenAI
+except ImportError:  # pragma: no cover - optional dependency
+    OpenAI = None
+
 
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
@@ -50,12 +55,34 @@ _SUBAGENT_TOOLSETS = sorted(
 _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
+_cached_max_concurrent = None
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 # ---------------------------------------------------------------------------
 # Task-tier profiles: named delegation presets for model/routing/effort/iters
 # ---------------------------------------------------------------------------
-SUPPORTED_TIERS = frozenset({"light", "heavy", "review", "planning", "research"})
+SUPPORTED_TIERS = frozenset({"light", "heavy", "review", "planning", "research", "auto"})
+_REVIEW_SIGNALS = {
+    "review", "audit", "critique", "inspect", "find bugs", "find bug",
+    "security check", "correctness", "is this ok", "is this okay",
+    "check for", "look for issues", "validate", "verify", "diff",
+    "regression", "vulnerability", "vulnerabilities", "linting", "lint",
+}
+_PLANNING_SIGNALS = {
+    "plan", "design", "architect", "architecture", "roadmap", "strategy",
+    "how should we", "how should i", "how to approach", "migration plan",
+    "system design", "breakdown", "break down", "decompose", "outline",
+}
+_RESEARCH_SIGNALS = {
+    "research", "investigate", "find sources", "compare options",
+    "literature", "what does", "what is the best", "survey",
+    "look up", "look into", "gather", "summarize options", "benchmark",
+}
+_LIGHT_SIGNALS = {
+    "count", "list", "read", "show", "display", "print", "format",
+    "rename", "move file", "copy file", "echo", "cat ", "head ", "tail ",
+    "how many", "what is in", "simple",
+}
 _TIER_REASONING_FLOORS = {
     "heavy": "medium",
     "research": "medium",
@@ -71,41 +98,138 @@ _REASONING_ORDER = {
 def resolve_tier_config(cfg: dict, tier: Optional[str] = None) -> dict:
     """Resolve a delegation tier into an effective config dict.
 
-    Merges the tier-specific overrides on top of the flat base config.
-    Applies reasoning floor guardrails per tier.
-    Strips ``tiers`` and ``default_tier`` keys from the result so downstream
-    code never sees nested structures.
-
-    Resolution order:
-      1. If ``tiers`` dict missing/empty -> return flat cfg unchanged.
-      2. ``tier`` arg -> lookup in tiers dict.
-      3. Fallback to ``cfg.default_tier``.
-      4. Fallback to flat cfg (no tier).
+    Always returns a shallow copy with ``tiers`` and ``default_tier`` removed.
+    Applies tier overrides when available and logs warnings for unknown tiers.
     """
-    tiers = cfg.get("tiers")
-    if not isinstance(tiers, dict) or not tiers:
-        return cfg
+    merged = dict(cfg or {})
+    tiers = merged.pop("tiers", None)
+    default_tier = merged.pop("default_tier", None)
 
-    effective_tier = str(tier or cfg.get("default_tier") or "").strip().lower() or None
-    if not effective_tier or effective_tier not in tiers:
-        return cfg
+    if not isinstance(tiers, dict) or not tiers:
+        return merged
+
+    effective_tier = str(tier or default_tier or "").strip().lower() or None
+    if not effective_tier:
+        return merged
 
     tier_cfg = tiers.get(effective_tier)
+    if tier is not None and str(tier).strip().lower() and effective_tier not in tiers:
+        logger.warning("unknown delegation tier '%s'; falling back to flat config", tier)
+        return merged
+    if default_tier and effective_tier == str(default_tier).strip().lower() and effective_tier not in tiers:
+        logger.warning("unknown default_tier '%s'; falling back to flat config", default_tier)
+        return merged
     if not isinstance(tier_cfg, dict):
-        return cfg
+        return merged
 
-    merged = dict(cfg)
-    merged.pop("tiers", None)
-    merged.pop("default_tier", None)
     merged.update(tier_cfg)
-
     floor = _TIER_REASONING_FLOORS.get(effective_tier)
     if floor:
         current = str(merged.get("reasoning_effort") or "").strip().lower()
         if _REASONING_ORDER.get(current, 0) < _REASONING_ORDER[floor]:
             merged["reasoning_effort"] = floor
-
     return merged
+
+
+def _normalize_tier_value(tier) -> Optional[str]:
+    value = str(tier or "").strip().lower() or None
+    if value and value in SUPPORTED_TIERS and value != "auto":
+        return value
+    return None
+
+
+def _infer_delegate_tier(goal, context, toolsets, cfg) -> Optional[str]:
+    text = f"{goal or ''} {context or ''}".strip().lower()
+    if len(text) < 10:
+        return None
+
+    matches = []
+    if any(sig in text for sig in _REVIEW_SIGNALS):
+        matches.append("review")
+    if any(sig in text for sig in _PLANNING_SIGNALS):
+        matches.append("planning")
+    if any(sig in text for sig in _RESEARCH_SIGNALS):
+        matches.append("research")
+    if any(sig in text for sig in _LIGHT_SIGNALS):
+        matches.append("light")
+
+    if len(matches) > 1:
+        if "review" in matches:
+            logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", "review", text)
+            return "review"
+        return None
+    if matches:
+        tier = matches[0]
+        logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", tier, text)
+        return tier
+
+    logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", "heavy", text)
+    return "heavy"
+
+
+def _infer_delegate_tier_llm(goal, context, toolsets, cfg) -> Optional[str]:
+    if OpenAI is None:
+        return None
+    try:
+        auto_cfg = cfg.get("auto_tier_router") or {}
+        model = auto_cfg.get("model") or cfg.get("model")
+        provider = auto_cfg.get("provider") or cfg.get("provider")
+        threshold = float(auto_cfg.get("confidence_threshold", 0.75))
+        timeout_ms = int(auto_cfg.get("timeout_ms", 3000))
+        base_url = cfg.get("base_url")
+        api_key = cfg.get("api_key")
+        try:
+            if provider:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                runtime = resolve_runtime_provider(requested=provider)
+                base_url = getattr(runtime, "base_url", base_url)
+                api_key = getattr(runtime, "api_key", api_key)
+        except Exception:
+            pass
+        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_ms / 1000)
+        prompt = (
+            "Select exactly one tier from light, heavy, review, planning, research. "
+            "Return JSON: {tier, confidence, rationale}. "
+            f"GOAL: {goal or ''} CONTEXT: {context or ''}"
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=150,
+            response_format={"type": "json_object"},
+        )
+        content = resp.choices[0].message.content
+        data = json.loads(content)
+        tier = _normalize_tier_value(data.get("tier"))
+        conf = float(data.get("confidence", 0))
+        if tier and conf >= threshold:
+            return tier
+        return None
+    except Exception as exc:
+        logger.warning("auto-tier LLM router failed: %s; falling back", exc)
+        return None
+
+
+def _resolve_effective_tier(tier, goal, context, toolsets, cfg) -> Optional[str]:
+    explicit = _normalize_tier_value(tier)
+    if explicit:
+        return explicit
+
+    auto_allowed = cfg.get("auto_tier_selection") is True and (tier == "auto" or tier is None)
+    if not auto_allowed:
+        return None
+
+    strategy = cfg.get("auto_tier_strategy", "hybrid")
+    inferred = None
+    if strategy in ("heuristic", "hybrid"):
+        inferred = _infer_delegate_tier(goal, context, toolsets, cfg)
+    if inferred is None and strategy in ("llm", "hybrid"):
+        inferred = _infer_delegate_tier_llm(goal, context, toolsets, cfg)
+    if inferred is None:
+        logger.debug("auto-tier selection inconclusive; using default_tier")
+        return None
+    return inferred
 
 
 def _validate_pool_model(model: Optional[str], pool: list) -> Optional[str]:
@@ -117,14 +241,16 @@ def _validate_pool_model(model: Optional[str], pool: list) -> Optional[str]:
     """
     if not model or not pool:
         return model
-    pool_models = {entry.get("model") for entry in pool if isinstance(entry, dict) and entry.get("model")}
+    pool_models = [entry.get("model") for entry in pool if isinstance(entry, dict) and entry.get("model")]
     if model in pool_models:
         return model
-    logger.warning(
-        "delegation model '%s' not in pool %s; falling back to first pool entry",
-        model, pool_models,
-    )
-    return pool[0].get("model") if pool else model
+    if pool_models:
+        logger.warning(
+            "delegation model '%s' not in pool %s; falling back to first pool entry",
+            model, set(pool_models),
+        )
+        return pool_models[0]
+    return model
 
 
 def _build_pool_description(pool: list) -> str:
@@ -151,11 +277,15 @@ def _get_max_concurrent_children() -> int:
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
     """
+    global _cached_max_concurrent
+    if _cached_max_concurrent is not None:
+        return _cached_max_concurrent
     cfg = _load_config()
     val = cfg.get("max_concurrent_children")
     if val is not None:
         try:
-            return max(1, int(val))
+            _cached_max_concurrent = max(1, int(val))
+            return _cached_max_concurrent
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.max_concurrent_children=%r is not a valid integer; "
@@ -164,10 +294,12 @@ def _get_max_concurrent_children() -> int:
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
-            return max(1, int(env_val))
+            _cached_max_concurrent = max(1, int(env_val))
+            return _cached_max_concurrent
         except (TypeError, ValueError):
             pass
-    return _DEFAULT_MAX_CONCURRENT_CHILDREN
+    _cached_max_concurrent = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    return _cached_max_concurrent
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -421,8 +553,8 @@ def _build_child_agent(
     # Resolve reasoning config: explicit override > delegation config > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
-    if isinstance(override_reasoning_effort, str) and override_reasoning_effort.strip():
-        _effort = override_reasoning_effort.strip().lower()
+    if override_reasoning_effort is not None and str(override_reasoning_effort).strip():
+        _effort = str(override_reasoning_effort).strip().lower()
         if _effort == "none":
             child_reasoning = {"enabled": False, "effort": "none"}
         else:
@@ -758,10 +890,11 @@ def delegate_task(
 
     # Load config and resolve the requested tier, if any.
     raw_cfg = _load_config()
-    pool = raw_cfg.get("pool") or []
-    cfg = resolve_tier_config(raw_cfg, tier=tier)
+    effective_tier = _resolve_effective_tier(tier, goal, context, toolsets, raw_cfg)
+    cfg = resolve_tier_config(raw_cfg, tier=effective_tier)
+    pool = cfg.get("pool") or raw_cfg.get("pool") or []
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    effective_max_iter = max_iterations or default_max_iter
+    effective_max_iter = max_iterations if max_iterations is not None else default_max_iter
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.base_url is configured, this resolves the full credential
@@ -804,7 +937,7 @@ def delegate_task(
     n_tasks = len(task_list)
     # Track goal labels for progress display (truncated for readability)
     task_labels = [t["goal"][:40] for t in task_list]
-
+    
     # Save parent tool names BEFORE any child construction mutates the global.
     # _build_child_agent() calls AIAgent() which calls get_tool_definitions(),
     # which overwrites model_tools._last_resolved_tool_names with child's toolset.
@@ -817,14 +950,15 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
-            # Per-task tier resolution: task.tier > top-level tier > default_tier > flat
-            task_tier = str(t.get("tier") or tier or raw_cfg.get("default_tier") or "").strip().lower() or None
+            # Per-task tier resolution: explicit task tier wins; otherwise auto-router may infer.
+            task_tier = _resolve_effective_tier(t.get("tier") or tier, t.get("goal"), t.get("context"), t.get("toolsets") or toolsets, raw_cfg)
             task_cfg = resolve_tier_config(raw_cfg, tier=task_tier)
-            task_max_iter = max_iterations or task_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            task_max_iter = max_iterations if max_iterations is not None else task_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            task_pool = task_cfg.get("pool") or pool
             task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
             # Pool validation: ensure model is in pool if pool is configured
-            if pool:
-                task_creds["model"] = _validate_pool_model(task_creds.get("model"), pool)
+            if task_pool:
+                task_creds["model"] = _validate_pool_model(task_creds.get("model"), task_pool)
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
@@ -852,6 +986,7 @@ def delegate_task(
         # Batch -- run in parallel with per-task progress lines
         completed_count = 0
         spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+        _ = _resolve_effective_tier(raw_cfg.get("default_tier"), goal, context, toolsets, raw_cfg)
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
@@ -1183,12 +1318,7 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": sorted(SUPPORTED_TIERS),
                 "description": (
-                    "Task complexity tier. Selects a delegation.tiers entry "
-                    "which overrides model, provider, reasoning_effort, and "
-                    "max_iterations for the child agent. "
-                    "light=cheap/fast, heavy=default, review=high reasoning, "
-                    "planning=high reasoning, research=high reasoning. "
-                    "Per-task tiers override this top-level tier."
+                    "Task complexity tier. Choose explicitly or pass 'auto' to let Hermes select automatically based on goal/context (requires delegation.auto_tier_selection: true in config). Explicit values: 'light' (fast/cheap: counting, reading, simple lookups), 'heavy' (default: coding, debugging, implementation), 'review' (deep analysis: code review, audit, security check, find bugs), 'planning' (strategy: architecture, roadmap, system design), 'research' (information gathering: comparing options, sources, literature). Per-task tiers in tasks[] override this top-level tier."
                 ),
             },
             "acp_command": {

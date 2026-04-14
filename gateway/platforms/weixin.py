@@ -1542,11 +1542,14 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
+        path: str = "",
+        image_path: str = "",
         caption: str = "",
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
+        # Base platform passes image_path=...; accept both names
+        path = image_path or path
         return await self.send_document(chat_id, file_path=path, caption=caption, metadata=metadata)
 
     async def send_document(

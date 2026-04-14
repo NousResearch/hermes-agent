@@ -127,6 +127,20 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_terminal_docker_forward_env_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.docker_forward_env", '["GITHUB_TOKEN"]')
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "docker_forward_env" in config
+        assert 'TERMINAL_DOCKER_FORWARD_ENV=["GITHUB_TOKEN"]' in env_content
+
+    def test_terminal_docker_env_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.docker_env", '{"OBSIDIAN_VAULT_PATH":"/workspace/obsidian-vault"}')
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "docker_env" in config
+        assert 'TERMINAL_DOCKER_ENV={"OBSIDIAN_VAULT_PATH":"/workspace/obsidian-vault"}' in env_content
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277

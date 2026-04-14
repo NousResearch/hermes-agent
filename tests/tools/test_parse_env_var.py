@@ -38,6 +38,16 @@ class TestParseEnvVar:
             config = _tt_mod._get_env_config()
             assert config["docker_forward_env"] == ["GITHUB_TOKEN", "NPM_TOKEN"]
 
+    def test_get_env_config_parses_docker_env_json(self):
+        with patch.dict("os.environ", {
+            "TERMINAL_ENV": "docker",
+            "TERMINAL_DOCKER_ENV": '{"OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault"}',
+        }, clear=False):
+            config = _tt_mod._get_env_config()
+            assert config["docker_env"] == {
+                "OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault",
+            }
+
     def test_create_environment_passes_docker_forward_env(self):
         fake_env = object()
         with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:
@@ -51,6 +61,22 @@ class TestParseEnvVar:
 
         assert result is fake_env
         assert mock_docker.call_args.kwargs["forward_env"] == ["GITHUB_TOKEN"]
+
+    def test_create_environment_passes_docker_env(self):
+        fake_env = object()
+        with patch.object(_tt_mod, "_DockerEnvironment", return_value=fake_env) as mock_docker:
+            result = _tt_mod._create_environment(
+                "docker",
+                image="python:3.11",
+                cwd="/root",
+                timeout=180,
+                container_config={"docker_env": {"OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault"}},
+            )
+
+        assert result is fake_env
+        assert mock_docker.call_args.kwargs["env"] == {
+            "OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault",
+        }
 
     def test_falls_back_to_default(self):
         with patch.dict("os.environ", {}, clear=False):

@@ -3212,6 +3212,8 @@ def set_config_value(key: str, value: str):
         "terminal.backend": "TERMINAL_ENV",
         "terminal.modal_mode": "TERMINAL_MODAL_MODE",
         "terminal.docker_image": "TERMINAL_DOCKER_IMAGE",
+        "terminal.docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "terminal.docker_env": "TERMINAL_DOCKER_ENV",
         "terminal.singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "terminal.modal_image": "TERMINAL_MODAL_IMAGE",
         "terminal.daytona_image": "TERMINAL_DAYTONA_IMAGE",
@@ -3226,7 +3228,10 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        if isinstance(value, (list, dict)):
+            save_env_value(_config_to_env_sync[key], json.dumps(value))
+        else:
+            save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

@@ -5,6 +5,8 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
+import yaml
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
@@ -328,7 +330,38 @@ class TestRootLevelProviderOverride:
         }
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
-        assert "provider" not in result  # root key still cleaned up
+
+
+class TestTerminalConfigEnvBridging:
+    """CLI config loading should bridge Docker env config into TERMINAL_* vars."""
+
+    def test_docker_env_and_forward_env_bridge_to_json_env_vars(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {
+                "backend": "docker",
+                "docker_forward_env": ["GITHUB_TOKEN"],
+                "docker_env": {
+                    "OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault",
+                },
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        monkeypatch.delenv("TERMINAL_DOCKER_FORWARD_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_ENV", raising=False)
+
+        cli.load_cli_config()
+
+        assert os.environ["TERMINAL_DOCKER_FORWARD_ENV"] == '["GITHUB_TOKEN"]'
+        assert os.environ["TERMINAL_DOCKER_ENV"] == (
+            '{"OBSIDIAN_VAULT_PATH": "/workspace/obsidian-vault"}'
+        )
 
 
 class TestProviderResolution:

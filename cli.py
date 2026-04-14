@@ -417,6 +417,7 @@ def load_cli_config() -> Dict[str, Any]:
         "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
         "docker_image": "TERMINAL_DOCKER_IMAGE",
         "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "docker_env": "TERMINAL_DOCKER_ENV",
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
@@ -448,7 +449,7 @@ def load_cli_config() -> Dict[str, Any]:
         if config_key in terminal_config:
             if _file_has_terminal_config or env_var not in os.environ:
                 val = terminal_config[config_key]
-                if isinstance(val, list):
+                if isinstance(val, (list, dict)):
                     import json
                     os.environ[env_var] = json.dumps(val)
                 else:

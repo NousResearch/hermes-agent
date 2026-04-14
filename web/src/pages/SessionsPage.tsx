@@ -50,7 +50,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
       parts.push(snippet.slice(last, match.index));
     }
     parts.push(
-      <mark key={i++} className="bg-warning/30 text-warning rounded-sm px-0.5">
+      <mark key={i++} className="bg-warning/30 text-warning px-0.5">
         {match[1]}
       </mark>
     );
@@ -77,7 +77,7 @@ function ToolCallBlock({ toolCall }: { toolCall: { id: string; function: { name:
   }
 
   return (
-    <div className="mt-2 rounded-md border border-warning/20 bg-warning/5">
+    <div className="mt-2 border border-warning/20 bg-warning/5">
       <button
         type="button"
         className="flex w-full items-center gap-2 px-3 py-2 text-xs text-warning cursor-pointer hover:bg-warning/10 transition-colors"

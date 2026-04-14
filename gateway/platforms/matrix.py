@@ -1700,6 +1700,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Public wrapper for sending an emoji reaction to a Matrix event."""
         return await self._send_reaction(room_id, event_id, emoji)
 
+    async def _seed_control_reactions(self, room_id: str, event_id: str, emojis: list[str]) -> None:
+        """Pre-seed interactive control reactions so clients expose tap targets."""
+        for emoji in emojis:
+            try:
+                await self.send_reaction(room_id, event_id, emoji)
+            except Exception as exc:
+                logger.debug("Matrix control reaction seed failed for %s on %s: %s", emoji, event_id, exc)
+
     async def _redact_reaction(
         self, room_id: str, reaction_event_id: str, reason: str = "",
     ) -> bool:
@@ -2195,6 +2203,7 @@ class MatrixAdapter(BasePlatformAdapter):
         }
         self._approval_state[result.message_id] = state
         self._register_event_role(result.message_id, "interactive_control", chat_id, metadata, control_type="approval")
+        await self._seed_control_reactions(chat_id, result.message_id, ["✅", "🔁", "♾️", "❌"])
         return result
 
     async def send_model_picker(
@@ -2250,6 +2259,11 @@ class MatrixAdapter(BasePlatformAdapter):
         }
         self._model_picker_state[result.message_id] = state
         self._register_event_role(result.message_id, "interactive_control", chat_id, metadata, control_type="model_picker")
+        await self._seed_control_reactions(
+            chat_id,
+            result.message_id,
+            [self._number_emoji(idx) for idx in range(len(page_items))] + (["▶️"] if len(providers) > page_size else []) + ["❌"],
+        )
         return result
 
     async def _edit_model_picker_message(self, message_id: str, state: Dict[str, Any]) -> SendResult:

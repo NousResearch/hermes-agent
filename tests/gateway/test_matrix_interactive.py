@@ -75,6 +75,44 @@ class TestMatrixExecApproval:
         adapter.send.assert_awaited_once()
         assert adapter.send.call_args.kwargs["metadata"]["thread_id"] == "$thread2"
 
+    async def test_send_exec_approval_seeds_reaction_choices(self):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$approval"))
+        adapter.send_reaction = AsyncMock(return_value=SendResult(success=True, message_id="$rxn"))
+
+        await adapter.send_exec_approval(
+            chat_id="!room:example.org",
+            command="rm -rf /tmp/x",
+            session_key="session-1",
+        )
+
+        seeded = [call.args[2] for call in adapter.send_reaction.await_args_list]
+        assert seeded == ["✅", "🔁", "♾️", "❌"]
+
+    async def test_send_model_picker_seeds_number_reactions_and_cancel(self):
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="$picker"))
+        adapter.send_reaction = AsyncMock(return_value=SendResult(success=True, message_id="$rxn"))
+
+        async def _on_selected(_chat_id, _model_id, _provider_slug):
+            return "done"
+
+        providers = [
+            {"slug": "openai-codex", "name": "OpenAI Codex", "models": ["gpt-5.4"], "total_models": 1, "is_current": True},
+            {"slug": "custom-vllm", "name": "vLLM", "models": ["m1", "m2"], "total_models": 2},
+        ]
+        await adapter.send_model_picker(
+            chat_id="!room:example.org",
+            providers=providers,
+            current_model="gpt-5.4",
+            current_provider="openai-codex",
+            session_key="session-1",
+            on_model_selected=_on_selected,
+        )
+
+        seeded = [call.args[2] for call in adapter.send_reaction.await_args_list]
+        assert seeded == ["1️⃣", "2️⃣", "❌"]
+
     async def test_approval_reaction_resolves_once(self):
         adapter = _make_adapter()
         adapter._approval_state["$approval"] = {

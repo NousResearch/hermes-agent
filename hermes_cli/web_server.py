@@ -418,6 +418,17 @@ async def get_status():
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
+        elif gateway_running and remote_health_body is not None:
+            # The health probe confirmed the gateway is alive, but the local
+            # runtime status file may be stale (cross-container).  Override
+            # stopped/None state so the dashboard shows the correct badge.
+            if gateway_state in (None, "stopped"):
+                gateway_state = "running"
+
+    # If there was no runtime info at all but the health probe confirmed alive,
+    # ensure we still report the gateway as running (no shared volume scenario).
+    if gateway_running and gateway_state is None and remote_health_body is not None:
+        gateway_state = "running"
 
     active_sessions = 0
     try:

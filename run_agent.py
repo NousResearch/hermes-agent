@@ -123,6 +123,13 @@ from agent.display import (
     _split_unified_diff_sections,
 )
 from agent.cancellation_token import CancellationToken
+from agent.checkpoint import (
+    Checkpoint,
+    CheckpointConfig,
+    FileCheckpointStore,
+    MemoryCheckpointStore,
+    PendingWrite,
+)
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -3087,6 +3094,99 @@ class AIAgent:
         self._cancel_token = CancellationToken(task_name="AIAgent")
         _set_interrupt(False, self._execution_thread_id)
         logger.info("Agent resumed from pause")
+
+    def save_checkpoint(
+        self,
+        thread_id: str | None = None,
+        pending_writes: list[PendingWrite] | None = None,
+    ) -> str:
+        """
+        Persist a checkpoint of current agent state to disk.
+
+        Returns a checkpoint_id that can be used to load_checkpoint(checkpoint_id).
+        """
+        if not hasattr(self, "_checkpoint_store"):
+            self._checkpoint_store = FileCheckpointStore()
+
+        config = CheckpointConfig(
+            thread_id=thread_id or self.session_id,
+        )
+        checkpoint = Checkpoint(
+            channel_values={
+                "api_call_count": self._api_call_count,
+                "interrupt_requested": self._interrupt_requested,
+                "interrupt_message": self._interrupt_message,
+            },
+            versions_seen={},
+            metadata={
+                "session_id": self.session_id,
+                "saved_at": time.time(),
+            },
+        )
+        return self._checkpoint_store.put(config, checkpoint, pending_writes)
+
+    def load_checkpoint(
+        self,
+        thread_id: str | None = None,
+        checkpoint_id: str | None = None,
+    ) -> Checkpoint | None:
+        """
+        Load a checkpoint from the store and apply its state.
+
+        If checkpoint_id is None, loads the latest for the given thread_id.
+        """
+        if not hasattr(self, "_checkpoint_store"):
+            self._checkpoint_store = FileCheckpointStore()
+
+        config = CheckpointConfig(
+            thread_id=thread_id or self.session_id,
+            checkpoint_id=checkpoint_id,
+        )
+        checkpoint = self._checkpoint_store.get(config)
+        if checkpoint is None:
+            return None
+
+        self._api_call_count = checkpoint.channel_values.get(
+            "api_call_count", self._api_call_count
+        )
+        self._interrupt_requested = checkpoint.channel_values.get(
+            "interrupt_requested", False
+        )
+        self._interrupt_message = checkpoint.channel_values.get(
+            "interrupt_message"
+        )
+        logger.info(
+            "Loaded checkpoint: thread=%s checkpoint_id=%s",
+            config.thread_id,
+            checkpoint_id,
+        )
+        return checkpoint
+
+    def list_checkpoints(
+        self,
+        thread_id: str | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """List all checkpoints for a thread, most recent first."""
+        if not hasattr(self, "_checkpoint_store"):
+            self._checkpoint_store = FileCheckpointStore()
+        return self._checkpoint_store.list(
+            thread_id or self.session_id, limit=limit
+        )
+
+    def get_pending_writes(
+        self,
+        thread_id: str | None = None,
+        checkpoint_id: str | None = None,
+    ) -> list[PendingWrite]:
+        """Get pending writes for a checkpoint."""
+        if not hasattr(self, "_checkpoint_store"):
+            self._checkpoint_store = FileCheckpointStore()
+        config = CheckpointConfig(
+            thread_id=thread_id or self.session_id,
+            checkpoint_id=checkpoint_id,
+        )
+        return self._checkpoint_store.get_pending_writes(config)
 
 
     def _touch_activity(self, desc: str) -> None:

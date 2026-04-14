@@ -576,8 +576,9 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
 
     # After the probe detects a single model ("llm"), the flow asks
-    # "Use this model? [Y/n]:" — confirm with Enter, then context length.
-    answers = iter(["http://localhost:8000", "local-key", "", ""])
+    # "Use this model? [Y/n]:" — confirm with Enter, then context length,
+    # then display name.
+    answers = iter(["http://localhost:8000", "local-key", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
 
@@ -641,3 +642,46 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
         "ca_bundle": "/tmp/local-ca.pem",
         "insecure": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# _auto_provider_name — unit tests
+# ---------------------------------------------------------------------------
+
+def test_auto_provider_name_localhost():
+    from hermes_cli.main import _auto_provider_name
+    assert _auto_provider_name("http://localhost:11434/v1") == "Local (localhost:11434)"
+    assert _auto_provider_name("http://127.0.0.1:1234/v1") == "Local (127.0.0.1:1234)"
+
+
+def test_auto_provider_name_runpod():
+    from hermes_cli.main import _auto_provider_name
+    assert "RunPod" in _auto_provider_name("https://xyz.runpod.io/v1")
+
+
+def test_auto_provider_name_remote():
+    from hermes_cli.main import _auto_provider_name
+    result = _auto_provider_name("https://api.together.xyz/v1")
+    assert result == "Api.together.xyz"
+
+
+def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
+    """When a display name is passed, it should appear in the saved entry."""
+    import yaml
+    from hermes_cli.main import _save_custom_provider
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.dump({}))
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config", lambda: yaml.safe_load(cfg_path.read_text()) or {},
+    )
+    saved = {}
+    def _save(cfg):
+        saved.update(cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", _save)
+
+    _save_custom_provider("http://localhost:11434/v1", name="Ollama")
+    entries = saved.get("custom_providers", [])
+    assert len(entries) == 1
+    assert entries[0]["name"] == "Ollama"

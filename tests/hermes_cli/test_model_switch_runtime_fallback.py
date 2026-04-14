@@ -51,3 +51,27 @@ def test_handle_model_switch_passes_runtime_fallback_chain_to_live_agent():
         api_mode="chat_completions",
         fallback_model=cli._fallback_model,
     )
+
+
+def test_apply_model_switch_result_passes_runtime_fallback_chain_to_live_agent():
+    cli = object.__new__(HermesCLI)
+    cli.model = "claude-sonnet-4-6"
+    cli.provider = "anthropic"
+    cli.base_url = "https://api.anthropic.com"
+    cli.api_key = "old-key"
+    cli.api_mode = "anthropic_messages"
+    cli.requested_provider = "anthropic"
+    cli._fallback_model = [{"provider": "zai", "model": "glm-5"}]
+    cli.agent = MagicMock()
+
+    with patch("cli._cprint"):
+        cli._apply_model_switch_result(_result(), persist_global=False)
+
+    cli.agent.switch_model.assert_called_once_with(
+        new_model="gpt-5.4",
+        new_provider="openai",
+        api_key="new-key",
+        base_url="https://api.openai.com/v1",
+        api_mode="chat_completions",
+        fallback_model=cli._fallback_model,
+    )

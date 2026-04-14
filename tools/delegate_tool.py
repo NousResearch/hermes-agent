@@ -28,6 +28,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    from agent.delegation_policy import (
+        DISPATCH_LOCAL,
+        DISPATCH_FAST,
+        DISPATCH_STRONG,
+        ALL_ARMS,
+        init_policy,
+        get_policy,
+        record_outcome,
+        extract_bucket,
+    )
+    _HAS_DELEGATION_POLICY = True
+except ImportError:
+    _HAS_DELEGATION_POLICY = False
+
 from agent.messages import (
     AgentMessage,
     ControlMessage,
@@ -926,6 +941,14 @@ def delegate_task(
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
+    # Initialize adaptive delegation policy (lazy, one-time)
+    policy_mode = "off"
+    if _HAS_DELEGATION_POLICY:
+        policy_cfg = cfg.get("policy", {})
+        policy_mode = policy_cfg.get("update_rule", "off")
+        policy_epsilon = float(policy_cfg.get("epsilon", 0.1))
+        init_policy(mode=policy_mode, epsilon=policy_epsilon)
+
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
@@ -935,6 +958,21 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # Ask adaptive policy for the best dispatch (if enabled)
+    # _policy_dispatch is one of: DISPATCH_LOCAL, DISPATCH_FAST, DISPATCH_STRONG
+    _policy_dispatch = DISPATCH_LOCAL  # default = run locally
+    if _HAS_DELEGATION_POLICY and policy_mode != "off":
+        _parent_tier = getattr(parent_agent, "model", "") or ""
+        _repo_path = getattr(parent_agent, "_workdir", None)
+        _task_kind_bucket = extract_bucket(
+            goal=goal or "",
+            repo_path=_repo_path,
+            rough_token_estimate=None,
+            parent_model_tier=_parent_tier,
+        )
+        _policy_dispatch = get_policy().pick(_task_kind_bucket, available_arms=None)
+        logger.debug("Delegation policy picked: %s (bucket: %s)", _policy_dispatch, _task_kind_bucket)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -1087,6 +1125,30 @@ def delegate_task(
                 pass
 
     total_duration = round(time.monotonic() - overall_start, 2)
+
+    # Record outcomes for adaptive policy learning (if enabled)
+    if _HAS_DELEGATION_POLICY and policy_mode != "off":
+        _parent_tier = getattr(parent_agent, "model", "") or ""
+        _repo_path = getattr(parent_agent, "_workdir", None)
+        for entry in results:
+            _idx = entry["task_index"]
+            _goal = task_list[_idx]["goal"] if _idx < len(task_list) else ""
+            _succeeded = entry.get("status") == "completed"
+            _wall_ms = int(entry.get("duration_seconds", 0) * 1000)
+            _tokens = (
+                entry.get("tokens", {}).get("input", 0)
+                + entry.get("tokens", {}).get("output", 0)
+            )
+            record_outcome(
+                goal=_goal,
+                arm=_policy_dispatch,
+                succeeded=_succeeded,
+                wall_time_ms=_wall_ms,
+                cost_tokens=_tokens,
+                repo_path=_repo_path,
+                rough_token_estimate=None,
+                parent_model_tier=_parent_tier,
+            )
 
     return json.dumps({
         "results": results,

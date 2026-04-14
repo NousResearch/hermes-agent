@@ -8,18 +8,18 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
-from tools.approval import clear_session, is_session_yolo_enabled
+from tools.approval import disable_session_yolo, is_session_yolo_enabled
 
 
 @pytest.fixture(autouse=True)
 def _clean_yolo_state(monkeypatch):
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-    clear_session("agent:main:telegram:dm:chat-a")
-    clear_session("agent:main:telegram:dm:chat-b")
+    disable_session_yolo("agent:main:telegram:dm:chat-a")
+    disable_session_yolo("agent:main:telegram:dm:chat-b")
     yield
     monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-    clear_session("agent:main:telegram:dm:chat-a")
-    clear_session("agent:main:telegram:dm:chat-b")
+    disable_session_yolo("agent:main:telegram:dm:chat-a")
+    disable_session_yolo("agent:main:telegram:dm:chat-b")
 
 
 def _make_runner():

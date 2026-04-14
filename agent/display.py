@@ -77,12 +77,6 @@ def _diff_ansi() -> dict[str, str]:
     return _diff_colors_cached
 
 
-def reset_diff_colors() -> None:
-    """Reset cached diff colors (call after /skin switch)."""
-    global _diff_colors_cached
-    _diff_colors_cached = None
-
-
 # Module-level helpers — each call resolves from the active skin lazily.
 def _diff_dim():   return _diff_ansi()["dim"]
 def _diff_file():  return _diff_ansi()["file"]

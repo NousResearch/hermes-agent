@@ -44,11 +44,6 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
-# Backward-compatible alias — gateway/run.py imports this at runtime inside
-# a function body, so it gets the correct snapshot for that process.  New code
-# should prefer get_memory_dir().
-MEMORY_DIR = get_memory_dir()
-
 ENTRY_DELIMITER = "\n§\n"
 
 

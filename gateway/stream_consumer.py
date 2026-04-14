@@ -491,6 +491,13 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # A bare streaming cursor is not meaningful user-visible content and
+        # can render as a stray tofu/white-box message on some clients.
+        visible_without_cursor = text
+        if self.cfg.cursor:
+            visible_without_cursor = visible_without_cursor.replace(self.cfg.cursor, "")
+        if not visible_without_cursor.strip():
+            return True  # cursor-only / whitespace-only update
         if not text.strip():
             return True  # nothing to send is "success"
         try:

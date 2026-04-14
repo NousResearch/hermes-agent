@@ -910,6 +910,21 @@ class TestParseTargetRefMatrix:
         assert is_explicit is False
 
 
+class TestParseTargetRefAamp:
+    """_parse_target_ref correctly extracts peer mailbox and task thread for AAMP."""
+
+    def test_aamp_peer_without_thread(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("aamp", "peer@example.com")
+        assert chat_id == "peer@example.com"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_aamp_peer_with_task_thread(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("aamp", "peer@example.com:task-123")
+        assert chat_id == "peer@example.com"
+        assert thread_id == "task-123"
+        assert is_explicit is True
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

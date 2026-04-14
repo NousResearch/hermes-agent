@@ -310,6 +310,7 @@ def show_status(args):
         "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
         "Slack": ("SLACK_BOT_TOKEN", None),
         "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
+        "AAMP": ("AAMP_BASE_URL", "AAMP_HOME_CHANNEL"),
         "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
         "DingTalk": ("DINGTALK_CLIENT_ID", None),
         "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),

@@ -20,6 +20,36 @@ from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+DEFAULT_AAMP_BASE_URL = "https://meshmail.ai"
+DEFAULT_AAMP_SLUG = "hermes"
+
+
+def _normalize_aamp_base_url(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if not value.startswith(("http://", "https://")):
+        value = f"http://{value}"
+    return value.rstrip("/")
+
+
+def _load_aamp_cached_identity(raw_path: str | None = None) -> Optional[Dict[str, Any]]:
+    value = (raw_path or "").strip() or "aamp/mailbox_identity.json"
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = get_hermes_home() / path
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Failed to read cached AAMP identity %s: %s", path, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _has_aamp_cached_identity(raw_path: str | None = None) -> bool:
+    return _load_aamp_cached_identity(raw_path) is not None
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -67,6 +97,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    AAMP = "aamp"
 
 
 @dataclass
@@ -281,6 +312,20 @@ class GatewayConfig:
             # Email uses extra dict for config (address + imap_host + smtp_host)
             elif platform == Platform.EMAIL and config.extra.get("address"):
                 connected.append(platform)
+            # AAMP uses mailbox identity or slug-based self-registration
+            elif platform == Platform.AAMP:
+                cached_identity = _load_aamp_cached_identity(config.extra.get("credentials_file"))
+                cached_base_url = _normalize_aamp_base_url(str((cached_identity or {}).get("base_url", "") or ""))
+                cached_email = str((cached_identity or {}).get("email", "") or "").strip()
+                cached_mailbox_token = str((cached_identity or {}).get("mailbox_token", "") or "").strip()
+                cached_smtp_password = str((cached_identity or {}).get("smtp_password", "") or "").strip()
+                if (config.extra.get("base_url") or cached_base_url) and (
+                    config.extra.get("email")
+                    or config.extra.get("mailbox_token")
+                    or config.extra.get("slug")
+                    or (cached_email and cached_mailbox_token and cached_smtp_password)
+                ):
+                    connected.append(platform)
             # SMS uses api_key (Twilio auth token) — SID checked via env
             elif platform == Platform.SMS and os.getenv("TWILIO_ACCOUNT_SID"):
                 connected.append(platform)
@@ -1161,6 +1206,70 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQ_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # AAMP
+    cached_aamp_identity = _load_aamp_cached_identity(os.getenv("AAMP_CREDENTIALS_FILE", ""))
+    aamp_base_url = _normalize_aamp_base_url(
+        os.getenv("AAMP_BASE_URL")
+        or os.getenv("AAMP_HOST")
+        or str((cached_aamp_identity or {}).get("base_url", "") or "")
+        or DEFAULT_AAMP_BASE_URL
+    )
+    raw_aamp_slug = os.getenv("AAMP_SLUG", "").strip()
+    aamp_slug = raw_aamp_slug or DEFAULT_AAMP_SLUG
+    aamp_email = os.getenv("AAMP_EMAIL", "").strip()
+    aamp_mailbox_token = os.getenv("AAMP_MAILBOX_TOKEN", "").strip()
+    aamp_password = os.getenv("AAMP_PASSWORD", "").strip() or os.getenv("AAMP_SMTP_PASSWORD", "").strip()
+    aamp_credentials_file = os.getenv("AAMP_CREDENTIALS_FILE", "")
+    aamp_reject_unauthorized = os.getenv("AAMP_REJECT_UNAUTHORIZED", "").strip()
+    aamp_sender_policies = os.getenv("AAMP_SENDER_POLICIES", "").strip()
+    has_cached_aamp_identity = _has_aamp_cached_identity(aamp_credentials_file)
+    aamp_poll_interval_raw = os.getenv("AAMP_POLL_INTERVAL", "").strip()
+    aamp_poll_interval: Any = 10
+    if aamp_poll_interval_raw:
+        try:
+            parsed_poll_interval = float(aamp_poll_interval_raw)
+            aamp_poll_interval = int(parsed_poll_interval) if parsed_poll_interval.is_integer() else parsed_poll_interval
+        except ValueError:
+            logger.warning(
+                "Invalid AAMP_POLL_INTERVAL=%r; falling back to default 10 seconds",
+                aamp_poll_interval_raw,
+            )
+    if aamp_base_url and (
+        os.getenv("AAMP_BASE_URL")
+        or os.getenv("AAMP_HOST")
+        or raw_aamp_slug
+        or aamp_email
+        or aamp_mailbox_token
+        or aamp_password
+        or has_cached_aamp_identity
+    ):
+        if Platform.AAMP not in config.platforms:
+            config.platforms[Platform.AAMP] = PlatformConfig()
+        config.platforms[Platform.AAMP].enabled = True
+        config.platforms[Platform.AAMP].extra.update({
+            "base_url": aamp_base_url,
+            "slug": aamp_slug,
+            "email": aamp_email,
+            "mailbox_token": aamp_mailbox_token,
+            "smtp_password": aamp_password,
+            "description": os.getenv("AAMP_DESCRIPTION", "Hermes Agent AAMP mailbox"),
+            "credentials_file": aamp_credentials_file,
+            "poll_interval": aamp_poll_interval,
+        })
+        if aamp_sender_policies:
+            config.platforms[Platform.AAMP].extra["sender_policies"] = aamp_sender_policies
+        if aamp_reject_unauthorized:
+            config.platforms[Platform.AAMP].extra["reject_unauthorized"] = (
+                aamp_reject_unauthorized.lower() in ("true", "1", "yes", "on")
+            )
+    aamp_home = os.getenv("AAMP_HOME_CHANNEL", "").strip()
+    if aamp_home and Platform.AAMP in config.platforms:
+        config.platforms[Platform.AAMP].home_channel = HomeChannel(
+            platform=Platform.AAMP,
+            chat_id=aamp_home,
+            name=os.getenv("AAMP_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

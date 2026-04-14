@@ -389,9 +389,10 @@ memory:
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
-# Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
-# automatically cleared. Without resets, conversation context grows indefinitely
-# which increases API costs with every message.
+# Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack, AAMP,
+# and other gateway platforms) are automatically cleared. Without resets,
+# conversation context grows indefinitely which increases API costs with every
+# message.
 #
 # When a reset triggers, the agent first saves important information to its
 # persistent memory — but the conversation context is wiped. The agent starts
@@ -424,7 +425,8 @@ group_sessions_per_user: true
 # ─────────────────────────────────────────────────────────────────────────────
 # Stream tokens to messaging platforms in real-time. The bot sends a message
 # on first token, then progressively edits it as more tokens arrive.
-# Disabled by default — enable to try the streaming UX on Telegram/Discord/Slack.
+# Disabled by default. Platforms without edit-based streaming support, such as
+# AAMP and email, ignore this and send a single final reply.
 streaming:
   enabled: false
   # transport: edit           # "edit" = progressive editMessageText
@@ -519,7 +521,9 @@ agent:
 #   - A preset like "hermes-cli" or "hermes-telegram" (curated tool set)
 #   - A list of individual toolsets to compose your own (see list below)
 #
-# Supported platform keys: cli, telegram, discord, whatsapp, slack, qqbot
+# Supported platform keys include: cli, telegram, discord, whatsapp, slack,
+# signal, aamp, homeassistant, email, matrix, mattermost, sms, dingtalk,
+# feishu, wecom, wecom-callback, weixin, bluebubbles, qqbot, webhook, api_server
 #
 # Examples:
 #
@@ -547,6 +551,7 @@ agent:
 #   whatsapp:      hermes-whatsapp       (same as telegram)
 #   slack:         hermes-slack          (same as telegram)
 #   signal:        hermes-signal         (same as telegram)
+#   aamp:          hermes-aamp           (same as telegram; outbound replies stay final-only)
 #   homeassistant: hermes-homeassistant  (same as telegram)
 #   qqbot:            hermes-qqbot            (same as telegram)
 #
@@ -557,6 +562,7 @@ platform_toolsets:
   whatsapp: [hermes-whatsapp]
   slack: [hermes-slack]
   signal: [hermes-signal]
+  aamp: [hermes-aamp]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
 
@@ -604,6 +610,8 @@ platform_toolsets:
 #   hermes-discord   - Same as hermes-telegram
 #   hermes-whatsapp  - Same as hermes-telegram
 #   hermes-slack     - Same as hermes-telegram
+#   hermes-signal    - Same as hermes-telegram
+#   hermes-aamp      - Same as hermes-telegram
 #
 # COMPOSITE:
 #   debugging    - terminal + web + file

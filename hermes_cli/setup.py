@@ -1975,6 +1975,12 @@ def _setup_email():
     _gateway_setup_email()
 
 
+def _setup_aamp():
+    """Configure AAMP via gateway setup."""
+    from hermes_cli.gateway import _setup_aamp as _gateway_setup_aamp
+    _gateway_setup_aamp()
+
+
 def _setup_sms():
     """Configure SMS (Twilio) via gateway setup."""
     from hermes_cli.gateway import _setup_sms as _gateway_setup_sms
@@ -2180,6 +2186,7 @@ _GATEWAY_PLATFORMS = [
     ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
     ("Signal", "SIGNAL_HTTP_URL", _setup_signal),
     ("Email", "EMAIL_ADDRESS", _setup_email),
+    ("AAMP", "AAMP_BASE_URL", _setup_aamp),
     ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
@@ -2208,6 +2215,15 @@ def setup_gateway(config: dict):
     for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
         # Matrix has two possible env vars
         is_configured = bool(get_env_value(env_var))
+        if name == "AAMP" and not is_configured:
+            is_configured = bool(
+                get_env_value("AAMP_SLUG")
+                or get_env_value("AAMP_EMAIL")
+                or get_env_value("AAMP_MAILBOX_TOKEN")
+                or get_env_value("AAMP_PASSWORD")
+                or get_env_value("AAMP_SMTP_PASSWORD")
+                or get_env_value("AAMP_CREDENTIALS_FILE")
+            )
         if name == "Matrix" and not is_configured:
             is_configured = bool(get_env_value("MATRIX_PASSWORD"))
         label = f"{name}  (configured)" if is_configured else name
@@ -2232,6 +2248,13 @@ def setup_gateway(config: dict):
         or get_env_value("SLACK_BOT_TOKEN")
         or get_env_value("SIGNAL_HTTP_URL")
         or get_env_value("EMAIL_ADDRESS")
+        or get_env_value("AAMP_BASE_URL")
+        or get_env_value("AAMP_SLUG")
+        or get_env_value("AAMP_EMAIL")
+        or get_env_value("AAMP_MAILBOX_TOKEN")
+        or get_env_value("AAMP_PASSWORD")
+        or get_env_value("AAMP_SMTP_PASSWORD")
+        or get_env_value("AAMP_CREDENTIALS_FILE")
         or get_env_value("TWILIO_ACCOUNT_SID")
         or get_env_value("MATTERMOST_TOKEN")
         or get_env_value("MATRIX_ACCESS_TOKEN")
@@ -2266,6 +2289,16 @@ def setup_gateway(config: dict):
             missing_home.append("BlueBubbles")
         if get_env_value("QQ_APP_ID") and not get_env_value("QQ_HOME_CHANNEL"):
             missing_home.append("QQBot")
+        if (
+            get_env_value("AAMP_BASE_URL")
+            or get_env_value("AAMP_SLUG")
+            or get_env_value("AAMP_EMAIL")
+            or get_env_value("AAMP_MAILBOX_TOKEN")
+            or get_env_value("AAMP_PASSWORD")
+            or get_env_value("AAMP_SMTP_PASSWORD")
+            or get_env_value("AAMP_CREDENTIALS_FILE")
+        ) and not get_env_value("AAMP_HOME_CHANNEL"):
+            missing_home.append("AAMP")
 
         if missing_home:
             print()
@@ -2448,6 +2481,16 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("Signal")
         if get_env_value("EMAIL_ADDRESS"):
             platforms.append("Email")
+        if (
+            get_env_value("AAMP_BASE_URL")
+            or get_env_value("AAMP_SLUG")
+            or get_env_value("AAMP_EMAIL")
+            or get_env_value("AAMP_MAILBOX_TOKEN")
+            or get_env_value("AAMP_PASSWORD")
+            or get_env_value("AAMP_SMTP_PASSWORD")
+            or get_env_value("AAMP_CREDENTIALS_FILE")
+        ):
+            platforms.append("AAMP")
         if get_env_value("TWILIO_ACCOUNT_SID"):
             platforms.append("SMS")
         if get_env_value("MATRIX_ACCESS_TOKEN") or get_env_value("MATRIX_PASSWORD"):

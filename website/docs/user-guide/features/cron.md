@@ -194,6 +194,8 @@ When scheduling jobs, you specify where the output goes:
 | `"slack"` | Slack home channel | |
 | `"whatsapp"` | WhatsApp home | |
 | `"signal"` | Signal | |
+| `"aamp"` | AAMP home mailbox | Uses `AAMP_HOME_CHANNEL` |
+| `"aamp:peer@example.com"` | Specific AAMP peer mailbox | Direct mailbox delivery |
 | `"matrix"` | Matrix home room | |
 | `"mattermost"` | Mattermost home channel | |
 | `"email"` | Email | |

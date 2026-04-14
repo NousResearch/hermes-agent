@@ -1,5 +1,6 @@
 """Tests for hermes_cli.gateway."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, call
 
@@ -177,6 +178,81 @@ def test_install_linux_gateway_from_setup_system_choice_as_root_installs(monkeyp
 
     assert (scope, did_install) == ("system", True)
     assert calls == [(True, True, "alice")]
+
+
+def test_aamp_setup_includes_sender_policy_prompt():
+    aamp = next(item for item in gateway._PLATFORMS if item["key"] == "aamp")
+
+    assert any("default slug hermes" in step for step in aamp["setup_instructions"])
+    assert any("AAMP_SENDER_POLICIES" in step for step in aamp["setup_instructions"])
+    assert not any(var["name"] == "AAMP_SLUG" for var in aamp["vars"])
+    assert any(var["name"] == "AAMP_SENDER_POLICIES" for var in aamp["vars"])
+    assert any(var["name"] == "AAMP_HOME_CHANNEL" for var in aamp["vars"])
+
+
+def test_setup_aamp_persists_default_base_url_when_left_blank(monkeypatch):
+    saved = {}
+    prompts = iter(["", "", "", ""])
+
+    monkeypatch.setattr(gateway, "get_env_value", lambda name: "")
+    monkeypatch.setattr(gateway, "prompt", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(gateway, "prompt_choice", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(gateway, "save_env_value", lambda name, value: saved.setdefault(name, value))
+
+    gateway._setup_aamp()
+
+    assert saved["AAMP_BASE_URL"] == "https://meshmail.ai"
+
+
+def test_setup_aamp_prints_registered_mailbox_and_usage(monkeypatch, capsys):
+    prompts = iter(["", "", "", ""])
+
+    monkeypatch.setattr(gateway, "get_env_value", lambda name: "" if name != "AAMP_HOME_CHANNEL" else "owner@meshmail.ai")
+    monkeypatch.setattr(gateway, "prompt", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(gateway, "prompt_choice", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(gateway, "save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_is_aamp_configured", lambda: True)
+    monkeypatch.setattr(
+        gateway,
+        "_resolve_aamp_setup_identity",
+        lambda: (
+            SimpleNamespace(email="hermes@meshmail.ai"),
+            Path("/tmp/mailbox_identity.json"),
+            None,
+        ),
+    )
+
+    gateway._setup_aamp()
+
+    out = capsys.readouterr().out
+    assert "Hermes AAMP mailbox: hermes@meshmail.ai" in out
+    assert "Send AAMP tasks to: hermes@meshmail.ai" in out
+    assert "task.dispatch" in out
+    assert "owner@meshmail.ai" in out
+
+
+def test_setup_aamp_explains_deferred_registration_when_identity_unavailable(monkeypatch, capsys):
+    prompts = iter(["", "", "", ""])
+
+    monkeypatch.setattr(gateway, "get_env_value", lambda name: "")
+    monkeypatch.setattr(gateway, "prompt", lambda *args, **kwargs: next(prompts))
+    monkeypatch.setattr(gateway, "prompt_choice", lambda *args, **kwargs: 2)
+    monkeypatch.setattr(gateway, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(gateway, "save_env_value", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_is_aamp_configured", lambda: True)
+    monkeypatch.setattr(
+        gateway,
+        "_resolve_aamp_setup_identity",
+        lambda: (None, None, RuntimeError("sdk unavailable")),
+    )
+
+    gateway._setup_aamp()
+
+    out = capsys.readouterr().out
+    assert "auto-register on first gateway start" in out
+    assert "mailbox_identity.json" in out
 
 
 # ---------------------------------------------------------------------------

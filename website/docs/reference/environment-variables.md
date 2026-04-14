@@ -235,6 +235,21 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `EMAIL_HOME_ADDRESS_NAME` | Display name for the email home target |
 | `EMAIL_POLL_INTERVAL` | Email polling interval in seconds |
 | `EMAIL_ALLOW_ALL_USERS` | Allow all inbound email senders |
+| `AAMP_BASE_URL` | AAMP management-service base URL (defaults to `https://meshmail.ai`; `AAMP_HOST` alias also supported) |
+| `AAMP_ALLOWED_USERS` | Comma-separated AAMP peer mailbox addresses allowed to use Hermes |
+| `AAMP_SENDER_POLICIES` | JSON sender-policy rules using sender + exact `X-AAMP-Dispatch-Context` matching |
+| `AAMP_HOME_CHANNEL` | Default AAMP peer mailbox for cron delivery and notifications |
+| `AAMP_HOME_CHANNEL_NAME` | Display name for the AAMP home target |
+| `AAMP_EMAIL` | Explicit AAMP mailbox email when skipping auto-registration |
+| `AAMP_PASSWORD` | Explicit AAMP SMTP password paired with `AAMP_EMAIL` |
+| `AAMP_SMTP_PASSWORD` | Alias for `AAMP_PASSWORD` |
+| `AAMP_MAILBOX_TOKEN` | AAMP mailbox token in base64(`email:password`) form |
+| `AAMP_CREDENTIALS_FILE` | Path to the cached AAMP mailbox identity JSON |
+| `AAMP_POLL_INTERVAL` | SDK reconnect / polling-fallback interval in seconds |
+| `AAMP_REJECT_UNAUTHORIZED` | Verify TLS certificates for AAMP SDK HTTP, WebSocket, and SMTP connections |
+| `AAMP_DESCRIPTION` | Description Hermes uses when auto-registering an AAMP mailbox |
+| `AAMP_SLUG` | Advanced override for the auto-registration slug (default: `hermes`) |
+| `AAMP_ALLOW_ALL_USERS` | Allow all AAMP senders without an allowlist |
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |

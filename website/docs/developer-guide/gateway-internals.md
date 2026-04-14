@@ -6,7 +6,7 @@ description: "How the messaging gateway boots, authorizes users, routes sessions
 
 # Gateway Internals
 
-The messaging gateway is the long-running process that connects Hermes to 14+ external messaging platforms through a unified architecture.
+The messaging gateway is the long-running process that connects Hermes to 16+ external messaging platforms through a unified architecture.
 
 ## Key Files
 
@@ -156,10 +156,12 @@ gateway/platforms/
 ├── matrix.py            # Matrix via mautrix (optional E2EE)
 ├── mattermost.py        # Mattermost WebSocket API
 ├── email.py             # Email via IMAP/SMTP
+├── aamp.py              # AAMP mailbox agent via aamp-sdk
 ├── sms.py               # SMS via Twilio
 ├── dingtalk.py          # DingTalk WebSocket
 ├── feishu.py            # Feishu/Lark WebSocket or webhook
-├── wecom.py             # WeCom (WeChat Work) callback
+├── wecom.py             # WeCom (WeChat Work) WebSocket bot
+├── wecom_callback.py    # WeCom self-built callback app
 ├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
 ├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
 ├── qqbot.py             # QQ Bot (Tencent QQ) via Official API v2

@@ -113,44 +113,34 @@ class TestMattermostWSAuthRetry:
 class TestMatrixSyncAuthRetry:
     """gateway/platforms/matrix.py — _sync_loop()"""
 
+    @staticmethod
+    def _make_client(fake_sync):
+        client = MagicMock()
+        client.sync = fake_sync
+        client.sync_store = MagicMock()
+        client.sync_store.get_next_batch = AsyncMock(return_value=None)
+        client.sync_store.put_next_batch = AsyncMock()
+        client.handle_sync = MagicMock(return_value=[])
+        return client
+
     def test_unknown_token_sync_error_stops_loop(self):
-        """A SyncError with M_UNKNOWN_TOKEN should stop syncing."""
-        import types
-        nio_mock = types.ModuleType("nio")
-
-        class SyncError:
-            def __init__(self, message):
-                self.message = message
-
-        nio_mock.SyncError = SyncError
-
+        """An M_UNKNOWN_TOKEN auth failure should stop syncing."""
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
+        adapter._joined_rooms = set()
+        adapter._pending_megolm = []
 
         sync_count = 0
 
-        async def fake_sync(timeout=30000, since=None):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal sync_count
             sync_count += 1
-            return SyncError("M_UNKNOWN_TOKEN: Invalid access token")
+            raise RuntimeError("M_UNKNOWN_TOKEN: Invalid access token")
 
-        adapter._client = MagicMock()
-        adapter._client.sync = fake_sync
-        adapter._client.sync_store = MagicMock()
-        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
-        adapter._pending_megolm = []
-        adapter._joined_rooms = set()
+        adapter._client = self._make_client(fake_sync)
 
-        async def run():
-            import sys
-            sys.modules["nio"] = nio_mock
-            try:
-                await adapter._sync_loop()
-            finally:
-                del sys.modules["nio"]
-
-        asyncio.run(run())
+        asyncio.run(adapter._sync_loop())
         assert sync_count == 1
 
     def test_exception_with_401_stops_loop(self):
@@ -158,34 +148,19 @@ class TestMatrixSyncAuthRetry:
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
+        adapter._joined_rooms = set()
+        adapter._pending_megolm = []
 
         call_count = 0
 
-        async def fake_sync(timeout=30000, since=None):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal call_count
             call_count += 1
             raise RuntimeError("HTTP 401 Unauthorized")
 
-        adapter._client = MagicMock()
-        adapter._client.sync = fake_sync
-        adapter._client.sync_store = MagicMock()
-        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
-        adapter._pending_megolm = []
-        adapter._joined_rooms = set()
+        adapter._client = self._make_client(fake_sync)
 
-        async def run():
-            import types
-            nio_mock = types.ModuleType("nio")
-            nio_mock.SyncError = type("SyncError", (), {})
-
-            import sys
-            sys.modules["nio"] = nio_mock
-            try:
-                await adapter._sync_loop()
-            finally:
-                del sys.modules["nio"]
-
-        asyncio.run(run())
+        asyncio.run(adapter._sync_loop())
         assert call_count == 1
 
     def test_transient_error_retries(self):
@@ -193,36 +168,24 @@ class TestMatrixSyncAuthRetry:
         from gateway.platforms.matrix import MatrixAdapter
         adapter = MatrixAdapter.__new__(MatrixAdapter)
         adapter._closing = False
+        adapter._joined_rooms = set()
+        adapter._pending_megolm = []
 
         call_count = 0
 
-        async def fake_sync(timeout=30000, since=None):
+        async def fake_sync(*, since=None, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count >= 2:
                 adapter._closing = True
-                return MagicMock()  # Normal response
+                return {"next_batch": "nb-2", "rooms": {"join": {}}}
             raise ConnectionError("network timeout")
 
-        adapter._client = MagicMock()
-        adapter._client.sync = fake_sync
-        adapter._client.sync_store = MagicMock()
-        adapter._client.sync_store.get_next_batch = AsyncMock(return_value=None)
-        adapter._pending_megolm = []
-        adapter._joined_rooms = set()
+        adapter._client = self._make_client(fake_sync)
 
         async def run():
-            import types
-            nio_mock = types.ModuleType("nio")
-            nio_mock.SyncError = type("SyncError", (), {})
-
-            import sys
-            sys.modules["nio"] = nio_mock
-            try:
-                with patch("asyncio.sleep", new_callable=AsyncMock):
-                    await adapter._sync_loop()
-            finally:
-                del sys.modules["nio"]
+            with patch("asyncio.sleep", new_callable=AsyncMock):
+                await adapter._sync_loop()
 
         asyncio.run(run())
         assert call_count >= 2

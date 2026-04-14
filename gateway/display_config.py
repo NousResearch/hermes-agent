@@ -174,6 +174,21 @@ def resolve_display_setting(
 # Helpers
 # ---------------------------------------------------------------------------
 
+def get_platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Return a copy of the built-in defaults for a platform."""
+    return dict(_PLATFORM_DEFAULTS.get(platform_key, _GLOBAL_DEFAULTS))
+
+
+
+def get_effective_display(user_config: dict, platform_key: str) -> dict[str, Any]:
+    """Return the fully resolved display settings for a platform."""
+    return {
+        key: resolve_display_setting(user_config, platform_key, key)
+        for key in OVERRIDEABLE_KEYS
+    }
+
+
+
 def _normalise(setting: str, value: Any) -> Any:
     """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
     if setting == "tool_progress":

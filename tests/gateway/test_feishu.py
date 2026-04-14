@@ -606,7 +606,6 @@ class TestAdapterBehavior(unittest.TestCase):
             def register_p2_customized_event(self, event_key, _handler):
                 calls.append(f"customized:{event_key}")
                 return self
-
             def build(self):
                 calls.append("build")
                 return "handler"

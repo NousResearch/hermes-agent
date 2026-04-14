@@ -1152,6 +1152,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     or "403" in err_str
                     or "unauthorized" in err_str
                     or "forbidden" in err_str
+                    or "m_unknown_token" in err_str
                 ):
                     logger.error(
                         "Matrix: permanent auth error: %s — stopping sync", exc

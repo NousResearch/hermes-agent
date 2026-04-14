@@ -77,12 +77,29 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Platforms that don't support direct channel enumeration get session-based
-    # discovery automatically.  Skip infrastructure entries that aren't messaging
-    # platforms — everything else falls through to _build_from_sessions().
-    _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
-    for plat in Platform:
-        plat_name = plat.value
-        if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
+    # discovery automatically. Keep the allowlist explicit so supported
+    # session-derived targets like "email" remain obvious in both code and tests.
+    _SESSION_DISCOVERY_PLATFORMS = (
+        "telegram",
+        "signal",
+        "whatsapp",
+        "email",
+        "sms",
+        "matrix",
+        "feishu",
+        "mattermost",
+        "bluebubbles",
+        "weixin",
+        "wecom",
+        "wecom_callback",
+        "dingtalk",
+        "qqbot",
+        "discord",
+        "slack",
+        "homeassistant",
+    )
+    for plat_name in _SESSION_DISCOVERY_PLATFORMS:
+        if plat_name in platforms:
             continue
         platforms[plat_name] = _build_from_sessions(plat_name)
 

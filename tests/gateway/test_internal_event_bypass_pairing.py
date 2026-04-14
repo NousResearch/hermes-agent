@@ -358,6 +358,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     import gateway.pairing as pairing_mod
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     # gateway.pairing.PAIRING_DIR is a module-level constant captured at
     # import time from whichever HERMES_HOME was set then. Per-test
     # HERMES_HOME redirection in conftest doesn't retroactively move it.

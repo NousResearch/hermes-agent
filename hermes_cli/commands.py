@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -617,6 +618,7 @@ class SlashCommandCompleter(Completer):
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
         self._file_cache_cwd: str = ""
+        self._file_refreshing: bool = False
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -806,7 +808,12 @@ class SlashCommandCompleter(Completer):
         yield from self._fuzzy_file_completions(word, query, limit)
 
     def _get_project_files(self) -> list[str]:
-        """Return cached list of project files (refreshed every 5s)."""
+        """Return cached list of project files (refreshed every 5s).
+
+        When the cache is stale, returns the old cache immediately and
+        kicks off a background thread to refresh.  This way the completer
+        never blocks on rg/fd subprocesses.
+        """
         cwd = os.getcwd()
         now = time.monotonic()
         if (
@@ -816,8 +823,24 @@ class SlashCommandCompleter(Completer):
         ):
             return self._file_cache
 
+        # Cache is stale — return what we have and refresh in background.
+        if not self._file_refreshing:
+            self._file_refreshing = True
+            threading.Thread(
+                target=self._refresh_file_cache,
+                args=(cwd, now),
+                daemon=True,
+            ).start()
+
+        # Return old cache if directory hasn't changed, else empty list.
+        if self._file_cache_cwd == cwd:
+            return self._file_cache
+        return []
+
+    def _refresh_file_cache(self, cwd: str, start_time: float) -> None:
+        """Run rg/fd in a background thread and update the cache."""
         files: list[str] = []
-        # Try rg first (fast, respects .gitignore), then fd, then find.
+        # Try rg first (fast, respects .gitignore), then fd.
         for cmd in [
             ["rg", "--files", "--sortr=modified", cwd],
             ["rg", "--files", cwd],
@@ -833,7 +856,6 @@ class SlashCommandCompleter(Completer):
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
-                    # Store relative paths
                     for p in raw[:5000]:
                         rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
                         files.append(rel)
@@ -842,9 +864,9 @@ class SlashCommandCompleter(Completer):
                 continue
 
         self._file_cache = files
-        self._file_cache_time = now
+        self._file_cache_time = start_time
         self._file_cache_cwd = cwd
-        return files
+        self._file_refreshing = False
 
     @staticmethod
     def _score_path(filepath: str, query: str) -> int:
@@ -896,7 +918,7 @@ class SlashCommandCompleter(Completer):
         files = self._get_project_files()
 
         if not query:
-            # No query — show recently modified files (already sorted by mtime)
+            # No query — show first files from the project list
             for fp in files[:limit]:
                 is_dir = fp.endswith("/")
                 filename = os.path.basename(fp)

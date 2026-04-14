@@ -2665,7 +2665,7 @@ class AIAgent:
         if isinstance(body, dict):
             payload = body.get("error") if isinstance(body.get("error"), dict) else body
         if isinstance(payload, dict):
-            reason = payload.get("code") or payload.get("error")
+            reason = payload.get("code") or payload.get("type") or payload.get("error")
             if isinstance(reason, str) and reason.strip():
                 context["reason"] = reason.strip()
             message = payload.get("message") or payload.get("error_description")
@@ -4722,6 +4722,25 @@ class AIAgent:
             return False, has_retried_429
 
         if effective_reason == FailoverReason.rate_limit:
+            quota_reason = str((error_context or {}).get("reason") or "").strip().lower()
+            quota_message = str((error_context or {}).get("message") or "").strip().lower()
+            has_reset_at = bool((error_context or {}).get("reset_at") or (error_context or {}).get("resets_at"))
+            is_quota_exhausted = (
+                quota_reason == "usage_limit_reached"
+                or (has_reset_at and ("usage limit" in quota_message or "quota" in quota_message))
+            )
+            if is_quota_exhausted:
+                rotate_status = status_code if status_code is not None else 429
+                next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+                if next_entry is not None:
+                    logger.info(
+                        "Credential %s (quota exhausted) — rotated to pool entry %s",
+                        rotate_status,
+                        getattr(next_entry, "id", "?"),
+                    )
+                    self._swap_credential(next_entry)
+                    return True, False
+                return False, has_retried_429
             if not has_retried_429:
                 return False, True
             rotate_status = status_code if status_code is not None else 429
@@ -4735,6 +4754,32 @@ class AIAgent:
                 self._swap_credential(next_entry)
                 return True, False
             return False, True
+
+        if (
+            effective_reason in (FailoverReason.timeout, FailoverReason.unknown)
+            and self.api_mode == "codex_responses"
+            and (self.provider or "").strip().lower() == "openai-codex"
+        ):
+            quota_message = str((error_context or {}).get("message") or "").strip().lower()
+            is_codex_quota_proxy = (
+                quota_message.startswith("[errno 2] no such file or directory")
+                and "'" not in quota_message
+            )
+            if is_codex_quota_proxy:
+                synthesized_context = dict(error_context or {})
+                synthesized_context.setdefault("reason", "codex_file_not_found_quota_proxy")
+                next_entry = pool.mark_exhausted_and_rotate(
+                    status_code=429,
+                    error_context=synthesized_context,
+                )
+                if next_entry is not None:
+                    logger.info(
+                        "Credential 429 (codex file-not-found quota proxy) — rotated to pool entry %s",
+                        getattr(next_entry, "id", "?"),
+                    )
+                    self._swap_credential(next_entry)
+                    return True, False
+                return False, has_retried_429
 
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()

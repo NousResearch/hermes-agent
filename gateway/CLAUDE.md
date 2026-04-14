@@ -2,7 +2,7 @@
 
 # Gateway 模块 - 消息平台网关
 
-> 最后更新：2026-04-08 18:28:35
+> 最后更新：2026-04-13 16:35:00
 
 ## 模块职责
 
@@ -16,6 +16,8 @@
 - **危险命令审批**：在消息平台上审批危险命令
 - **消息格式化**：将 Hermes 响应格式化为平台原生格式
 - **文件处理**：支持平台特定的文件上传和下载
+- **重启通知**：`/restart` 命令完成后自动通知请求者
+- **服务重启**：支持 systemd 服务重启（替代分离的子进程）
 
 ## 入口与启动
 
@@ -266,6 +268,57 @@ async def request_approval(
     """请求用户审批危险命令。"""
 ```
 
+### 重启通知机制 (run.py)
+
+**主要函数**：
+```python
+async def send_restart_notification(
+    platform: str,
+    chat_id: str,
+    thread_id: str = None,
+) -> None:
+    """发送重启成功通知到请求者。"""
+
+async def handle_restart_command(
+    platform: str,
+    chat_id: str,
+    thread_id: str = None,
+) -> None:
+    """处理 /restart 命令并保存通知信息。"""
+
+def save_restart_notification(
+    platform: str,
+    chat_id: str,
+    thread_id: str = None,
+) -> None:
+    """保存重启通知信息到 .restart_notify.json。"""
+
+def load_and_send_restart_notifications() -> None:
+    """加载并发送重启通知。"""
+```
+
+**特性**：
+- **持久化通知信息**：将请求者的路由信息（平台、chat_id、thread_id）保存到 `.restart_notify.json`
+- **自动通知**：网关重启后自动发送 "Gateway restarted successfully" 消息
+- **线程保留**：保留 Telegram topic 或 Discord thread 的 ID，确保通知发送到正确位置
+- **自动清理**：发送通知后自动删除 `.restart_notify.json` 文件
+
+### systemd 服务重启 (run.py)
+
+**主要函数**：
+```python
+def restart_via_systemd() -> bool:
+    """通过 systemd 重启网关服务。"""
+
+def is_running_under_systemd() -> bool:
+    """检查是否在 systemd 下运行。"""
+```
+
+**特性**：
+- **服务重启**：使用 `systemctl restart` 替代分离的子进程
+- **改进的响应**：提供更好的重启响应和回退说明
+- **venv 符号链接保留**：在重映射路径时保持 venv python 符号链接未解析
+
 ## 关键依赖与配置
 
 ### 依赖项
@@ -344,6 +397,8 @@ async def request_approval(
 - `tests/gateway/test_discord.py` - Discord 适配器测试
 - `tests/gateway/test_slack.py` - Slack 适配器测试
 - `tests/gateway/test_dispatch.py` - 命令调度测试
+- `tests/gateway/test_restart_notification.py` - 重启通知机制测试（约 173 个测试用例）
+- `tests/gateway/test_run_progress_topics.py` - 工具进度显示测试（约 63 个测试用例）
 
 ### 测试覆盖
 - **单元测试**：每个适配器都有对应的测试文件
@@ -408,6 +463,15 @@ A: 每个实例有独立的 `~/.hermes/` 目录，可以运行多个网关实例
 - `tests/gateway/` - 完整的测试套件
 
 ## 变更记录 (Changelog)
+
+### 2026-04-13 16:35:00 - 重启通知与 systemd 集成 🔄
+- ✅ **重启通知机制**：`/restart` 命令完成后自动通知请求者
+- 📊 **持久化通知信息**：保存路由信息到 `.restart_notify.json`
+- 🔧 **systemd 集成**：支持 systemd 服务重启（替代分离的子进程）
+- 🛠️ **改进的响应**：提供更好的重启响应和回退说明
+- 🔒 **venv 符号链接保留**：在重映射路径时保持 venv python 符号链接未解析
+- 🧪 **测试覆盖**：约 173 个重启通知测试用例、63 个工具进度测试用例
+- 📖 **文档更新**：添加重启通知机制和 systemd 服务重启文档
 
 ### 2026-04-08 - 初始化模块文档 🚀
 - ✅ **创建模块文档**：生成 gateway 模块的完整 CLAUDE.md

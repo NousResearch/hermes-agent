@@ -474,6 +474,12 @@ class WeComAdapter(BasePlatformAdapter):
         if not isinstance(body, dict):
             return
 
+        # Debug: log image/file fields when present
+        if isinstance(body.get("image"), dict):
+            logger.info("[%s] Image field content: %s", self.name, json.dumps(body["image"], ensure_ascii=False))
+        if isinstance(body.get("file"), dict):
+            logger.info("[%s] File field content: %s", self.name, json.dumps(body["file"], ensure_ascii=False))
+
         msg_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex)
         if self._dedup.is_duplicate(msg_id):
             logger.debug("[%s] Duplicate message %s ignored", self.name, msg_id)
@@ -717,6 +723,26 @@ class WeComAdapter(BasePlatformAdapter):
 
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
+
+        # Check for sdkfileid (会话存档格式，不是智能机器人标准格式)
+        sdkfileid = str(media.get("sdkfileid") or "").strip()
+        if sdkfileid:
+            logger.warning(
+                "[%s] Received %s with sdkfileid (会话存档格式)，但智能机器人应使用 url+aeskey 格式。"
+                "这可能是企业微信 API 问题或配置问题。忽略此 %s。",
+                self.name, kind, kind
+            )
+            logger.debug("[%s] %s sdkfileid: %s, media keys: %s",
+                        self.name, kind, sdkfileid[:50] + "...", list(media.keys()))
+            # Note: sdkfileid is used by 会话内容存档 (chat archive) feature,
+            # which requires a different SDK (WeWorkFinanceSdk with enterprise private key).
+            # Smart robots should use url + aeskey format instead.
+            # As a fallback, we'll try to check for url below.
+            # If you need to process sdkfileid, you must:
+            # 1. Enable 会话内容存档 in your WeCom admin console
+            # 2. Configure the WeWorkFinanceSdk with your enterprise private key
+            # 3. Use Finance.GetMediaData() to download files
+            return None
 
         url = str(media.get("url") or "").strip()
         if not url:

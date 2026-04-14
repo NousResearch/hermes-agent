@@ -124,6 +124,7 @@ class TestValidateToolset:
             schema=_make_schema("mcp_dynserver_ping", "Ping"),
             handler=_dummy_handler,
         )
+        reg.register_toolset_alias("dynserver", "mcp-dynserver")
 
         monkeypatch.setattr("tools.registry.registry", reg)
 

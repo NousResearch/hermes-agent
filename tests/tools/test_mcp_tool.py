@@ -184,11 +184,7 @@ class TestToolHandler:
     def _patch_mcp_loop(self, coro_side_effect=None):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
         def fake_run(coro, timeout=30):
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(coro)
-            finally:
-                loop.close()
+            return asyncio.run(coro)
         if coro_side_effect:
             return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=coro_side_effect)
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
@@ -774,6 +770,42 @@ class TestShutdown:
         assert len(_servers) == 0
         mock_server.shutdown.assert_called_once()
 
+    def test_shutdown_deregisters_registered_tools(self):
+        """shutdown_mcp_servers removes MCP tools and their raw alias."""
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, shutdown_mcp_servers, _servers
+        from tools.registry import registry
+        from toolsets import resolve_toolset, validate_toolset
+
+        _servers.clear()
+        registry.register(
+            name="mcp_test_ping",
+            toolset="mcp-test",
+            schema={
+                "name": "mcp_test_ping",
+                "description": "Ping",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        registry.register_toolset_alias("test", "mcp-test")
+
+        server = MCPServerTask("test")
+        server._registered_tool_names = ["mcp_test_ping"]
+        _servers["test"] = server
+
+        mcp_mod._ensure_mcp_loop()
+        try:
+            assert validate_toolset("test") is True
+            assert "mcp_test_ping" in resolve_toolset("test")
+            shutdown_mcp_servers()
+        finally:
+            mcp_mod._mcp_loop = None
+            mcp_mod._mcp_thread = None
+
+        assert "mcp_test_ping" not in registry.get_all_tool_names()
+        assert validate_toolset("test") is False
+
     def test_shutdown_handles_errors(self):
         """shutdown_mcp_servers handles errors during close gracefully."""
         import tools.mcp_tool as mcp_mod
@@ -1177,7 +1209,11 @@ class TestConfigurableTimeouts:
         try:
             handler = _make_tool_handler("test_srv", "my_tool", 180)
             with patch("tools.mcp_tool._run_on_mcp_loop") as mock_run:
-                mock_run.return_value = json.dumps({"result": "ok"})
+                def fake_run(coro, timeout=30):
+                    coro.close()
+                    return json.dumps({"result": "ok"})
+
+                mock_run.side_effect = fake_run
                 handler({})
                 # Verify timeout=180 was passed
                 call_kwargs = mock_run.call_args
@@ -1277,11 +1313,7 @@ class TestUtilityHandlers:
     def _patch_mcp_loop(self):
         """Return a patch for _run_on_mcp_loop that runs the coroutine directly."""
         def fake_run(coro, timeout=30):
-            loop = asyncio.new_event_loop()
-            try:
-                return loop.run_until_complete(coro)
-            finally:
-                loop.close()
+            return asyncio.run(coro)
         return patch("tools.mcp_tool._run_on_mcp_loop", side_effect=fake_run)
 
     # -- list_resources --
@@ -3048,6 +3080,7 @@ class TestSanitizeMcpNameComponent:
             schema={"name": "mcp_ai_exa_exa_search", "description": "Search", "parameters": {"type": "object", "properties": {}}},
             handler=lambda *_args, **_kwargs: "{}",
         )
+        reg.register_toolset_alias("ai.exa/exa", "mcp-ai.exa/exa")
 
         with patch("tools.registry.registry", reg):
             assert validate_toolset("ai.exa/exa") is True

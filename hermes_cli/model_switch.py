@@ -782,7 +782,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids
+    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids, openrouter_vendor_label
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -795,6 +795,23 @@ def list_authenticated_providers(
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+
+    def _build_openrouter_groups(model_ids: list[str]) -> list[dict]:
+        grouped: dict[str, list[str]] = {}
+        for model_id in model_ids:
+            if "/" not in model_id:
+                continue
+            vendor, _bare = model_id.split("/", 1)
+            grouped.setdefault(vendor, []).append(model_id)
+        return [
+            {
+                "id": vendor,
+                "name": openrouter_vendor_label(vendor),
+                "models": models,
+                "total_models": len(models),
+            }
+            for vendor, models in sorted(grouped.items(), key=lambda item: item[0])
+        ]
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -827,7 +844,7 @@ def list_authenticated_providers(
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
 
-        results.append({
+        provider_entry = {
             "slug": slug,
             "name": display_name,
             "is_current": slug == current_provider or mdev_id == current_provider,
@@ -835,7 +852,10 @@ def list_authenticated_providers(
             "models": top,
             "total_models": total,
             "source": "built-in",
-        })
+        }
+        if slug == "openrouter":
+            provider_entry["groups"] = _build_openrouter_groups(model_ids)
+        results.append(provider_entry)
         seen_slugs.add(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
@@ -1085,4 +1105,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-

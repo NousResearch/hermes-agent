@@ -34,6 +34,22 @@ _OPENROUTER_EXCLUDED_PICKER_IDS: frozenset[str] = frozenset({
     "openrouter/free",
     "openrouter/auto",
 })
+_OPENROUTER_VENDOR_LABELS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "arcee-ai": "Arcee",
+    "deepseek": "DeepSeek",
+    "google": "Google",
+    "meta-llama": "Meta Llama",
+    "minimax": "MiniMax",
+    "moonshotai": "Moonshot",
+    "nvidia": "Nvidia",
+    "openai": "OpenAI",
+    "qwen": "Qwen",
+    "stepfun": "StepFun",
+    "x-ai": "X.AI",
+    "xiaomi": "Xiaomi",
+    "z-ai": "Z.AI",
+}
 
 
 def _codex_curated_models() -> list[str]:
@@ -780,6 +796,29 @@ def fetch_openrouter_models(
 def openrouter_picker_model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return the canonical automated OpenRouter picker catalog."""
     return [mid for mid, _desc in fetch_openrouter_models(force_refresh=force_refresh)]
+
+
+def openrouter_vendor_label(vendor_slug: str) -> str:
+    """Return a human-friendly label for an OpenRouter vendor slug."""
+    label = _OPENROUTER_VENDOR_LABELS.get(vendor_slug)
+    if label:
+        return label
+    bits = [part for part in vendor_slug.replace("_", "-").split("-") if part]
+    return " ".join(part[:1].upper() + part[1:] for part in bits) or vendor_slug
+
+
+def openrouter_picker_groups(*, force_refresh: bool = False) -> list[tuple[str, tuple[str, ...]]]:
+    """Return OpenRouter picker groups as ``(vendor, models...)`` tuples."""
+    grouped: dict[str, list[str]] = {}
+    for model_id in openrouter_picker_model_ids(force_refresh=force_refresh):
+        if "/" not in model_id:
+            continue
+        vendor, _bare = model_id.split("/", 1)
+        grouped.setdefault(vendor, []).append(model_id)
+    return [
+        (vendor, tuple(models))
+        for vendor, models in sorted(grouped.items(), key=lambda item: item[0])
+    ]
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:

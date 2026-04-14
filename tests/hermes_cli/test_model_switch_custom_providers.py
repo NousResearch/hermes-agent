@@ -69,6 +69,42 @@ def test_list_authenticated_providers_uses_dynamic_openrouter_catalog(monkeypatc
     assert openrouter["total_models"] == 2
 
 
+def test_list_authenticated_providers_exposes_openrouter_groups(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"openrouter": {"env": ["OPENROUTER_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.openrouter_picker_model_ids",
+        lambda **_kwargs: ["anthropic/claude-sonnet-4.6", "openai/gpt-5.4"],
+    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        user_providers={},
+        custom_providers=[],
+        max_models=50,
+    )
+
+    openrouter = next(p for p in providers if p["slug"] == "openrouter")
+    assert openrouter["groups"] == [
+        {
+            "id": "anthropic",
+            "name": "Anthropic",
+            "models": ["anthropic/claude-sonnet-4.6"],
+            "total_models": 1,
+        },
+        {
+            "id": "openai",
+            "name": "OpenAI",
+            "models": ["openai/gpt-5.4"],
+            "total_models": 1,
+        },
+    ]
+
+
 def test_resolve_provider_full_finds_named_custom_provider():
     """Explicit /model --provider should resolve saved custom_providers entries."""
     resolved = resolve_provider_full(

@@ -2773,6 +2773,7 @@ if DISCORD_AVAILABLE:
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False
             self._selected_provider: str = ""
+            self._selected_group: str = ""
 
             self._build_provider_select()
 
@@ -2822,7 +2823,19 @@ if DISCORD_AVAILABLE:
             if not provider:
                 return
 
-            models = provider.get("models", [])
+            group = next(
+                (
+                    g for g in provider.get("groups", [])
+                    if g.get("id") == self._selected_group
+                ),
+                None,
+            )
+            if group:
+                models = group.get("models", [])
+                group_name = group.get("name", self._selected_group)
+            else:
+                models = provider.get("models", [])
+                group_name = ""
             options = []
             for model_id in models[:25]:
                 short = model_id.split("/")[-1] if "/" in model_id else model_id
@@ -2836,7 +2849,11 @@ if DISCORD_AVAILABLE:
                 return
 
             select = discord.ui.Select(
-                placeholder=f"Choose a model from {provider.get('name', provider_slug)}...",
+                placeholder=(
+                    f"Choose a model from {group_name}..."
+                    if group_name
+                    else f"Choose a model from {provider.get('name', provider_slug)}..."
+                ),
                 options=options,
                 custom_id="model_model_select",
             )
@@ -2855,6 +2872,49 @@ if DISCORD_AVAILABLE:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
+        def _build_group_select(self, provider_slug: str):
+            """Build the vendor-group dropdown for OpenRouter."""
+            self.clear_items()
+            provider = next(
+                (p for p in self.providers if p["slug"] == provider_slug), None
+            )
+            if not provider:
+                return
+
+            groups = provider.get("groups", [])
+            options = []
+            for group in groups[:25]:
+                count = group.get("total_models", len(group.get("models", [])))
+                label = f"{group['name']} ({count} models)"
+                options.append(
+                    discord.SelectOption(
+                        label=label[:100],
+                        value=group["id"],
+                    )
+                )
+            if not options:
+                return
+
+            select = discord.ui.Select(
+                placeholder=f"Choose a vendor group from {provider.get('name', provider_slug)}...",
+                options=options,
+                custom_id="model_group_select",
+            )
+            select.callback = self._on_group_selected
+            self.add_item(select)
+
+            back_btn = discord.ui.Button(
+                label="◀ Back", style=discord.ButtonStyle.grey, custom_id="model_group_back"
+            )
+            back_btn.callback = self._on_back
+            self.add_item(back_btn)
+
+            cancel_btn = discord.ui.Button(
+                label="Cancel", style=discord.ButtonStyle.red, custom_id="model_group_cancel"
+            )
+            cancel_btn.callback = self._on_cancel
+            self.add_item(cancel_btn)
+
         async def _on_provider_selected(self, interaction: discord.Interaction):
             if not self._check_auth(interaction):
                 await interaction.response.send_message(
@@ -2868,6 +2928,20 @@ if DISCORD_AVAILABLE:
                 (p for p in self.providers if p["slug"] == provider_slug), None
             )
             pname = provider.get("name", provider_slug) if provider else provider_slug
+            groups = provider.get("groups", []) if provider else []
+            self._selected_group = ""
+
+            if groups:
+                self._build_group_select(provider_slug)
+                await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="⚙ Model Configuration",
+                        description=f"Provider: **{pname}**\nSelect a vendor group ({len(groups)} available):",
+                        color=discord.Color.blue(),
+                    ),
+                    view=self,
+                )
+                return
 
             self._build_model_select(provider_slug)
 
@@ -2879,6 +2953,44 @@ if DISCORD_AVAILABLE:
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
                     description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    color=discord.Color.blue(),
+                ),
+                view=self,
+            )
+
+        async def _on_group_selected(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            group_id = interaction.data["values"][0]
+            self._selected_group = group_id
+            provider = next(
+                (p for p in self.providers if p["slug"] == self._selected_provider), None
+            )
+            group = next(
+                (g for g in (provider.get("groups", []) if provider else []) if g.get("id") == group_id),
+                None,
+            )
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            gname = group.get("name", group_id) if group else group_id
+
+            self._build_model_select(self._selected_provider)
+
+            total = group.get("total_models", 0) if group else 0
+            shown = min(len(group.get("models", [])), 25) if group else 0
+            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Model Configuration",
+                    description=(
+                        f"Provider: **{pname}**\n"
+                        f"Vendor: **{gname}**\n"
+                        f"Select a model:{extra}"
+                    ),
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -2925,7 +3037,25 @@ if DISCORD_AVAILABLE:
                 )
                 return
 
+            if self._selected_group:
+                provider = next(
+                    (p for p in self.providers if p["slug"] == self._selected_provider), None
+                )
+                pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+                self._selected_group = ""
+                self._build_group_select(self._selected_provider)
+                await interaction.response.edit_message(
+                    embed=discord.Embed(
+                        title="⚙ Model Configuration",
+                        description=f"Provider: **{pname}**\nSelect a vendor group ({len(provider.get('groups', []) if provider else [])} available):",
+                        color=discord.Color.blue(),
+                    ),
+                    view=self,
+                )
+                return
+
             self._build_provider_select()
+            self._selected_provider = ""
 
             try:
                 from hermes_cli.providers import get_label

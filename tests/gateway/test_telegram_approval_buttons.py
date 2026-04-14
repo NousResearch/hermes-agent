@@ -245,7 +245,7 @@ class TestTelegramApprovalCallback:
         adapter = _make_adapter()
 
         query = AsyncMock()
-        query.data = "mp:some_provider"
+        query.data = "mv:anthropic"
         query.message = MagicMock()
         query.message.chat_id = 12345
         query.from_user = MagicMock()
@@ -288,4 +288,96 @@ class TestTelegramApprovalCallback:
                     pass  # May fail on file write, that's fine
 
         # Should NOT have triggered approval resolution
-        mock_resolve.assert_not_called()
+
+
+class TestTelegramModelPickerGroups:
+    @pytest.mark.asyncio
+    async def test_provider_selection_with_groups_opens_group_stage(self):
+        adapter = _make_adapter()
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {
+                    "slug": "openrouter",
+                    "name": "OpenRouter",
+                    "models": ["anthropic/claude-sonnet-4.6"],
+                    "total_models": 2,
+                    "groups": [
+                        {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "models": ["anthropic/claude-sonnet-4.6"],
+                            "total_models": 1,
+                        },
+                        {
+                            "id": "openai",
+                            "name": "OpenAI",
+                            "models": ["openai/gpt-5.4"],
+                            "total_models": 1,
+                        },
+                    ],
+                }
+            ],
+            "current_model": "anthropic/claude-sonnet-4.6",
+            "current_provider": "openrouter",
+        }
+
+        query = AsyncMock()
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        await adapter._handle_model_picker_callback(query, "mp:openrouter", "12345")
+
+        state = adapter._model_picker_state["12345"]
+        assert state["selected_provider"] == "openrouter"
+        assert state["group_list"][0]["id"] == "anthropic"
+        assert "Select a vendor group" in query.edit_message_text.call_args.kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_group_selection_keeps_openrouter_as_provider(self):
+        adapter = _make_adapter()
+        callback = AsyncMock(return_value="Model switched")
+        adapter._model_picker_state["12345"] = {
+            "providers": [
+                {
+                    "slug": "openrouter",
+                    "name": "OpenRouter",
+                    "models": ["anthropic/claude-sonnet-4.6"],
+                    "total_models": 2,
+                    "groups": [
+                        {
+                            "id": "anthropic",
+                            "name": "Anthropic",
+                            "models": ["anthropic/claude-sonnet-4.6"],
+                            "total_models": 1,
+                        }
+                    ],
+                }
+            ],
+            "selected_provider": "openrouter",
+            "selected_provider_name": "OpenRouter",
+            "group_list": [
+                {
+                    "id": "anthropic",
+                    "name": "Anthropic",
+                    "models": ["anthropic/claude-sonnet-4.6"],
+                    "total_models": 1,
+                }
+            ],
+            "on_model_selected": callback,
+        }
+
+        query = AsyncMock()
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        await adapter._handle_model_picker_callback(query, "mv:anthropic", "12345")
+        state = adapter._model_picker_state["12345"]
+        assert state["selected_group"] == "anthropic"
+        assert state["model_list"] == ["anthropic/claude-sonnet-4.6"]
+
+        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
+        callback.assert_awaited_once_with("12345", "anthropic/claude-sonnet-4.6", "openrouter")

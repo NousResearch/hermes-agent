@@ -4,7 +4,7 @@ import json
 from unittest.mock import patch
 
 from hermes_cli.models import (
-    fetch_openrouter_models, model_ids, detect_provider_for_model, openrouter_picker_model_ids,
+    fetch_openrouter_models, model_ids, detect_provider_for_model, openrouter_picker_groups, openrouter_picker_model_ids,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
@@ -172,6 +172,24 @@ class TestOpenRouterPickerModelIds:
             ids = openrouter_picker_model_ids()
 
         assert ids == [mid for mid, _ in LIVE_OPENROUTER_MODELS]
+
+
+class TestOpenRouterPickerGroups:
+    def test_groups_models_by_vendor(self):
+        with patch(
+            "hermes_cli.models.openrouter_picker_model_ids",
+            return_value=[
+                "anthropic/claude-opus-4.6",
+                "anthropic/claude-sonnet-4.6",
+                "openai/gpt-5.4",
+            ],
+        ):
+            groups = openrouter_picker_groups()
+
+        assert groups == [
+            ("anthropic", ("anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6")),
+            ("openai", ("openai/gpt-5.4",)),
+        ]
 
 
 class TestFindOpenrouterSlug:

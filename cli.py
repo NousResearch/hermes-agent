@@ -4584,6 +4584,20 @@ class HermesCLI:
                 self._close_model_picker()
                 return
             provider_data = providers[selected]
+            groups = provider_data.get("groups") or []
+            if provider_data.get("slug") == "openrouter" and groups:
+                current_model = state.get("current_model") or ""
+                current_vendor = current_model.split("/", 1)[0] if "/" in current_model else ""
+                state["stage"] = "openrouter_group"
+                state["provider_data"] = provider_data
+                state["group_list"] = groups
+                state["group_data"] = None
+                state["selected"] = next(
+                    (i for i, group in enumerate(groups) if group.get("id") == current_vendor),
+                    0,
+                )
+                self._invalidate(min_interval=0.0)
+                return
             model_list = []
             try:
                 from hermes_cli.models import provider_model_ids
@@ -4600,14 +4614,56 @@ class HermesCLI:
             state["selected"] = 0
             self._invalidate(min_interval=0.0)
             return
+        if stage == "openrouter_group":
+            provider_data = state.get("provider_data") or {}
+            group_list = state.get("group_list") or []
+            back_idx = len(group_list)
+            cancel_idx = len(group_list) + 1
+            if selected == back_idx:
+                state["stage"] = "provider"
+                state["selected"] = next(
+                    (
+                        i
+                        for i, provider in enumerate(state.get("providers") or [])
+                        if provider.get("slug") == provider_data.get("slug")
+                    ),
+                    0,
+                )
+                self._invalidate(min_interval=0.0)
+                return
+            if selected >= cancel_idx:
+                self._close_model_picker()
+                return
+            if selected < len(group_list):
+                group_data = group_list[selected]
+                state["stage"] = "model"
+                state["group_data"] = group_data
+                state["model_list"] = list(group_data.get("models") or [])
+                state["selected"] = 0
+                self._invalidate(min_interval=0.0)
+                return
+            self._close_model_picker()
+            return
         if stage == "model":
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
             back_idx = len(model_list)
             cancel_idx = len(model_list) + 1
             if selected == back_idx:
-                state["stage"] = "provider"
-                state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
+                group_data = state.get("group_data")
+                if group_data:
+                    state["stage"] = "openrouter_group"
+                    state["selected"] = next(
+                        (
+                            i
+                            for i, group in enumerate(state.get("group_list") or [])
+                            if group.get("id") == group_data.get("id")
+                        ),
+                        0,
+                    )
+                else:
+                    state["stage"] = "provider"
+                    state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
@@ -8506,6 +8562,8 @@ class HermesCLI:
                 return
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
+            elif state.get("stage") == "openrouter_group":
+                max_idx = len(state.get("group_list") or []) + 1
             else:
                 max_idx = len(state.get("model_list") or []) + 1
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
@@ -9226,10 +9284,29 @@ class HermesCLI:
                     choices.append(label)
                 choices.append("Cancel")
                 hint = f"Current: {state.get('current_model', 'unknown')} on {state.get('current_provider', 'unknown')}"
+            elif stage == "openrouter_group":
+                provider_data = state.get("provider_data") or {}
+                group_list = state.get("group_list") or []
+                current_model = state.get("current_model") or ""
+                current_vendor = current_model.split("/", 1)[0] if "/" in current_model else ""
+                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                choices = []
+                for group in group_list:
+                    count = group.get("total_models", len(group.get("models", [])))
+                    label = f"{group['name']} ({count} model{'s' if count != 1 else ''})"
+                    if group.get("id") == current_vendor:
+                        label += "  ← current"
+                    choices.append(label)
+                choices += ["← Back", "Cancel"]
+                hint = f"Select a vendor group ({len(group_list)} available)"
             else:
                 provider_data = state.get("provider_data") or {}
+                group_data = state.get("group_data") or {}
                 model_list = state.get("model_list") or []
-                title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
+                title_suffix = provider_data.get('name', provider_data.get('slug', 'Provider'))
+                if group_data:
+                    title_suffix = f"{title_suffix} / {group_data.get('name', group_data.get('id', 'Group'))}"
+                title = f"⚙ Model Picker — {title_suffix}"
                 choices = list(model_list) + ["← Back", "Cancel"]
                 if model_list:
                     hint = f"Select a model ({len(model_list)} available)"

@@ -725,14 +725,19 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
     )
 
 
+def _tui_deps_ready(root: Path) -> bool:
+    """Nix and local dev both need file: workspace @hermes/ink under node_modules."""
+    return (root / "node_modules" / "@hermes" / "ink" / "package.json").is_file()
+
+
 def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
     """Directory whose dist/entry.js we should run: HERMES_TUI_DIR first, else repo ui-tui."""
     env = os.environ.get("HERMES_TUI_DIR")
     if env:
         p = Path(env)
-        if (p / "dist" / "entry.js").exists():
+        if (p / "dist" / "entry.js").exists() and _tui_deps_ready(p):
             return p
-    if (tui_dir / "dist" / "entry.js").exists():
+    if (tui_dir / "dist" / "entry.js").exists() and _tui_deps_ready(tui_dir):
         return tui_dir
     return None
 
@@ -784,15 +789,17 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
-    # pre-built dist (nix / HERMES_TUI_DIR) needs no npm at all.
+    # pre-built dist + node_modules (nix / full HERMES_TUI_DIR) skips npm.
     if not tui_dev:
         ext_dir = os.environ.get("HERMES_TUI_DIR")
-        if ext_dir and (Path(ext_dir) / "dist" / "entry.js").exists():
-            node = _node_bin("node")
-            return [node, str(Path(ext_dir) / "dist" / "entry.js")], Path(ext_dir)
+        if ext_dir:
+            p = Path(ext_dir)
+            if (p / "dist" / "entry.js").exists() and _tui_deps_ready(p):
+                node = _node_bin("node")
+                return [node, str(p / "dist" / "entry.js")], p
 
     npm = _node_bin("npm")
-    if not (tui_dir / "node_modules").exists():
+    if not _tui_deps_ready(tui_dir):
         print("Installing TUI dependencies…")
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],

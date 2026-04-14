@@ -1142,6 +1142,8 @@ class TestResponsesStreaming:
                 assert "event: response.output_text.delta" in body
                 assert "event: response.output_text.done" in body
                 assert "event: response.completed" in body
+                assert '"sequence_number":' in body
+                assert '"logprobs": []' in body
                 assert "Hello" in body
                 assert " world" in body
 
@@ -1195,11 +1197,12 @@ class TestResponsesStreaming:
                 body = await resp.text()
                 assert "event: response.output_item.added" in body
                 assert "event: response.output_item.done" in body
+                assert body.count("event: response.output_item.done") >= 2
                 assert '"type": "function_call"' in body
                 assert '"type": "function_call_output"' in body
                 assert '"call_id": "call_123"' in body
                 assert '"name": "read_file"' in body
-                assert '"output": "{\\"content\\":\\"hello\\"}"' in body
+                assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
 
     @pytest.mark.asyncio
     async def test_streamed_response_is_stored_for_get(self, adapter):
@@ -1544,7 +1547,7 @@ class TestToolCallsInOutput:
             assert output[0]["call_id"] == "call_abc123"
             assert output[1]["type"] == "function_call_output"
             assert output[1]["call_id"] == "call_abc123"
-            assert output[1]["output"] == "42"
+            assert output[1]["output"] == [{"type": "input_text", "text": "42"}]
             assert output[2]["type"] == "message"
             assert output[2]["content"][0]["text"] == "The result is 42."
 

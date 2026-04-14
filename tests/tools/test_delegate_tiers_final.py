@@ -130,17 +130,33 @@ class TestMalformedTierWithPool(unittest.TestCase):
 
 class TestCacheBehavior(unittest.TestCase):
 
-    def test_cache_hit_avoids_config_read(self):
-        """Cached value is returned without calling _load_config."""
-        old = dt._cached_max_concurrent
+    def test_cache_hit_returns_cached_value(self):
+        """Cached value is returned when fingerprint matches."""
+        old_val = dt._cached_max_concurrent
+        old_fp = dt._cached_config_fingerprint
         try:
             dt._cached_max_concurrent = 7
-            with patch("tools.delegate_tool._load_config") as mock_cfg:
-                result = dt._get_max_concurrent_children()
-                mock_cfg.assert_not_called()
+            # Set fingerprint to match current config
+            dt._cached_config_fingerprint = dt._config_fingerprint()
+            result = dt._get_max_concurrent_children()
             self.assertEqual(result, 7)
         finally:
-            dt._cached_max_concurrent = old
+            dt._cached_max_concurrent = old_val
+            dt._cached_config_fingerprint = old_fp
+
+    def test_cache_invalidation_on_config_change(self):
+        """Cache is invalidated when config fingerprint changes."""
+        old_val = dt._cached_max_concurrent
+        old_fp = dt._cached_config_fingerprint
+        try:
+            dt._cached_max_concurrent = 7
+            dt._cached_config_fingerprint = "stale_value"
+            with patch("tools.delegate_tool._load_config", return_value={"max_concurrent_children": 9}):
+                result = dt._get_max_concurrent_children()
+                self.assertEqual(result, 9)
+        finally:
+            dt._cached_max_concurrent = old_val
+            dt._cached_config_fingerprint = old_fp
 
     def test_cache_miss_uses_config(self):
         """First call with no cache reads config."""

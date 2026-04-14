@@ -56,6 +56,7 @@ _TOOLSET_LIST_STR = ", ".join(f"'{n}'" for n in _SUBAGENT_TOOLSETS)
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 _cached_max_concurrent = None
+_cached_config_fingerprint = None
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,11 @@ def _normalize_tier_value(tier) -> Optional[str]:
 
 
 def _infer_delegate_tier(goal, context, toolsets, cfg) -> Optional[str]:
+    """Heuristic tier inference based on goal/context keywords and toolsets.
+
+    Returns a tier string if confident, None otherwise (caller falls through
+    to LLM fallback in hybrid mode).
+    """
     text = f"{goal or ''} {context or ''}".strip().lower()
     if len(text) < 10:
         return None
@@ -153,18 +159,48 @@ def _infer_delegate_tier(goal, context, toolsets, cfg) -> Optional[str]:
     if any(sig in text for sig in _LIGHT_SIGNALS):
         matches.append("light")
 
+    # Toolset-based signals: strengthen or bias the keyword match.
+    ts = set(toolsets or [])
+    has_web = "web" in ts
+    has_terminal = "terminal" in ts
+    has_file = "file" in ts
+    web_only = has_web and not has_terminal and not has_file
+    file_only = has_file and not has_terminal and not has_web
+
+    if not matches and ts:
+        # Web-only toolset strongly implies research or planning.
+        if web_only:
+            if any(w in text for w in ("compare", "which", "best", "what", "find")):
+                matches.append("research")
+            elif any(w in text for w in ("plan", "design", "how should", "approach")):
+                matches.append("planning")
+            else:
+                matches.append("research")  # default for web-only
+        # File-only with analysis language implies review.
+        elif file_only and any(w in text for w in ("check", "look", "inspect", "examine", "audit", "verify")):
+            matches.append("review")
+
+    # Toolset signal amplification: if keyword matched but toolsets suggest a
+    # different tier, prefer the toolset-biased tier for strong signals.
+    if not matches and ts:
+        # Terminal + file with action words -> heavy (implementation)
+        if has_terminal and has_file and any(w in text for w in ("build", "create", "write", "make", "setup")):
+            matches.append("heavy")
+
     if len(matches) > 1:
-        if "review" in matches:
-            logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", "review", text)
-            return "review"
-        return None
+        # Ambiguous: prefer the more conservative (higher-cognition) tier.
+        priority = {"review": 4, "planning": 3, "research": 2, "heavy": 1, "light": 0}
+        best = max(matches, key=lambda t: priority.get(t, 0))
+        logger.debug("auto-tier heuristic picked '%s' from %s for goal: %.80s", best, matches, text)
+        return best
     if matches:
         tier = matches[0]
         logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", tier, text)
         return tier
 
-    logger.debug("auto-tier heuristic selected '%s' for goal: %.80s", "heavy", text)
-    return "heavy"
+    # No signal matched — return None so LLM fallback (hybrid) or default_tier kicks in.
+    logger.debug("auto-tier heuristic found no signal for goal: %.80s", text)
+    return None
 
 
 def _infer_delegate_tier_llm(goal, context, toolsets, cfg) -> Optional[str]:
@@ -270,22 +306,50 @@ def _build_pool_description(pool: list) -> str:
     return "\n".join(lines)
 
 
+def _config_fingerprint() -> str:
+    """Return a lightweight fingerprint of the delegation config for cache invalidation."""
+    cfg = _load_config()
+    import hashlib
+    raw = json.dumps({
+        "mcc": cfg.get("max_concurrent_children"),
+        "env": os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN", ""),
+    }, sort_keys=True)
+    return hashlib.md5(raw.encode()).hexdigest()[:8]
+
+
+def _invalidate_max_concurrent_cache() -> None:
+    """Clear the cached max_concurrent_children value."""
+    global _cached_max_concurrent, _cached_config_fingerprint
+    _cached_max_concurrent = None
+    _cached_config_fingerprint = None
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
 
+    Uses config-fingerprint-based cache invalidation so runtime config changes
+    are detected without polling every call.
+
     Uses the same ``_load_config()`` path that the rest of ``delegate_task``
     uses, keeping config priority consistent (config.yaml > env > default).
     """
-    global _cached_max_concurrent
+    global _cached_max_concurrent, _cached_config_fingerprint
+
     if _cached_max_concurrent is not None:
-        return _cached_max_concurrent
+        fp = _config_fingerprint()
+        if fp == _cached_config_fingerprint:
+            return _cached_max_concurrent
+        _invalidate_max_concurrent_cache()
+
     cfg = _load_config()
     val = cfg.get("max_concurrent_children")
     if val is not None:
         try:
-            _cached_max_concurrent = max(1, int(val))
-            return _cached_max_concurrent
+            result = max(1, int(val))
+            _cached_max_concurrent = result
+            _cached_config_fingerprint = _config_fingerprint()
+            return result
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.max_concurrent_children=%r is not a valid integer; "
@@ -294,11 +358,14 @@ def _get_max_concurrent_children() -> int:
     env_val = os.getenv("DELEGATION_MAX_CONCURRENT_CHILDREN")
     if env_val:
         try:
-            _cached_max_concurrent = max(1, int(env_val))
-            return _cached_max_concurrent
+            result = max(1, int(env_val))
+            _cached_max_concurrent = result
+            _cached_config_fingerprint = _config_fingerprint()
+            return result
         except (TypeError, ValueError):
             pass
     _cached_max_concurrent = _DEFAULT_MAX_CONCURRENT_CHILDREN
+    _cached_config_fingerprint = _config_fingerprint()
     return _cached_max_concurrent
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation

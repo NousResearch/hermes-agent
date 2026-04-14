@@ -32,8 +32,9 @@ class TestDelegateTierRouter(unittest.TestCase):
         self.assertEqual(_infer_delegate_tier("list the files", "", [], {}), "light")
         self.assertEqual(_infer_delegate_tier("how many items are there", "", [], {}), "light")
 
-    def test_heuristic_heavy_default(self):
-        self.assertEqual(_infer_delegate_tier("implement the feature", "", [], {}), "heavy")
+    def test_heuristic_no_signal_returns_none(self):
+        """When no keyword signals match, heuristic returns None (for LLM fallback or default_tier)."""
+        self.assertIsNone(_infer_delegate_tier("implement the feature", "", [], {}))
 
     def test_heuristic_priority_review_wins(self):
         self.assertEqual(_infer_delegate_tier("review this plan", "", [], {}), "review")

@@ -2814,22 +2814,47 @@ if DISCORD_AVAILABLE:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _build_model_select(self, provider_slug: str):
-            """Build the model dropdown for a specific provider."""
-            self.clear_items()
-            provider = next(
-                (p for p in self.providers if p["slug"] == provider_slug), None
-            )
-            if not provider:
-                return
+        def _provider_by_slug(self, provider_slug: str | None = None):
+            slug = provider_slug or self._selected_provider
+            return next((p for p in self.providers if p["slug"] == slug), None)
 
-            group = next(
+        def _current_group(self, provider=None):
+            provider = provider or self._provider_by_slug()
+            if not provider:
+                return None
+            return next(
                 (
                     g for g in provider.get("groups", [])
                     if g.get("id") == self._selected_group
                 ),
                 None,
             )
+
+        def _model_selection_description(self, provider, *, group=None) -> str:
+            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
+            if group:
+                total = group.get("total_models", 0)
+                shown = min(len(group.get("models", [])), 25)
+                extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+                return (
+                    f"Provider: **{pname}**\n"
+                    f"Vendor: **{group.get('name', self._selected_group)}**\n"
+                    f"Select a model:{extra}"
+                )
+
+            total = provider.get("total_models", 0) if provider else 0
+            shown = min(len(provider.get("models", [])), 25) if provider else 0
+            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
+            return f"Provider: **{pname}**\nSelect a model:{extra}"
+
+        def _build_model_select(self, provider_slug: str):
+            """Build the model dropdown for a specific provider."""
+            self.clear_items()
+            provider = self._provider_by_slug(provider_slug)
+            if not provider:
+                return
+
+            group = self._current_group(provider)
             if group:
                 models = group.get("models", [])
                 group_name = group.get("name", self._selected_group)
@@ -2875,9 +2900,7 @@ if DISCORD_AVAILABLE:
         def _build_group_select(self, provider_slug: str):
             """Build the vendor-group dropdown for OpenRouter."""
             self.clear_items()
-            provider = next(
-                (p for p in self.providers if p["slug"] == provider_slug), None
-            )
+            provider = self._provider_by_slug(provider_slug)
             if not provider:
                 return
 
@@ -2924,9 +2947,7 @@ if DISCORD_AVAILABLE:
 
             provider_slug = interaction.data["values"][0]
             self._selected_provider = provider_slug
-            provider = next(
-                (p for p in self.providers if p["slug"] == provider_slug), None
-            )
+            provider = self._provider_by_slug(provider_slug)
             pname = provider.get("name", provider_slug) if provider else provider_slug
             groups = provider.get("groups", []) if provider else []
             self._selected_group = ""
@@ -2944,15 +2965,10 @@ if DISCORD_AVAILABLE:
                 return
 
             self._build_model_select(provider_slug)
-
-            total = provider.get("total_models", 0) if provider else 0
-            shown = min(len(provider.get("models", [])), 25) if provider else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
-
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=f"Provider: **{pname}**\nSelect a model:{extra}",
+                    description=self._model_selection_description(provider),
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -2967,30 +2983,15 @@ if DISCORD_AVAILABLE:
 
             group_id = interaction.data["values"][0]
             self._selected_group = group_id
-            provider = next(
-                (p for p in self.providers if p["slug"] == self._selected_provider), None
-            )
-            group = next(
-                (g for g in (provider.get("groups", []) if provider else []) if g.get("id") == group_id),
-                None,
-            )
-            pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
-            gname = group.get("name", group_id) if group else group_id
+            provider = self._provider_by_slug()
+            group = self._current_group(provider)
 
             self._build_model_select(self._selected_provider)
-
-            total = group.get("total_models", 0) if group else 0
-            shown = min(len(group.get("models", [])), 25) if group else 0
-            extra = f"\n*{total - shown} more available — type `/model <name>` directly*" if total > shown else ""
 
             await interaction.response.edit_message(
                 embed=discord.Embed(
                     title="⚙ Model Configuration",
-                    description=(
-                        f"Provider: **{pname}**\n"
-                        f"Vendor: **{gname}**\n"
-                        f"Select a model:{extra}"
-                    ),
+                    description=self._model_selection_description(provider, group=group),
                     color=discord.Color.blue(),
                 ),
                 view=self,
@@ -3038,9 +3039,7 @@ if DISCORD_AVAILABLE:
                 return
 
             if self._selected_group:
-                provider = next(
-                    (p for p in self.providers if p["slug"] == self._selected_provider), None
-                )
+                provider = self._provider_by_slug()
                 pname = provider.get("name", self._selected_provider) if provider else self._selected_provider
                 self._selected_group = ""
                 self._build_group_select(self._selected_provider)

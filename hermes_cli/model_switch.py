@@ -782,7 +782,7 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_model_ids, openrouter_vendor_label
+    from hermes_cli.models import _PROVIDER_MODELS, openrouter_picker_group_entries, openrouter_picker_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -795,23 +795,6 @@ def list_authenticated_providers(
     # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
-
-    def _build_openrouter_groups(model_ids: list[str]) -> list[dict]:
-        grouped: dict[str, list[str]] = {}
-        for model_id in model_ids:
-            if "/" not in model_id:
-                continue
-            vendor, _bare = model_id.split("/", 1)
-            grouped.setdefault(vendor, []).append(model_id)
-        return [
-            {
-                "id": vendor,
-                "name": openrouter_vendor_label(vendor),
-                "models": models,
-                "total_models": len(models),
-            }
-            for vendor, models in sorted(grouped.items(), key=lambda item: item[0])
-        ]
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -854,7 +837,7 @@ def list_authenticated_providers(
             "source": "built-in",
         }
         if slug == "openrouter":
-            provider_entry["groups"] = _build_openrouter_groups(model_ids)
+            provider_entry["groups"] = openrouter_picker_group_entries()
         results.append(provider_entry)
         seen_slugs.add(slug)
 

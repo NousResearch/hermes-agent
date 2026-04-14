@@ -821,6 +821,19 @@ def openrouter_picker_groups(*, force_refresh: bool = False) -> list[tuple[str, 
     ]
 
 
+def openrouter_picker_group_entries(*, force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Return OpenRouter picker groups with labels for UI presentation."""
+    return [
+        {
+            "id": vendor,
+            "name": openrouter_vendor_label(vendor),
+            "models": list(models),
+            "total_models": len(models),
+        }
+        for vendor, models in openrouter_picker_groups(force_refresh=force_refresh)
+    ]
+
+
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Compatibility wrapper returning OpenRouter picker model IDs."""
     return openrouter_picker_model_ids(force_refresh=force_refresh)

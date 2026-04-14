@@ -1210,6 +1210,83 @@ class TelegramAdapter(BasePlatformAdapter):
         ])
         return InlineKeyboardMarkup(rows)
 
+    def _picker_provider(self, state: dict):
+        provider_slug = state.get("selected_provider", "")
+        return next(
+            (p for p in state["providers"] if p["slug"] == provider_slug),
+            None,
+        )
+
+    def _picker_group(self, state: dict):
+        group_id = state.get("selected_group", "")
+        return next(
+            (g for g in state.get("group_list", []) if g.get("id") == group_id),
+            None,
+        )
+
+    async def _show_provider_picker(self, query, state: dict, get_label) -> None:
+        keyboard = self._build_provider_keyboard(state["providers"])
+        try:
+            provider_label = get_label(state["current_provider"])
+        except Exception:
+            provider_label = state["current_provider"]
+
+        await query.edit_message_text(
+            text=(
+                f"⚙ *Model Configuration*\n\n"
+                f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                f"Provider: {provider_label}\n\n"
+                f"Select a provider:"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+
+    async def _show_group_picker(self, query, state: dict) -> None:
+        groups = state.get("group_list", [])
+        pname = state.get("selected_provider_name", state.get("selected_provider", ""))
+        keyboard = self._build_group_keyboard(groups)
+        await query.edit_message_text(
+            text=(
+                f"⚙ *Model Configuration*\n\n"
+                f"Provider: *{pname}*\n"
+                f"Select a vendor group ({len(groups)} available):"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+
+    async def _show_model_picker(self, query, state: dict, page: int) -> None:
+        models = state.get("model_list", [])
+        state["model_page"] = page
+        keyboard, page_info = self._build_model_keyboard(models, page)
+
+        pname = state.get("selected_provider_name", "")
+        gname = state.get("selected_group_name", "")
+        if gname:
+            group = self._picker_group(state)
+            total = group.get("total_models", len(models)) if group else len(models)
+            header = (
+                f"Provider: *{pname}*\n"
+                f"Vendor: *{gname}*{page_info}\n"
+            )
+        else:
+            provider = self._picker_provider(state)
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            header = f"Provider: *{pname}*{page_info}\n"
+        shown = len(models)
+        extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+
+        await query.edit_message_text(
+            text=(
+                f"⚙ *Model Configuration*\n\n"
+                f"{header}"
+                f"Select a model:{extra}"
+            ),
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
+        )
+
     def _build_model_keyboard(self, models: list, page: int) -> tuple:
         """Build paginated model buttons. Returns (keyboard, page_info_text)."""
         page_size = self._MODEL_PAGE_SIZE
@@ -1286,37 +1363,13 @@ class TelegramAdapter(BasePlatformAdapter):
             state["selected_group_name"] = ""
 
             if groups:
-                keyboard = self._build_group_keyboard(groups)
-                await query.edit_message_text(
-                    text=(
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*\n"
-                        f"Select a vendor group ({len(groups)} available):"
-                    ),
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=keyboard,
-                )
+                await self._show_group_picker(query, state)
                 await query.answer()
                 return
 
             models = provider.get("models", [])
             state["model_list"] = models
-            state["model_page"] = 0
-
-            keyboard, page_info = self._build_model_keyboard(models, 0)
-            total = provider.get("total_models", len(models))
-            shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-
-            await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*{page_info}\n"
-                    f"Select a model:{extra}"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
+            await self._show_model_picker(query, state, 0)
             await query.answer()
 
         elif data.startswith("mv:"):
@@ -1334,25 +1387,7 @@ class TelegramAdapter(BasePlatformAdapter):
             state["selected_group"] = group_id
             state["selected_group_name"] = group.get("name", group_id)
             state["model_list"] = models
-            state["model_page"] = 0
-
-            keyboard, page_info = self._build_model_keyboard(models, 0)
-            pname = state.get("selected_provider_name", state.get("selected_provider", ""))
-            gname = state.get("selected_group_name", group_id)
-            total = group.get("total_models", len(models))
-            shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-
-            await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*\n"
-                    f"Vendor: *{gname}*{page_info}\n"
-                    f"Select a model:{extra}"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
+            await self._show_model_picker(query, state, 0)
             await query.answer()
 
         elif data.startswith("mg:"):
@@ -1363,45 +1398,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Invalid page.")
                 return
 
-            models = state.get("model_list", [])
-            state["model_page"] = page
-
-            keyboard, page_info = self._build_model_keyboard(models, page)
-
-            pname = state.get("selected_provider_name", "")
-            gname = state.get("selected_group_name", "")
-            provider_slug = state.get("selected_provider", "")
-            provider = next(
-                (p for p in state["providers"] if p["slug"] == provider_slug),
-                None,
-            )
-            if gname:
-                group = next(
-                    (g for g in state.get("group_list", []) if g.get("id") == state.get("selected_group")),
-                    None,
-                )
-                total = group.get("total_models", len(models)) if group else len(models)
-            else:
-                total = provider.get("total_models", len(models)) if provider else len(models)
-            shown = len(models)
-            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
-
-            if gname:
-                header = (
-                    f"Provider: *{pname}*\n"
-                    f"Vendor: *{gname}*{page_info}\n"
-                )
-            else:
-                header = f"Provider: *{pname}*{page_info}\n"
-            await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"{header}"
-                    f"Select a model:{extra}"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
+            await self._show_model_picker(query, state, page)
             await query.answer()
 
         elif data.startswith("mm:"):
@@ -1458,39 +1455,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 # --- Back to vendor-group list ---
                 state["selected_group"] = ""
                 state["selected_group_name"] = ""
-                keyboard = self._build_group_keyboard(state.get("group_list", []))
-                pname = state.get("selected_provider_name", state.get("selected_provider", ""))
-
-                await query.edit_message_text(
-                    text=(
-                        f"⚙ *Model Configuration*\n\n"
-                        f"Provider: *{pname}*\n"
-                        f"Select a vendor group ({len(state.get('group_list', []))} available):"
-                    ),
-                    parse_mode=ParseMode.MARKDOWN,
-                    reply_markup=keyboard,
-                )
+                await self._show_group_picker(query, state)
                 await query.answer()
                 return
 
             # --- Back to provider list ---
-            keyboard = self._build_provider_keyboard(state["providers"])
-
-            try:
-                provider_label = get_label(state["current_provider"])
-            except Exception:
-                provider_label = state["current_provider"]
-
-            await query.edit_message_text(
-                text=(
-                    f"⚙ *Model Configuration*\n\n"
-                    f"Current model: `{state['current_model'] or 'unknown'}`\n"
-                    f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
-                ),
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=keyboard,
-            )
+            await self._show_provider_picker(query, state, get_label)
             await query.answer()
 
         elif data == "mx":

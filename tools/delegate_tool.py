@@ -385,6 +385,13 @@ def _build_child_agent(
     if child_pool is not None:
         child._credential_pool = child_pool
 
+    # Set execution thread ID before the heartbeat thread starts.  The heartbeat
+    # runs on a daemon thread and may call child.interrupt() before run_conversation()
+    # sets _execution_thread_id internally.  Storing it here ensures the interrupt
+    # is correctly scoped to the conversation thread and visible to is_interrupted().
+    # This is safe because _build_child_agent() runs synchronously on the main thread.
+    child._execution_thread_id = threading.current_thread().ident
+
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)

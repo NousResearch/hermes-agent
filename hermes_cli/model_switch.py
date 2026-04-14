@@ -141,6 +141,7 @@ class DirectAlias(NamedTuple):
     model: str
     provider: str
     base_url: str
+    context_length: int | None = None
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -177,9 +178,16 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                context_length = entry.get("context_length")
+                if context_length is not None:
+                    try:
+                        context_length = int(context_length)
+                    except (TypeError, ValueError):
+                        context_length = None
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
                         model=model, provider=provider, base_url=base_url,
+                        context_length=context_length,
                     )
     except Exception:
         pass
@@ -215,6 +223,7 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    context_length: int | None = None
 
 
 @dataclass
@@ -276,7 +285,7 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
 def resolve_alias(
     raw_input: str,
     current_provider: str,
-) -> Optional[tuple[str, str, str]]:
+) -> Optional[tuple[str, str, str, int | None]]:
     """Resolve a short alias against the current provider's catalog.
 
     Looks up *raw_input* in :data:`MODEL_ALIASES`, then searches the
@@ -285,9 +294,9 @@ def resolve_alias(
     providers).
 
     Returns:
-        ``(provider, resolved_model_id, alias_name)`` if a match is
-        found on the current provider, or ``None`` if the alias doesn't
-        exist or no matching model is available.
+        ``(provider, resolved_model_id, alias_name, context_length_or_None)``
+        if a match is found on the current provider, or ``None`` if the
+        alias doesn't exist or no matching model is available.
     """
     key = raw_input.strip().lower()
 
@@ -295,14 +304,14 @@ def resolve_alias(
     _ensure_direct_aliases()
     direct = DIRECT_ALIASES.get(key)
     if direct is not None:
-        return (direct.provider, direct.model, key)
+        return (direct.provider, direct.model, key, direct.context_length)
 
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
     # to the catalog/OpenRouter.
     for alias_name, da in DIRECT_ALIASES.items():
         if da.model.lower() == key:
-            return (da.provider, da.model, alias_name)
+            return (da.provider, da.model, alias_name, da.context_length)
 
     identity = MODEL_ALIASES.get(key)
     if identity is None:
@@ -324,12 +333,12 @@ def resolve_alias(
             # Match vendor/family prefix -- e.g. "anthropic/claude-sonnet"
             prefix = f"{vendor}/{family}".lower()
             if mid_lower.startswith(prefix):
-                return (current_provider, model_id, key)
+                return (current_provider, model_id, key, None)
         else:
             # Non-aggregator: bare names -- e.g. "claude-sonnet-4-6"
             family_lower = family.lower()
             if mid_lower.startswith(family_lower):
-                return (current_provider, model_id, key)
+                return (current_provider, model_id, key, None)
 
     return None
 
@@ -359,7 +368,7 @@ def get_authenticated_provider_slugs(
 def _resolve_alias_fallback(
     raw_input: str,
     authenticated_providers: list[str] = (),
-) -> Optional[tuple[str, str, str]]:
+) -> Optional[tuple[str, str, str, int | None]]:
     """Try to resolve an alias on the user's authenticated providers.
 
     Falls back to ``("openrouter", "nous")`` only when no authenticated
@@ -433,6 +442,7 @@ def switch_model(
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     resolved_alias = ""
+    alias_context_length: int | None = None
     new_model = raw_input.strip()
     target_provider = current_provider
 
@@ -503,7 +513,7 @@ def switch_model(
         # Resolve alias on the TARGET provider
         alias_result = resolve_alias(new_model, target_provider)
         if alias_result is not None:
-            _, new_model, resolved_alias = alias_result
+            _, new_model, resolved_alias, alias_context_length = alias_result
 
     # =================================================================
     # PATH B: No explicit provider — resolve from model input
@@ -513,7 +523,7 @@ def switch_model(
         alias_result = resolve_alias(raw_input, current_provider)
 
         if alias_result is not None:
-            target_provider, new_model, resolved_alias = alias_result
+            target_provider, new_model, resolved_alias, alias_context_length = alias_result
             logger.debug(
                 "Alias '%s' resolved to %s on %s",
                 resolved_alias, new_model, target_provider,
@@ -529,7 +539,7 @@ def switch_model(
                 )
                 fallback_result = _resolve_alias_fallback(raw_input, authed)
                 if fallback_result is not None:
-                    target_provider, new_model, resolved_alias = fallback_result
+                    target_provider, new_model, resolved_alias, alias_context_length = fallback_result
                     logger.debug(
                         "Alias '%s' resolved via fallback to %s on %s",
                         resolved_alias, new_model, target_provider,
@@ -716,6 +726,7 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        context_length=alias_context_length,
     )
 
 

@@ -4340,6 +4340,7 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    context_length=result.context_length,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -4455,6 +4456,7 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    context_length=result.context_length,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -4523,6 +4525,7 @@ class GatewayRunner:
                     base_url=result.base_url or current_base_url,
                     api_key=result.api_key or current_api_key,
                     provider=result.target_provider,
+                    config_context_length=result.context_length,
                 )
                 lines.append(f"Context: {ctx:,} tokens")
             except Exception:

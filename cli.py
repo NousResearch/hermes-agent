@@ -4457,6 +4457,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    context_length=result.context_length,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -4488,6 +4489,7 @@ class HermesCLI:
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
                     provider=result.target_provider,
+                    config_context_length=result.context_length,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:
@@ -4675,6 +4677,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    context_length=result.context_length,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -4712,6 +4715,7 @@ class HermesCLI:
                     base_url=result.base_url or self.base_url,
                     api_key=result.api_key or self.api_key,
                     provider=result.target_provider,
+                    config_context_length=result.context_length,
                 )
                 _cprint(f"    Context: {ctx:,} tokens")
             except Exception:

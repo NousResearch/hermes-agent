@@ -1231,6 +1231,23 @@ class AIAgent:
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
 
+        # Check model_aliases context_length (for aliases like qwen3.5-local)
+        if _config_context_length is None:
+            _model_aliases = _agent_cfg.get("model_aliases")
+            if isinstance(_model_aliases, dict):
+                for _alias_entry in _model_aliases.values():
+                    if not isinstance(_alias_entry, dict):
+                        continue
+                    if _alias_entry.get("model") == self.model:
+                        _al_ctx = _alias_entry.get("context_length")
+                        if _al_ctx is not None:
+                            try:
+                                _config_context_length = int(_al_ctx)
+                                self._config_context_length = _config_context_length
+                            except (TypeError, ValueError):
+                                pass
+                        break
+
         # Check custom_providers per-model context_length
         if _config_context_length is None:
             _custom_providers = _agent_cfg.get("custom_providers")
@@ -1475,7 +1492,7 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', context_length=None):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -1551,12 +1568,14 @@ class AIAgent:
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # Use alias-provided context_length if available (overrides config)
+            _effective_ctx = context_length or getattr(self, "_config_context_length", None)
             new_context_length = get_model_context_length(
                 self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=_effective_ctx,
             )
             self.context_compressor.update_model(
                 model=self.model,
@@ -1748,10 +1767,17 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+            # If aux model is the same as main model, reuse the already-known
+            # context length (avoids re-querying local endpoints that may
+            # report a different default context_length).
+            _config_ctx = None
+            if aux_model == self.model:
+                _config_ctx = getattr(self.context_compressor, "context_length", 0) or None
             aux_context = get_model_context_length(
                 aux_model,
                 base_url=aux_base_url,
                 api_key=aux_api_key,
+                config_context_length=_config_ctx,
             )
 
             threshold = self.context_compressor.threshold_tokens

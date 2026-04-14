@@ -493,6 +493,67 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return f"{SUMMARY_PREFIX}\n{text}" if text else SUMMARY_PREFIX
 
     # ------------------------------------------------------------------
+    # User message preservation
+    # ------------------------------------------------------------------
+    # When middle turns are compressed, user messages (the actual human
+    # intent, corrections, and preferences) are lost or paraphrased by
+    # the summarizer.  This method extracts them verbatim so they can be
+    # appended to the summary, preserving the user's exact words.
+
+    # Max chars to spend on preserved user messages (appended to summary)
+    _USER_MSGS_BUDGET_CHARS = 4000
+    # Max individual message length before truncation
+    _USER_MSG_MAX_CHARS = 300
+
+    @staticmethod
+    def _extract_user_messages(
+        turns: List[Dict[str, Any]], budget_chars: int = 4000, msg_max: int = 300,
+    ) -> str:
+        """Extract user messages from compressed turns, newest first.
+
+        Returns a formatted block of preserved user messages that can be
+        appended to the summary.  Returns empty string if no user messages
+        or if they'd be too short to be useful.
+        """
+        user_msgs = []
+        for i, msg in enumerate(turns):
+            if msg.get("role") != "user":
+                continue
+            content = (msg.get("content") or "").strip()
+            if not content:
+                continue
+            # Skip system injections and skill loads (not real user input)
+            if content.startswith("[SYSTEM:") or content.startswith("---\nname:"):
+                continue
+            user_msgs.append((i, content))
+
+        if not user_msgs:
+            return ""
+
+        # Walk newest-first, accumulating within budget
+        preserved = []
+        chars_used = 0
+        for turn_idx, content in reversed(user_msgs):
+            if len(content) > msg_max:
+                content = content[:msg_max - 3] + "..."
+            if chars_used + len(content) + 20 > budget_chars:
+                break
+            preserved.append((turn_idx, content))
+            chars_used += len(content) + 20
+
+        if not preserved:
+            return ""
+
+        # Reverse back to chronological order
+        preserved.reverse()
+
+        lines = ["\n\n## Preserved User Messages (verbatim, from compressed turns)"]
+        for turn_idx, content in preserved:
+            lines.append(f"- Turn {turn_idx}: \"{content}\"")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
     # ------------------------------------------------------------------
 
@@ -739,6 +800,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+
+        # Phase 3b: Preserve user messages from compressed turns
+        # Append verbatim user messages to the summary so the model remembers
+        # exact preferences, corrections, and intent after compression.
+        if summary:
+            preserved_user_msgs = self._extract_user_messages(
+                turns_to_summarize,
+                budget_chars=self._USER_MSGS_BUDGET_CHARS,
+                msg_max=self._USER_MSG_MAX_CHARS,
+            )
+            if preserved_user_msgs:
+                summary += preserved_user_msgs
 
         # Phase 4: Assemble compressed message list
         compressed = []

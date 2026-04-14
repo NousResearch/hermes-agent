@@ -2480,7 +2480,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if message.reference:
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
-                reply_to_text = message.reference.resolved.content or None
+                reply_to_text = getattr(message.reference.resolved, "content", None) or None
 
         event = MessageEvent(
             text=event_text,

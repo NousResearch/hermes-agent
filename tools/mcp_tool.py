@@ -1145,7 +1145,13 @@ def _run_on_mcp_loop(coro, timeout: float = 30):
     if loop is None or not loop.is_running():
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    try:
+        return future.result(timeout=timeout)
+    except (TimeoutError, Exception) as exc:
+        # Cancel the in-flight coroutine so it doesn't linger on the event
+        # loop holding session resources (e.g. a pending call_tool RPC).
+        future.cancel()
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -1229,13 +1235,18 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     def _handler(args: dict, **kwargs) -> str:
         with _lock:
             server = _servers.get(server_name)
-        if not server or not server.session:
+        if not server:
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             })
 
         async def _call():
-            result = await server.session.call_tool(tool_name, arguments=args)
+            session = server.session
+            if session is None:
+                return json.dumps({
+                    "error": f"MCP server '{server_name}' disconnected"
+                })
+            result = await session.call_tool(tool_name, arguments=args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

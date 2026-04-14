@@ -8,9 +8,9 @@ libraries if `gws` is not installed.
 Usage:
   python google_api.py gmail search "is:unread" [--max 10]
   python google_api.py gmail get MESSAGE_ID
-  python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello"
-  python google_api.py gmail reply MESSAGE_ID --body "Thanks"
-  python google_api.py calendar list [--from DATE] [--to DATE] [--calendar primary]
+  python google_api.py gmail send --to user@example.com --subject "Hi" --body "Hello" [--html] [--no-signature]
+  python google_api.py gmail reply MESSAGE_ID --body "Thanks" [--html] [--no-signature]
+  python google_api.py calendar list [--start DATE] [--end DATE] [--calendar primary]
   python google_api.py calendar create --summary "Meeting" --start DATETIME --end DATETIME
   python google_api.py drive search "budget report" [--max 10]
   python google_api.py contacts list [--max 20]
@@ -126,6 +126,34 @@ def _run_gws(parts: list[str], *, params: dict | None = None, body: dict | None 
         print("ERROR: Unexpected non-JSON output from gws:", file=sys.stderr)
         print(stdout, file=sys.stderr)
         sys.exit(1)
+
+
+def _get_sendas_primary() -> dict:
+    if _gws_binary():
+        payload = _run_gws(
+            ["gmail", "users", "settings", "sendAs", "list"],
+            params={"userId": "me"},
+        )
+    else:
+        service = build_service("gmail", "v1")
+        payload = service.users().settings().sendAs().list(userId="me").execute()
+
+    aliases = payload.get("sendAs", [])
+    for alias in aliases:
+        if alias.get("isPrimary"):
+            return alias
+    for alias in aliases:
+        if alias.get("isDefault"):
+            return alias
+    return aliases[0] if aliases else {}
+
+
+def _apply_signature(body: str, *, html: bool, no_signature: bool) -> tuple[str, bool]:
+    alias = _get_sendas_primary()
+    signature = alias.get("signature")
+    if no_signature or not signature:
+        return body, html
+    return f"{body}<br><br>{signature}", True
 
 
 def _headers_dict(msg: dict) -> dict[str, str]:
@@ -316,8 +344,10 @@ def gmail_get(args):
 
 
 def gmail_send(args):
+    body_text, use_html = _apply_signature(args.body, html=args.html, no_signature=args.no_signature)
+
     if _gws_binary():
-        message = MIMEText(args.body, "html" if args.html else "plain")
+        message = MIMEText(body_text, "html" if use_html else "plain")
         message["To"] = args.to
         message["Subject"] = args.subject
         if args.cc:
@@ -339,7 +369,7 @@ def gmail_send(args):
         return
 
     service = build_service("gmail", "v1")
-    message = MIMEText(args.body, "html" if args.html else "plain")
+    message = MIMEText(body_text, "html" if use_html else "plain")
     message["To"] = args.to
     message["Subject"] = args.subject
     if args.cc:
@@ -359,6 +389,8 @@ def gmail_send(args):
 
 
 def gmail_reply(args):
+    body_text, use_html = _apply_signature(args.body, html=args.html, no_signature=args.no_signature)
+
     if _gws_binary():
         original = _run_gws(
             ["gmail", "users", "messages", "get"],
@@ -375,7 +407,7 @@ def gmail_reply(args):
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
 
-        message = MIMEText(args.body)
+        message = MIMEText(body_text, "html" if use_html else "plain")
         message["To"] = headers.get("from", "")
         message["Subject"] = subject
         if args.from_header:
@@ -404,7 +436,7 @@ def gmail_reply(args):
     if not subject.startswith("Re:"):
         subject = f"Re: {subject}"
 
-    message = MIMEText(args.body)
+    message = MIMEText(body_text, "html" if use_html else "plain")
     message["To"] = headers.get("from", "")
     message["Subject"] = subject
     if args.from_header:
@@ -1075,6 +1107,7 @@ def main():
     p.add_argument("--cc", default="")
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
     p.add_argument("--html", action="store_true", help="Send body as HTML")
+    p.add_argument("--no-signature", action="store_true", help="Do not append the sender's Gmail signature")
     p.add_argument("--thread-id", default="", help="Thread ID for threading")
     p.set_defaults(func=gmail_send)
 
@@ -1082,6 +1115,8 @@ def main():
     p.add_argument("message_id", help="Message ID to reply to")
     p.add_argument("--body", required=True)
     p.add_argument("--from", dest="from_header", default="", help="Custom From header (e.g. '\"Agent Name\" <user@example.com>')")
+    p.add_argument("--html", action="store_true", help="Send body as HTML")
+    p.add_argument("--no-signature", action="store_true", help="Do not append the sender's Gmail signature")
     p.set_defaults(func=gmail_reply)
 
     p = gmail_sub.add_parser("labels")

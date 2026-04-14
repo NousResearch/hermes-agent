@@ -484,3 +484,164 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def test_api_get_sendas_primary_prefers_primary_alias(api_module):
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps(
+            {
+                "sendAs": [
+                    {"sendAsEmail": "alias@example.com", "isDefault": True, "signature": "<p>Default</p>"},
+                    {"sendAsEmail": "primary@example.com", "isPrimary": True, "signature": "<p>Primary</p>"},
+                ]
+            }
+        ),
+        stderr="",
+    )
+
+    with patch.object(subprocess, "run", return_value=completed):
+        alias = api_module._get_sendas_primary()
+
+    assert alias["sendAsEmail"] == "primary@example.com"
+    assert alias["signature"] == "<p>Primary</p>"
+
+
+def test_api_get_sendas_primary_gracefully_degrades_on_empty_list(api_module):
+    completed = subprocess.CompletedProcess(
+        args=[],
+        returncode=0,
+        stdout=json.dumps({"sendAs": []}),
+        stderr="",
+    )
+
+    with patch.object(subprocess, "run", return_value=completed):
+        alias = api_module._get_sendas_primary()
+
+    assert alias == {}
+
+
+def test_api_gmail_send_appends_signature_and_forces_html(api_module):
+    sendas_payload = {
+        "sendAs": [
+            {"sendAsEmail": "lev@valstratis.com", "isPrimary": True, "signature": "<table>sig</table>"}
+        ]
+    }
+    send_payload = {"id": "msg-123", "threadId": "thr-456"}
+    captured = []
+
+    def capture_run(cmd, **kwargs):
+        captured.append(cmd)
+        if "sendAs" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(sendas_payload), stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(send_payload), stderr="")
+
+    args = api_module.argparse.Namespace(
+        to="user@example.com",
+        subject="Hi",
+        body="<p>Hello</p>",
+        cc="",
+        from_header="",
+        html=False,
+        no_signature=False,
+        thread_id="",
+        func=api_module.gmail_send,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_send(args)
+
+    send_cmd = captured[-1]
+    body = json.loads(send_cmd[send_cmd.index("--json") + 1])
+    raw = body["raw"]
+    decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+    assert "<p>Hello</p><br><br><table>sig</table>" in decoded
+    assert "Content-Type: text/html" in decoded
+
+
+def test_api_gmail_send_no_signature_leaves_body_unchanged(api_module):
+    sendas_payload = {
+        "sendAs": [
+            {"sendAsEmail": "lev@valstratis.com", "isPrimary": True, "signature": "<table>sig</table>"}
+        ]
+    }
+    send_payload = {"id": "msg-123", "threadId": "thr-456"}
+    captured = []
+
+    def capture_run(cmd, **kwargs):
+        captured.append(cmd)
+        if "sendAs" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(sendas_payload), stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(send_payload), stderr="")
+
+    args = api_module.argparse.Namespace(
+        to="user@example.com",
+        subject="Hi",
+        body="Hello",
+        cc="",
+        from_header="",
+        html=False,
+        no_signature=True,
+        thread_id="",
+        func=api_module.gmail_send,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_send(args)
+
+    send_cmd = captured[-1]
+    body = json.loads(send_cmd[send_cmd.index("--json") + 1])
+    raw = body["raw"]
+    decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+    assert "\n\nHello" in decoded
+    assert "sig" not in decoded
+    assert "Content-Type: text/plain" in decoded
+
+
+def test_api_gmail_reply_appends_signature_and_forces_html(api_module):
+    sendas_payload = {
+        "sendAs": [
+            {"sendAsEmail": "lev@valstratis.com", "isDefault": True, "signature": "<p>sig</p>"}
+        ]
+    }
+    original_payload = {
+        "id": "orig-123",
+        "threadId": "thr-456",
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "sender@example.com"},
+                {"name": "Subject", "value": "Status"},
+                {"name": "Message-ID", "value": "<abc@example.com>"},
+            ]
+        },
+    }
+    send_payload = {"id": "msg-789", "threadId": "thr-456"}
+    captured = []
+
+    def capture_run(cmd, **kwargs):
+        captured.append(cmd)
+        if "sendAs" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(sendas_payload), stderr="")
+        if "messages" in cmd and "get" in cmd:
+            return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(original_payload), stderr="")
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout=json.dumps(send_payload), stderr="")
+
+    args = api_module.argparse.Namespace(
+        message_id="abc123",
+        body="Thanks",
+        from_header="",
+        html=False,
+        no_signature=False,
+        func=api_module.gmail_reply,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.gmail_reply(args)
+
+    send_cmd = captured[-1]
+    body = json.loads(send_cmd[send_cmd.index("--json") + 1])
+    raw = body["raw"]
+    decoded = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+    assert "Thanks<br><br><p>sig</p>" in decoded
+    assert "Content-Type: text/html" in decoded

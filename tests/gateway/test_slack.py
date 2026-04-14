@@ -1312,6 +1312,16 @@ class TestFormatMessage:
         result = adapter.format_message("[link](https://x.com?a=1&b=2)")
         assert result == "<https://x.com?a=1&b=2|link>"
 
+    def test_markdown_image_does_not_create_broken_slack_link(self, adapter):
+        """Markdown image syntax should not become '!<url|alt>' in Slack."""
+        result = adapter.format_message("![alt](https://img.example.com/cat.png)")
+        assert result == "![alt](https://img.example.com/cat.png)"
+
+    def test_literal_asterisks_with_spaces_are_not_treated_as_italic(self, adapter):
+        """Asterisks used as plain delimiters should stay literal."""
+        result = adapter.format_message("a * b * c")
+        assert result == "a * b * c"
+
     def test_emoji_shortcodes_passthrough(self, adapter):
         """Emoji shortcodes like :smile: pass through unchanged."""
         assert adapter.format_message(":smile: hello :wave:") == ":smile: hello :wave:"

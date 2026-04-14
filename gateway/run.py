@@ -5733,14 +5733,31 @@ class GatewayRunner:
                         if source.platform == Platform.SLACK
                         else "/sethome"
                     )
-                    await adapter.send(
-                        source.chat_id,
+                    notice = (
                         f"📬 No home channel is set for {platform_name.title()}. "
                         f"A home channel is where Hermes delivers cron job results "
                         f"and cross-platform messages.\n\n"
                         f"Type {sethome_cmd} to make this chat your home channel, "
                         f"or ignore to skip."
                     )
+                    sent = False
+                    if (
+                        source.platform == Platform.SLACK
+                        and source.user_id
+                        and hasattr(adapter, "send_ephemeral")
+                    ):
+                        try:
+                            result = await adapter.send_ephemeral(
+                                source.chat_id,
+                                source.user_id,
+                                notice,
+                                metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                            )
+                            sent = bool(getattr(result, "success", False))
+                        except Exception:
+                            sent = False
+                    if not sent:
+                        await adapter.send(source.chat_id, notice)
         
         # -----------------------------------------------------------------
         # Voice channel awareness — inject current voice channel state

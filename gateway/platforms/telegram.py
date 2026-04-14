@@ -2905,6 +2905,8 @@ class TelegramAdapter(BasePlatformAdapter):
             "couldn't", "can't", "unable to", "i'm unable", "not available",
             "doesn't work", "does not work", "something went wrong",
             "try again", "timeout", "timed out", "out of memory",
+            "错误", "失败", "抱歉", "无法", "不行", "出问题", "出了点问题",
+            "重试", "超时", "内存不足", "不支持",
         ]
         if any(p in lower for p in _ERROR_PATTERNS):
             return "❌"
@@ -2914,12 +2916,14 @@ class TelegramAdapter(BasePlatformAdapter):
             "success", "done", "completed", "finished", "ready",
             "here you go", "here it is", "enjoy", "congratulations",
             "great job", "well done", "task completed",
+            "完成", "成功", "搞定", "好了", "就绪", "祝贺", "恭喜",
+            "已部署", "已更新", "已创建", "已修复", "已解决",
         ]
         if any(p in lower for p in _SUCCESS_PATTERNS):
             return "✅"
 
         # --- Warning ---
-        _WARN_PATTERNS = ["warning", "caution", "be careful", "note that", "keep in mind"]
+        _WARN_PATTERNS = ["warning", "caution", "be careful", "note that", "keep in mind", "警告", "注意", "小心", "谨慎", "提醒"]
         if any(p in lower for p in _WARN_PATTERNS):
             return "⚠️"
 
@@ -2932,6 +2936,8 @@ class TelegramAdapter(BasePlatformAdapter):
             "json", "yaml", "xml", "html", "css", "javascript", "python",
             "typescript", "rust", "go lang", "sql", "docker", "kubernetes",
             "algorithm", "data structure", "compilation", "debug",
+            "代码", "函数", "接口", "部署", "配置", "服务器", "数据库", "脚本",
+            "前端", "后端", "测试", "编译", "运行", "安装", "依赖",
         ]
         if any(p in lower for p in _CODE_PATTERNS):
             return "💻"
@@ -2940,14 +2946,16 @@ class TelegramAdapter(BasePlatformAdapter):
         _NEWS_PATTERNS = [
             "news", "headline", "breaking", "according to", "reported",
             "article", "published", "journal", "press release",
+            "新闻", "头条", "快讯", "据报道", "发布", "资讯", "报道", "消息",
+            "早报", "晚报", "开盘", "收盘",
         ]
         if any(p in lower for p in _NEWS_PATTERNS):
             return "📰"
 
         # --- Weather ---
-        _WEATHER_KEYWORDS = ["weather", "temperature", "forecast", "°c", "°f", "rain", "snow", "sunny", "cloudy", "humid"]
+        _WEATHER_KEYWORDS = ["weather", "temperature", "forecast", "°c", "°f", "rain", "snow", "sunny", "cloudy", "humid", "天气", "温度", "预报", "℃", "°c", "°f", "下雨", "雪", "晴", "阴", "湿度", "℃", "度"]
         if any(p in lower for p in _WEATHER_KEYWORDS):
-            if any(bad in lower for bad in ("rain", "snow", "storm", "cloudy", "overcast")):
+            if any(bad in lower for bad in ("rain", "snow", "storm", "cloudy", "overcast", "下雨", "雪", "阴", "多云")):
                 return "🌧️"
             return "☀️"
 
@@ -2955,12 +2963,13 @@ class TelegramAdapter(BasePlatformAdapter):
         _HUMOR_PATTERNS = [
             "joke", "funny", "lol", "haha", "😂", "😄", "lmao",
             "pun", "riddle", "knock knock",
+            "哈哈", "笑话", "搞笑", "😂", "😄", "笑死", "乐", "逗", "幽默", "hh",
         ]
         if any(p in lower for p in _HUMOR_PATTERNS):
             return "😄"
 
         # --- Location / maps ---
-        _LOCATION_PATTERNS = ["location", "address", "map", "distance", "direction", "route", "navigation"]
+        _LOCATION_PATTERNS = ["location", "address", "map", "distance", "direction", "route", "navigation", "位置", "地址", "地图", "距离", "方向", "路线", "导航", "在哪里", "在哪"]
         if any(p in lower for p in _LOCATION_PATTERNS):
             return "📍"
 

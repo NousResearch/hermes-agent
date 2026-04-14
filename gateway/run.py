@@ -2922,6 +2922,32 @@ class GatewayRunner:
                     merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
+            _telegram_followup_grace = float(
+                os.getenv("HERMES_TELEGRAM_FOLLOWUP_GRACE_SECONDS", "3.0")
+            )
+            _started_at = self._running_agents_ts.get(_quick_key, 0)
+            if (
+                source.platform == Platform.TELEGRAM
+                and event.message_type == MessageType.TEXT
+                and _telegram_followup_grace > 0
+                and _started_at
+                and (time.time() - _started_at) <= _telegram_followup_grace
+            ):
+                logger.debug(
+                    "Telegram follow-up arrived %.2fs after run start for %s — queueing without interrupt",
+                    time.time() - _started_at,
+                    _quick_key[:20],
+                )
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
+                return None
+
             running_agent = self._running_agents.get(_quick_key)
             if running_agent is _AGENT_PENDING_SENTINEL:
                 # Agent is being set up but not ready yet.
@@ -2935,7 +2961,12 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    merge_pending_message_event(
+                        adapter._pending_messages,
+                        _quick_key,
+                        event,
+                        merge_text=True,
+                    )
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():

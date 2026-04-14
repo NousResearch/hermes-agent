@@ -281,137 +281,342 @@ class EnvVarReveal(BaseModel):
 
 
 @app.get("/api/status")
-async def get_status():
-    current_ver, latest_ver = check_config_version()
+async def get_status(profile: Optional[str] = None):
+    profile_info = _list_dashboard_profiles()
+    selected_profile = _resolve_session_profile(profile)
 
-    gateway_pid = get_running_pid()
-    gateway_running = gateway_pid is not None
+    if selected_profile == "all":
+        summaries = []
+        for entry in profile_info["profiles"]:
+            summary = _status_payload_for_profile(entry["name"])
+            summary["profile"] = entry["name"]
+            summaries.append(summary)
+        return {
+            **summaries[0],
+            "selected_profile": "all",
+            "active_profile": profile_info["active_profile"],
+            "available_profiles": profile_info["profiles"],
+            "active_sessions": sum(s.get("active_sessions", 0) for s in summaries),
+            "gateway_running": any(s.get("gateway_running") for s in summaries),
+            "gateway_pid": None,
+            "gateway_state": "running" if any(s.get("gateway_running") for s in summaries) else "stopped",
+            "gateway_platforms": {},
+            "gateway_exit_reason": None,
+            "gateway_updated_at": None,
+            "hermes_home": "all profiles",
+            "profile_summaries": summaries,
+        }
 
+    payload = _status_payload_for_profile(selected_profile)
+    payload.update(
+        {
+            "selected_profile": selected_profile,
+            "active_profile": profile_info["active_profile"],
+            "available_profiles": profile_info["profiles"],
+            "profile_summaries": [
+                {**payload, "profile": selected_profile}
+            ],
+        }
+    )
+    return payload
+
+
+def _gateway_status_for_profile(profile: str) -> Dict[str, Any]:
+    from gateway.status import _read_json_file
+    import os
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        active_profile = get_active_profile_name()
+    except Exception:
+        active_profile = "default"
+
+    if profile == active_profile:
+        gateway_pid = get_running_pid()
+        gateway_running = gateway_pid is not None
+        gateway_state = None
+        gateway_platforms: Dict[str, Any] = {}
+        gateway_exit_reason = None
+        gateway_updated_at = None
+        configured_gateway_platforms: set[str] | None = None
+        try:
+            from gateway.config import load_gateway_config
+            gateway_config = load_gateway_config()
+            configured_gateway_platforms = {
+                platform.value for platform in gateway_config.get_connected_platforms()
+            }
+        except Exception:
+            configured_gateway_platforms = None
+
+        runtime = read_runtime_status()
+        if runtime:
+            gateway_state = runtime.get("gateway_state")
+            gateway_platforms = runtime.get("platforms") or {}
+            if configured_gateway_platforms is not None:
+                gateway_platforms = {
+                    key: value
+                    for key, value in gateway_platforms.items()
+                    if key in configured_gateway_platforms
+                }
+            gateway_exit_reason = runtime.get("exit_reason")
+            gateway_updated_at = runtime.get("updated_at")
+            if not gateway_running:
+                gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
+                gateway_platforms = {}
+
+        return {
+            "gateway_running": gateway_running,
+            "gateway_pid": gateway_pid,
+            "gateway_state": gateway_state,
+            "gateway_platforms": gateway_platforms,
+            "gateway_exit_reason": gateway_exit_reason,
+            "gateway_updated_at": gateway_updated_at,
+        }
+
+    if profile == "custom":
+        profile_home = get_hermes_home()
+    else:
+        from hermes_cli.profiles import get_profile_dir
+        profile_home = get_profile_dir(profile)
+
+    pid_path = profile_home / "gateway.pid"
+    runtime_path = profile_home / "gateway_state.json"
+
+    gateway_pid = None
+    gateway_running = False
     gateway_state = None
-    gateway_platforms: dict = {}
+    gateway_platforms: Dict[str, Any] = {}
     gateway_exit_reason = None
     gateway_updated_at = None
-    configured_gateway_platforms: set[str] | None = None
+
     try:
-        from gateway.config import load_gateway_config
-
-        gateway_config = load_gateway_config()
-        configured_gateway_platforms = {
-            platform.value for platform in gateway_config.get_connected_platforms()
-        }
+        if pid_path.exists():
+            raw = pid_path.read_text().strip()
+            if raw:
+                data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
+                pid = int(data.get("pid"))
+                os.kill(pid, 0)
+                gateway_pid = pid
+                gateway_running = True
     except Exception:
-        configured_gateway_platforms = None
+        gateway_pid = None
+        gateway_running = False
 
-    runtime = read_runtime_status()
+    runtime = _read_json_file(runtime_path) if runtime_path.exists() else None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
-        if configured_gateway_platforms is not None:
-            gateway_platforms = {
-                key: value
-                for key, value in gateway_platforms.items()
-                if key in configured_gateway_platforms
-            }
         gateway_exit_reason = runtime.get("exit_reason")
         gateway_updated_at = runtime.get("updated_at")
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
 
-    active_sessions = 0
-    try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=50)
-            now = time.time()
-            active_sessions = sum(
-                1 for s in sessions
-                if s.get("ended_at") is None
-                and (now - s.get("last_active", s.get("started_at", 0))) < 300
-            )
-        finally:
-            db.close()
-    except Exception:
-        pass
-
     return {
-        "version": __version__,
-        "release_date": __release_date__,
-        "hermes_home": str(get_hermes_home()),
-        "config_path": str(get_config_path()),
-        "env_path": str(get_env_path()),
-        "config_version": current_ver,
-        "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
         "gateway_pid": gateway_pid,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason,
         "gateway_updated_at": gateway_updated_at,
+    }
+
+
+def _status_payload_for_profile(profile: str) -> Dict[str, Any]:
+    current_ver, latest_ver = check_config_version()
+    gateway = _gateway_status_for_profile(profile)
+    sessions = _load_sessions_for_profile(profile)
+    active_sessions = sum(1 for s in sessions if s.get("is_active"))
+
+    if profile == "custom":
+        profile_home = get_hermes_home()
+    else:
+        from hermes_cli.profiles import get_profile_dir
+        profile_home = get_profile_dir(profile)
+
+    return {
+        "version": __version__,
+        "release_date": __release_date__,
+        "hermes_home": str(profile_home),
+        "config_path": str(profile_home / "config.yaml"),
+        "env_path": str(profile_home / ".env"),
+        "config_version": current_ver,
+        "latest_config_version": latest_ver,
+        **gateway,
         "active_sessions": active_sessions,
     }
 
 
-@app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+@app.get("/api/profiles")
+async def get_profiles():
+    return _list_dashboard_profiles()
+
+
+def _list_dashboard_profiles() -> Dict[str, Any]:
+    """Return profile choices for the dashboard session browser."""
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
-            total = db.session_count()
-            now = time.time()
-            for s in sessions:
-                s["is_active"] = (
-                    s.get("ended_at") is None
-                    and (now - s.get("last_active", s.get("started_at", 0))) < 300
-                )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
-        finally:
-            db.close()
-    except Exception as e:
+        from hermes_cli.profiles import get_active_profile_name, list_profiles
+
+        active_profile = get_active_profile_name()
+        profiles = [
+            {"name": p.name, "label": p.name, "is_active": p.name == active_profile}
+            for p in list_profiles()
+        ]
+        if active_profile not in {p["name"] for p in profiles}:
+            profiles.insert(0, {"name": active_profile, "label": active_profile, "is_active": True})
+        return {"active_profile": active_profile, "profiles": profiles}
+    except Exception:
+        active_profile = "default"
+        return {
+            "active_profile": active_profile,
+            "profiles": [{"name": active_profile, "label": active_profile, "is_active": True}],
+        }
+
+
+def _resolve_session_profile(profile: Optional[str]) -> str:
+    info = _list_dashboard_profiles()
+    active_profile = info["active_profile"]
+    requested = (profile or active_profile).strip() if isinstance(profile, str) else active_profile
+    if requested in ("", "current", "active"):
+        return active_profile
+    if requested == "all":
+        return "all"
+    available = {p["name"] for p in info["profiles"]}
+    if requested not in available:
+        raise HTTPException(status_code=404, detail=f"Unknown profile: {requested}")
+    return requested
+
+
+def _session_db_for_profile(profile: Optional[str]):
+    from hermes_state import SessionDB
+    from hermes_cli.profiles import get_profile_dir, get_active_profile_name
+
+    resolved = profile or get_active_profile_name()
+    if resolved in ("current", "active"):
+        resolved = get_active_profile_name()
+    if resolved == "custom":
+        db_path = get_hermes_home() / "state.db"
+    else:
+        db_path = get_profile_dir(resolved) / "state.db"
+    return SessionDB(db_path=db_path)
+
+
+def _load_sessions_for_profile(profile: str, include_children: bool = False) -> List[Dict[str, Any]]:
+    db = _session_db_for_profile(profile)
+    try:
+        sessions = db.list_sessions_rich(limit=100000, offset=0, include_children=include_children)
+    finally:
+        db.close()
+
+    now = time.time()
+    for session in sessions:
+        session["profile"] = profile
+        session["is_active"] = (
+            session.get("ended_at") is None
+            and (now - session.get("last_active", session.get("started_at", 0))) < 300
+        )
+    return sessions
+
+
+def _search_sessions_for_profile(profile: str, query: str, limit: int) -> List[Dict[str, Any]]:
+    db = _session_db_for_profile(profile)
+    try:
+        matches = db.search_messages(query=query, limit=limit)
+    finally:
+        db.close()
+
+    results = []
+    seen = set()
+    for match in matches:
+        sid = match["session_id"]
+        key = (profile, sid)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            {
+                "session_id": sid,
+                "profile": profile,
+                "snippet": match.get("snippet", ""),
+                "role": match.get("role"),
+                "source": match.get("source"),
+                "model": match.get("model"),
+                "session_started": match.get("session_started"),
+            }
+        )
+    return results
+
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 20, offset: int = 0, profile: Optional[str] = None):
+    try:
+        selected_profile = _resolve_session_profile(profile)
+        profile_info = _list_dashboard_profiles()
+        available_profiles = profile_info["profiles"]
+
+        if selected_profile == "all":
+            sessions: List[Dict[str, Any]] = []
+            for entry in available_profiles:
+                profile_sessions = _load_sessions_for_profile(entry["name"])
+                for session in profile_sessions:
+                    session.setdefault("profile", entry["name"])
+                sessions.extend(profile_sessions)
+            sessions.sort(key=lambda s: s.get("started_at", 0), reverse=True)
+        else:
+            sessions = _load_sessions_for_profile(selected_profile)
+            for session in sessions:
+                session.setdefault("profile", selected_profile)
+
+        total = len(sessions)
+        page = sessions[offset:offset + limit]
+        return {
+            "sessions": page,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "selected_profile": selected_profile,
+            "active_profile": profile_info["active_profile"],
+            "available_profiles": available_profiles,
+        }
+    except HTTPException:
+        raise
+    except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
+async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
     """Full-text search across session message content using FTS5."""
     if not q or not q.strip():
-        return {"results": []}
+        return {"results": [], "selected_profile": _resolve_session_profile(profile)}
     try:
-        from hermes_state import SessionDB
-        db = SessionDB()
-        try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
-            import re
-            terms = []
-            for token in re.findall(r'"[^"]*"|\S+', q.strip()):
-                if token.startswith('"') or token.endswith("*"):
-                    terms.append(token)
-                else:
-                    terms.append(token + "*")
-            prefix_query = " ".join(terms)
-            matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
-            for m in matches:
-                sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
-        finally:
-            db.close()
+        # Auto-add prefix wildcards so partial words match
+        # e.g. "nimb" → "nimb*" matches "nimby"
+        # Preserve quoted phrases and existing wildcards as-is
+        import re
+        terms = []
+        for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+            if token.startswith('"') or token.endswith("*"):
+                terms.append(token)
+            else:
+                terms.append(token + "*")
+        prefix_query = " ".join(terms)
+
+        selected_profile = _resolve_session_profile(profile)
+        profile_info = _list_dashboard_profiles()
+        if selected_profile == "all":
+            results: List[Dict[str, Any]] = []
+            per_profile_limit = max(limit, 20)
+            for entry in profile_info["profiles"]:
+                results.extend(_search_sessions_for_profile(entry["name"], prefix_query, per_profile_limit))
+            results.sort(key=lambda r: r.get("session_started") or 0, reverse=True)
+            results = results[:limit]
+        else:
+            results = _search_sessions_for_profile(selected_profile, prefix_query, limit)
+        return {"results": results, "selected_profile": selected_profile}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -1598,41 +1803,48 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session_detail(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+async def get_session_detail(session_id: str, profile: Optional[str] = None):
+    selected_profile = _resolve_session_profile(profile)
+    if selected_profile == "all":
+        raise HTTPException(status_code=400, detail="Specify a profile when viewing a single session")
+    db = _session_db_for_profile(selected_profile)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
+        session["profile"] = selected_profile
         return session
     finally:
         db.close()
 
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+async def get_session_messages(session_id: str, profile: Optional[str] = None):
+    selected_profile = _resolve_session_profile(profile)
+    if selected_profile == "all":
+        raise HTTPException(status_code=400, detail="Specify a profile when viewing session messages")
+    db = _session_db_for_profile(selected_profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        return {"session_id": sid, "profile": selected_profile, "messages": messages}
     finally:
         db.close()
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session_endpoint(session_id: str):
-    from hermes_state import SessionDB
-    db = SessionDB()
+async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
+    selected_profile = _resolve_session_profile(profile)
+    if selected_profile == "all":
+        raise HTTPException(status_code=400, detail="Specify a profile when deleting a session")
+    db = _session_db_for_profile(selected_profile)
     try:
         if not db.delete_session(session_id):
             raise HTTPException(status_code=404, detail="Session not found")
-        return {"ok": True}
+        return {"ok": True, "profile": selected_profile}
     finally:
         db.close()
 
@@ -1883,10 +2095,8 @@ async def update_config_raw(body: RawConfigUpdate):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/api/analytics/usage")
-async def get_usage_analytics(days: int = 30):
-    from hermes_state import SessionDB
-    db = SessionDB()
+def _usage_analytics_for_profile(profile: str, days: int) -> Dict[str, Any]:
+    db = _session_db_for_profile(profile)
     try:
         cutoff = time.time() - (days * 86400)
         cur = db._conn.execute("""
@@ -1925,10 +2135,65 @@ async def get_usage_analytics(days: int = 30):
             FROM sessions WHERE started_at > ?
         """, (cutoff,))
         totals = dict(cur3.fetchone())
-
-        return {"daily": daily, "by_model": by_model, "totals": totals, "period_days": days}
+        return {"daily": daily, "by_model": by_model, "totals": totals, "period_days": days, "selected_profile": profile}
     finally:
         db.close()
+
+
+@app.get("/api/analytics/usage")
+async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
+    selected_profile = _resolve_session_profile(profile)
+    profile_info = _list_dashboard_profiles()
+
+    if selected_profile == "all":
+        summaries = []
+        daily_map: Dict[str, Dict[str, Any]] = {}
+        model_map: Dict[str, Dict[str, Any]] = {}
+        totals = {
+            "total_input": 0,
+            "total_output": 0,
+            "total_cache_read": 0,
+            "total_reasoning": 0,
+            "total_estimated_cost": 0,
+            "total_actual_cost": 0,
+            "total_sessions": 0,
+        }
+        for entry in profile_info["profiles"]:
+            summary = _usage_analytics_for_profile(entry["name"], days)
+            summary["profile"] = entry["name"]
+            summaries.append(summary)
+            for row in summary["daily"]:
+                day = row["day"]
+                agg = daily_map.setdefault(day, {"day": day, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "reasoning_tokens": 0, "estimated_cost": 0, "actual_cost": 0, "sessions": 0})
+                for key in ("input_tokens", "output_tokens", "cache_read_tokens", "reasoning_tokens", "estimated_cost", "actual_cost", "sessions"):
+                    agg[key] += row.get(key) or 0
+            for row in summary["by_model"]:
+                model = row["model"] or "unknown"
+                agg = model_map.setdefault(model, {"model": model, "input_tokens": 0, "output_tokens": 0, "estimated_cost": 0, "sessions": 0})
+                for key in ("input_tokens", "output_tokens", "estimated_cost", "sessions"):
+                    agg[key] += row.get(key) or 0
+            for key in totals:
+                totals[key] += summary["totals"].get(key) or 0
+        daily = [daily_map[k] for k in sorted(daily_map)]
+        by_model = sorted(model_map.values(), key=lambda r: (r.get("input_tokens", 0) + r.get("output_tokens", 0)), reverse=True)
+        return {
+            "daily": daily,
+            "by_model": by_model,
+            "totals": totals,
+            "period_days": days,
+            "selected_profile": "all",
+            "active_profile": profile_info["active_profile"],
+            "available_profiles": profile_info["profiles"],
+            "profile_summaries": summaries,
+        }
+
+    payload = _usage_analytics_for_profile(selected_profile, days)
+    payload.update({
+        "active_profile": profile_info["active_profile"],
+        "available_profiles": profile_info["profiles"],
+        "profile_summaries": [{**payload, "profile": selected_profile}],
+    })
+    return payload
 
 
 def mount_spa(application: FastAPI):

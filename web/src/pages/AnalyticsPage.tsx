@@ -229,6 +229,8 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
+  const [selectedProfile, setSelectedProfile] = useState("all");
+  const [availableProfiles, setAvailableProfiles] = useState<Array<{ name: string; label: string; is_active: boolean }>>([]);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -238,11 +240,14 @@ export default function AnalyticsPage() {
     setLoading(true);
     setError(null);
     api
-      .getAnalytics(days)
-      .then(setData)
+      .getAnalytics(days, selectedProfile)
+      .then((resp) => {
+        setData(resp);
+        setAvailableProfiles(resp.available_profiles ?? []);
+      })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [days]);
+  }, [days, selectedProfile]);
 
   useEffect(() => {
     load();
@@ -251,19 +256,34 @@ export default function AnalyticsPage() {
   return (
     <div className="flex flex-col gap-6">
       {/* Period selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground font-medium">{t.analytics.period}</span>
-        {PERIODS.map((p) => (
-          <Button
-            key={p.label}
-            variant={days === p.days ? "default" : "outline"}
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => setDays(p.days)}
-          >
-            {p.label}
-          </Button>
-        ))}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-muted-foreground font-medium">{t.analytics.period}</span>
+          {PERIODS.map((p) => (
+            <Button
+              key={p.label}
+              variant={days === p.days ? "default" : "outline"}
+              size="sm"
+              className="text-xs h-7"
+              onClick={() => setDays(p.days)}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        <select
+          value={selectedProfile}
+          onChange={(e) => setSelectedProfile(e.target.value)}
+          className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground sm:w-44"
+          aria-label="Filter analytics by profile"
+        >
+          <option value="all">All profiles</option>
+          {availableProfiles.map((profile) => (
+            <option key={profile.name} value={profile.name}>
+              {profile.is_active ? `${profile.label} (active)` : profile.label}
+            </option>
+          ))}
+        </select>
       </div>
 
       {loading && !data && (

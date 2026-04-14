@@ -21,15 +21,32 @@ async function getSessionToken(): Promise<string> {
 }
 
 export const api = {
-  getStatus: () => fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
-  deleteSession: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}`, {
+  getStatus: (profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<StatusResponse>(`/api/status${suffix}`);
+  },
+  getProfiles: () => fetchJSON<ProfilesResponse>("/api/profiles"),
+  getSessions: (limit = 20, offset = 0, profile?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<PaginatedSessions>(`/api/sessions?${qs.toString()}`);
+  },
+  getSessionMessages: (id: string, profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages${suffix}`);
+  },
+  deleteSession: (id: string, profile?: string) => {
+    const qs = new URLSearchParams();
+    if (profile) qs.set("profile", profile);
+    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    return fetchJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}${suffix}`, {
       method: "DELETE",
-    }),
+    });
+  },
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -38,8 +55,11 @@ export const api = {
     if (params.component && params.component !== "all") qs.set("component", params.component);
     return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
   },
-  getAnalytics: (days: number) =>
-    fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
+  getAnalytics: (days: number, profile?: string) => {
+    const qs = new URLSearchParams({ days: String(days) });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<AnalyticsResponse>(`/api/analytics/usage?${qs.toString()}`);
+  },
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -110,8 +130,11 @@ export const api = {
   getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
 
   // Session search (FTS5)
-  searchSessions: (q: string) =>
-    fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
+  searchSessions: (q: string, profile?: string) => {
+    const qs = new URLSearchParams({ q });
+    if (profile) qs.set("profile", profile);
+    return fetchJSON<SessionSearchResponse>(`/api/sessions/search?${qs.toString()}`);
+  },
 
   // OAuth provider management
   getOAuthProviders: () =>
@@ -177,8 +200,22 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+export interface ProfileStatusSummary {
+  profile: string;
+  active_sessions: number;
+  gateway_running: boolean;
+  gateway_pid: number | null;
+  gateway_state: string | null;
+  gateway_platforms: Record<string, PlatformStatus>;
+  gateway_exit_reason: string | null;
+  gateway_updated_at: string | null;
+  hermes_home: string;
+}
+
 export interface StatusResponse {
   active_sessions: number;
+  active_profile: string;
+  available_profiles: ProfileOption[];
   config_path: string;
   config_version: number;
   env_path: string;
@@ -190,12 +227,15 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  profile_summaries: ProfileStatusSummary[];
   release_date: string;
+  selected_profile: string;
   version: string;
 }
 
 export interface SessionInfo {
   id: string;
+  profile: string | null;
   source: string | null;
   model: string | null;
   title: string | null;
@@ -215,6 +255,9 @@ export interface PaginatedSessions {
   total: number;
   limit: number;
   offset: number;
+  selected_profile: string;
+  active_profile: string;
+  available_profiles: ProfileOption[];
 }
 
 export interface EnvVarInfo {
@@ -242,6 +285,7 @@ export interface SessionMessage {
 
 export interface SessionMessagesResponse {
   session_id: string;
+  profile: string;
   messages: SessionMessage[];
 }
 
@@ -269,9 +313,28 @@ export interface AnalyticsModelEntry {
   sessions: number;
 }
 
-export interface AnalyticsResponse {
+export interface ProfileAnalyticsSummary {
+  profile: string;
   daily: AnalyticsDailyEntry[];
   by_model: AnalyticsModelEntry[];
+  totals: {
+    total_input: number;
+    total_output: number;
+    total_cache_read: number;
+    total_reasoning: number;
+    total_estimated_cost: number;
+    total_actual_cost: number;
+    total_sessions: number;
+  };
+}
+
+export interface AnalyticsResponse {
+  active_profile: string;
+  available_profiles: ProfileOption[];
+  daily: AnalyticsDailyEntry[];
+  by_model: AnalyticsModelEntry[];
+  profile_summaries: ProfileAnalyticsSummary[];
+  selected_profile: string;
   totals: {
     total_input: number;
     total_output: number;
@@ -313,8 +376,20 @@ export interface ToolsetInfo {
   tools: string[];
 }
 
+export interface ProfileOption {
+  name: string;
+  label: string;
+  is_active: boolean;
+}
+
+export interface ProfilesResponse {
+  active_profile: string;
+  profiles: ProfileOption[];
+}
+
 export interface SessionSearchResult {
   session_id: string;
+  profile: string;
   snippet: string;
   role: string | null;
   source: string | null;
@@ -324,6 +399,7 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+  selected_profile?: string;
 }
 
 // ── Model info types ──────────────────────────────────────────────────

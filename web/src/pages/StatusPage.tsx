@@ -17,19 +17,20 @@ import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/i18n";
 
 export default function StatusPage() {
+  const [selectedProfile, setSelectedProfile] = useState("all");
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const { t } = useI18n();
 
   useEffect(() => {
     const load = () => {
-      api.getStatus().then(setStatus).catch(() => {});
-      api.getSessions(50).then((resp) => setSessions(resp.sessions)).catch(() => {});
+      api.getStatus(selectedProfile).then(setStatus).catch(() => {});
+      api.getSessions(50, 0, selectedProfile).then((resp) => setSessions(resp.sessions)).catch(() => {});
     };
     load();
     const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedProfile]);
 
   if (!status) {
     return (
@@ -115,6 +116,22 @@ export default function StatusPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <div className="flex justify-end">
+        <select
+          value={selectedProfile}
+          onChange={(e) => setSelectedProfile(e.target.value)}
+          className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground sm:w-44"
+          aria-label="Filter status by profile"
+        >
+          <option value="all">All profiles</option>
+          {status.available_profiles.map((profile) => (
+            <option key={profile.name} value={profile.name}>
+              {profile.is_active ? `${profile.label} (active)` : profile.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {/* Alert banner — breaks grid monotony for critical states */}
       {alerts.length > 0 && (
         <div className="border border-destructive/30 bg-destructive/[0.06] p-4">
@@ -158,6 +175,32 @@ export default function StatusPage() {
         ))}
       </div>
 
+      {selectedProfile === "all" && status.profile_summaries.length > 0 && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-muted-foreground" />
+              <CardTitle className="text-base">Profile Overview</CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {status.profile_summaries.map((summary) => (
+              <div key={summary.profile} className="border border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium text-sm">{summary.profile}</span>
+                  <Badge variant={summary.gateway_running ? "success" : "outline"} className="text-[10px]">
+                    {summary.gateway_running ? "gateway on" : "gateway off"}
+                  </Badge>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  {summary.active_sessions} active session{summary.active_sessions === 1 ? "" : "s"}
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       {platforms.length > 0 && (
         <PlatformsCard platforms={platforms} platformStateBadge={PLATFORM_STATE_BADGE} />
       )}
@@ -185,6 +228,11 @@ export default function StatusPage() {
                       <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                       {t.common.live}
                     </Badge>
+                    {(selectedProfile === "all" || s.profile) && (
+                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                        {s.profile ?? selectedProfile}
+                      </Badge>
+                    )}
                   </div>
 
                   <span className="text-xs text-muted-foreground truncate">
@@ -213,7 +261,14 @@ export default function StatusPage() {
                 className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 border border-border p-3 w-full"
               >
                 <div className="flex flex-col gap-1 min-w-0 w-full">
-                  <span className="font-medium text-sm truncate">{s.title ?? t.common.untitled}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-sm truncate">{s.title ?? t.common.untitled}</span>
+                    {(selectedProfile === "all" || s.profile) && (
+                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                        {s.profile ?? selectedProfile}
+                      </Badge>
+                    )}
+                  </div>
 
                   <span className="text-xs text-muted-foreground truncate">
                     <span className="font-mono-ui">{(s.model ?? t.common.unknown).split("/").pop()}</span> · {s.message_count} {t.common.msgs} · {timeAgo(s.last_active)}

@@ -177,6 +177,7 @@ function SessionRow({
   isExpanded,
   onToggle,
   onDelete,
+  selectedProfile,
 }: {
   session: SessionInfo;
   snippet?: string;
@@ -184,6 +185,7 @@ function SessionRow({
   isExpanded: boolean;
   onToggle: () => void;
   onDelete: () => void;
+  selectedProfile: string;
 }) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -194,12 +196,12 @@ function SessionRow({
     if (isExpanded && messages === null && !loading) {
       setLoading(true);
       api
-        .getSessionMessages(session.id)
+        .getSessionMessages(session.id, session.profile ?? (selectedProfile === "all" ? undefined : selectedProfile))
         .then((resp) => setMessages(resp.messages))
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
     }
-  }, [isExpanded, session.id, messages, loading]);
+  }, [isExpanded, session.id, session.profile, selectedProfile, messages, loading]);
 
   const sourceInfo = (session.source ? SOURCE_CONFIG[session.source] : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
@@ -254,6 +256,11 @@ function SessionRow({
           <Badge variant="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
+          {(selectedProfile === "all" || session.profile) && (
+            <Badge variant="secondary" className="text-[10px]">
+              {session.profile ?? selectedProfile}
+            </Badge>
+          )}
           <Button
             variant="ghost"
             size="icon"
@@ -298,27 +305,30 @@ export default function SessionsPage() {
   const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SessionSearchResult[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [selectedProfile, setSelectedProfile] = useState<string>("all");
+  const [availableProfiles, setAvailableProfiles] = useState<Array<{ name: string; label: string; is_active: boolean }>>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const { t } = useI18n();
 
-  const loadSessions = useCallback((p: number) => {
+  const loadSessions = useCallback((p: number, profile: string) => {
     setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, profile)
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
+        setAvailableProfiles(resp.available_profiles);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
-    loadSessions(page);
-  }, [loadSessions, page]);
+    loadSessions(page, selectedProfile);
+  }, [loadSessions, page, selectedProfile]);
 
   // Debounced FTS search
   useEffect(() => {
@@ -333,7 +343,7 @@ export default function SessionsPage() {
     setSearching(true);
     debounceRef.current = setTimeout(() => {
       api
-        .searchSessions(search.trim())
+        .searchSessions(search.trim(), selectedProfile)
         .then((resp) => setSearchResults(resp.results))
         .catch(() => setSearchResults(null))
         .finally(() => setSearching(false));
@@ -342,31 +352,31 @@ export default function SessionsPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [search]);
+  }, [search, selectedProfile]);
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string, profile: string | null) => {
     try {
-      await api.deleteSession(id);
-      setSessions((prev) => prev.filter((s) => s.id !== id));
+      await api.deleteSession(id, profile ?? (selectedProfile === "all" ? undefined : selectedProfile));
+      setSessions((prev) => prev.filter((s) => !(s.id === id && (s.profile ?? selectedProfile) === (profile ?? selectedProfile))));
       setTotal((prev) => prev - 1);
-      if (expandedId === id) setExpandedId(null);
+      if (expandedKey === `${profile ?? selectedProfile}:${id}`) setExpandedKey(null);
     } catch {
       // ignore
     }
   };
 
-  // Build snippet map from search results (session_id → snippet)
+  // Build snippet map from search results ((profile:session_id) → snippet)
   const snippetMap = new Map<string, string>();
   if (searchResults) {
     for (const r of searchResults) {
-      snippetMap.set(r.session_id, r.snippet);
+      snippetMap.set(`${r.profile}:${r.session_id}`, r.snippet);
     }
   }
 
   // When searching, filter sessions to those with FTS matches;
   // when not searching, show all sessions
   const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
+    ? sessions.filter((s) => snippetMap.has(`${s.profile ?? selectedProfile}:${s.id}`))
     : sessions;
 
   if (loading) {
@@ -388,27 +398,47 @@ export default function SessionsPage() {
             {total}
           </Badge>
         </div>
-        <div className="relative w-full sm:w-64">
-          {searching ? (
-            <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
-          ) : (
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-          )}
-          <Input
-            placeholder={t.sessions.searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-8 pr-7 h-8 text-xs"
-          />
-          {search && (
-            <button
-              type="button"
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
-              onClick={() => setSearch("")}
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
+          <select
+            value={selectedProfile}
+            onChange={(e) => {
+              setSelectedProfile(e.target.value);
+              setPage(0);
+              setExpandedKey(null);
+            }}
+            className="h-8 rounded-md border border-border bg-background px-2 text-xs text-foreground sm:w-44"
+            aria-label="Filter sessions by profile"
+          >
+            <option value="all">All profiles</option>
+            {availableProfiles.map((profile) => (
+              <option key={profile.name} value={profile.name}>
+                {profile.is_active ? `${profile.label} (active)` : profile.label}
+              </option>
+            ))}
+          </select>
+          <div className="relative w-full sm:w-64">
+            {searching ? (
+              <div className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+            ) : (
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            )}
+            <Input
+              placeholder={t.sessions.searchPlaceholder}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-8 pr-7 h-8 text-xs"
+            />
+            {search && (
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                onClick={() => setSearch("")}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            )}
+          </div>
+        </div>
         </div>
       </div>
 
@@ -427,15 +457,16 @@ export default function SessionsPage() {
           <div className="flex flex-col gap-1.5">
             {filtered.map((s) => (
               <SessionRow
-                key={s.id}
+                key={`${s.profile ?? selectedProfile}:${s.id}`}
                 session={s}
-                snippet={snippetMap.get(s.id)}
+                snippet={snippetMap.get(`${s.profile ?? selectedProfile}:${s.id}`)}
                 searchQuery={search || undefined}
-                isExpanded={expandedId === s.id}
+                isExpanded={expandedKey === `${s.profile ?? selectedProfile}:${s.id}`}
                 onToggle={() =>
-                  setExpandedId((prev) => (prev === s.id ? null : s.id))
+                  setExpandedKey((prev) => (prev === `${s.profile ?? selectedProfile}:${s.id}` ? null : `${s.profile ?? selectedProfile}:${s.id}`))
                 }
-                onDelete={() => handleDelete(s.id)}
+                onDelete={() => handleDelete(s.id, s.profile)}
+                selectedProfile={selectedProfile}
               />
             ))}
           </div>

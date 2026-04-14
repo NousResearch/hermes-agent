@@ -99,14 +99,14 @@ const nextDetailsMode = (m: DetailsMode): DetailsMode =>
 
 // ── Pure helpers ─────────────────────────────────────────────────────
 
-const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
 type PasteSnippet = { label: string; text: string }
 
-const shortCwd = (cwd: string, max = 28) => {
-  const home = process.env.HOME
-  const path = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
 
-  return path.length <= max ? path : `…${path.slice(-(max - 1))}`
+const shortCwd = (cwd: string, max = 28) => {
+  const p = process.env.HOME && cwd.startsWith(process.env.HOME) ? `~${cwd.slice(process.env.HOME.length)}` : cwd
+
+  return p.length <= max ? p : `…${p.slice(-(max - 1))}`
 }
 
 const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?: number } | null | undefined) => {
@@ -332,6 +332,7 @@ function StickyPromptTracker({
       if (!s) {
         return NaN
       }
+
       const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
 
       return s.isSticky() ? -1 - top : top
@@ -356,6 +357,7 @@ function StickyPromptTracker({
         if ((offsets[i] ?? 0) + 1 >= top) {
           continue
         }
+
         text = userDisplay(messages[i]!.text.trim()).replace(/\s+/g, ' ').trim()
 
         break
@@ -366,6 +368,85 @@ function StickyPromptTracker({
   useEffect(() => onChange(text), [onChange, text])
 
   return null
+}
+
+function TranscriptScrollbar({ scrollRef, t }: { scrollRef: RefObject<ScrollBoxHandle | null>; t: Theme }) {
+  useSyncExternalStore(
+    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
+    () => {
+      const s = scrollRef.current
+
+      if (!s) {
+        return NaN
+      }
+
+      return `${s.getScrollTop() + s.getPendingDelta()}:${s.getViewportHeight()}:${s.getScrollHeight()}`
+    },
+    () => ''
+  )
+
+  const [hover, setHover] = useState(false)
+  const [grab, setGrab] = useState<number | null>(null)
+
+  const s = scrollRef.current
+  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
+
+  if (!vp) {
+    return <Box width={1} />
+  }
+
+  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
+  const scrollable = total > vp
+  const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
+  const travel = Math.max(1, vp - thumb)
+  const pos = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
+  const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
+
+  const jump = (row: number, offset: number) => {
+    if (!s || !scrollable) {
+      return
+    }
+    s.scrollTo(Math.round((Math.max(0, Math.min(travel, row - offset)) / travel) * Math.max(0, total - vp)))
+  }
+
+  return (
+    <Box
+      flexDirection="column"
+      onMouseDown={(e: { localRow?: number }) => {
+        const row = Math.max(0, Math.min(vp - 1, e.localRow ?? 0))
+        const off = row >= thumbTop && row < thumbTop + thumb ? row - thumbTop : Math.floor(thumb / 2)
+        setGrab(off)
+        jump(row, off)
+      }}
+      onMouseDrag={(e: { localRow?: number }) =>
+        jump(Math.max(0, Math.min(vp - 1, e.localRow ?? 0)), grab ?? Math.floor(thumb / 2))
+      }
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onMouseUp={() => setGrab(null)}
+      width={1}
+    >
+      {Array.from({ length: vp }, (_, i) => {
+        const active = i >= thumbTop && i < thumbTop + thumb
+
+        const color = active
+          ? grab !== null
+            ? t.color.gold
+            : hover
+              ? t.color.amber
+              : t.color.bronze
+          : hover
+            ? t.color.bronze
+            : t.color.dim
+
+        return (
+          <Text color={color} dimColor={!active && !hover} key={i}>
+            {scrollable ? (active ? '┃' : '│') : ' '}
+          </Text>
+        )
+      })}
+    </Box>
+  )
 }
 
 // ── App ──────────────────────────────────────────────────────────────
@@ -561,12 +642,16 @@ export function App({ gw }: { gw: GatewayClient }) {
   const scrollWithSelection = useCallback(
     (delta: number) => {
       const s = scrollRef.current
-      const sel = selection.getState() as
-        | { anchor?: { row: number }; focus?: { row: number }; isDragging?: boolean }
-        | null
+
+      const sel = selection.getState() as {
+        anchor?: { row: number }
+        focus?: { row: number }
+        isDragging?: boolean
+      } | null
 
       if (!s || !sel?.anchor || !sel.focus) {
         s?.scrollBy(delta)
+
         return
       }
 
@@ -575,11 +660,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       if (sel.anchor.row < top || sel.anchor.row > bottom) {
         s.scrollBy(delta)
+
         return
       }
 
       if (!sel.isDragging && (sel.focus.row < top || sel.focus.row > bottom)) {
         s.scrollBy(delta)
+
         return
       }
 
@@ -3065,60 +3152,66 @@ export function App({ gw }: { gw: GatewayClient }) {
   return (
     <AlternateScreen mouseTracking={MOUSE_TRACKING}>
       <Box flexDirection="column" flexGrow={1}>
-        <ScrollBox flexDirection="column" flexGrow={1} ref={scrollRef} stickyScroll width="100%">
-          <Box flexDirection="column" paddingX={1}>
-            {virtualHistory.topSpacer > 0 ? <Box height={virtualHistory.topSpacer} /> : null}
+        <Box flexDirection="row" flexGrow={1}>
+          <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={scrollRef} stickyScroll>
+            <Box flexDirection="column" paddingX={1}>
+              {virtualHistory.topSpacer > 0 ? <Box height={virtualHistory.topSpacer} /> : null}
 
-            {visibleHistory.map(row => (
-              <Box flexDirection="column" key={row.key} ref={virtualHistory.measureRef(row.key)}>
-                {row.msg.kind === 'intro' && row.msg.info ? (
-                  <Box flexDirection="column" paddingTop={1}>
-                    <Banner t={theme} />
-                    <SessionPanel info={row.msg.info} sid={sid} t={theme} />
-                  </Box>
-                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-                  <Panel sections={row.msg.panelData.sections} t={theme} title={row.msg.panelData.title} />
-                ) : (
-                  <MessageLine cols={cols} compact={compact} detailsMode={detailsMode} msg={row.msg} t={theme} />
-                )}
-              </Box>
-            ))}
+              {visibleHistory.map(row => (
+                <Box flexDirection="column" key={row.key} ref={virtualHistory.measureRef(row.key)}>
+                  {row.msg.kind === 'intro' && row.msg.info ? (
+                    <Box flexDirection="column" paddingTop={1}>
+                      <Banner t={theme} />
+                      <SessionPanel info={row.msg.info} sid={sid} t={theme} />
+                    </Box>
+                  ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+                    <Panel sections={row.msg.panelData.sections} t={theme} title={row.msg.panelData.title} />
+                  ) : (
+                    <MessageLine cols={cols} compact={compact} detailsMode={detailsMode} msg={row.msg} t={theme} />
+                  )}
+                </Box>
+              ))}
 
-            {virtualHistory.bottomSpacer > 0 ? <Box height={virtualHistory.bottomSpacer} /> : null}
+              {virtualHistory.bottomSpacer > 0 ? <Box height={virtualHistory.bottomSpacer} /> : null}
 
-            {showProgressArea && (
-              <ToolTrail
-                activity={activity}
-                busy={busy && !streaming}
-                detailsMode={detailsMode}
-                reasoning={reasoning}
-                reasoningActive={reasoningActive}
-                reasoningStreaming={reasoningStreaming}
-                t={theme}
-                tools={tools}
-                trail={turnTrail}
-              />
-            )}
+              {showProgressArea && (
+                <ToolTrail
+                  activity={activity}
+                  busy={busy && !streaming}
+                  detailsMode={detailsMode}
+                  reasoning={reasoning}
+                  reasoningActive={reasoningActive}
+                  reasoningStreaming={reasoningStreaming}
+                  t={theme}
+                  tools={tools}
+                  trail={turnTrail}
+                />
+              )}
 
-            {showStreamingArea && (
-              <MessageLine
-                cols={cols}
-                compact={compact}
-                detailsMode={detailsMode}
-                isStreaming
-                msg={{ role: 'assistant', text: streaming }}
-                t={theme}
-              />
-            )}
-          </Box>
-        </ScrollBox>
+              {showStreamingArea && (
+                <MessageLine
+                  cols={cols}
+                  compact={compact}
+                  detailsMode={detailsMode}
+                  isStreaming
+                  msg={{ role: 'assistant', text: streaming }}
+                  t={theme}
+                />
+              )}
+            </Box>
+          </ScrollBox>
 
-        <StickyPromptTracker
-          messages={historyItems}
-          offsets={virtualHistory.offsets}
-          onChange={setStickyPrompt}
-          scrollRef={scrollRef}
-        />
+          <NoSelect flexShrink={0} marginLeft={1}>
+            <TranscriptScrollbar scrollRef={scrollRef} t={theme} />
+          </NoSelect>
+
+          <StickyPromptTracker
+            messages={historyItems}
+            offsets={virtualHistory.offsets}
+            onChange={setStickyPrompt}
+            scrollRef={scrollRef}
+          />
+        </Box>
 
         <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
           {clarify && (

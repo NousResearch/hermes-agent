@@ -46,6 +46,7 @@ export function useVirtualHistory(
       if (!s) {
         return NaN
       }
+
       const b = Math.floor(s.getScrollTop() / QUANTUM)
 
       return s.isSticky() ? -b - 1 : b
@@ -122,6 +123,7 @@ export function useVirtualHistory(
       if (!k) {
         continue
       }
+
       const h = Math.ceil(nodes.current.get(k)?.yogaNode?.getComputedHeight?.() ?? 0)
 
       if (h > 0 && heights.current.get(k) !== h) {

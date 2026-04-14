@@ -8,6 +8,7 @@ import type { DOMElement } from '../dom.js'
 import type { ClickEvent } from '../events/click-event.js'
 import type { FocusEvent } from '../events/focus-event.js'
 import type { KeyboardEvent } from '../events/keyboard-event.js'
+import type { MouseEvent } from '../events/mouse-event.js'
 import type { Styles } from '../styles.js'
 import * as warn from '../warn.js'
 export type Props = Except<Styles, 'textWrap'> & {
@@ -31,6 +32,9 @@ export type Props = Except<Styles, 'textWrap'> & {
    * ancestors; call `event.stopImmediatePropagation()` to stop bubbling.
    */
   onClick?: (event: ClickEvent) => void
+  onMouseDown?: (event: MouseEvent) => void
+  onMouseUp?: (event: MouseEvent) => void
+  onMouseDrag?: (event: MouseEvent) => void
   onFocus?: (event: FocusEvent) => void
   onFocusCapture?: (event: FocusEvent) => void
   onBlur?: (event: FocusEvent) => void
@@ -52,7 +56,7 @@ export type Props = Except<Styles, 'textWrap'> & {
  * `<Box>` is an essential Ink component to build your layout. It's like `<div style="display: flex">` in the browser.
  */
 function Box(t0: Props) {
-  const $ = _c(42)
+  const $ = _c(48)
   let autoFocus
   let children
   let flexDirection
@@ -66,8 +70,11 @@ function Box(t0: Props) {
   let onFocusCapture
   let onKeyDown
   let onKeyDownCapture
+  let onMouseDown
+  let onMouseDrag
   let onMouseEnter
   let onMouseLeave
+  let onMouseUp
   let ref
   let style
   let tabIndex
@@ -87,11 +94,14 @@ function Box(t0: Props) {
       onFocusCapture: t11,
       onBlur: t12,
       onBlurCapture: t13,
-      onMouseEnter: t14,
-      onMouseLeave: t15,
-      onKeyDown: t16,
-      onKeyDownCapture: t17,
-      ...t18
+      onMouseDown: t14,
+      onMouseUp: t15,
+      onMouseDrag: t16,
+      onMouseEnter: t17,
+      onMouseLeave: t18,
+      onKeyDown: t19,
+      onKeyDownCapture: t20,
+      ...t21
     } = t0
 
     children = t1
@@ -103,11 +113,14 @@ function Box(t0: Props) {
     onFocusCapture = t11
     onBlur = t12
     onBlurCapture = t13
-    onMouseEnter = t14
-    onMouseLeave = t15
-    onKeyDown = t16
-    onKeyDownCapture = t17
-    style = t18
+    onMouseDown = t14
+    onMouseUp = t15
+    onMouseDrag = t16
+    onMouseEnter = t17
+    onMouseLeave = t18
+    onKeyDown = t19
+    onKeyDownCapture = t20
+    style = t21
     flexWrap = t2 === undefined ? 'nowrap' : t2
     flexDirection = t3 === undefined ? 'row' : t3
     flexGrow = t4 === undefined ? 0 : t4
@@ -143,11 +156,14 @@ function Box(t0: Props) {
     $[11] = onFocusCapture
     $[12] = onKeyDown
     $[13] = onKeyDownCapture
-    $[14] = onMouseEnter
-    $[15] = onMouseLeave
-    $[16] = ref
-    $[17] = style
-    $[18] = tabIndex
+    $[14] = onMouseDown
+    $[15] = onMouseUp
+    $[16] = onMouseDrag
+    $[17] = onMouseEnter
+    $[18] = onMouseLeave
+    $[19] = ref
+    $[20] = style
+    $[21] = tabIndex
   } else {
     autoFocus = $[1]
     children = $[2]
@@ -162,11 +178,14 @@ function Box(t0: Props) {
     onFocusCapture = $[11]
     onKeyDown = $[12]
     onKeyDownCapture = $[13]
-    onMouseEnter = $[14]
-    onMouseLeave = $[15]
-    ref = $[16]
-    style = $[17]
-    tabIndex = $[18]
+    onMouseDown = $[14]
+    onMouseUp = $[15]
+    onMouseDrag = $[16]
+    onMouseEnter = $[17]
+    onMouseLeave = $[18]
+    ref = $[19]
+    style = $[20]
+    tabIndex = $[21]
   }
 
   const t1 = style.overflowX ?? style.overflow ?? 'visible'
@@ -174,13 +193,13 @@ function Box(t0: Props) {
   let t3
 
   if (
-    $[19] !== flexDirection ||
-    $[20] !== flexGrow ||
-    $[21] !== flexShrink ||
-    $[22] !== flexWrap ||
-    $[23] !== style ||
-    $[24] !== t1 ||
-    $[25] !== t2
+    $[22] !== flexDirection ||
+    $[23] !== flexGrow ||
+    $[24] !== flexShrink ||
+    $[25] !== flexWrap ||
+    $[26] !== style ||
+    $[27] !== t1 ||
+    $[28] !== t2
   ) {
     t3 = {
       flexWrap,
@@ -191,35 +210,38 @@ function Box(t0: Props) {
       overflowX: t1,
       overflowY: t2
     }
-    $[19] = flexDirection
-    $[20] = flexGrow
-    $[21] = flexShrink
-    $[22] = flexWrap
-    $[23] = style
-    $[24] = t1
-    $[25] = t2
-    $[26] = t3
+    $[22] = flexDirection
+    $[23] = flexGrow
+    $[24] = flexShrink
+    $[25] = flexWrap
+    $[26] = style
+    $[27] = t1
+    $[28] = t2
+    $[29] = t3
   } else {
-    t3 = $[26]
+    t3 = $[29]
   }
 
   let t4
 
   if (
-    $[27] !== autoFocus ||
-    $[28] !== children ||
-    $[29] !== onBlur ||
-    $[30] !== onBlurCapture ||
-    $[31] !== onClick ||
-    $[32] !== onFocus ||
-    $[33] !== onFocusCapture ||
-    $[34] !== onKeyDown ||
-    $[35] !== onKeyDownCapture ||
-    $[36] !== onMouseEnter ||
-    $[37] !== onMouseLeave ||
-    $[38] !== ref ||
-    $[39] !== t3 ||
-    $[40] !== tabIndex
+    $[30] !== autoFocus ||
+    $[31] !== children ||
+    $[32] !== onBlur ||
+    $[33] !== onBlurCapture ||
+    $[34] !== onClick ||
+    $[35] !== onFocus ||
+    $[36] !== onFocusCapture ||
+    $[37] !== onKeyDown ||
+    $[38] !== onKeyDownCapture ||
+    $[39] !== onMouseDown ||
+    $[40] !== onMouseUp ||
+    $[41] !== onMouseDrag ||
+    $[42] !== onMouseEnter ||
+    $[43] !== onMouseLeave ||
+    $[44] !== ref ||
+    $[45] !== t3 ||
+    $[46] !== tabIndex
   ) {
     t4 = (
       <ink-box
@@ -231,8 +253,11 @@ function Box(t0: Props) {
         onFocusCapture={onFocusCapture}
         onKeyDown={onKeyDown}
         onKeyDownCapture={onKeyDownCapture}
+        onMouseDown={onMouseDown}
+        onMouseDrag={onMouseDrag}
         onMouseEnter={onMouseEnter}
         onMouseLeave={onMouseLeave}
+        onMouseUp={onMouseUp}
         ref={ref}
         style={t3}
         tabIndex={tabIndex}
@@ -240,23 +265,26 @@ function Box(t0: Props) {
         {children}
       </ink-box>
     )
-    $[27] = autoFocus
-    $[28] = children
-    $[29] = onBlur
-    $[30] = onBlurCapture
-    $[31] = onClick
-    $[32] = onFocus
-    $[33] = onFocusCapture
-    $[34] = onKeyDown
-    $[35] = onKeyDownCapture
-    $[36] = onMouseEnter
-    $[37] = onMouseLeave
-    $[38] = ref
-    $[39] = t3
-    $[40] = tabIndex
-    $[41] = t4
+    $[30] = autoFocus
+    $[31] = children
+    $[32] = onBlur
+    $[33] = onBlurCapture
+    $[34] = onClick
+    $[35] = onFocus
+    $[36] = onFocusCapture
+    $[37] = onKeyDown
+    $[38] = onKeyDownCapture
+    $[39] = onMouseDown
+    $[40] = onMouseUp
+    $[41] = onMouseDrag
+    $[42] = onMouseEnter
+    $[43] = onMouseLeave
+    $[44] = ref
+    $[45] = t3
+    $[46] = tabIndex
+    $[47] = t4
   } else {
-    t4 = $[41]
+    t4 = $[47]
   }
 
   return t4

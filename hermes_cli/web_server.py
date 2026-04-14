@@ -10,8 +10,10 @@ Usage:
 """
 
 import asyncio
+import hmac
 import json
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -47,7 +49,7 @@ from gateway.status import get_running_pid, read_runtime_status
 try:
     from fastapi import FastAPI, HTTPException, Request
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -83,6 +85,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Endpoints that do NOT require the session token.  Everything else under
+# /api/ is gated by the auth middleware below.  Keep this list minimal —
+# only truly non-sensitive, read-only endpoints belong here.
+# ---------------------------------------------------------------------------
+_PUBLIC_API_PATHS: frozenset = frozenset({
+    "/api/status",
+    "/api/config/defaults",
+    "/api/config/schema",
+    "/api/model/info",
+})
+
+
+def _require_token(request: Request) -> None:
+    """Validate the ephemeral session token.  Raises 401 on mismatch.
+
+    Uses ``hmac.compare_digest`` to prevent timing side-channels.
+    """
+    auth = request.headers.get("authorization", "")
+    expected = f"Bearer {_SESSION_TOKEN}"
+    if not hmac.compare_digest(auth.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Require the session token on all /api/ routes except the public list."""
+    path = request.url.path
+    if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
+        auth = request.headers.get("authorization", "")
+        expected = f"Bearer {_SESSION_TOKEN}"
+        if not hmac.compare_digest(auth.encode(), expected.encode()):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+            )
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -280,12 +320,68 @@ class EnvVarReveal(BaseModel):
     key: str
 
 
+_GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
+_GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
+
+
+def _probe_gateway_health() -> tuple[bool, dict | None]:
+    """Probe the gateway via its HTTP health endpoint (cross-container).
+
+    Uses ``/health/detailed`` first (returns full state), falling back to
+    the simpler ``/health`` endpoint.  Returns ``(is_alive, body_dict)``.
+
+    Accepts any of these as ``GATEWAY_HEALTH_URL``:
+    - ``http://gateway:8642``                (base URL — recommended)
+    - ``http://gateway:8642/health``         (explicit health path)
+    - ``http://gateway:8642/health/detailed`` (explicit detailed path)
+
+    This is a **blocking** call — run via ``run_in_executor`` from async code.
+    """
+    if not _GATEWAY_HEALTH_URL:
+        return False, None
+
+    # Normalise to base URL so we always probe the right paths regardless of
+    # whether the user included /health or /health/detailed in the env var.
+    base = _GATEWAY_HEALTH_URL.rstrip("/")
+    if base.endswith("/health/detailed"):
+        base = base[: -len("/health/detailed")]
+    elif base.endswith("/health"):
+        base = base[: -len("/health")]
+
+    for path in (f"{base}/health/detailed", f"{base}/health"):
+        try:
+            req = urllib.request.Request(path, method="GET")
+            with urllib.request.urlopen(req, timeout=_GATEWAY_HEALTH_TIMEOUT) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read())
+                    return True, body
+        except Exception:
+            continue
+    return False, None
+
+
 @app.get("/api/status")
 async def get_status():
     current_ver, latest_ver = check_config_version()
 
+    # --- Gateway liveness detection ---
+    # Try local PID check first (same-host).  If that fails and a remote
+    # GATEWAY_HEALTH_URL is configured, probe the gateway over HTTP so the
+    # dashboard works when the gateway runs in a separate container.
     gateway_pid = get_running_pid()
     gateway_running = gateway_pid is not None
+    remote_health_body: dict | None = None
+
+    if not gateway_running and _GATEWAY_HEALTH_URL:
+        loop = asyncio.get_event_loop()
+        alive, remote_health_body = await loop.run_in_executor(
+            None, _probe_gateway_health
+        )
+        if alive:
+            gateway_running = True
+            # PID from the remote container (display only — not locally valid)
+            if remote_health_body:
+                gateway_pid = remote_health_body.get("pid")
 
     gateway_state = None
     gateway_platforms: dict = {}
@@ -302,7 +398,12 @@ async def get_status():
     except Exception:
         configured_gateway_platforms = None
 
+    # Prefer the detailed health endpoint response (has full state) when the
+    # local runtime status file is absent or stale (cross-container).
     runtime = read_runtime_status()
+    if runtime is None and remote_health_body and remote_health_body.get("gateway_state"):
+        runtime = remote_health_body
+
     if runtime:
         gateway_state = runtime.get("gateway_state")
         gateway_platforms = runtime.get("platforms") or {}
@@ -317,6 +418,17 @@ async def get_status():
         if not gateway_running:
             gateway_state = gateway_state if gateway_state in ("stopped", "startup_failed") else "stopped"
             gateway_platforms = {}
+        elif gateway_running and remote_health_body is not None:
+            # The health probe confirmed the gateway is alive, but the local
+            # runtime status file may be stale (cross-container).  Override
+            # stopped/None state so the dashboard shows the correct badge.
+            if gateway_state in (None, "stopped"):
+                gateway_state = "running"
+
+    # If there was no runtime info at all but the health probe confirmed alive,
+    # ensure we still report the gateway as running (no shared volume scenario).
+    if gateway_running and gateway_state is None and remote_health_body is not None:
+        gateway_state = "running"
 
     active_sessions = 0
     try:
@@ -607,17 +719,6 @@ async def update_config(body: ConfigUpdate):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/auth/session-token")
-async def get_session_token():
-    """Return the ephemeral session token for this server instance.
-
-    The token protects sensitive endpoints (reveal).  It's served to the SPA
-    which stores it in memory — it's never persisted and dies when the server
-    process exits.  CORS already restricts this to localhost origins.
-    """
-    return {"token": _SESSION_TOKEN}
-
-
 @app.get("/api/env")
 async def get_env_vars():
     env_on_disk = load_env()
@@ -671,9 +772,7 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     - Audit logging
     """
     # --- Token check ---
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     # --- Rate limit ---
     now = time.time()
@@ -944,9 +1043,7 @@ async def list_oauth_providers():
 @app.delete("/api/providers/oauth/{provider_id}")
 async def disconnect_oauth_provider(provider_id: str, request: Request):
     """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
 
     valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid_ids:
@@ -1518,9 +1615,7 @@ def _codex_full_login_worker(session_id: str) -> None:
 @app.post("/api/providers/oauth/{provider_id}/start")
 async def start_oauth_login(provider_id: str, request: Request):
     """Initiate an OAuth login flow. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     _gc_oauth_sessions()
     valid = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
     if provider_id not in valid:
@@ -1552,9 +1647,7 @@ class OAuthSubmitBody(BaseModel):
 @app.post("/api/providers/oauth/{provider_id}/submit")
 async def submit_oauth_code(provider_id: str, body: OAuthSubmitBody, request: Request):
     """Submit the auth code for PKCE flows. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     if provider_id == "anthropic":
         return await asyncio.get_event_loop().run_in_executor(
             None, _submit_anthropic_pkce, body.session_id, body.code,
@@ -1582,9 +1675,7 @@ async def poll_oauth_session(provider_id: str, session_id: str):
 @app.delete("/api/providers/oauth/sessions/{session_id}")
 async def cancel_oauth_session(session_id: str, request: Request):
     """Cancel a pending OAuth session. Token-protected."""
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {_SESSION_TOKEN}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_token(request)
     with _oauth_sessions_lock:
         sess = _oauth_sessions.pop(session_id, None)
     if sess is None:
@@ -1932,7 +2023,12 @@ async def get_usage_analytics(days: int = 30):
 
 
 def mount_spa(application: FastAPI):
-    """Mount the built SPA. Falls back to index.html for client-side routing."""
+    """Mount the built SPA. Falls back to index.html for client-side routing.
+
+    The session token is injected into index.html via a ``<script>`` tag so
+    the SPA can authenticate against protected API endpoints without a
+    separate (unauthenticated) token-dispensing endpoint.
+    """
     if not WEB_DIST.exists():
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
@@ -1941,6 +2037,20 @@ def mount_spa(application: FastAPI):
                 status_code=404,
             )
         return
+
+    _index_path = WEB_DIST / "index.html"
+
+    def _serve_index():
+        """Return index.html with the session token injected."""
+        html = _index_path.read_text()
+        token_script = (
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+        )
+        html = html.replace("</head>", f"{token_script}</head>", 1)
+        return HTMLResponse(
+            html,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
@@ -1955,24 +2065,32 @@ def mount_spa(application: FastAPI):
             and file_path.is_file()
         ):
             return FileResponse(file_path)
-        return FileResponse(
-            WEB_DIST / "index.html",
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
-        )
+        return _serve_index()
 
 
 mount_spa(app)
 
 
-def start_server(host: str = "127.0.0.1", port: int = 9119, open_browser: bool = True):
+def start_server(
+    host: str = "127.0.0.1",
+    port: int = 9119,
+    open_browser: bool = True,
+    allow_public: bool = False,
+):
     """Start the web UI server."""
     import uvicorn
 
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        import logging
-        logging.warning(
-            "Binding to %s — the web UI exposes config and API keys. "
-            "Only bind to non-localhost if you trust all users on the network.", host,
+    _LOCALHOST = ("127.0.0.1", "localhost", "::1")
+    if host not in _LOCALHOST and not allow_public:
+        raise SystemExit(
+            f"Refusing to bind to {host} — the dashboard exposes API keys "
+            f"and config without robust authentication.\n"
+            f"Use --insecure to override (NOT recommended on untrusted networks)."
+        )
+    if host not in _LOCALHOST:
+        _log.warning(
+            "Binding to %s with --insecure — the dashboard has no robust "
+            "authentication. Only use on trusted networks.", host,
         )
 
     if open_browser:

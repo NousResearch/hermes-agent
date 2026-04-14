@@ -361,6 +361,17 @@ class TestSlashCommandCompleter:
     def test_no_completions_for_empty_input(self):
         assert _completions(SlashCommandCompleter(), "") == []
 
+    def test_context_reference_completion_for_bare_at_sign(self, tmp_path, monkeypatch):
+        (tmp_path / "notes.txt").write_text("hello")
+        monkeypatch.chdir(tmp_path)
+
+        completions = _completions(SlashCommandCompleter(), "@")
+        texts = {item.text for item in completions}
+
+        assert "@diff" in texts
+        assert "@file:" in texts
+        assert "@file:notes.txt" in texts
+
     # -- skill commands via provider ------------------------------------
 
     def test_skill_commands_are_completed_from_provider(self):

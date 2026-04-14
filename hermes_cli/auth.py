@@ -388,8 +388,8 @@ ZAI_ENDPOINTS = [
     # (id, base_url, default_model, label)
     ("global",        "https://api.z.ai/api/paas/v4",        "glm-5",   "Global"),
     ("cn",            "https://open.bigmodel.cn/api/paas/v4", "glm-5",   "China"),
-    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-4.7", "Global (Coding Plan)"),
-    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-4.7", "China (Coding Plan)"),
+    ("coding-global", "https://api.z.ai/api/coding/paas/v4",  "glm-5.1", "Global (Coding Plan)"),
+    ("coding-cn",     "https://open.bigmodel.cn/api/coding/paas/v4", "glm-5.1", "China (Coding Plan)"),
 ]
 
 

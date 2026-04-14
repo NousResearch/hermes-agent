@@ -442,6 +442,28 @@ class TestBlueBubblesWebhookUrl:
         adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
         assert "192.168.1.50" in adapter._webhook_url
 
+    def test_register_url_embeds_password(self, monkeypatch):
+        """_webhook_register_url should append ?password=... for inbound auth."""
+        adapter = _make_adapter(monkeypatch, password="secret123")
+        assert adapter._webhook_register_url.endswith("?password=secret123")
+        assert adapter._webhook_register_url.startswith(adapter._webhook_url)
+
+    def test_register_url_url_encodes_password(self, monkeypatch):
+        """Passwords with special characters must be URL-encoded."""
+        adapter = _make_adapter(monkeypatch, password="W9fTC&L5JL*@")
+        assert "password=W9fTC%26L5JL%2A%40" in adapter._webhook_register_url
+
+    def test_register_url_omits_query_when_no_password(self, monkeypatch):
+        """If no password is configured, the register URL should be the bare URL."""
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"server_url": "http://localhost:1234", "password": ""},
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert adapter._webhook_register_url == adapter._webhook_url
+
 
 class TestBlueBubblesWebhookRegistration:
     """Tests for _register_webhook, _unregister_webhook, _find_registered_webhooks."""

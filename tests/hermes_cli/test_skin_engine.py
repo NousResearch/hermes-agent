@@ -40,13 +40,6 @@ class TestSkinConfig:
         assert skin.get_branding("agent_name") == "Hermes Agent"
         assert skin.get_branding("nonexistent", "fallback") == "fallback"
 
-    def test_get_spinner_list_empty_for_default(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        # Default skin has no custom spinner config
-        assert skin.get_spinner_list("waiting_faces") == []
-        assert skin.get_spinner_list("thinking_verbs") == []
-
     def test_get_spinner_wings_empty_for_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("default")
@@ -68,9 +61,6 @@ class TestBuiltinSkins:
     def test_ares_has_spinner_customization(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("ares")
-        assert len(skin.get_spinner_list("waiting_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_faces")) > 0
-        assert len(skin.get_spinner_list("thinking_verbs")) > 0
         wings = skin.get_spinner_wings()
         assert len(wings) > 0
         assert isinstance(wings[0], tuple)

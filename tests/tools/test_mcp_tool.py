@@ -1008,8 +1008,12 @@ class TestReconnection:
         asyncio.run(_test())
 
     def test_no_reconnect_on_initial_failure(self):
-        """First connection failure reports error immediately, no retry."""
-        from tools.mcp_tool import MCPServerTask
+        """First connection failure retries up to _MAX_INITIAL_CONNECT_RETRIES times.
+
+        Before the MCP resilience fix, initial failures gave up immediately.
+        Now they retry with backoff to handle transient DNS/network blips.
+        """
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         run_count = 0
         target_server = None
@@ -1032,8 +1036,8 @@ class TestReconnection:
                  patch("asyncio.sleep", new_callable=AsyncMock):
                 await server.run({"command": "test"})
 
-            # Only one attempt, no retry on initial failure
-            assert run_count == 1
+            # Now retries up to _MAX_INITIAL_CONNECT_RETRIES before giving up
+            assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
             assert server._error is not None
             assert "cannot connect" in str(server._error)
 

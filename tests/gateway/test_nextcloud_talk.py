@@ -153,7 +153,7 @@ class TestBackendUrlValidation:
         assert _validate_backend_url("https://cloud.example.com") is True
 
     def test_accepts_http(self):
-        assert _validate_backend_url("http://192.168.1.1") is True
+        assert _validate_backend_url("http://nextcloud.local") is True
 
     def test_rejects_ftp(self):
         assert _validate_backend_url("ftp://evil.com") is False

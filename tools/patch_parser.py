@@ -178,23 +178,35 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
                 hint = hint_match.group(1) if hint_match else None
                 current_hunk = Hunk(context_hint=hint)
                 
-        elif current_op and line:
-            # Parse hunk line
-            if current_hunk is None:
-                current_hunk = Hunk()
-            
-            if line.startswith('+'):
-                current_hunk.lines.append(HunkLine('+', line[1:]))
-            elif line.startswith('-'):
-                current_hunk.lines.append(HunkLine('-', line[1:]))
-            elif line.startswith(' '):
-                current_hunk.lines.append(HunkLine(' ', line[1:]))
-            elif line.startswith('\\'):
-                # "\ No newline at end of file" marker - skip
-                pass
-            else:
-                # Treat as context line (implicit space prefix)
-                current_hunk.lines.append(HunkLine(' ', line))
+        elif current_op:
+            # Blank lines inside a patch body must not be dropped: agents often emit a
+            # raw empty line between hunk rows instead of " +" / " " V4A prefixes.
+            if (
+                line == ""
+                and current_op.operation
+                in (OperationType.ADD, OperationType.UPDATE)
+            ):
+                if current_hunk is None:
+                    current_hunk = Hunk()
+                prefix = "+" if current_op.operation == OperationType.ADD else " "
+                current_hunk.lines.append(HunkLine(prefix, ""))
+            elif line:
+                # Parse hunk line
+                if current_hunk is None:
+                    current_hunk = Hunk()
+
+                if line.startswith('+'):
+                    current_hunk.lines.append(HunkLine('+', line[1:]))
+                elif line.startswith('-'):
+                    current_hunk.lines.append(HunkLine('-', line[1:]))
+                elif line.startswith(' '):
+                    current_hunk.lines.append(HunkLine(' ', line[1:]))
+                elif line.startswith('\\'):
+                    # "\ No newline at end of file" marker - skip
+                    pass
+                else:
+                    # Treat as context line (implicit space prefix)
+                    current_hunk.lines.append(HunkLine(' ', line))
         
         i += 1
     

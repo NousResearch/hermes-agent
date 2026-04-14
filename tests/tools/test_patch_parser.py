@@ -78,6 +78,32 @@ class TestParseAddFile:
         assert contents[0] == "import os"
         assert contents[2] == 'print("hello")'
 
+    def test_add_file_preserves_raw_blank_line_between_plus_lines(self):
+        """Regression #9844: a bare empty row between + lines must not be dropped."""
+        patch = """\
+*** Begin Patch
+*** Add File: spaced.py
++first
+
++second
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+        lines = [l for l in ops[0].hunks[0].lines if l.prefix == "+"]
+        assert [x.content for x in lines] == ["first", "", "second"]
+
+        class FakeFileOps:
+            written = None
+
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True
+        assert file_ops.written == "first\n\nsecond"
+
 
 class TestParseDeleteFile:
     def test_delete_file(self):
@@ -185,6 +211,38 @@ class TestApplyUpdate:
             '    result = 1\n'
             '    return result + 1'
         )
+
+    def test_update_preserves_raw_blank_line_inside_hunk(self):
+        """Regression #9844: blank patch row between + and context keeps file spacing."""
+        patch = """\
+*** Begin Patch
+*** Update File: gap.py
+ ctx1
+-old
++new
+
+ ctx2
+*** End Patch"""
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        class FakeFileOps:
+            written = None
+
+            def read_file_raw(self, path):
+                return SimpleNamespace(
+                    content="ctx1\nold\n\nctx2\n",
+                    error=None,
+                )
+
+            def write_file(self, path, content):
+                self.written = content
+                return SimpleNamespace(error=None)
+
+        file_ops = FakeFileOps()
+        result = apply_v4a_operations(ops, file_ops)
+        assert result.success is True
+        assert file_ops.written == "ctx1\nnew\n\nctx2\n"
 
 
 class TestAdditionOnlyHunks:

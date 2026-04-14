@@ -92,6 +92,14 @@ class TestBuiltinSkins:
         assert skin.get_color("completion_menu_meta_bg") == "#EEF2FF"
         assert skin.get_color("completion_menu_meta_current_bg") == "#BFDBFE"
 
+    def test_warm_lightmode_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("warm-lightmode")
+        assert skin.name == "warm-lightmode"
+        assert skin.get_color("banner_text") == "#2C1810"
+        assert skin.get_color("completion_menu_bg") == "#F5EFE0"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -129,6 +137,7 @@ class TestSkinManagement:
         assert "mono" in names
         assert "slate" in names
         assert "daylight" in names
+        assert "warm-lightmode" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"

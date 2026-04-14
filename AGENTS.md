@@ -456,6 +456,17 @@ def profile_env(tmp_path, monkeypatch):
 
 ---
 
+## Ops Dashboard Read Model
+
+- `hermes_cli/ops_dashboard.py` is the backend normalization layer for the Jax ops dashboard MVP.
+- It reads raw session JSON from `get_hermes_home() / "sessions"` and produces lightweight session/run records.
+- Prefer this module over `SessionDB` when the goal is dashboard ingestion from transcript files.
+- Status heuristics are intentionally best-effort:
+  - final assistant turn with `finish_reason="stop"` → `completed`
+  - recently updated non-terminal runs → `running`
+  - stale incomplete runs → `failed`
+- Regression coverage lives in `tests/hermes_cli/test_ops_dashboard.py`.
+
 ## Testing
 
 ```bash

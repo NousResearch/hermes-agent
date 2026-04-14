@@ -393,39 +393,68 @@ ZAI_ENDPOINTS = [
 ]
 
 
+def _probe_single_zai_endpoint(
+    api_key: str, endpoint: tuple, timeout: float,
+) -> Optional[Dict[str, str]]:
+    """Probe a single Z.AI endpoint. Returns endpoint info dict or None."""
+    ep_id, base_url, model, label = endpoint
+    try:
+        resp = httpx.post(
+            f"{base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "stream": False,
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
+            timeout=timeout,
+        )
+        if resp.status_code == 200:
+            logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
+            return {
+                "id": ep_id,
+                "base_url": base_url,
+                "model": model,
+                "label": label,
+            }
+        logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
+    except Exception as exc:
+        logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    return None
+
+
 def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str, str]]:
-    """Probe z.ai endpoints to find one that accepts this API key.
+    """Probe z.ai endpoints in parallel to find one that accepts this API key.
 
     Returns {"id": ..., "base_url": ..., "model": ..., "label": ...} for the
-    first working endpoint, or None if all fail.
+    first working endpoint (in ZAI_ENDPOINTS priority order), or None if all
+    fail.
     """
-    for ep_id, base_url, model, label in ZAI_ENDPOINTS:
-        try:
-            resp = httpx.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "stream": False,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "ping"}],
-                },
-                timeout=timeout,
-            )
-            if resp.status_code == 200:
-                logger.debug("Z.AI endpoint probe: %s (%s) OK", ep_id, base_url)
-                return {
-                    "id": ep_id,
-                    "base_url": base_url,
-                    "model": model,
-                    "label": label,
-                }
-            logger.debug("Z.AI endpoint probe: %s returned %s", ep_id, resp.status_code)
-        except Exception as exc:
-            logger.debug("Z.AI endpoint probe: %s failed: %s", ep_id, exc)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    with ThreadPoolExecutor(max_workers=len(ZAI_ENDPOINTS)) as pool:
+        futures = {
+            pool.submit(_probe_single_zai_endpoint, api_key, ep, timeout): ep[0]
+            for ep in ZAI_ENDPOINTS
+        }
+        results: Dict[str, Dict[str, str]] = {}
+        for future in as_completed(futures):
+            ep_id = futures[future]
+            try:
+                result = future.result()
+                if result is not None:
+                    results[ep_id] = result
+            except Exception:
+                pass
+
+    # Return first match in priority order (ZAI_ENDPOINTS list order)
+    for ep in ZAI_ENDPOINTS:
+        if ep[0] in results:
+            return results[ep[0]]
     return None
 
 

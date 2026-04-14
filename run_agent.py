@@ -937,9 +937,15 @@ class AIAgent:
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        from hermes_cli.auth import PROVIDER_REGISTRY as _PR
+                        _pconf = _PR.get(_explicit)
+                        if _pconf and _pconf.api_key_env_vars:
+                            _env_hint = " or ".join(_pconf.api_key_env_vars)
+                        else:
+                            _env_hint = f"{_explicit.upper()}_API_KEY"
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"was found. Set the {_env_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key

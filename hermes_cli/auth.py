@@ -195,7 +195,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="Alibaba Cloud (DashScope)",
         auth_type="api_key",
         inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-        api_key_env_vars=("DASHSCOPE_API_KEY",),
+        api_key_env_vars=("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
     "minimax-cn": ProviderConfig(

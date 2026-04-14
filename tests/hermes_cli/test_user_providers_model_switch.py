@@ -116,6 +116,40 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+def test_list_authenticated_providers_includes_models_dict_from_custom_providers(monkeypatch):
+    """Legacy custom_providers entries should expose models dict keys in /model."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    custom_providers = [
+        {
+            "name": "cch_anthropic",
+            "base_url": "http://localhost:23000",
+            "api_mode": "anthropic_messages",
+            "models": {
+                "glm-5-turbo": {"context_length": 202752},
+                "MiniMax-M2.1": {"context_length": 196608},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers={},
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    custom_provider = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "cch_anthropic"),
+        None,
+    )
+
+    assert custom_provider is not None
+    assert custom_provider["total_models"] == 2
+    assert custom_provider["models"] == ["glm-5-turbo", "MiniMax-M2.1"]
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

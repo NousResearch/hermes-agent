@@ -43,6 +43,7 @@ export const api = {
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
+  getModelInfo: () => fetchJSON<ModelInfoResponse>("/api/model/info"),
   saveConfig: (config: Record<string, unknown>) =>
     fetchJSON<{ ok: boolean }>("/api/config", {
       method: "PUT",
@@ -323,6 +324,24 @@ export interface SessionSearchResult {
 
 export interface SessionSearchResponse {
   results: SessionSearchResult[];
+}
+
+// ── Model info types ──────────────────────────────────────────────────
+
+export interface ModelInfoResponse {
+  model: string;
+  provider: string;
+  auto_context_length: number;
+  config_context_length: number;
+  effective_context_length: number;
+  capabilities: {
+    supports_tools?: boolean;
+    supports_vision?: boolean;
+    supports_reasoning?: boolean;
+    context_window?: number;
+    max_output_tokens?: number;
+    model_family?: string;
+  };
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────

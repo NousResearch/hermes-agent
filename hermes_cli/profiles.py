@@ -992,8 +992,8 @@ def rename_profile(old_name: str, new_name: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def generate_bash_completion() -> str:
-    """Generate a bash completion script for hermes profile names."""
-    return '''# Hermes Agent profile completion
+    """Generate a bash completion script for all hermes CLI subcommands."""
+    return '''# Hermes Agent full shell completion
 # Add to ~/.bashrc: eval "$(hermes completion bash)"
 
 _hermes_profiles() {
@@ -1016,7 +1016,7 @@ _hermes_completion() {
         return
     fi
 
-    # Complete profile subcommands
+    # Complete second-level subcommands
     if [[ "${COMP_WORDS[1]}" == "profile" ]]; then
         case "$prev" in
             profile)
@@ -1030,9 +1030,144 @@ _hermes_completion() {
         esac
     fi
 
+    if [[ "${COMP_WORDS[1]}" == "gateway" ]]; then
+        case "$prev" in
+            gateway)
+                COMPREPLY=($(compgen -W "run start stop restart status install uninstall setup" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "setup" ]]; then
+        case "$prev" in
+            setup)
+                COMPREPLY=($(compgen -W "model tts terminal gateway tools agent" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "auth" ]]; then
+        case "$prev" in
+            auth)
+                COMPREPLY=($(compgen -W "add list remove reset" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "cron" ]]; then
+        case "$prev" in
+            cron)
+                COMPREPLY=($(compgen -W "list create add edit pause resume run remove status tick" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "webhook" ]]; then
+        case "$prev" in
+            webhook)
+                COMPREPLY=($(compgen -W "subscribe add list remove test" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "config" ]]; then
+        case "$prev" in
+            config)
+                COMPREPLY=($(compgen -W "show edit set path env-path check migrate" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "pairing" ]]; then
+        case "$prev" in
+            pairing)
+                COMPREPLY=($(compgen -W "list approve revoke clear-pending" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "skills" ]]; then
+        case "$prev" in
+            skills)
+                COMPREPLY=($(compgen -W "browse search install inspect list check update audit uninstall publish snapshot tap config" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "plugins" ]]; then
+        case "$prev" in
+            plugins)
+                COMPREPLY=($(compgen -W "install update remove list enable disable" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "memory" ]]; then
+        case "$prev" in
+            memory)
+                COMPREPLY=($(compgen -W "setup status off" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "tools" ]]; then
+        case "$prev" in
+            tools)
+                COMPREPLY=($(compgen -W "list disable enable" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "mcp" ]]; then
+        case "$prev" in
+            mcp)
+                COMPREPLY=($(compgen -W "serve add remove list test configure" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "sessions" ]]; then
+        case "$prev" in
+            sessions)
+                COMPREPLY=($(compgen -W "list export delete prune stats rename browse" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "logs" ]]; then
+        case "$prev" in
+            logs)
+                COMPREPLY=($(compgen -W "agent errors gateway list" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
+    if [[ "${COMP_WORDS[1]}" == "debug" ]]; then
+        case "$prev" in
+            debug)
+                COMPREPLY=($(compgen -W "share" -- "$cur"))
+                return
+                ;;
+        esac
+    fi
+
     # Top-level subcommands
     if [[ "$COMP_CWORD" == 1 ]]; then
-        local commands="chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version"
+        local commands="chat model gateway setup whatsapp login logout auth status cron webhook doctor dump backup import config pairing skills plugins memory tools mcp sessions insights claw version update uninstall acp profile completion dashboard logs debug"
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
     fi
 }
@@ -1042,9 +1177,9 @@ complete -F _hermes_completion hermes
 
 
 def generate_zsh_completion() -> str:
-    """Generate a zsh completion script for hermes profile names."""
+    """Generate a zsh completion script for all hermes CLI subcommands."""
     return '''#compdef hermes
-# Hermes Agent profile completion
+# Hermes Agent full shell completion
 # Add to ~/.zshrc: eval "$(hermes completion zsh)"
 
 _hermes() {
@@ -1057,13 +1192,58 @@ _hermes() {
     _arguments \\
         '-p[Profile name]:profile:($profiles)' \\
         '--profile[Profile name]:profile:($profiles)' \\
-        '1:command:(chat model gateway setup status cron doctor dump config skills tools mcp sessions profile update version)' \\
+        '1:command:(chat model gateway setup whatsapp login logout auth status cron webhook doctor dump backup import config pairing skills plugins memory tools mcp sessions insights claw version update uninstall acp profile completion dashboard logs debug)' \\
         '*::arg:->args'
 
     case $words[1] in
         profile)
             _arguments '1:action:(list use create delete show alias rename export import)' \\
                         '2:profile:($profiles)'
+            ;;
+        gateway)
+            _arguments '1:action:(run start stop restart status install uninstall setup)'
+            ;;
+        setup)
+            _arguments '1:action:(model tts terminal gateway tools agent)'
+            ;;
+        auth)
+            _arguments '1:action:(add list remove reset)'
+            ;;
+        cron)
+            _arguments '1:action:(list create add edit pause resume run remove status tick)'
+            ;;
+        webhook)
+            _arguments '1:action:(subscribe add list remove test)'
+            ;;
+        config)
+            _arguments '1:action:(show edit set path env-path check migrate)'
+            ;;
+        pairing)
+            _arguments '1:action:(list approve revoke clear-pending)'
+            ;;
+        skills)
+            _arguments '1:action:(browse search install inspect list check update audit uninstall publish snapshot tap config)'
+            ;;
+        plugins)
+            _arguments '1:action:(install update remove list enable disable)'
+            ;;
+        memory)
+            _arguments '1:action:(setup status off)'
+            ;;
+        tools)
+            _arguments '1:action:(list disable enable)'
+            ;;
+        mcp)
+            _arguments '1:action:(serve add remove list test configure)'
+            ;;
+        sessions)
+            _arguments '1:action:(list export delete prune stats rename browse)'
+            ;;
+        logs)
+            _arguments '1:action:(agent errors gateway list)'
+            ;;
+        debug)
+            _arguments '1:action:(share)'
             ;;
     esac
 }

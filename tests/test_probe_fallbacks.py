@@ -8,6 +8,8 @@ import sys
 
 import pytest
 
+from agent import fallback_probe as fallback_probe_core
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "probe_fallbacks.py"
 SPEC = importlib.util.spec_from_file_location("probe_fallbacks", MODULE_PATH)
@@ -61,7 +63,7 @@ def test_run_probe_reports_success(monkeypatch, tmp_path):
         assert timeout == 42
         return subprocess.CompletedProcess(command, 0, stdout="PONG\n\nsession_id: abc", stderr="")
 
-    monkeypatch.setattr(probe_fallbacks.subprocess, "run", fake_run)
+    monkeypatch.setattr(fallback_probe_core.subprocess, "run", fake_run)
 
     result = probe_fallbacks.run_probe(route, repo_root=tmp_path, timeout=42)
 
@@ -78,12 +80,27 @@ def test_run_probe_classifies_rate_limit(monkeypatch, tmp_path):
     def fake_run(command, *, shell, cwd, capture_output, text, timeout):
         return subprocess.CompletedProcess(command, 1, stdout="", stderr="Error code: 429 quota exceeded")
 
-    monkeypatch.setattr(probe_fallbacks.subprocess, "run", fake_run)
+    monkeypatch.setattr(fallback_probe_core.subprocess, "run", fake_run)
 
     result = probe_fallbacks.run_probe(route, repo_root=tmp_path, timeout=42)
 
     assert result["ok"] is False
     assert result["classification"] == "rate_limit"
+
+
+def test_run_probe_classifies_timeout(monkeypatch, tmp_path):
+    route = probe_fallbacks.ProbeRoute(provider="google", cli_provider="gemini", model="gemini-2.0-flash")
+
+    def fake_run(command, *, shell, cwd, capture_output, text, timeout):
+        raise subprocess.TimeoutExpired(command, timeout)
+
+    monkeypatch.setattr(fallback_probe_core.subprocess, "run", fake_run)
+
+    result = probe_fallbacks.run_probe(route, repo_root=tmp_path, timeout=42)
+
+    assert result["ok"] is False
+    assert result["classification"] == "timeout"
+    assert result["returncode"] == 124
 
 
 def test_probe_routes_runs_all_routes_and_sets_failure_exit_code(monkeypatch, tmp_path):
@@ -105,7 +122,7 @@ def test_probe_routes_runs_all_routes_and_sets_failure_exit_code(monkeypatch, tm
             "command": "cmd",
         }
 
-    monkeypatch.setattr(probe_fallbacks, "run_probe", fake_run_probe)
+    monkeypatch.setattr(fallback_probe_core, "run_probe", fake_run_probe)
 
     summary = probe_fallbacks.probe_routes(routes, repo_root=tmp_path, timeout=30, max_workers=2)
 

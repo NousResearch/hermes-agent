@@ -962,6 +962,8 @@ class AIAgent:
             self._fallback_chain = []
         self._fallback_index = 0
         self._fallback_activated = False
+        self._fallback_probe_summary = None
+        self._fallback_probe_prepared = False
         # Legacy attribute kept for backward compat (tests, external callers)
         self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
         if self._fallback_chain and not self.quiet_mode:
@@ -5397,6 +5399,32 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
+    def _prepare_probe_driven_fallback_chain(self) -> None:
+        if self._fallback_probe_prepared or not self._fallback_chain:
+            return
+        self._fallback_probe_prepared = True
+        try:
+            from agent.fallback_probe import probe_fallback_chain, reorder_fallback_chain_by_probe
+
+            summary = probe_fallback_chain(
+                self._fallback_chain,
+                repo_root=Path(__file__).resolve().parent,
+            )
+            self._fallback_probe_summary = summary
+            reordered = reorder_fallback_chain_by_probe(self._fallback_chain, summary)
+            if reordered != self._fallback_chain:
+                self._fallback_chain = reordered
+                self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+                logging.info(
+                    "Fallback probe reordered chain: %s",
+                    " -> ".join(
+                        f"{item.get('model')} ({item.get('provider')})"
+                        for item in self._fallback_chain
+                    ) or "<empty>",
+                )
+        except Exception as e:
+            logging.warning("Fallback probe unavailable, keeping configured chain: %s", e)
+
     def _try_activate_fallback(self) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
@@ -5409,6 +5437,10 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        if self._fallback_index >= len(self._fallback_chain):
+            return False
+
+        self._prepare_probe_driven_fallback_chain()
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -5597,6 +5629,8 @@ class AIAgent:
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+            self._fallback_probe_prepared = False
+            self._fallback_probe_summary = None
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",

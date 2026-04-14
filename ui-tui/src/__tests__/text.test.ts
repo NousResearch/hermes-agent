@@ -78,24 +78,10 @@ describe('edgePreview', () => {
 
 describe('pasteTokenLabel', () => {
   it('builds readable long-paste labels with counts', () => {
-    expect(
-      pasteTokenLabel({
-        charCount: 1000,
-        id: 7,
-        lineCount: 250,
-        text: 'Vampire Bondage ropes slipped from her neck, still stained with blood',
-        tokenCount: 250
-      })
-    ).toContain('[[paste:7 ')
-    expect(
-      pasteTokenLabel({
-        charCount: 1000,
-        id: 7,
-        lineCount: 250,
-        text: 'Vampire Bondage ropes slipped from her neck, still stained with blood',
-        tokenCount: 250
-      })
-    ).toContain('[250 lines · 250 tok · 1K chars]')
+    const label = pasteTokenLabel('Vampire Bondage ropes slipped from her neck, still stained with blood', 250)
+    expect(label.startsWith('[[ ')).toBe(true)
+    expect(label).toContain('[250 lines]')
+    expect(label.endsWith(' ]]')).toBe(true)
   })
 })
 

@@ -59,35 +59,18 @@ export const edgePreview = (s: string, head = 16, tail = 28) => {
   return `${one.slice(0, head).trimEnd()}.. ${one.slice(-tail).trimStart()}`
 }
 
-export const pasteTokenLabel = ({
-  charCount,
-  id,
-  lineCount,
-  text,
-  tokenCount
-}: {
-  charCount: number
-  id: number
-  lineCount: number
-  text: string
-  tokenCount: number
-}) => {
+export const pasteTokenLabel = (text: string, lineCount: number) => {
   const preview = edgePreview(text)
-  const counts = `[${fmtK(lineCount)} lines · ${fmtK(tokenCount)} tok · ${fmtK(charCount)} chars]`
 
   if (!preview) {
-    return `[[paste:${id} ${counts}]]`
-  }
-
-  const one = text.replace(/\s+/g, ' ').trim().replace(/\]\]/g, '] ]')
-
-  if (one.length === preview.length) {
-    return `[[paste:${id} ${preview} ${counts}]]`
+    return `[[ [${fmtK(lineCount)} lines] ]]`
   }
 
   const [head = preview, tail = ''] = preview.split('.. ', 2)
 
-  return `[[paste:${id} ${head.trimEnd()}.. ${counts} .. ${tail.trimStart()}]]`
+  return tail
+    ? `[[ ${head.trimEnd()}.. [${fmtK(lineCount)} lines] .. ${tail.trimStart()} ]]`
+    : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number) => {

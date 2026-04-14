@@ -96,6 +96,7 @@ AUTHOR_MAP = {
     "aryan@synvoid.com": "aryansingh",
     "johnsonblake1@gmail.com": "blakejohnson",
     "kennyx102@gmail.com": "bobashopcashier",
+    "shokatalishaikh95@gmail.com": "areu01or00",
     "bryan@intertwinesys.com": "bryanyoung",
     "christo.mitov@gmail.com": "christomitov",
     "hermes@nousresearch.com": "NousResearch",

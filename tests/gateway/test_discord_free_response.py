@@ -386,6 +386,96 @@ async def test_discord_voice_linked_channel_skips_mention_requirement_and_auto_t
 
 
 @pytest.mark.asyncio
+async def test_discord_free_channel_skips_auto_thread(adapter, monkeypatch):
+    """Free-response channels must NOT auto-create threads — bot replies directly."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content="free chat message",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_smart_thread_creates_thread_on_mention(adapter, monkeypatch):
+    """smart mode: @mention in a normal channel creates a thread."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "smart")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    bot_user = adapter._client.user
+    fake_thread = FakeThread(channel_id=888, name="smart-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content=f"<@{bot_user.id}> help",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_discord_smart_thread_no_thread_without_mention(adapter, monkeypatch):
+    """smart mode: message without @mention in free channel does NOT create thread."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "smart")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=123),
+        content="just chatting",
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_discord_smart_thread_free_channel_skips_thread_even_on_mention(adapter, monkeypatch):
+    """smart mode: free-response channels never thread, even if bot is @mentioned."""
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "smart")
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "789")
+
+    bot_user = adapter._client.user
+    adapter._auto_create_thread = AsyncMock()
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=789),
+        content=f"<@{bot_user.id}> hey",
+        mentions=[bot_user],
+    )
+
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_not_awaited()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
 async def test_discord_voice_linked_parent_thread_still_requires_mention(adapter, monkeypatch):
     """Threads under a voice-linked channel should still require @mention."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")

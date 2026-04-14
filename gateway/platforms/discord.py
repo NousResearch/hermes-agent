@@ -2466,20 +2466,33 @@ class DiscordAdapter(BasePlatformAdapter):
                 if self._client.user not in message.mentions:
                     return
 
-            if self._client.user and self._client.user in message.mentions:
+            was_mentioned = self._client.user and self._client.user in message.mentions
+            if was_mentioned:
                 message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
                 message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+        else:
+            was_mentioned = False
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
         # no_thread_channels: channels where bot responds directly without thread.
+        #
+        # auto_thread values:
+        #   true/1/yes — thread on every message that passes the mention gate
+        #   false/0/no — never thread (respond inline)
+        #   smart      — thread only on explicit @mention; free-response channels
+        #                always skip threading regardless
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels)
-            auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            auto_thread_mode = os.getenv("DISCORD_AUTO_THREAD", "true").lower()
+            if auto_thread_mode == "smart":
+                auto_thread = was_mentioned
+            else:
+                auto_thread = auto_thread_mode in ("true", "1", "yes")
             if auto_thread and not skip_thread and not is_voice_linked_channel:
                 thread = await self._auto_create_thread(message)
                 if thread:

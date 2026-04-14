@@ -7,6 +7,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from tools.autonomy_guard import enforce_write_policy
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
@@ -543,6 +544,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
         return tool_error(sensitive_err)
+    branch_decision = enforce_write_policy("write_file", path)
+    if not branch_decision["allowed"]:
+        return tool_error(
+            branch_decision["message"],
+            status=branch_decision["status"],
+            branch=branch_decision.get("branch"),
+            repo_root=branch_decision.get("repo_root"),
+        )
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
@@ -578,6 +587,15 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
             return tool_error(sensitive_err)
+        branch_decision = enforce_write_policy("patch", _p)
+        if not branch_decision["allowed"]:
+            return tool_error(
+                branch_decision["message"],
+                status=branch_decision["status"],
+                branch=branch_decision.get("branch"),
+                repo_root=branch_decision.get("repo_root"),
+                path=_p,
+            )
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []

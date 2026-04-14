@@ -1,0 +1,58 @@
+version: 1
+
+branch_protection:
+  protected_branches:
+    - main
+    - master
+
+approval:
+  forbidden_command_fragments:
+    - --dangerously-skip-permissions
+    - --yolo
+    - /yolo
+  require_explicit_approval_patterns:
+    - pattern: '\bgit\s+push\b'
+      description: push commits to a remote
+    - pattern: '\bgit\s+tag\b'
+      description: create or move a git tag
+    - pattern: '\bgh\s+pr\s+(create|merge|ready)\b'
+      description: change pull request state
+    - pattern: '\b(hermes|claude)\b.*\b(publish|release|deploy)\b'
+      description: publish or deploy changes
+    - pattern: '\bnpm\s+publish\b'
+      description: publish an npm package
+    - pattern: '\bpython(?:3)?\s+.*release\.py\b'
+      description: run a release script
+
+terminal_writes:
+  patterns:
+    - pattern: '\bgit\s+(add|commit|merge|rebase|cherry-pick|apply|am|revert|rm|mv)\b'
+      description: git mutation
+    - pattern: '\b(touch|mkdir|rmdir|rm|mv|cp|install)\b'
+      description: filesystem mutation
+    - pattern: '\bsed\s+(-[^\s]*i|--in-place)\b'
+      description: in-place file edit
+    - pattern: '\btee\b'
+      description: file write via tee
+    - pattern: '(?<!\d)>{1,2}(?!\d)'
+      description: shell redirection write
+
+bootstrap:
+  required_commands:
+    - git
+    - python3
+    - uv
+  require_hermes_config_without_explicit_credentials: true
+  require_provider_resolution: true
+  require_provider_auth: true
+
+proof_of_done:
+  output_dir: proof_of_done
+  max_command_preview_chars: 240
+
+readiness:
+  script: scripts/run_readiness.py
+  smoke_script: scripts/smoke_autonomy.py
+  pytest_targets:
+    - tests/tools/test_autonomy_guard.py
+    - tests/run_agent/test_autonomy_runtime.py

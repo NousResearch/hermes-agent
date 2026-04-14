@@ -44,6 +44,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+from tools.autonomy_guard import evaluate_terminal_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -1285,6 +1287,25 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        policy_decision = evaluate_terminal_command(command, workdir=workdir or cwd, force=force)
+        if not policy_decision["allowed"]:
+            if policy_decision.get("status") == "approval_required":
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": policy_decision.get("message", "Waiting for user approval"),
+                    "status": "approval_required",
+                    "command": command,
+                    "description": policy_decision.get("description", "command flagged by autonomy policy"),
+                    "pattern_key": "autonomy-policy",
+                }, ensure_ascii=False)
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": policy_decision.get("message", "Command blocked by autonomy policy"),
+                "status": policy_decision.get("status", "blocked"),
+                "description": policy_decision.get("description", ""),
+            }, ensure_ascii=False)
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:

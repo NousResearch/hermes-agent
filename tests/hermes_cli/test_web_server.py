@@ -984,3 +984,195 @@ class TestModelInfoEndpoint:
         assert resp.status_code == 200
         data = resp.json()
         assert data["auto_context_length"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Gateway health probe tests
+# ---------------------------------------------------------------------------
+
+
+class TestProbeGatewayHealth:
+    """Tests for _probe_gateway_health() — cross-container gateway detection."""
+
+    def test_returns_false_when_no_url_configured(self, monkeypatch):
+        """When GATEWAY_HEALTH_URL is unset, the probe returns (False, None)."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+        alive, body = ws._probe_gateway_health()
+        assert alive is False
+        assert body is None
+
+    def test_normalizes_url_with_health_suffix(self, monkeypatch):
+        """If the user sets the URL to include /health, it's stripped to base."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642/health")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        # Both paths should fail (no server), but we verify they were constructed
+        # correctly by checking the URLs attempted.
+        calls = []
+        original_urlopen = ws.urllib.request.urlopen
+
+        def mock_urlopen(req, **kwargs):
+            calls.append(req.full_url)
+            raise ConnectionError("mock")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        alive, body = ws._probe_gateway_health()
+        assert alive is False
+        assert "http://gw:8642/health/detailed" in calls
+        assert "http://gw:8642/health" in calls
+
+    def test_normalizes_url_with_health_detailed_suffix(self, monkeypatch):
+        """If the user sets the URL to include /health/detailed, it's stripped to base."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642/health/detailed")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+        calls = []
+
+        def mock_urlopen(req, **kwargs):
+            calls.append(req.full_url)
+            raise ConnectionError("mock")
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        ws._probe_gateway_health()
+        assert "http://gw:8642/health/detailed" in calls
+        assert "http://gw:8642/health" in calls
+
+    def test_successful_detailed_probe(self, monkeypatch):
+        """Successful /health/detailed probe returns (True, body_dict)."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+
+        response_body = json.dumps({
+            "status": "ok",
+            "gateway_state": "running",
+            "pid": 42,
+        })
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = response_body.encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", lambda req, **kw: mock_resp)
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["status"] == "ok"
+        assert body["pid"] == 42
+
+    def test_detailed_fails_falls_back_to_simple_health(self, monkeypatch):
+        """If /health/detailed fails, falls back to /health."""
+        import hermes_cli.web_server as ws
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_TIMEOUT", 1)
+
+        call_count = [0]
+
+        def mock_urlopen(req, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise ConnectionError("detailed failed")
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.read.return_value = json.dumps({"status": "ok"}).encode()
+            mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+            mock_resp.__exit__ = MagicMock(return_value=False)
+            return mock_resp
+
+        monkeypatch.setattr(ws.urllib.request, "urlopen", mock_urlopen)
+        alive, body = ws._probe_gateway_health()
+        assert alive is True
+        assert body["status"] == "ok"
+        assert call_count[0] == 2
+
+
+class TestStatusRemoteGateway:
+    """Tests for /api/status with remote gateway health fallback."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_TOKEN
+        self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
+
+    def test_status_falls_back_to_remote_probe(self, monkeypatch):
+        """When local PID check fails and remote probe succeeds, gateway shows running."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+            "gateway_state": "running",
+            "platforms": {"telegram": {"state": "connected"}},
+            "pid": 999,
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] == 999
+        assert data["gateway_state"] == "running"
+
+    def test_status_remote_probe_not_attempted_when_local_pid_found(self, monkeypatch):
+        """When local PID check succeeds, the remote probe is never called."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: 1234)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: {
+            "gateway_state": "running",
+            "platforms": {},
+        })
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        probe_called = [False]
+        original = ws._probe_gateway_health
+
+        def track_probe():
+            probe_called[0] = True
+            return original()
+
+        monkeypatch.setattr(ws, "_probe_gateway_health", track_probe)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        assert not probe_called[0]
+
+    def test_status_remote_probe_not_attempted_when_no_url(self, monkeypatch):
+        """When GATEWAY_HEALTH_URL is unset, no probe is attempted."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", None)
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is False
+
+    def test_status_remote_running_null_pid(self, monkeypatch):
+        """Remote gateway running but PID not in response — pid should be None."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "get_running_pid", lambda: None)
+        monkeypatch.setattr(ws, "read_runtime_status", lambda: None)
+        monkeypatch.setattr(ws, "_GATEWAY_HEALTH_URL", "http://gw:8642")
+        monkeypatch.setattr(ws, "_probe_gateway_health", lambda: (True, {
+            "status": "ok",
+        }))
+
+        resp = self.client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_pid"] is None
+        assert data["gateway_state"] == "running"

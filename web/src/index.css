@@ -81,7 +81,6 @@ html, body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: color-mix(in srgb, var(--color-foreground) 20%, transparent);
-  border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: color-mix(in srgb, var(--color-foreground) 35%, transparent);

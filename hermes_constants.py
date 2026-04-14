@@ -139,6 +139,17 @@ def get_subprocess_home() -> str | None:
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
+# Thinking budget (token limit for reasoning) per effort level.
+# Providers that support reasoning budgets use these as upper bounds.
+THINKING_BUDGET_MAP = {
+    "minimal": 500,
+    "low": 1000,
+    "medium": 2000,
+    "high": 4000,
+    "xhigh": 8000,
+}
+THINKING_BUDGET_MAX = 16000  # Absolute maximum allowed budget
+
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.

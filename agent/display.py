@@ -443,37 +443,125 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
         return False
 
 
+
+def _lexer_for_diff_file(filename: str | None) -> str:
+    """Infer pygments lexer from a filename in the diff header."""
+    if not filename:
+        return "text"
+    import os as _os
+    ext = _os.path.splitext(filename)[1].lower()
+    _EXT = {
+        ".py": "python", ".js": "javascript", ".ts": "typescript",
+        ".jsx": "jsx", ".tsx": "tsx", ".go": "go", ".rs": "rust",
+        ".java": "java", ".c": "c", ".cpp": "cpp", ".h": "c",
+        ".css": "css", ".scss": "scss", ".html": "html", ".htm": "html",
+        ".json": "json", ".yaml": "yaml", ".yml": "yaml", ".toml": "ini",
+        ".sh": "bash", ".bash": "bash", ".zsh": "bash",
+        ".sql": "sql", ".md": "markdown",
+        ".xml": "xml", ".vue": "html", ".svelte": "html",
+        ".rb": "ruby", ".php": "php", ".swift": "swift",
+        ".kt": "kotlin", ".kts": "kotlin", ".cs": "csharp",
+        ".lua": "lua", ".r": "r", ".scala": "scala",
+    }
+    return _EXT.get(ext, "text")
+
+
+def _syntax_highlight_lines(lines: list[str], lexer_name: str) -> list[str]:
+    """
+    Apply pygments syntax highlighting to a batch of code lines.
+    Returns list of ANSI-highlighted lines with diff colors preserved.
+    """
+    if not lines or lexer_name == "text":
+        return lines
+
+    try:
+        from pygments import highlight
+        from pygments.lexers import get_lexer_by_name
+        from pygments.formatters import Terminal256Formatter
+        from pygments.styles import get_style_by_name
+    except ImportError:
+        return lines
+
+    try:
+        lexer = get_lexer_by_name(lexer_name)
+    except Exception:
+        return lines
+
+    try:
+        # Join with newlines, highlight as a block, split back
+        code_block = "\n".join(lines)
+        formatter = Terminal256Formatter(style="monokai")
+        highlighted = highlight(code_block, lexer, formatter)
+        return highlighted.rstrip("\n").split("\n")
+    except Exception:
+        return lines
+
+
 def _render_inline_unified_diff(diff: str) -> list[str]:
-    """Render unified diff lines in Hermes' inline transcript style."""
+    """
+    Render unified diff lines with syntax highlighting and Hermes diff colors.
+
+    Strategy: Group content lines (+/-/space) by file section, infer lexer from
+    filename, batch-highlight with pygments, then reapply diff color prefix.
+    """
     rendered: list[str] = []
-    from_file = None
-    to_file = None
+    from_file: str | None = None
+    to_file: str | None = None
+    current_lexer = "text"
+
+    # Accumulate raw diff lines for batch processing
+    # Each entry: (prefix_char, content)
+    pending_content: list[tuple[str, str]] = []
+
+    def flush_pending():
+        """Flush accumulated content lines with syntax highlighting."""
+        nonlocal pending_content, current_lexer
+        if not pending_content:
+            return
+        # Batch-highlight the content (strip prefix)
+        code_lines = [c for _, c in pending_content]
+        highlighted = _syntax_highlight_lines(code_lines, current_lexer)
+        for (prefix, _), hl_line in zip(pending_content, highlighted):
+            if prefix == "-":
+                rendered.append(f"{_diff_minus()}-{hl_line}{_ANSI_RESET}")
+            elif prefix == "+":
+                rendered.append(f"{_diff_plus()}+{hl_line}{_ANSI_RESET}")
+            else:
+                rendered.append(f"{_diff_dim()} {hl_line}{_ANSI_RESET}")
+        pending_content.clear()
 
     for raw_line in diff.splitlines():
         if raw_line.startswith("--- "):
             from_file = raw_line[4:].strip()
+            current_lexer = _lexer_for_diff_file(from_file)
+            rendered.append(f"{_diff_file()}--- {from_file}{_ANSI_RESET}")
             continue
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
-            if from_file or to_file:
-                rendered.append(f"{_diff_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+            rendered.append(f"{_diff_file()}+++ {to_file}{_ANSI_RESET}")
             continue
         if raw_line.startswith("@@"):
+            flush_pending()
             rendered.append(f"{_diff_hunk()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_diff_minus()}{raw_line}{_ANSI_RESET}")
+            pending_content.append(("-", raw_line[1:]))
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_diff_plus()}{raw_line}{_ANSI_RESET}")
+            pending_content.append(("+", raw_line[1:]))
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_diff_dim()}{raw_line}{_ANSI_RESET}")
+            pending_content.append((" ", raw_line[1:]))
             continue
-        if raw_line:
-            rendered.append(raw_line)
+        # Non-diff line
+        flush_pending()
+        rendered.append(raw_line)
 
+    flush_pending()
     return rendered
+
+
+
 
 
 def _split_unified_diff_sections(diff: str) -> list[str]:

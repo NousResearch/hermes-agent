@@ -66,6 +66,21 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
+
+# Import tool dependency graph
+from agent.tool_dependency import ToolDependencyGraph
+
+# Import hook system
+try:
+    from tools.hooks import (
+        initialize_hooks,
+        execute_pre_tool_hook,
+        execute_post_tool_hook,
+        execute_stop_hook,
+    )
+    HOOKS_AVAILABLE = True
+except ImportError:
+    HOOKS_AVAILABLE = False
 from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
@@ -76,8 +91,10 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
+from agent.tool_result_store import save_large_result
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
+from agent.project_context import ProjectChangeTracker
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -95,19 +112,25 @@ from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.claude_md_loader import CLAUDE_md_loader
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
+    _render_inline_unified_diff,
+    _split_unified_diff_sections,
 )
+from agent.cancellation_token import CancellationToken
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
 from utils import atomic_json_write, env_var_enabled
 
+# Large result persistence threshold (30KB)
+LARGE_RESULT_THRESHOLD = 30 * 1024
 
 
 class _SafeWriter:
@@ -265,17 +288,42 @@ def _is_destructive_command(cmd: str) -> bool:
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
-    """Return True when a tool-call batch is safe to run concurrently."""
+    """Return True when a tool-call batch is safe to run concurrently.
+
+    Uses the registry's ``is_concurrency_safe`` / ``is_read_only`` fields
+    as the primary source of truth.  Falls back to the path-overlap heuristic
+    for tools whose concurrency flags are None (unknown).
+    """
     if len(tool_calls) <= 1:
         return False
 
     tool_names = [tc.function.name for tc in tool_calls]
-    if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
+
+    # -- Always sequential: user-facing / interactive tools -----------------
+    if any(name == "clarify" for name in tool_names):
         return False
 
+    # Load registry lazily (avoids circular import at module startup)
+    from tools.registry import registry as _reg
+
     reserved_paths: list[Path] = []
+
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
+
+        # -- Explicit concurrency flags take priority ------------------------
+        is_safe = _reg.is_concurrency_safe_tool(tool_name)
+        is_ro = _reg.is_read_only_tool(tool_name)
+
+        if is_safe is True and is_ro is True:
+            # Explicitly marked read-only AND concurrency-safe → always OK
+            continue
+
+        if is_safe is False:
+            # Explicitly marked unsafe → fall back to sequential
+            return False
+
+        # -- Flags are None (unknown): use argument-based heuristic --------
         try:
             function_args = json.loads(tool_call.function.arguments)
         except Exception:
@@ -293,6 +341,7 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             )
             return False
 
+        # Path-scoped tools: check for overlapping file targets
         if tool_name in _PATH_SCOPED_TOOLS:
             scoped_path = _extract_parallel_scope_path(tool_name, function_args)
             if scoped_path is None:
@@ -302,10 +351,65 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             reserved_paths.append(scoped_path)
             continue
 
-        if tool_name not in _PARALLEL_SAFE_TOOLS:
+        # Terminal commands: check for destructive-looking patterns in the
+        # command string.  A tool is considered concurrency-unsafe when it
+        # carries a potentially destructive shell command.
+        if tool_name == "terminal":
+            cmd = function_args.get("command", "")
+            if _is_destructive_command(cmd):
+                return False
+            # Non-destructive terminal commands are treated as safe
+            continue
+
+        # Unknown tool with no explicit flag and no recognised safe pattern
+        return False
+
+
+def _should_streaming_early_execute(
+    tool_name: str,
+    function_args: dict,
+    tool_id: str,
+    agent,
+) -> bool:
+    """Decide whether to early-execute a tool during streaming.
+
+    Key constraints (Claude Code pattern):
+    - Tool must be concurrency-safe (read-only or explicitly marked safe)
+    - Tool must NOT already have a result in _streaming_early_results
+    - Tool must NOT be in the sequential-only list (clarify, todo, memory, etc.)
+    - Agent must not be interrupted
+    """
+    # Skip if already executed
+    if hasattr(agent, "_streaming_early_results"):
+        if tool_id in agent._streaming_early_results:
             return False
 
-    return True
+    # Never early-run interactive or stateful agent-level tools
+    if tool_name in ("clarify", "todo", "memory", "delegate_task", "skill_view",
+                     "skill_manage", "cronjob", "session_search"):
+        return False
+
+    # Interrupt check — don't start new work if agent is shutting down
+    if getattr(agent, "_interrupt_requested", False):
+        return False
+
+    # Check concurrency safety via registry
+    try:
+        from tools.registry import registry as _reg
+        is_safe = _reg.is_concurrency_safe_tool(tool_name)
+        is_ro = _reg.is_read_only_tool(tool_name)
+        if is_safe is True and is_ro is True:
+            return True
+        # Fallback: path-based safety for file/terminal tools
+        if tool_name in ("read_file", "search_files", "browser_snapshot", "browser_get_images"):
+            return True
+        if tool_name == "terminal":
+            cmd = function_args.get("command", "")
+            return not _is_destructive_command(cmd)
+    except Exception:
+        pass
+
+    return False
 
 
 def _extract_parallel_scope_path(tool_name: str, function_args: dict) -> Path | None:
@@ -668,6 +772,8 @@ class AIAgent:
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
         self._credential_pool = credential_pool
+        # Project change tracking for conflict detection
+        self._project_tracker = ProjectChangeTracker()
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
         # Store effective base URL for feature detection (prompt caching, reasoning, etc.)
@@ -750,6 +856,9 @@ class AIAgent:
         # even when stream consumers are registered (no tokens streaming then)
         self._executing_tools = False
 
+        # Hook system state
+        self._hooks_initialized = False
+
         # Interrupt mechanism for breaking out of tool loops
         self._interrupt_requested = False
         self._interrupt_message = None  # Optional message that triggered interrupt
@@ -760,6 +869,7 @@ class AIAgent:
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        self._cancel_token = CancellationToken(task_name="AIAgent")  # Collaborative cancellation
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -1081,6 +1191,9 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+
+        # Active CLAUDE.md loader -- re-reads on every refresh() so external edits take effect
+        self._claude_md_loader = CLAUDE_md_loader()
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -2920,6 +3033,7 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        self._cancel_token.cancel(f"Interrupt: {message}" if message else "User interrupt")
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
@@ -2940,6 +3054,104 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None
         _set_interrupt(False, self._execution_thread_id)
+        # Create a fresh cancellation token — cancellation is permanent but
+        # the agent can handle a new interrupt after clearing.
+        self._cancel_token = CancellationToken(task_name="AIAgent")
+
+    def save_state(self) -> dict:
+        """
+        Save agent execution state for later resume.
+
+        Returns a dict with the key execution state. Use with load_state().
+
+        Returns:
+            dict with keys: session_id, api_call_count, interrupt_requested,
+            interrupt_message, cancel_token_state, last_activity_ts
+
+        Note: Does NOT save conversation_history — the caller manages that.
+        Only captures what is needed to resume an interrupted session.
+        """
+        with self._client_lock:
+            return {
+                "session_id": self.session_id,
+                "api_call_count": self._api_call_count,
+                "interrupt_requested": self._interrupt_requested,
+                "interrupt_message": self._interrupt_message,
+                "cancel_token_cancelled": self._cancel_token.is_cancelled,
+                "cancel_token_reason": self._cancel_token.cancel_reason,
+                "last_activity_ts": self._last_activity_ts,
+                "checkpoint_saved_at": time.time(),
+            }
+
+    def load_state(self, state: dict) -> None:
+        """
+        Load agent execution state from a previously saved state dict.
+
+        Args:
+            state: dict from save_state()
+
+        Restores api_call_count and interrupt state.
+        Creates a fresh cancel token (cancelled state is NOT restored — token is reset).
+        Note: conversation_history must be restored by the caller.
+        """
+        with self._client_lock:
+            self.session_id = state.get("session_id", self.session_id)
+            self._api_call_count = state.get("api_call_count", 0)
+            self._interrupt_requested = state.get("interrupt_requested", False)
+            self._interrupt_message = state.get("interrupt_message", None)
+            self._last_activity_ts = state.get("last_activity_ts", time.time())
+            # Cancel token is always fresh — cancellation is not inherited
+            self._cancel_token = CancellationToken(task_name="AIAgent")
+            logger.info(
+                "Loaded state: session=%s api_calls=%d",
+                self.session_id, self._api_call_count
+            )
+
+    def pause(self) -> dict:
+        """
+        Pause agent execution and return current state.
+
+        Requests cancellation via the cancel token and returns state via save_state().
+        The agent loop should check the cancel token and exit when cancelled.
+
+        Returns:
+            dict from save_state()
+
+        Usage::
+
+            state = agent.pause()  # save and signal stop
+            # Later:
+            agent.load_state(state)
+            agent.resume()
+        """
+        self._cancel_token.cancel("Pause requested")
+        self._interrupt_requested = True
+        self._interrupt_message = None
+        _set_interrupt(True, self._execution_thread_id)
+        return self.save_state()
+
+    def resume(self, state: dict | None = None) -> None:
+        """
+        Resume agent from a paused state.
+
+        If state is provided, loads it first. Clears interrupt and creates
+        a fresh cancel token so execution can continue.
+
+        Args:
+            state: optional dict from save_state()
+
+        Usage::
+
+            agent.resume(paused_state)
+        """
+        if state:
+            self.load_state(state)
+        self._interrupt_requested = False
+        self._interrupt_message = None
+        self._cancel_token = CancellationToken(task_name="AIAgent")
+        _set_interrupt(False, self._execution_thread_id)
+        logger.info("Agent resumed from pause")
+
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""
@@ -4981,10 +5193,11 @@ class AIAgent:
     def _fire_tool_gen_started(self, tool_name: str) -> None:
         """Notify display layer that the model is generating tool call arguments.
 
-        Fires once per tool name when the streaming response begins producing
-        tool_call / tool_use tokens.  Gives the TUI a chance to show a spinner
-        or status line so the user isn't staring at a frozen screen while a
-        large tool payload (e.g. a 45 KB write_file) is being generated.
+        Fires once per tool name when the FIRST NAME CHUNK arrives during
+        streaming — before the full tool name or arguments are available.
+        This enables "streaming tool launch": the TUI shows a spinner the
+        moment the model starts typing "read_file" rather than waiting for
+        the complete tool_calls block.  The name may be partial (e.g. "read_fi").
         """
         cb = self.tool_gen_callback
         if cb is not None:
@@ -5152,7 +5365,7 @@ class AIAgent:
                             except Exception:
                                 pass
 
-                # Accumulate tool call deltas — notify display on first name
+                # Accumulate tool call deltas — fire notification on first name chunk
                 if delta and delta.tool_calls:
                     for tc_delta in delta.tool_calls:
                         raw_idx = tc_delta.index if tc_delta.index is not None else 0
@@ -5195,12 +5408,58 @@ class AIAgent:
                             if hasattr(extra, "model_dump"):
                                 extra = extra.model_dump()
                             entry["extra_content"] = extra
-                        # Fire once per tool when the full name is available
+                        # ── Streaming Tool Launch ──────────────────────────────────────
+                        # Fire _fire_tool_gen_started on the FIRST name chunk, not
+                        # when the full name is complete.  This gives the TUI a
+                        # spinner the moment the model begins typing "read_file"
+                        # rather than making the user wait for the entire name +
+                        # opening brace + arguments before any visual feedback.
                         name = entry["function"]["name"]
-                        if name and idx not in tool_gen_notified:
+                        if tc_delta.function and tc_delta.function.name and idx not in tool_gen_notified:
                             tool_gen_notified.add(idx)
                             _fire_first_delta()
                             self._fire_tool_gen_started(name)
+                        elif name and idx not in tool_gen_notified:
+                            # Fallback for providers that send the name in one shot
+                            # alongside the first delta.
+                            tool_gen_notified.add(idx)
+                            _fire_first_delta()
+                            self._fire_tool_gen_started(name)
+
+                        # ── Streaming Early Execution ──────────────────────────────────
+                        # Once a tool name is complete, check if its arguments are
+                        # ready (valid JSON) and if the tool is concurrency-safe.
+                        # If so, execute it immediately in a background thread —
+                        # it will finish BEFORE the full stream completes.
+                        # The result is stored in self._streaming_early_results
+                        # and consumed by _execute_tool_calls to avoid re-running.
+                        tool_id = entry.get("id", "")
+                        if tool_id and name:
+                            args_so_far = entry["function"]["arguments"]
+                            if args_so_far and args_so_far.strip().startswith("{"):
+                                try:
+                                    parsed_args = json.loads(args_so_far)
+                                    if isinstance(parsed_args, dict):
+                                        # Arguments are valid JSON — check if we should early-run
+                                        if _should_streaming_early_execute(name, parsed_args, tool_id, self):
+                                            import threading as _threading
+                                            def _early_worker():
+                                                try:
+                                                    result = self._invoke_tool(
+                                                        name, parsed_args,
+                                                        self._current_effective_task_id,
+                                                        tool_id,
+                                                    )
+                                                    self._streaming_early_results[tool_id] = {
+                                                        "name": name,
+                                                        "args": parsed_args,
+                                                        "result": result,
+                                                    }
+                                                except Exception as _exc:
+                                                    logger.debug("Streaming early exec failed for %s: %s", name, _exc)
+                                            _threading.Thread(target=_early_worker, daemon=True).start()
+                                except json.JSONDecodeError:
+                                    pass  # Arguments not valid yet — wait for more deltas
 
                 if chunk.choices[0].finish_reason:
                     finish_reason = chunk.choices[0].finish_reason
@@ -6865,22 +7124,159 @@ class AIAgent:
         Dispatches to concurrent execution only for batches that look
         independent: read-only tools may always share the parallel path, while
         file reads/writes may do so only when their target paths do not overlap.
+
+        Streaming early execution: if a tool was pre-executed during streaming
+        (via _streaming_early_results), its result is consumed here and the
+        actual execution is skipped — the tool ran in parallel with token
+        generation and finished before this function was called.
         """
         tool_calls = assistant_message.tool_calls
+
+        # Drain pre-executed results first — these tools ran during streaming
+        # and their results are ready to consume without re-execution.
+        early_results = {}
+        if hasattr(self, "_streaming_early_results") and self._streaming_early_results:
+            for tc in tool_calls:
+                tid = tc.id
+                if tid in self._streaming_early_results:
+                    early_results[tid] = self._streaming_early_results.pop(tid)
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
-            if not _should_parallelize_tool_batch(tool_calls):
+            # If all tools were early-executed, skip execution entirely
+            if len(early_results) == len(tool_calls):
+                self._append_early_results(messages, early_results, effective_task_id)
+                return
+
+            # Partition: early-executed vs still-need-execution
+            still_need = [tc for tc in tool_calls if tc.id not in early_results]
+
+            # Append early results immediately — their tools ran during streaming
+            if early_results:
+                self._append_early_results(messages, early_results, effective_task_id)
+
+            # Build a filtered assistant message for the remaining tool calls
+            if not still_need:
+                return  # All tools were early-executed
+
+            from types import SimpleNamespace
+            filtered_assistant = SimpleNamespace(
+                tool_calls=[tc for tc in assistant_message.tool_calls if tc.id not in early_results]
+            )
+
+            # Tool dependency analysis: detect and inject missing prerequisites
+            # For example: patch without prior read_file
+            if hasattr(self, '_tool_deps') and filtered_assistant.tool_calls:
+                parsed_calls = []
+                for tc in filtered_assistant.tool_calls:
+                    tc_dict = {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "args": tc.function.arguments,
+                    }
+                    if isinstance(tc_dict["args"], str):
+                        import json
+                        try:
+                            tc_dict["args"] = json.loads(tc_dict["args"])
+                        except:
+                            pass
+                    parsed_calls.append(tc_dict)
+                
+                analysis = self._tool_deps.analyze_sequence(parsed_calls)
+                
+                # Inject synthetic tool calls for missing dependencies
+                for missing_dep in analysis.get("missing_deps", []):
+                    synthetic = self._tool_deps.check_read_before_edit(
+                        missing_dep["by"], 
+                        {"path": missing_dep.get("for_path", "")}
+                    )
+                    if synthetic:
+                        # Prepend synthetic call to the list
+                        from types import SimpleNamespace
+                        synthetic_tc = SimpleNamespace(
+                            id=synthetic["id"],
+                            function=SimpleNamespace(
+                                name=synthetic["name"],
+                                arguments=json.dumps(synthetic["args"])
+                            )
+                        )
+                        filtered_assistant.tool_calls.insert(0, synthetic_tc)
+                
+                # Log warnings about missing dependencies
+                for warning in analysis.get("warnings", []):
+                    logger.warning(f"Tool dependency: {warning}")
+
+            if not _should_parallelize_tool_batch(filtered_assistant.tool_calls):
                 return self._execute_tool_calls_sequential(
-                    assistant_message, messages, effective_task_id, api_call_count
+                    filtered_assistant, messages, effective_task_id, api_call_count
                 )
 
             return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
+                filtered_assistant, messages, effective_task_id, api_call_count
             )
         finally:
             self._executing_tools = False
+
+    def _append_early_results(
+        self,
+        messages: list,
+        early_results: dict,
+        effective_task_id: str,
+    ) -> None:
+        """Append pre-executed tool results to the messages list.
+
+        Called when a tool was early-executed during streaming. Its result is
+        already computed — we just format it as a tool result message and apply
+        result-postprocessing (persistence, subdirectory hints) as normal.
+        """
+        # Sort by tool_call_id so results appear in the same order as calls
+        for tool_call_id, info in sorted(early_results.items(), key=lambda x: x[0]):
+            name = info["name"]
+            args = info["args"]
+            result = info["result"]
+
+            from tools.tool_result_storage import maybe_persist_tool_result
+            from tools.environments.base import get_active_env
+
+            result = maybe_persist_tool_result(
+                content=result,
+                tool_name=name,
+                tool_use_id=tool_call_id,
+                env=get_active_env(effective_task_id),
+            )
+
+            subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
+            if subdir_hints:
+                result += subdir_hints
+
+            messages.append({
+                "role": "tool",
+                "content": result,
+                "tool_call_id": tool_call_id,
+            })
+
+            logger.debug(
+                "Streaming early result consumed: %s (id=%s, %d chars)",
+                name, tool_call_id, len(result),
+            )
+
+            # Fire tool-complete callbacks for early results so gateway hooks
+            # and stream consumers see the same events as normal tool execution.
+            if self.tool_progress_callback:
+                try:
+                    is_error, _ = _detect_tool_failure(name, result)
+                    self.tool_progress_callback(
+                        "tool.completed", name, None, None,
+                        duration=0.0, is_error=is_error,
+                    )
+                except Exception:
+                    pass
+            if self.tool_complete_callback:
+                try:
+                    self.tool_complete_callback(tool_call_id, name, args, result)
+                except Exception:
+                    pass
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None) -> str:
@@ -6890,6 +7286,14 @@ class AIAgent:
         tools. Used by the concurrent execution path; the sequential path retains
         its own inline invocation for backward-compatible display handling.
         """
+        # PreToolUse hook - check before execution
+        if HOOKS_AVAILABLE and hasattr(self, '_hooks_initialized'):
+            hook_result = execute_pre_tool_hook(function_name, function_args, tool_call_id)
+            if hook_result.blocked:
+                error_msg = f"[Hook blocked] {hook_result.system_message or 'Tool execution blocked by hook'}"
+                if hook_result.hook_specific_output:
+                    return json.dumps({"blocked": True, "message": error_msg, "hook_output": hook_result.hook_specific_output})
+                return json.dumps({"blocked": True, "message": error_msg})
         if function_name == "todo":
             from tools.todo_tool import todo_tool as _todo_tool
             return _todo_tool(
@@ -6946,15 +7350,22 @@ class AIAgent:
                 toolsets=function_args.get("toolsets"),
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
+                acp_command=function_args.get("acp_command"),
+                acp_args=function_args.get("acp_args"),
+                is_worktree_isolated=function_args.get("is_worktree_isolated", False),
                 parent_agent=self,
             )
         else:
-            return handle_function_call(
+            result = handle_function_call(
                 function_name, function_args, effective_task_id,
                 tool_call_id=tool_call_id,
                 session_id=self.session_id or "",
                 enabled_tools=list(self.valid_tool_names) if self.valid_tool_names else None,
             )
+            # Persist large results (>30KB) to disk to reduce context consumption
+            if len(result) > LARGE_RESULT_THRESHOLD:
+                return save_large_result(result, function_name, tool_call_id or str(uuid.uuid4()))
+            return result
 
     def _execute_tool_calls_concurrent(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute multiple tool calls concurrently using a thread pool.
@@ -7328,6 +7739,9 @@ class AIAgent:
                         toolsets=function_args.get("toolsets"),
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
+                        acp_command=function_args.get("acp_command"),
+                        acp_args=function_args.get("acp_args"),
+                        is_worktree_isolated=function_args.get("is_worktree_isolated", False),
                         parent_agent=self,
                     )
                     _delegate_result = function_result
@@ -7479,6 +7893,11 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # Register tool result for dependency tracking
+            self._tool_deps.register_result(
+                tool_call.id, function_name, function_result, function_args
+            )
+
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -7508,7 +7927,91 @@ class AIAgent:
         if num_tools_seq > 0:
             enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
 
+    def _build_ryow_summary(self, messages: list, effective_task_id: str) -> str:
+        """
+        Build a RYOW (Read Your Own Writes) summary showing what the model actually
+        wrote/changed after tool execution. This gives the model concrete feedback
+        on what was written, not just "operation successful".
 
+        Args:
+            messages: The conversation messages list (to check tool results)
+            effective_task_id: The current task identifier
+
+        Returns:
+            A string summary of what was written/changed, or empty string if nothing
+        """
+        if not hasattr(self, "_project_tracker") or self._project_tracker is None:
+            return ""
+
+        try:
+            tracker = self._project_tracker
+            edits = tracker.get_session_edits()
+            if not edits:
+                return ""
+
+            # Filter to just write_file and patch operations from tool results
+            write_ops = []
+            for msg in messages:
+                if msg.get("role") == "tool" and msg.get("tool_call_id"):
+                    content = msg.get("content", "")
+                    # Look for success indicators with file paths
+                    if "File written" in content or "File patched" in content or "written" in content.lower():
+                        write_ops.append(content)
+
+            if not write_ops:
+                return ""
+
+            summary_parts = ["[RYOW] After tool execution, your changes are now live:"]
+            for op in write_ops[:5]:  # Limit to 5 to avoid context bloat
+                # Extract meaningful part of the result
+                if len(op) > 300:
+                    op = op[:300] + "..."
+                summary_parts.append(f"  • {op}")
+
+            # Add info about files that were modified
+            pending_files = tracker.get_pending_files()
+            if pending_files:
+                summary_parts.append(f"\n[RYOW] Files modified this session:")
+                for f in pending_files[:10]:  # Limit to 10 files
+                    # Try to get content near changes
+                    content_near = tracker.get_file_content_near_changes(f, context_lines=5)
+                    if content_near:
+                        # Truncate if too long
+                        if len(content_near) > 500:
+                            content_near = content_near[:500] + "..."
+                        summary_parts.append(f"  {f}:")
+                        summary_parts.append(f"    {content_near[:200]}..." if len(content_near) > 200 else f"    {content_near}")
+                    else:
+                        summary_parts.append(f"  {f}")
+
+            return "\n".join(summary_parts)
+        except Exception as e:
+            logger.debug(f"_build_ryow_summary error: {e}")
+            return ""
+
+    def _ryow_inject_after_tools(self, messages: list, effective_task_id: str) -> None:
+        """
+        Inject a RYOW (Read Your Own Writes) system message after tool execution.
+
+        This reads back the actual content that was written/modified and injects
+        it as a system message so the model can see what it actually produced,
+        not just the generic "operation successful" message.
+
+        Args:
+            messages: The conversation messages list to inject into
+            effective_task_id: The current task identifier
+        """
+        ryow_summary = self._build_ryow_summary(messages, effective_task_id)
+        if not ryow_summary:
+            return
+
+        # Inject as a system message that the model will see
+        ryow_message = {
+            "role": "system",
+            "content": ryow_summary
+        }
+        messages.append(ryow_message)
+        logger.debug("Injected RYOW summary after tool execution")
 
     def _emit_context_pressure(self, compaction_progress: float, compressor) -> None:
         """Notify the user that context is approaching the compaction threshold.
@@ -7756,6 +8259,8 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        # Stash on instance so streaming loop can access it for early tool execution
+        self._current_effective_task_id = effective_task_id
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -7767,7 +8272,25 @@ class AIAgent:
         self._thinking_prefill_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
+        # Streaming early execution: maps tool_call_id -> {"name": str, "args": dict, "result": str}
+        # Populated during streaming as tools complete; consumed by _execute_tool_calls
+        self._streaming_early_results: dict = {}
         self._unicode_sanitization_passes = 0
+        # Tool dependency tracking for semantic dependency awareness
+        self._tool_deps = ToolDependencyGraph()
+
+        # Active CLAUDE.md: re-read on every turn so external edits take effect immediately.
+        # Refresh the loader and prepend any relevant context to the ephemeral system prompt.
+        if self._claude_md_loader.should_refresh():
+            _cla_ctx = self._claude_md_loader.get_relevant_context("")
+            if _cla_ctx:
+                _cla_inject = (
+                    (_cla_ctx + "\n\n" + self.ephemeral_system_prompt)
+                    if self.ephemeral_system_prompt
+                    else _cla_ctx
+                )
+                self.ephemeral_system_prompt = _cla_inject
+                logger.debug("CLAUDE.md context injected into ephemeral_system_prompt")
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -7992,6 +8515,15 @@ class AIAgent:
 
         # Main conversation loop
         api_call_count = 0
+
+        # Initialize hook system for this session
+        if HOOKS_AVAILABLE and not self._hooks_initialized:
+            try:
+                initialize_hooks()
+                self._hooks_initialized = True
+                logger.info("Hook system initialized")
+            except Exception as e:
+                logger.warning("Failed to initialize hook system: %s", e)
         final_response = None
         interrupted = False
         codex_ack_continuations = 0
@@ -10014,6 +10546,10 @@ class AIAgent:
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                    # RYOW: Read Your Own Writes - inject what was actually written
+                    # after tool execution so the model sees its actual changes
+                    self._ryow_inject_after_tools(messages, effective_task_id)
+
                     # Reset per-turn retry counters after successful tool
                     # execution so a single truncation doesn't poison the
                     # entire conversation.
@@ -10423,6 +10959,16 @@ class AIAgent:
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
+
+        # Execute Stop hooks before cleaning up
+        if HOOKS_AVAILABLE and self._hooks_initialized:
+            try:
+                stop_reason = _turn_exit_reason or "completed"
+                hook_result = execute_stop_hook(stop_reason)
+                if hook_result.blocked:
+                    logger.warning("Stop hook blocked: %s", hook_result.system_message)
+            except Exception as e:
+                logger.warning("Stop hook error: %s", e)
 
         # Save trajectory if enabled
         self._save_trajectory(messages, user_message, completed)

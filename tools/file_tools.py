@@ -10,6 +10,7 @@ from pathlib import Path
 from tools.binary_extensions import has_binary_extension
 from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
+from agent.project_context import get_project_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +445,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "If you are stuck in a loop, stop reading and proceed with writing or responding."
             )
 
+        # Update project change tracker with file read info
+        try:
+            tracker = get_project_tracker()
+            _mtime = task_data.get("dedup", {}).get(dedup_key)
+            if _mtime is not None:
+                tracker.mark_file_read(path, result.content or "", _mtime)
+        except Exception:
+            pass  # Don't fail the tool if tracker fails
+
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e))
@@ -553,6 +563,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         # Refresh the stored timestamp so consecutive writes by this
         # task don't trigger false staleness warnings.
         _update_read_timestamp(path, task_id)
+        # Update project change tracker
+        try:
+            tracker = get_project_tracker()
+            import os as _os
+            _mtime = _os.path.getmtime(path) if _os.path.exists(path) else None
+            if _mtime is not None:
+                tracker.mark_file_written(path, _mtime)
+        except Exception:
+            pass  # Don't fail the tool if tracker fails
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -564,8 +583,14 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default") -> str:
-    """Patch a file using replace mode or V4A patch format."""
+               task_id: str = "default", auto_read_context: bool = True) -> str:
+    """Patch a file using replace mode or V4A patch format.
+    
+    Args:
+        auto_read_context: If True (default), automatically read the file to get
+            exact line content before patching. This eliminates "string not found"
+            errors from whitespace/encoding differences.
+    """
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -593,7 +618,78 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 return tool_error("path required")
             if old_string is None or new_string is None:
                 return tool_error("old_string and new_string required")
-            result = file_ops.patch_replace(path, old_string, new_string, replace_all)
+            
+            # Use DiffPatcher for surgical diff-based patching
+            from tools.diff_patch import DiffPatcher
+            patcher = DiffPatcher()
+            
+            # If auto_read_context is True, read file to get exact content
+            actual_old_string = old_string
+            if auto_read_context:
+                try:
+                    file_ops_inner = _get_file_ops(task_id)
+                    read_result = file_ops_inner.read_file(path, 1, 100000)
+                    if hasattr(read_result, 'content') and read_result.content:
+                        file_content = read_result.content
+                        if old_string in file_content:
+                            actual_old_string = old_string
+                except Exception:
+                    pass  # Use provided old_string as-is
+            
+            patch_result = patcher.apply_surgical(path, actual_old_string, new_string)
+            
+            if patch_result['success']:
+                # Create PatchResult-compatible dict with surgical patch info
+                from tools.file_operations import PatchResult
+                diff_preview = patcher.preview_diff(actual_old_string, new_string, path)
+                result = PatchResult(
+                    success=True,
+                    diff=diff_preview,
+                    files_modified=[path],
+                    lint=None
+                )
+                result_dict = result.to_dict()
+                result_dict['changed_lines'] = patch_result.get('changed_lines', [])
+                result_dict['method'] = patch_result.get('method', 'surgical')
+                result_dict['diff_preview'] = diff_preview
+            else:
+                # Fallback to naive string replace when surgical patch fails
+                # This handles cases where the exact string wasn't found but might
+                # still be replaceable with looser matching
+                logger.warning("Surgical patch failed (%s), falling back to naive replace for %s",
+                             patch_result.get('error'), path)
+                try:
+                    with open(path, 'r', encoding='utf-8') as f:
+                        file_content = f.read()
+                    if actual_old_string in file_content:
+                        new_content = file_content.replace(actual_old_string, new_string, 1)
+                        with open(path, 'w', encoding='utf-8') as f:
+                            f.write(new_content)
+                        from tools.file_operations import PatchResult
+                        diff_preview = patcher.preview_diff(actual_old_string, new_string, path)
+                        result = PatchResult(
+                            success=True,
+                            diff=diff_preview,
+                            files_modified=[path],
+                            lint=None
+                        )
+                        result_dict = result.to_dict()
+                        result_dict['changed_lines'] = []
+                        result_dict['method'] = 'fallback'
+                        result_dict['diff_preview'] = diff_preview
+                        result_dict['_warning'] = "Used naive replace fallback: surgical patch failed ({})".format(
+                            patch_result.get('error', 'unknown'))
+                    else:
+                        from tools.file_operations import PatchResult
+                        result = PatchResult(error=patch_result.get('error', 'Patch failed'))
+                        result_dict = result.to_dict()
+                except Exception as e:
+                    from tools.file_operations import PatchResult
+                    result = PatchResult(error="Fallback replace also failed: {}".format(str(e)))
+                    result_dict = result.to_dict()
+            
+            # Skip the generic result.to_dict() call below since we built result_dict above
+            skip_generic_result_processing = True
         elif mode == "patch":
             if not patch:
                 return tool_error("patch content required")
@@ -601,7 +697,10 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         else:
             return tool_error(f"Unknown mode: {mode}")
         
-        result_dict = result.to_dict()
+        # Only call result.to_dict() if we didn't build result_dict in the replace block
+        if not skip_generic_result_processing:
+            result_dict = result.to_dict()
+        
         if stale_warnings:
             result_dict["_warning"] = stale_warnings[0] if len(stale_warnings) == 1 else " | ".join(stale_warnings)
         # Refresh stored timestamps for all successfully-patched paths so
@@ -609,6 +708,18 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if not result_dict.get("error"):
             for _p in _paths_to_check:
                 _update_read_timestamp(_p, task_id)
+            # Update project change tracker for successful patches
+            try:
+                tracker = get_project_tracker()
+                if mode == "replace" and path:
+                    tracker.mark_file_patched(path, old_string or "", new_string or "")
+                elif mode == "patch":
+                    # For V4A patches, record each patched file without old/new strings
+                    # since we don't have them in the same format
+                    for _p in _paths_to_check:
+                        tracker.mark_file_patched(_p, "[V4A patch]", "[V4A patch]")
+            except Exception:
+                pass  # Don't fail the tool if tracker fails
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -727,6 +838,20 @@ WRITE_FILE_SCHEMA = {
     }
 }
 
+DIFF_PREVIEW_SCHEMA = {
+    "name": "diff_preview",
+    "description": "Preview a diff without applying it. Shows what changes WOULD be made by a patch operation. Useful for reviewing changes before committing them via the patch tool.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path to preview diff for"},
+            "old_string": {"type": "string", "description": "Text that would be replaced"},
+            "new_string": {"type": "string", "description": "Text that would replace old_string"}
+        },
+        "required": ["path", "old_string", "new_string"]
+    }
+}
+
 PATCH_SCHEMA = {
     "name": "patch",
     "description": "Targeted find-and-replace edits in files. Use this instead of sed/awk in terminal. Uses fuzzy matching (9 strategies) so minor whitespace/indentation differences won't break it. Returns a unified diff. Auto-runs syntax checks after editing.\n\nReplace mode (default): find a unique string and replace it.\nPatch mode: apply V4A multi-file patches for bulk changes.",
@@ -774,6 +899,49 @@ def _handle_write_file(args, **kw):
     return write_file_tool(path=args.get("path", ""), content=args.get("content", ""), task_id=tid)
 
 
+def diff_preview_tool(path: str, old_string: str, new_string: str) -> str:
+    """Preview a diff without applying it.
+
+    Returns the unified diff output that WOULD be produced if patch_tool
+    were called with the same parameters. Does not modify the file.
+    """
+    if not path:
+        return tool_error("path required")
+    if old_string is None:
+        return tool_error("old_string required")
+    if new_string is None:
+        return tool_error("new_string required")
+
+    from tools.diff_patch import DiffPatcher
+    patcher = DiffPatcher()
+
+    # Verify file exists and contains old_string
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
+    except Exception as e:
+        return tool_error("Failed to read file: {}".format(str(e)))
+
+    if old_string not in content:
+        return tool_error("old_string not found in {}".format(path))
+
+    # Compute and return the diff without applying
+    diff = patcher.preview_diff(old_string, new_string, path)
+    return json.dumps({
+        "success": True,
+        "path": path,
+        "diff": diff
+    }, ensure_ascii=False)
+
+
+def _handle_diff_preview(args, **kw):
+    return diff_preview_tool(
+        path=args.get("path"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string")
+    )
+
+
 def _handle_patch(args, **kw):
     tid = kw.get("task_id") or "default"
     return patch_tool(
@@ -793,7 +961,8 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'))
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=float('inf'), is_read_only=True, is_concurrency_safe=True)
+registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000, is_read_only=False, is_concurrency_safe=False)
+registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000, is_read_only=False, is_concurrency_safe=False)
+registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000, is_read_only=True, is_concurrency_safe=True)
+registry.register(name="diff_preview", toolset="hermes-core", schema=DIFF_PREVIEW_SCHEMA, handler=_handle_diff_preview, check_fn=_check_file_reqs, emoji="🔍", max_result_size_chars=100_000, is_read_only=True, is_concurrency_safe=True)

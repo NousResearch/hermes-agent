@@ -159,6 +159,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
+    # Agent Teams
+    CommandDef("team", "Manage agent teams: start, status, add member, stop", "Agent Teams",
+               args_hint="<start|status|add|stop|delegate> [type|role|goal]",
+               subcommands=("start", "status", "add", "stop", "delegate")),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
                cli_only=True, aliases=("exit", "q")),

@@ -27,12 +27,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars",
+        "max_result_size_chars", "is_concurrency_safe", "is_read_only",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None):
+                 max_result_size_chars=None,
+                 is_concurrency_safe=None, is_read_only=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -43,6 +44,9 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        # Callable(input_dict) -> bool, or bool, or None (unknown — fallback to heuristic)
+        self.is_concurrency_safe = is_concurrency_safe
+        self.is_read_only = is_read_only
 
 
 class ToolRegistry:
@@ -68,6 +72,8 @@ class ToolRegistry:
         description: str = "",
         emoji: str = "",
         max_result_size_chars: int | float | None = None,
+        is_concurrency_safe=None,
+        is_read_only=None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
@@ -88,6 +94,8 @@ class ToolRegistry:
             description=description or schema.get("description", ""),
             emoji=emoji,
             max_result_size_chars=max_result_size_chars,
+            is_concurrency_safe=is_concurrency_safe,
+            is_read_only=is_read_only,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -264,6 +272,28 @@ class ToolRegistry:
                 if env not in result[ts]["env_vars"]:
                     result[ts]["env_vars"].append(env)
         return result
+
+    def get_tool_concurrency_flags(self, name: str) -> tuple[bool | None, bool | None]:
+        """Return (is_concurrency_safe, is_read_only) for a tool.
+
+        Each value is True, False, or None (unknown / use heuristic).
+        """
+        entry = self._tools.get(name)
+        if not entry:
+            return None, None
+        return entry.is_concurrency_safe, entry.is_read_only
+
+    def is_read_only_tool(self, name: str) -> bool | None:
+        """Return True if a tool is explicitly marked read-only, False if
+        explicitly marked write/mutation, None if unknown (use heuristic)."""
+        _, is_read_only = self.get_tool_concurrency_flags(name)
+        return is_read_only
+
+    def is_concurrency_safe_tool(self, name: str) -> bool | None:
+        """Return True/False/None (unknown). Callable flags are NOT resolved here —
+        callers pass concrete args so they can be batched."""
+        is_safe, _ = self.get_tool_concurrency_flags(name)
+        return is_safe
 
     def check_tool_availability(self, quiet: bool = False):
         """Return (available_toolsets, unavailable_info) like the old function."""

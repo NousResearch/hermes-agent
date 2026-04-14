@@ -18,14 +18,22 @@ never the child's intermediate tool calls or reasoning.
 
 import json
 import logging
-logger = logging.getLogger(__name__)
 import os
+import shutil
+import subprocess
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+
+logger = logging.getLogger(__name__)
+
+# Worktree base directory
+_WORKTREE_BASE = Path.home() / ".hermes" / "worktrees"
 
 
 # Tools that children must never have access to
@@ -80,6 +88,210 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+# ---------------------------------------------------------------------------
+# Git Worktree Isolation for Subagents
+# ---------------------------------------------------------------------------
+
+def _is_git_repo(cwd: str) -> bool:
+    """Check if the given directory is inside a git repository."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=5, cwd=cwd,
+        )
+        return result.returncode == 0 and result.stdout.strip() == "true"
+    except Exception:
+        return False
+
+
+def _get_git_root(cwd: str) -> Optional[str]:
+    """Return the git repo root for the given directory, or None.
+
+    Only returns a root when `cwd` is genuinely inside a git working tree,
+    not merely a parent directory of one.
+    """
+    try:
+        # Check whether cwd is actually inside a working tree (not a bare parent)
+        toplevel_result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, timeout=5, cwd=cwd,
+        )
+        if toplevel_result.returncode != 0:
+            return None
+        root = toplevel_result.stdout.strip()
+
+        # Verify cwd resolves to a path under this root
+        cwd_resolved = Path(cwd).resolve()
+        root_resolved = Path(root).resolve()
+        try:
+            cwd_resolved.relative_to(root_resolved)
+        except ValueError:
+            # cwd is not under this toplevel — don't use it
+            return None
+
+        return root
+    except Exception:
+        pass
+    return None
+
+
+def _path_is_within_root(path: Path, root: Path) -> bool:
+    """Return True when a resolved path stays within the expected root."""
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _create_worktree(task_id: str, parent_cwd: str, branch_suffix: str = "") -> Optional[Dict[str, Any]]:
+    """Create an isolated git worktree for a delegated task.
+
+    Returns a dict with worktree metadata on success, None on failure.
+    The dict contains: path, branch, repo_root, task_id.
+    """
+    repo_root = _get_git_root(parent_cwd)
+    if not repo_root:
+        logger.debug("No git repo root found for %s, skipping worktree isolation", parent_cwd)
+        return None
+
+    short_id = uuid.uuid4().hex[:8]
+    safe_suffix = branch_suffix.replace("/", "-").replace(" ", "-")[:20]
+    wt_name = f"task-{short_id}" + (f"-{safe_suffix}" if safe_suffix else "")
+    branch_name = f"hermes/task-{short_id}" + (f"-{safe_suffix}" if safe_suffix else "")
+
+    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir.mkdir(parents=True, exist_ok=True)
+    wt_path = worktrees_dir / wt_name
+
+    # Ensure .worktrees/ is in .gitignore
+    gitignore = Path(repo_root) / ".gitignore"
+    _ignore_entry = ".worktrees/"
+    try:
+        existing = gitignore.read_text() if gitignore.exists() else ""
+        if _ignore_entry not in existing.splitlines():
+            with open(gitignore, "a") as f:
+                if existing and not existing.endswith("\n"):
+                    f.write("\n")
+                f.write(f"{_ignore_entry}\n")
+    except Exception as e:
+        logger.debug("Could not update .gitignore: %s", e)
+
+    # Create the worktree
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "add", str(wt_path), "-b", branch_name, "HEAD"],
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to create worktree: %s", result.stderr.strip())
+            return None
+    except Exception as e:
+        logger.warning("Failed to create worktree: %s", e)
+        return None
+
+    # Copy files listed in .worktreeinclude (gitignored files the agent needs)
+    include_file = Path(repo_root) / ".worktreeinclude"
+    if include_file.exists():
+        try:
+            repo_root_resolved = Path(repo_root).resolve()
+            wt_path_resolved = wt_path.resolve()
+            for line in include_file.read_text().splitlines():
+                entry = line.strip()
+                if not entry or entry.startswith("#"):
+                    continue
+                src = Path(repo_root) / entry
+                dst = wt_path / entry
+                try:
+                    src_resolved = src.resolve(strict=False)
+                    dst_resolved = dst.resolve(strict=False)
+                except (OSError, ValueError):
+                    logger.debug("Skipping invalid .worktreeinclude entry: %s", entry)
+                    continue
+                if not _path_is_within_root(src_resolved, repo_root_resolved):
+                    logger.warning("Skipping .worktreeinclude entry outside repo root: %s", entry)
+                    continue
+                if not _path_is_within_root(dst_resolved, wt_path_resolved):
+                    logger.warning("Skipping .worktreeinclude entry that escapes worktree: %s", entry)
+                    continue
+                if src.is_file():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(src), str(dst))
+                elif src.is_dir():
+                    if not dst.exists():
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        os.symlink(str(src_resolved), str(dst))
+        except Exception as e:
+            logger.debug("Error copying .worktreeinclude entries: %s", e)
+
+    logger.info("Created worktree at %s (branch %s) for task %s", wt_path, branch_name, task_id)
+    return {
+        "path": str(wt_path.resolve()),
+        "branch": branch_name,
+        "repo_root": str(Path(repo_root).resolve()),
+        "task_id": task_id,
+    }
+
+
+def _remove_worktree(worktree_info: Dict[str, Any], force: bool = False) -> bool:
+    """Remove a git worktree created for a delegated task.
+
+    Returns True on success, False on failure.
+    """
+    wt_path = worktree_info.get("path")
+    branch = worktree_info.get("branch")
+    repo_root = worktree_info.get("repo_root")
+    if not wt_path or not repo_root:
+        return False
+
+    try:
+        # Remove the worktree via git
+        result = subprocess.run(
+            ["git", "worktree", "remove", wt_path] + (["--force"] if force else []),
+            capture_output=True, text=True, timeout=30, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            logger.warning("Failed to remove worktree %s: %s", wt_path, result.stderr.strip())
+            return False
+        logger.info("Removed worktree at %s", wt_path)
+        return True
+    except Exception as e:
+        logger.warning("Failed to remove worktree %s: %s", wt_path, e)
+        return False
+
+
+def _resolve_worktree_for_task(
+    task_id: str,
+    task_index: int,
+    parent_agent,
+    is_isolated: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Resolve/create a worktree for a delegated task.
+
+    If is_isolated=True and the parent's CWD is in a git repo, creates an
+    isolated worktree. Returns the worktree metadata dict or None.
+    """
+    if not is_isolated:
+        return None
+
+    # Determine the effective parent CWD
+    parent_cwd = os.getenv("TERMINAL_CWD")
+    if not parent_cwd:
+        parent_cwd = getattr(parent_agent, "terminal_cwd", None)
+    if not parent_cwd:
+        parent_cwd = getattr(parent_agent, "cwd", None)
+    if not parent_cwd or not os.path.isdir(parent_cwd):
+        parent_cwd = os.getcwd()
+
+    if not _is_git_repo(parent_cwd):
+        logger.debug("Parent CWD %s is not a git repo, skipping worktree isolation", parent_cwd)
+        return None
+
+    # Use task_index in branch name for disambiguation in parallel tasks
+    effective_task_id = f"{task_id}-{task_index}"
+    return _create_worktree(effective_task_id, parent_cwd)
 
 
 def check_delegate_requirements() -> bool:
@@ -401,11 +613,15 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    worktree_info: Optional[Dict[str, Any]] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
+
+    If worktree_info is provided, the child runs inside the isolated git
+    worktree and WORKTREE_PATH is set in the child's environment.
     """
     child_start = time.monotonic()
 
@@ -467,6 +683,17 @@ def _run_single_child(
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
     _heartbeat_thread.start()
+
+    # Apply worktree isolation: set WORKTREE_PATH and TERMINAL_CWD so the child
+    # agent operates within the isolated worktree rather than the parent repo.
+    _original_environ = None
+    if worktree_info:
+        wt_path = worktree_info.get("path")
+        if wt_path:
+            _original_environ = os.environ.copy()
+            os.environ["WORKTREE_PATH"] = wt_path
+            os.environ["TERMINAL_CWD"] = wt_path
+            logger.debug("Subagent-%d running in worktree: %s", task_index, wt_path)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -583,6 +810,16 @@ def _run_single_child(
         _heartbeat_stop.set()
         _heartbeat_thread.join(timeout=5)
 
+        # Restore parent's environment (undo WORKTREE_PATH / TERMINAL_CWD)
+        if _original_environ is not None:
+            os.environ.clear()
+            os.environ.update(_original_environ)
+            _original_environ = None
+
+        # Remove worktree after child completes (cleanup)
+        if worktree_info:
+            _remove_worktree(worktree_info, force=True)
+
         if child_pool is not None and leased_cred_id is not None:
             try:
                 child_pool.release_lease(leased_cred_id)
@@ -629,6 +866,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
+    is_worktree_isolated: bool = False,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -728,10 +966,20 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    # Create worktrees for all tasks upfront when isolated
+    worktrees: List[Optional[Dict[str, Any]]] = []
+    if is_worktree_isolated:
+        task_id = getattr(parent_agent, "session_id", None) or f"delegated-{int(time.time())}"
+        for i, t in enumerate(task_list):
+            wt = _resolve_worktree_for_task(task_id, i, parent_agent, is_isolated=True)
+            worktrees.append(wt)
+    else:
+        worktrees = [None] * n_tasks
+
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(0, _t["goal"], child, parent_agent, worktree_info=worktrees[0])
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -740,13 +988,15 @@ def delegate_task(
 
         with ThreadPoolExecutor(max_workers=max_children) as executor:
             futures = {}
-            for i, t, child in children:
+            for idx, (i, t, child) in enumerate(children):
+                wt_info = worktrees[idx]
                 future = executor.submit(
                     _run_single_child,
                     task_index=i,
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    worktree_info=wt_info,
                 )
                 futures[future] = i
 
@@ -1076,6 +1326,18 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "is_worktree_isolated": {
+                "type": "boolean",
+                "description": (
+                    "When true, the subagent runs inside an isolated git worktree "
+                    "created specifically for this task (under ~/.hermes/worktrees/). "
+                    "This provides file-system isolation: the subagent's file modifications "
+                    "do not affect the parent repository. The worktree is automatically "
+                    "created before the task starts and removed after it completes. "
+                    "Defaults to false for backward compatibility. "
+                    "Has no effect when the parent is not inside a git repository."
+                ),
+            },
         },
         "required": [],
     },
@@ -1097,7 +1359,95 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        is_worktree_isolated=args.get("is_worktree_isolated", False),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+)
+
+# --- Coordinated Multi-Agent Delegation ---
+COORDINATED_DELEGATE_SCHEMA = {
+    "name": "coordinated_delegate",
+    "description": (
+        "Advanced multi-agent orchestration with role-based delegation, DAG task scheduling, "
+        "shared memory between agents, and result synthesis. Use this instead of delegate_task "
+        "for complex tasks that benefit from specialized roles (researcher, developer, reviewer) "
+        "working together with dependency awareness."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": (
+                    "The complex goal to decompose and execute across multiple specialized agents. "
+                    "Example: 'Build a REST API with auth, write tests, and deploy to production'"
+                ),
+            },
+            "context": {
+                "type": "string",
+                "description": "Background context shared with all agents (e.g. codebase, requirements).",
+            },
+            "role_hint": {
+                "type": "string",
+                "description": (
+                    "Optional hint about which roles to prioritize. "
+                    "Options: 'research' (favor researcher), 'code' (favor developer), "
+                    "'review' (favor reviewer), 'auto' (let coordinator decide)."
+                ),
+            },
+            "max_concurrent": {
+                "type": "integer",
+                "description": (
+                    "Max agents running in parallel (default: 3). "
+                    "Higher values are faster but use more API calls."
+                ),
+            },
+            "synthesize": {
+                "type": "boolean",
+                "description": (
+                    "If true, run a Synthesizer agent after all tasks complete "
+                    "to produce a unified final report (default: true)."
+                ),
+            },
+        },
+        "required": ["goal"],
+    },
+}
+
+
+def _coordinated_delegate_impl(
+    goal: str,
+    context: Optional[str] = None,
+    role_hint: Optional[str] = None,
+    max_concurrent: int = 3,
+    synthesize: bool = True,
+    parent_agent=None,
+) -> str:
+    """Implementation wrapper so the registry handler can catch exceptions."""
+    from agent.multi_agent_coordinator import coordinated_delegate as _impl
+    return _impl(
+        goal=goal,
+        context=context,
+        role_hint=role_hint,
+        max_concurrent=max_concurrent,
+        synthesize=synthesize,
+        parent_agent=parent_agent,
+    )
+
+
+registry.register(
+    name="coordinated_delegate",
+    toolset="delegation",
+    schema=COORDINATED_DELEGATE_SCHEMA,
+    handler=lambda args, **kw: _coordinated_delegate_impl(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        role_hint=args.get("role_hint"),
+        max_concurrent=args.get("max_concurrent", 3),
+        synthesize=args.get("synthesize", True),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="🧠",
 )

@@ -501,10 +501,10 @@ class TestWeixinMediaBuilder:
         )
         assert item["video_item"]["video_md5"] == "deadbeef"
 
-    def test_voice_builder_for_audio_files(self):
+    def test_voice_builder_for_audio_files_uses_file_attachment_type(self):
         adapter = _make_adapter()
         media_type, builder = adapter._outbound_media_builder("note.mp3")
-        assert media_type == weixin.MEDIA_VOICE
+        assert media_type == weixin.MEDIA_FILE
 
         item = builder(
             encrypt_query_param="eq",
@@ -514,8 +514,8 @@ class TestWeixinMediaBuilder:
             filename="note.mp3",
             rawfilemd5="abc",
         )
-        assert item["type"] == weixin.ITEM_VOICE
-        assert "voice_item" in item
+        assert item["type"] == weixin.ITEM_FILE
+        assert item["file_item"]["file_name"] == "note.mp3"
 
     def test_voice_builder_for_silk_files(self):
         adapter = _make_adapter()
@@ -593,41 +593,65 @@ class TestWeixinVoiceSending:
         return adapter
 
     @patch.object(WeixinAdapter, "_send_file", new_callable=AsyncMock)
-    @patch.object(WeixinAdapter, "_prepare_voice_payload")
-    def test_send_voice_uses_silk_payload(self, prepare_mock, send_file_mock, tmp_path):
+    def test_send_voice_downgrades_to_document_attachment(self, send_file_mock, tmp_path):
         adapter = self._connected_adapter()
         source = tmp_path / "voice.ogg"
-        silk = tmp_path / "voice.silk"
         source.write_bytes(b"ogg")
-        silk.write_bytes(b"silk")
-        prepare_mock.return_value = str(silk)
         send_file_mock.return_value = "msg-1"
 
         result = asyncio.run(adapter.send_voice("wxid_test123", str(source)))
 
         assert result.success is True
-        prepare_mock.assert_called_once_with(str(source))
-        send_file_mock.assert_awaited_once_with("wxid_test123", str(silk), "")
+        send_file_mock.assert_awaited_once_with(
+            "wxid_test123",
+            str(source),
+            "[voice message as attachment]",
+            force_file_attachment=True,
+        )
 
-    @patch("gateway.platforms.weixin.pilk.encode")
-    @patch.object(WeixinAdapter, "_transcode_audio_to_wav")
-    def test_prepare_voice_payload_transcodes_to_silk(self, transcode_mock, pilk_encode_mock, tmp_path):
+    def test_voice_builder_for_silk_files_can_be_forced_to_file_attachment(self):
         adapter = _make_adapter()
-        src = tmp_path / "voice.ogg"
-        src.write_bytes(b"ogg")
-        wav = tmp_path / "voice.wav"
-        wav.write_bytes(b"wav")
-        transcode_mock.return_value = str(wav)
+        media_type, builder = adapter._outbound_media_builder(
+            "recording.silk",
+            force_file_attachment=True,
+        )
+        assert media_type == weixin.MEDIA_FILE
 
-        def _fake_encode(infile, outfile, **kwargs):
-            Path(outfile).write_bytes(b"silk-bytes")
+        item = builder(
+            encrypt_query_param="eq",
+            aes_key_for_api="fakekey",
+            ciphertext_size=512,
+            plaintext_size=500,
+            filename="recording.silk",
+            rawfilemd5="abc",
+        )
+        assert item["type"] == weixin.ITEM_FILE
+        assert item["file_item"]["file_name"] == "recording.silk"
 
-        pilk_encode_mock.side_effect = _fake_encode
+    @patch.object(weixin, "_api_post", new_callable=AsyncMock)
+    @patch.object(weixin, "_upload_ciphertext", new_callable=AsyncMock)
+    @patch.object(weixin, "_get_upload_url", new_callable=AsyncMock)
+    def test_send_file_sets_voice_playtime_from_silk_duration(
+        self,
+        get_upload_url_mock,
+        upload_ciphertext_mock,
+        api_post_mock,
+        tmp_path,
+    ):
+        adapter = self._connected_adapter()
+        silk = tmp_path / "voice.silk"
+        silk.write_bytes(b"\x02#!SILK_V3\x01\x00")
+        get_upload_url_mock.return_value = {"upload_full_url": "https://cdn.example.com/upload"}
+        upload_ciphertext_mock.return_value = "enc-q"
+        api_post_mock.return_value = {"success": True}
 
-        silk_path = adapter._prepare_voice_payload(str(src))
+        with patch("gateway.platforms.weixin.pilk.get_duration", return_value=1260) as duration_mock:
+            asyncio.run(adapter._send_file("wxid_test123", str(silk), ""))
 
-        assert silk_path.endswith('.silk')
-        assert Path(silk_path).read_bytes() == b"silk-bytes"
-        pilk_encode_mock.assert_called_once_with(str(wav), silk_path, tencent=True)
-        assert not wav.exists()
-        os.unlink(silk_path)
+        duration_mock.assert_called_once_with(str(silk))
+        payload = api_post_mock.await_args.kwargs["payload"]
+        voice_item = payload["msg"]["item_list"][0]["voice_item"]
+        assert voice_item["playtime"] == 1260
+        assert voice_item["encode_type"] == 6
+        assert voice_item["sample_rate"] == 24000
+        assert voice_item["bits_per_sample"] == 16

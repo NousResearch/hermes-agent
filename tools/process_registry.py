@@ -501,9 +501,40 @@ class ProcessRegistry:
                 session.process.wait(timeout=5)
             except Exception as e:
                 logger.debug("Process wait timed out or failed: %s", e)
+            self._close_process_pipes(session)
             session.exited = True
             session.exit_code = session.process.returncode
             self._move_to_finished(session)
+
+    def _close_process_pipes(self, session: ProcessSession) -> None:
+        """Close parent-side pipe handles for a local Popen session.
+
+        Deduplicates by file descriptor so that ``stderr=subprocess.STDOUT``
+        (which redirects stderr to stdout at the OS level) only closes the
+        fd once even though ``proc.stderr`` is ``None`` and ``proc.stdout``
+        holds the sole handle.
+        """
+        proc = getattr(session, "process", None)
+        if not proc:
+            return
+
+        seen_fds: set[int] = set()
+        for attr in ("stdin", "stdout", "stderr"):
+            handle = getattr(proc, attr, None)
+            if handle is None:
+                continue
+            try:
+                fd = handle.fileno()
+            except (OSError, ValueError):
+                fd = None
+            if fd is not None and fd in seen_fds:
+                continue
+            if fd is not None:
+                seen_fds.add(fd)
+            try:
+                handle.close()
+            except OSError:
+                pass
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str

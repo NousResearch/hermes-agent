@@ -667,6 +667,7 @@ class MatrixAdapter(BasePlatformAdapter):
                         await asyncio.gather(*tasks)
                 except Exception as exc:
                     logger.warning("Matrix: initial sync event dispatch error: %s", exc)
+                await self._join_pending_invites(sync_data)
             else:
                 logger.warning(
                     "Matrix: initial sync returned unexpected type %s",
@@ -1143,6 +1144,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             await asyncio.gather(*tasks)
                     except Exception as exc:
                         logger.warning("Matrix: sync event dispatch error: %s", exc)
+                    await self._join_pending_invites(sync_data)
 
             except asyncio.CancelledError:
                 return
@@ -1623,13 +1625,35 @@ class MatrixAdapter(BasePlatformAdapter):
             "Matrix: invited to %s — joining",
             room_id,
         )
+        await self._join_room_by_id(room_id)
+
+    async def _join_room_by_id(self, room_id: str) -> bool:
+        """Join a room by ID and refresh local caches on success."""
+        if not room_id:
+            return False
+        if room_id in self._joined_rooms:
+            return True
         try:
             await self._client.join_room(RoomID(room_id))
             self._joined_rooms.add(room_id)
             logger.info("Matrix: joined %s", room_id)
             await self._refresh_dm_cache()
+            return True
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
+            return False
+
+    async def _join_pending_invites(self, sync_data: Dict[str, Any]) -> None:
+        """Join rooms still present in rooms.invite after sync processing."""
+        rooms = sync_data.get("rooms", {}) if isinstance(sync_data, dict) else {}
+        invites = rooms.get("invite", {})
+        if not isinstance(invites, dict):
+            return
+        for room_id in invites:
+            if room_id in self._joined_rooms:
+                continue
+            logger.info("Matrix: reconciling pending invite for %s", room_id)
+            await self._join_room_by_id(str(room_id))
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)

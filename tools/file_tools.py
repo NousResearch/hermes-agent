@@ -358,8 +358,20 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
-        result_dict = result.to_dict()
+        try:
+            result = file_ops.read_file(path, offset, limit)
+            result_dict = result.to_dict()
+        except UnicodeDecodeError as e:
+            # Fallback for Windows (cp1252/ANSI) files that fail strict UTF-8 decoding.
+            # We catch the error, log it softly, and instruct the user to check encoding.
+            logger.debug("UTF-8 decode failed for %s: %s", path, e)
+            return json.dumps({
+                "error": (
+                    f"Encoding Error: Cannot read '{path}' as UTF-8. "
+                    "This is common on Windows with ANSI-saved files. "
+                    "Please save the file with UTF-8 encoding and try again."
+                ),
+            })
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are

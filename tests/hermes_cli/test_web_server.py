@@ -875,6 +875,29 @@ class TestModelContextLength:
         assert result["model"]["provider"] == "custom"
         assert result["model"]["base_url"] == "http://localhost:11434/v1"
 
+    def test_denormalize_skips_named_custom_provider_autodetect(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "corp-model-v1",
+                "provider": "custom:corp-endpoint",
+                "base_url": "https://llm.corp.example/v1",
+            }
+        })
+
+        with patch("hermes_cli.models.detect_provider_for_model") as detect:
+            result = _denormalize_config_from_web({
+                "model": "gpt-4o",
+                "model_context_length": 0,
+            })
+
+        detect.assert_not_called()
+        assert result["model"]["default"] == "gpt-4o"
+        assert result["model"]["provider"] == "custom:corp-endpoint"
+        assert result["model"]["base_url"] == "https://llm.corp.example/v1"
+
 
 class TestModelContextLengthSchema:
     """Tests for model_context_length placement in CONFIG_SCHEMA."""

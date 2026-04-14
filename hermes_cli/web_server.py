@@ -588,7 +588,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 if model_val != disk_default:
                     current_provider = disk_model.get("provider", "") or ""
                     current_base_url = disk_model.get("base_url", "") or ""
-                    is_custom = current_provider in ("custom", "local") or (
+                    is_custom = current_provider in ("custom", "local") or current_provider.startswith("custom:") or (
                         "localhost" in current_base_url or "127.0.0.1" in current_base_url
                     )
                     if not is_custom:

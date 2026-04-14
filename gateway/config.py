@@ -677,6 +677,24 @@ def load_gateway_config() -> GatewayConfig:
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
 
+            # DingTalk settings → env vars (env vars take precedence)
+            dingtalk_cfg = yaml_cfg.get("dingtalk", {})
+            if isinstance(dingtalk_cfg, dict):
+                if "require_mention" in dingtalk_cfg and not os.getenv("DINGTALK_REQUIRE_MENTION"):
+                    os.environ["DINGTALK_REQUIRE_MENTION"] = str(dingtalk_cfg["require_mention"]).lower()
+                if "mention_patterns" in dingtalk_cfg and not os.getenv("DINGTALK_MENTION_PATTERNS"):
+                    os.environ["DINGTALK_MENTION_PATTERNS"] = json.dumps(dingtalk_cfg["mention_patterns"])
+                frc = dingtalk_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("DINGTALK_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["DINGTALK_FREE_RESPONSE_CHATS"] = str(frc)
+                allowed = dingtalk_cfg.get("allowed_users")
+                if allowed is not None and not os.getenv("DINGTALK_ALLOWED_USERS"):
+                    if isinstance(allowed, list):
+                        allowed = ",".join(str(v) for v in allowed)
+                    os.environ["DINGTALK_ALLOWED_USERS"] = str(allowed)
+
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
             if isinstance(matrix_cfg, dict):

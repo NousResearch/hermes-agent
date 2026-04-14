@@ -498,6 +498,12 @@ class SessionStore:
     Uses SQLite (via SessionDB) for session metadata and message transcripts.
     Falls back to legacy JSONL files if SQLite is unavailable.
     """
+
+    # Maximum number of active session entries kept in memory.  When
+    # exceeded, the oldest entries (by ``updated_at``) are evicted.
+    # SQLite records are never deleted by this limit — only the in-memory
+    # index is trimmed.
+    _MAX_ENTRIES = 500
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
                  has_active_processes_fn=None):
@@ -566,6 +572,61 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
+
+    def _delete_session_file(self, session_id: str) -> None:
+        """Delete a single session JSON file from disk."""
+        session_file = self.sessions_dir / f"{session_id}.json"
+        try:
+            if session_file.exists():
+                session_file.unlink()
+        except OSError as e:
+            logger.debug("Could not remove session file %s: %s", session_file, e)
+
+    def cleanup_old_session_files(self, retention_days: int = 7) -> int:
+        """Delete session JSON files older than *retention_days*.
+
+        Only removes the on-disk JSON files; SQLite records are preserved
+        so that ``session_search`` can still find historical sessions.
+
+        Returns the number of files deleted.
+        """
+        cutoff = _now() - timedelta(days=retention_days)
+        deleted = 0
+
+        if not self.sessions_dir.is_dir():
+            return 0
+
+        for fpath in self.sessions_dir.glob("session_*.json"):
+            try:
+                mtime = datetime.fromtimestamp(fpath.stat().st_mtime)
+                if mtime < cutoff:
+                    fpath.unlink()
+                    deleted += 1
+            except OSError:
+                pass
+
+        if deleted:
+            logger.info("Cleaned up %d session files older than %d days", deleted, retention_days)
+        return deleted
+
+    def _prune_entries(self) -> None:
+        """Evict oldest _entries when the in-memory index exceeds _MAX_ENTRIES.
+
+        SQLite records are untouched — only the runtime index is trimmed.
+        Must be called with ``self._lock`` held.
+        """
+        if len(self._entries) <= self._MAX_ENTRIES:
+            return
+
+        # Sort by updated_at (oldest first) and drop the excess
+        sorted_entries = sorted(
+            self._entries.items(), key=lambda kv: kv[1].updated_at
+        )
+        excess = len(self._entries) - self._MAX_ENTRIES
+        for key, _ in sorted_entries[:excess]:
+            del self._entries[key]
+
+        logger.debug("Pruned %d stale entries from session index", excess)
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
@@ -729,6 +790,11 @@ class SessionStore:
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
+            # When auto-resetting, delete the old session JSON file to prevent
+            # unbounded disk growth.  SQLite records are preserved.
+            if was_auto_reset and db_end_session_id:
+                self._delete_session_file(db_end_session_id)
+
             entry = SessionEntry(
                 session_key=session_key,
                 session_id=session_id,
@@ -745,6 +811,7 @@ class SessionStore:
 
             self._entries[session_key] = entry
             self._save()
+            self._prune_entries()
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": source.platform.value,
@@ -835,6 +902,10 @@ class SessionStore:
             old_entry = self._entries[session_key]
             db_end_session_id = old_entry.session_id
 
+            # Delete the old session JSON file to prevent unbounded disk growth.
+            # SQLite records are preserved for historical search.
+            self._delete_session_file(old_entry.session_id)
+
             now = _now()
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
@@ -851,6 +922,7 @@ class SessionStore:
 
             self._entries[session_key] = new_entry
             self._save()
+            self._prune_entries()
             db_create_kwargs = {
                 "session_id": session_id,
                 "source": old_entry.platform.value if old_entry.platform else "unknown",

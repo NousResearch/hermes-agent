@@ -144,6 +144,7 @@ def _discover_tools():
         "tools.image_generation_tool",
         "tools.skills_tool",
         "tools.skill_manager_tool",
+        "tools.skill_candidates_tool",
         "tools.browser_tool",
         "tools.cronjob_tools",
         "tools.rl_training_tool",

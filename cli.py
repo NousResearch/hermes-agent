@@ -2632,6 +2632,14 @@ class HermesCLI:
             return "Installing skill..."
         if cmd_lower.startswith("/skills"):
             return "Processing skills command..."
+        if cmd_lower.startswith("/skill-candidates inspect"):
+            return "Inspecting skill candidate..."
+        if cmd_lower.startswith("/skill-candidates approve"):
+            return "Approving skill candidate..."
+        if cmd_lower.startswith("/skill-candidates reject"):
+            return "Rejecting skill candidate..."
+        if cmd_lower.startswith("/skill-candidates"):
+            return "Loading skill candidates..."
         if cmd_lower == "/reload-mcp":
             return "Reloading MCP servers..."
         if cmd_lower.startswith("/browser"):
@@ -5199,6 +5207,11 @@ class HermesCLI:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_skill_candidates_command(self, cmd: str):
+        """Handle /skill-candidates slash command — delegates to hermes_cli.skill_candidates."""
+        from hermes_cli.skill_candidates import handle_skill_candidates_slash
+        handle_skill_candidates_slash(cmd, ChatConsole())
+
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -5435,6 +5448,9 @@ class HermesCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "skill-candidates":
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._handle_skill_candidates_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":

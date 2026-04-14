@@ -136,6 +136,25 @@ class TestDeregister:
         # bar still in ts1, so check should remain
         assert "ts1" in reg._toolset_checks
 
+    def test_removes_toolset_alias_when_last_tool_is_removed(self):
+        reg = ToolRegistry()
+        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
+        reg.register_toolset_alias("srv", "mcp-srv")
+
+        reg.deregister("foo")
+
+        assert reg.get_toolset_alias_target("srv") is None
+
+    def test_preserves_toolset_alias_while_toolset_still_exists(self):
+        reg = ToolRegistry()
+        reg.register(name="foo", toolset="mcp-srv", schema={}, handler=lambda x: x)
+        reg.register(name="bar", toolset="mcp-srv", schema={}, handler=lambda x: x)
+        reg.register_toolset_alias("srv", "mcp-srv")
+
+        reg.deregister("foo")
+
+        assert reg.get_toolset_alias_target("srv") == "mcp-srv"
+
     def test_noop_for_unknown_tool(self):
         reg = ToolRegistry()
         reg.deregister("nonexistent")  # Should not raise

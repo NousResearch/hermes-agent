@@ -1138,6 +1138,8 @@ class MCPServerTask:
 
     async def shutdown(self):
         """Signal the Task to exit and wait for clean resource teardown."""
+        from tools.registry import registry
+
         self._shutdown_event.set()
         if self._task and not self._task.done():
             try:
@@ -1152,6 +1154,9 @@ class MCPServerTask:
                     await self._task
                 except asyncio.CancelledError:
                     pass
+        for tool_name in list(getattr(self, "_registered_tool_names", [])):
+            registry.deregister(tool_name)
+        self._registered_tool_names = []
         self.session = None
 
 
@@ -1915,6 +1920,9 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             description=schema["description"],
         )
         registered_names.append(util_name)
+
+    if registered_names:
+        registry.register_toolset_alias(name, toolset_name)
 
     return registered_names
 

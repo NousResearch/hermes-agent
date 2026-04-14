@@ -1,76 +1,49 @@
 import { useEffect, useRef, useState, useMemo } from "react";
 import {
-  Bot,
-  ChevronRight,
   Code,
-  Ear,
   Download,
-  FileText,
   FormInput,
-  Globe,
-  Lock,
-  MessageSquare,
-  Mic,
-  Monitor,
-  Package,
-  Palette,
   RotateCcw,
   Save,
-  ScrollText,
   Search,
-  Settings,
-  Settings2,
   Upload,
-  Users,
-  Volume2,
-  Wrench,
   X,
+  ChevronRight,
+  Settings2,
+  FileText,
 } from "lucide-react";
-import type { ComponentType } from "react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
-import { ModelInfoCard } from "@/components/ModelInfoCard";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_ICONS: Record<string, ComponentType<{ className?: string }>> = {
-  general: Settings,
-  agent: Bot,
-  terminal: Monitor,
-  display: Palette,
-  delegation: Users,
-  memory: Package,
-  compression: Package,
-  security: Lock,
-  browser: Globe,
-  voice: Mic,
-  tts: Volume2,
-  stt: Ear,
-  logging: ScrollText,
-  discord: MessageSquare,
-  auxiliary: Wrench,
+const CATEGORY_ICONS: Record<string, string> = {
+  general: "⚙️",
+  agent: "🤖",
+  terminal: "💻",
+  display: "🎨",
+  delegation: "👥",
+  memory: "🧠",
+  compression: "📦",
+  security: "🔒",
+  browser: "🌐",
+  voice: "🎙️",
+  tts: "🔊",
+  stt: "👂",
+  logging: "📋",
+  discord: "💬",
+  auxiliary: "🔧",
 };
-const FallbackIcon = FileText;
-
-function prettyCategoryName(cat: string): string {
-  if (cat === "tts") return "Text-to-Speech";
-  if (cat === "stt") return "Speech-to-Text";
-  return cat.charAt(0).toUpperCase() + cat.slice(1);
-}
-
-function CategoryIcon({ cat, className }: { cat: string; className?: string }) {
-  const Icon = CATEGORY_ICONS[cat] ?? FallbackIcon;
-  return <Icon className={className} />;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
@@ -88,9 +61,15 @@ export default function ConfigPage() {
   const [yamlLoading, setYamlLoading] = useState(false);
   const [yamlSaving, setYamlSaving] = useState(false);
   const [activeCategory, setActiveCategory] = useState<string>("");
-  const [modelInfoRefreshKey, setModelInfoRefreshKey] = useState(0);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useI18n();
+
+  function prettyCategoryName(cat: string): string {
+    const key = cat as keyof typeof t.config.categories;
+    if (t.config.categories[key]) return t.config.categories[key];
+    return cat.charAt(0).toUpperCase() + cat.slice(1);
+  }
 
   useEffect(() => {
     api.getConfig().then(setConfig).catch(() => {});
@@ -118,7 +97,7 @@ export default function ConfigPage() {
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast("Failed to load raw config", "error"))
+        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
         .finally(() => setYamlLoading(false));
     }
   }, [yamlMode]);
@@ -175,10 +154,9 @@ export default function ConfigPage() {
     setSaving(true);
     try {
       await api.saveConfig(config);
-      showToast("Configuration saved", "success");
-      setModelInfoRefreshKey((k) => k + 1);
+      showToast(t.config.configSaved, "success");
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -188,11 +166,10 @@ export default function ConfigPage() {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText);
-      showToast("YAML config saved", "success");
-      setModelInfoRefreshKey((k) => k + 1);
+      showToast(t.config.yamlConfigSaved, "success");
       api.getConfig().then(setConfig).catch(() => {});
     } catch (e) {
-      showToast(`Failed to save YAML: ${e}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -221,9 +198,9 @@ export default function ConfigPage() {
       try {
         const imported = JSON.parse(reader.result as string);
         setConfig(imported);
-        showToast("Config imported — review and save", "success");
+        showToast(t.config.configImported, "success");
       } catch {
-        showToast("Invalid JSON file", "error");
+        showToast(t.config.invalidJson, "error");
       }
     };
     reader.readAsText(file);
@@ -242,7 +219,6 @@ export default function ConfigPage() {
   const renderFields = (fields: [string, Record<string, unknown>][], showCategory = false) => {
     let lastSection = "";
     let lastCat = "";
-    const currentModel = config ? String(getNestedValue(config, "model") ?? "") : "";
     return fields.map(([key, s]) => {
       const parts = key.split(".");
       const section = parts.length > 1 ? parts[0] : "";
@@ -256,7 +232,7 @@ export default function ConfigPage() {
         <div key={key}>
           {showCatBadge && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <CategoryIcon cat={cat} className="h-4 w-4 text-muted-foreground" />
+              <span className="text-base">{CATEGORY_ICONS[cat] || "📄"}</span>
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
@@ -279,12 +255,6 @@ export default function ConfigPage() {
               onChange={(v) => setConfig(setNestedValue(config, key, v))}
             />
           </div>
-          {/* Inject model info card right after the model field */}
-          {key === "model" && currentModel && (
-            <div className="py-1">
-              <ModelInfoCard currentModel={currentModel} refreshKey={modelInfoRefreshKey} />
-            </div>
-          )}
         </div>
       );
     });
@@ -298,19 +268,19 @@ export default function ConfigPage() {
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <Settings2 className="h-4 w-4 text-muted-foreground" />
-          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
-            ~/.hermes/config.yaml
+          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
+            {t.config.configPath}
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title="Export config as JSON" aria-label="Export config">
+          <Button variant="ghost" size="sm" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
             <Download className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title="Import config from JSON" aria-label="Import config">
+          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
             <Upload className="h-3.5 w-3.5" />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          <Button variant="ghost" size="sm" onClick={handleReset} title="Reset to defaults" aria-label="Reset to defaults">
+          <Button variant="ghost" size="sm" onClick={handleReset} title={t.config.resetDefaults} aria-label={t.config.resetDefaults}>
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
 
@@ -325,7 +295,7 @@ export default function ConfigPage() {
             {yamlMode ? (
               <>
                 <FormInput className="h-3.5 w-3.5" />
-                Form
+                {t.common.form}
               </>
             ) : (
               <>
@@ -338,12 +308,12 @@ export default function ConfigPage() {
           {yamlMode ? (
             <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {yamlSaving ? "Saving..." : "Save"}
+              {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
             <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {saving ? "Saving..." : "Save"}
+              {saving ? t.common.saving : t.common.save}
             </Button>
           )}
         </div>
@@ -355,7 +325,7 @@ export default function ConfigPage() {
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Raw YAML Configuration
+              {t.config.rawYaml}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -384,7 +354,7 @@ export default function ConfigPage() {
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
                 <Input
                   className="pl-8 h-8 text-xs"
-                  placeholder="Search..."
+                  placeholder={t.common.search}
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
@@ -411,13 +381,13 @@ export default function ConfigPage() {
                       setSearchQuery("");
                       setActiveCategory(cat);
                     }}
-                    className={`group flex items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
+                    className={`group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
                       isActive
                         ? "bg-primary/10 text-primary font-medium"
                         : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                     }`}
                   >
-                    <CategoryIcon cat={cat} className="h-4 w-4 shrink-0" />
+                    <span className="text-sm leading-none">{CATEGORY_ICONS[cat] || "📄"}</span>
                     <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
                     <span className={`text-[10px] tabular-nums ${isActive ? "text-primary/60" : "text-muted-foreground/50"}`}>
                       {categoryCounts[cat] || 0}
@@ -441,17 +411,17 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Search className="h-4 w-4" />
-                      Search Results
+                      {t.config.searchResults}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} field{searchMatchedFields.length !== 1 ? "s" : ""}
+                      {searchMatchedFields.length} {t.config.fields.replace("{s}", searchMatchedFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {searchMatchedFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">
-                      No fields match "<span className="text-foreground">{searchQuery}</span>"
+                      {t.config.noFieldsMatch.replace("{query}", searchQuery)}
                     </p>
                   ) : (
                     renderFields(searchMatchedFields, true)
@@ -464,11 +434,11 @@ export default function ConfigPage() {
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <CategoryIcon cat={activeCategory} className="h-4 w-4" />
+                      <span className="text-base">{CATEGORY_ICONS[activeCategory] || "📄"}</span>
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} field{activeFields.length !== 1 ? "s" : ""}
+                      {activeFields.length} {t.config.fields.replace("{s}", activeFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>
                 </CardHeader>

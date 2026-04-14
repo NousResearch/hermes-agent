@@ -4036,7 +4036,40 @@ def cmd_update(args):
                                     capture_output=True, text=True, timeout=15,
                                 )
                                 if restart.returncode == 0:
-                                    restarted_services.append(svc_name)
+                                    # Verify the service actually survived the
+                                    # restart.  systemctl restart returns 0 even
+                                    # if the new process crashes immediately.
+                                    import time as _time
+                                    _time.sleep(3)
+                                    verify = subprocess.run(
+                                        scope_cmd + ["is-active", svc_name],
+                                        capture_output=True, text=True, timeout=5,
+                                    )
+                                    if verify.stdout.strip() == "active":
+                                        restarted_services.append(svc_name)
+                                    else:
+                                        # Retry once — transient startup failures
+                                        # (stale module cache, import race) often
+                                        # resolve on the second attempt.
+                                        print(f"  ⚠ {svc_name} died after restart, retrying...")
+                                        retry = subprocess.run(
+                                            scope_cmd + ["restart", svc_name],
+                                            capture_output=True, text=True, timeout=15,
+                                        )
+                                        _time.sleep(3)
+                                        verify2 = subprocess.run(
+                                            scope_cmd + ["is-active", svc_name],
+                                            capture_output=True, text=True, timeout=5,
+                                        )
+                                        if verify2.stdout.strip() == "active":
+                                            restarted_services.append(svc_name)
+                                            print(f"  ✓ {svc_name} recovered on retry")
+                                        else:
+                                            print(
+                                                f"  ✗ {svc_name} failed to stay running after restart.\n"
+                                                f"    Check logs: journalctl --user -u {svc_name} --since '2 min ago'\n"
+                                                f"    Restart manually: systemctl {'--user ' if scope == 'user' else ''}restart {svc_name}"
+                                            )
                                 else:
                                     print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
                     except (FileNotFoundError, subprocess.TimeoutExpired):

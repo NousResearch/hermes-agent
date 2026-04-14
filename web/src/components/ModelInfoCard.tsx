@@ -46,7 +46,7 @@ export function ModelInfoCard({ currentModel, refreshKey = 0 }: ModelInfoCardPro
     );
   }
 
-  if (!info || !info.model) return null;
+  if (!info || !info.model || info.effective_context_length <= 0) return null;
 
   const caps = info.capabilities;
   const hasCaps = caps && Object.keys(caps).length > 0;

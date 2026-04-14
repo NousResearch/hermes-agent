@@ -1403,7 +1403,13 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (ctrl(key, ch, 'c')) {
-      if (busy && sid) {
+      if (hasSelection) {
+        const copied = selection.copySelection()
+
+        if (copied) {
+          sys('copied selection')
+        }
+      } else if (busy && sid) {
         interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
         const partial = (streaming || buf.current).trimStart()
@@ -1423,12 +1429,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           statusTimerRef.current = null
           setStatus('ready')
         }, 1500)
-      } else if (hasSelection) {
-        const copied = selection.copySelection()
-
-        if (copied) {
-          sys('copied selection')
-        }
       } else if (input || inputBuf.length) {
         clearIn()
       } else {

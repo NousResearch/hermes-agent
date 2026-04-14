@@ -631,7 +631,7 @@ class TestWeixinVoiceSending:
     @patch.object(weixin, "_api_post", new_callable=AsyncMock)
     @patch.object(weixin, "_upload_ciphertext", new_callable=AsyncMock)
     @patch.object(weixin, "_get_upload_url", new_callable=AsyncMock)
-    def test_send_file_sets_voice_playtime_from_silk_duration(
+    def test_send_file_sets_voice_metadata_for_silk_payload(
         self,
         get_upload_url_mock,
         upload_ciphertext_mock,
@@ -645,13 +645,11 @@ class TestWeixinVoiceSending:
         upload_ciphertext_mock.return_value = "enc-q"
         api_post_mock.return_value = {"success": True}
 
-        with patch("gateway.platforms.weixin.pilk.get_duration", return_value=1260) as duration_mock:
-            asyncio.run(adapter._send_file("wxid_test123", str(silk), ""))
+        asyncio.run(adapter._send_file("wxid_test123", str(silk), ""))
 
-        duration_mock.assert_called_once_with(str(silk))
         payload = api_post_mock.await_args.kwargs["payload"]
         voice_item = payload["msg"]["item_list"][0]["voice_item"]
-        assert voice_item["playtime"] == 1260
+        assert voice_item.get("playtime", 0) == 0
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
         assert voice_item["bits_per_sample"] == 16

@@ -157,6 +157,15 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _gateway_ps_command() -> list[str]:
+    """Return the ``ps`` invocation used to discover manual gateway processes."""
+    # FreeBSD's ``ps eww`` prefixes the command column with environment
+    # assignments, which breaks the simple substring matching below.
+    # ``ww`` preserves full-width output without injecting env vars.
+    width_flags = "ww" if sys.platform.startswith("freebsd") else "eww"
+    return ["ps", width_flags, "-ax", "-o", "pid=,command="]
+
+
 def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
     """Find PIDs of running gateway processes.
 
@@ -222,7 +231,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                     current_cmd = ""
         else:
             result = subprocess.run(
-                ["ps", "eww", "-ax", "-o", "pid=,command="],
+                _gateway_ps_command(),
                 capture_output=True,
                 text=True,
                 timeout=10,

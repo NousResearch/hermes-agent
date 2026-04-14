@@ -799,6 +799,30 @@ class TestFindGatewayPidsExclude:
 
         assert pids == [100]
 
+    def test_freebsd_uses_ww_and_detects_gateway_process(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli.sys, "platform", "freebsd15")
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["ps", "ww", "-ax", "-o", "pid=,command="]
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout=(
+                    "87727 /home/pader/.hermes/hermes-agent/venv/bin/python3 "
+                    "/home/pader/.local/bin/hermes gateway run -v (python3.11)\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [87727]
+
 
 # ---------------------------------------------------------------------------
 # Gateway mode writes exit code before restart (#8300)

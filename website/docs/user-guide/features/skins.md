@@ -36,6 +36,7 @@ display:
 | `ares` | War-god theme — crimson and bronze | `Ares Agent` | Deep crimson borders with bronze accents. Aggressive spinner verbs ("forging", "marching", "tempering steel"). Custom sword-and-shield ASCII art banner. |
 | `mono` | Monochrome — clean grayscale | `Hermes Agent` | All grays — no color. Borders are `#555555`, text is `#c9d1d9`. Ideal for minimal terminal setups or screen recordings. |
 | `slate` | Cool blue — developer-focused | `Hermes Agent` | Royal blue borders (`#4169e1`), soft blue text. Calm and professional. No custom spinner — uses default faces. |
+| `daylight` | Light theme for bright terminals with dark text and cool blue accents | `Hermes Agent` | Designed for white or bright terminals. Dark slate text with blue borders, pale status surfaces, and a light completion menu that stays readable in light terminal profiles. |
 | `poseidon` | Ocean-god theme — deep blue and seafoam | `Poseidon Agent` | Deep blue to seafoam gradient. Ocean-themed spinners ("charting currents", "sounding the depth"). Trident ASCII art banner. |
 | `sisyphus` | Sisyphean theme — austere grayscale with persistence | `Sisyphus Agent` | Light grays with stark contrast. Boulder-themed spinners ("pushing uphill", "resetting the boulder", "enduring the loop"). Boulder-and-hill ASCII art banner. |
 | `charizard` | Volcanic theme — burnt orange and ember | `Charizard Agent` | Warm burnt orange to ember gradient. Fire-themed spinners ("banking into the draft", "measuring burn"). Dragon-silhouette ASCII art banner. |
@@ -63,6 +64,12 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `response_border` | Border around the agent's response box (ANSI escape) | `#FFD700` |
 | `session_label` | Session label color | `#DAA520` |
 | `session_border` | Session ID dim border color | `#8B8682` |
+| `status_bar_bg` | Background color for the TUI status / usage bar | `#1a1a2e` |
+| `voice_status_bg` | Background color for the voice-mode status badge | `#1a1a2e` |
+| `completion_menu_bg` | Background color for the completion menu list | `#1a1a2e` |
+| `completion_menu_current_bg` | Background color for the active completion row | `#333355` |
+| `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
+| `completion_menu_meta_current_bg` | Background color for the active completion meta column | `#333355` |
 
 ### Spinner (`spinner:`)
 
@@ -129,6 +136,12 @@ colors:
   response_border: "#FFD700"
   session_label: "#DAA520"
   session_border: "#8B8682"
+  status_bar_bg: "#1a1a2e"
+  voice_status_bg: "#1a1a2e"
+  completion_menu_bg: "#1a1a2e"
+  completion_menu_current_bg: "#333355"
+  completion_menu_meta_bg: "#1a1a2e"
+  completion_menu_meta_current_bg: "#333355"
 
 spinner:
   waiting_faces:

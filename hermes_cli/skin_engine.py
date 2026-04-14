@@ -32,6 +32,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       response_border: "#FFD700"         # Response box border (ANSI)
       session_label: "#DAA520"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
+      status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
+      voice_status_bg: "#1a1a2e"        # TUI voice status background
+      completion_menu_bg: "#1a1a2e"      # Completion menu background
+      completion_menu_current_bg: "#333355"  # Active completion row background
+      completion_menu_meta_bg: "#1a1a2e"     # Completion meta column background
+      completion_menu_meta_current_bg: "#333355"  # Active completion meta background
 
     # Spinner: customize the animated spinner during API calls
     spinner:
@@ -87,6 +93,7 @@ BUILT-IN SKINS
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
+- ``daylight`` — Light background theme with dark text and blue accents
 
 USER SKINS
 ==========
@@ -303,6 +310,43 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
+    },
+    "daylight": {
+        "name": "daylight",
+        "description": "Light theme for bright terminals with dark text and cool blue accents",
+        "colors": {
+            "banner_border": "#2563EB",
+            "banner_title": "#0F172A",
+            "banner_accent": "#1D4ED8",
+            "banner_dim": "#475569",
+            "banner_text": "#111827",
+            "ui_accent": "#2563EB",
+            "ui_label": "#0F766E",
+            "ui_ok": "#15803D",
+            "ui_error": "#B91C1C",
+            "ui_warn": "#B45309",
+            "prompt": "#111827",
+            "input_rule": "#93C5FD",
+            "response_border": "#2563EB",
+            "session_label": "#1D4ED8",
+            "session_border": "#64748B",
+            "status_bar_bg": "#E5EDF8",
+            "voice_status_bg": "#E5EDF8",
+            "completion_menu_bg": "#F8FAFC",
+            "completion_menu_current_bg": "#DBEAFE",
+            "completion_menu_meta_bg": "#EEF2FF",
+            "completion_menu_meta_current_bg": "#BFDBFE",
+        },
+        "spinner": {},
+        "branding": {
+            "agent_name": "Hermes Agent",
+            "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
+            "prompt_symbol": "❯ ",
+            "help_header": "[?] Available Commands",
+        },
+        "tool_prefix": "│",
     },
     "poseidon": {
         "name": "poseidon",
@@ -685,6 +729,12 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     label = skin.get_color("ui_label", title)
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
+    status_bg = skin.get_color("status_bar_bg", "#1a1a2e")
+    voice_bg = skin.get_color("voice_status_bg", status_bg)
+    menu_bg = skin.get_color("completion_menu_bg", "#1a1a2e")
+    menu_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
+    menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
+    menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
     return {
         "input-area": prompt,
@@ -692,13 +742,20 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "prompt": prompt,
         "prompt-working": f"{dim} italic",
         "hint": f"{dim} italic",
+        "status-bar": f"bg:{status_bg} {text}",
+        "status-bar-strong": f"bg:{status_bg} {title} bold",
+        "status-bar-dim": f"bg:{status_bg} {dim}",
+        "status-bar-good": f"bg:{status_bg} {skin.get_color('ui_ok', '#8FBC8F')} bold",
+        "status-bar-warn": f"bg:{status_bg} {warn} bold",
+        "status-bar-bad": f"bg:{status_bg} {skin.get_color('banner_accent', warn)} bold",
+        "status-bar-critical": f"bg:{status_bg} {error} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": f"bg:{menu_bg} {text}",
+        "completion-menu.completion": f"bg:{menu_bg} {text}",
+        "completion-menu.completion.current": f"bg:{menu_current_bg} {title}",
+        "completion-menu.meta.completion": f"bg:{menu_meta_bg} {dim}",
+        "completion-menu.meta.completion.current": f"bg:{menu_meta_current_bg} {label}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",
@@ -716,4 +773,6 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "approval-cmd": f"{dim} italic",
         "approval-choice": dim,
         "approval-selected": f"{title} bold",
+        "voice-status": f"bg:{voice_bg} {label}",
+        "voice-status-recording": f"bg:{voice_bg} {error} bold",
     }

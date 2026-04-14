@@ -78,6 +78,20 @@ class TestBuiltinSkins:
         assert skin.name == "slate"
         assert skin.get_color("banner_title") == "#7eb8f6"
 
+    def test_daylight_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("daylight")
+        assert skin.name == "daylight"
+        assert skin.tool_prefix == "│"
+        assert skin.get_color("banner_title") == "#0F172A"
+        assert skin.get_color("status_bar_bg") == "#E5EDF8"
+        assert skin.get_color("voice_status_bg") == "#E5EDF8"
+        assert skin.get_color("completion_menu_bg") == "#F8FAFC"
+        assert skin.get_color("completion_menu_current_bg") == "#DBEAFE"
+        assert skin.get_color("completion_menu_meta_bg") == "#EEF2FF"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#BFDBFE"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -114,6 +128,7 @@ class TestSkinManagement:
         assert "ares" in names
         assert "mono" in names
         assert "slate" in names
+        assert "daylight" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"
@@ -242,6 +257,15 @@ class TestCliBrandingHelpers:
             "completion-menu.completion.current",
             "completion-menu.meta.completion",
             "completion-menu.meta.completion.current",
+            "status-bar",
+            "status-bar-strong",
+            "status-bar-dim",
+            "status-bar-good",
+            "status-bar-warn",
+            "status-bar-bad",
+            "status-bar-critical",
+            "voice-status",
+            "voice-status-recording",
             "clarify-border",
             "clarify-title",
             "clarify-question",
@@ -277,3 +301,9 @@ class TestCliBrandingHelpers:
         assert overrides["clarify-title"] == f"{skin.get_color('banner_title')} bold"
         assert overrides["sudo-prompt"] == f"{skin.get_color('ui_error')} bold"
         assert overrides["approval-title"] == f"{skin.get_color('ui_warn')} bold"
+
+        set_active_skin("daylight")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
+        assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"

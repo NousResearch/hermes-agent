@@ -209,8 +209,8 @@ registry.register(
     handler=_handle_task_list,
     description="List structured tasks",
     emoji="🗂️",
-    mutates_agent_state=True,
-    allowed_in_plan_mode_default=False,
+    mutates_agent_state=False,
+    allowed_in_plan_mode_default=True,
 )
 
 registry.register(
@@ -220,8 +220,8 @@ registry.register(
     handler=_handle_task_get,
     description="Get a structured task",
     emoji="🗂️",
-    mutates_agent_state=True,
-    allowed_in_plan_mode_default=False,
+    mutates_agent_state=False,
+    allowed_in_plan_mode_default=True,
 )
 
 registry.register(

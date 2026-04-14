@@ -27,8 +27,13 @@ _ALLOWED_TRANSITIONS = {
 class TaskManager:
     """Manage structured tasks with JSON persistence."""
 
-    def __init__(self, storage_path: Path | str | None = None):
+    def __init__(
+        self,
+        storage_path: Path | str | None = None,
+        session_id: str = "default",
+    ):
         self.storage_path = Path(storage_path) if storage_path else get_hermes_home() / "state" / "tasks.json"
+        self.session_id = str(session_id or "default")
         self._tasks: dict[str, dict] = {}
         self._load()
 
@@ -67,6 +72,10 @@ class TaskManager:
             raise ValueError("metadata must be a dict")
         return copy.deepcopy(metadata)
 
+    @staticmethod
+    def _task_session_id(task: dict) -> str:
+        return str(task.get("session_id") or "default")
+
     def create(
         self,
         title,
@@ -85,6 +94,7 @@ class TaskManager:
             "title": title_text,
             "status": "pending",
             "kind": self._validate_kind(kind),
+            "session_id": self.session_id,
             "created_at": now,
             "updated_at": now,
             "parent_task_id": str(parent_task_id).strip() if parent_task_id else None,
@@ -129,18 +139,27 @@ class TaskManager:
         self._save()
         return copy.deepcopy(updated)
 
-    def get(self, task_id) -> dict | None:
+    def get(self, task_id, include_all: bool = False) -> dict | None:
         task = self._tasks.get(str(task_id).strip())
         if task is None:
             return None
+        if not include_all and self._task_session_id(task) != self.session_id:
+            return None
         return copy.deepcopy(task)
 
-    def list(self, status: str | None = None, kind: str | None = None) -> list[dict]:
+    def list(
+        self,
+        status: str | None = None,
+        kind: str | None = None,
+        include_all: bool = False,
+    ) -> list[dict]:
         normalized_status = self._validate_status(status) if status is not None else None
         normalized_kind = self._validate_kind(kind) if kind is not None else None
 
         results = []
         for task in self._tasks.values():
+            if not include_all and self._task_session_id(task) != self.session_id:
+                continue
             if normalized_status is not None and task["status"] != normalized_status:
                 continue
             if normalized_kind is not None and task["kind"] != normalized_kind:

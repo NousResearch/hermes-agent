@@ -150,6 +150,7 @@ def _discover_tools():
         "tools.tts_tool",
         "tools.todo_tool",
         "tools.task_tools",
+        "tools.coordinator_tool",
         "tools.memory_tool",
         "tools.session_search_tool",
         "tools.clarify_tool",

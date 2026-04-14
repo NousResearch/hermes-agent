@@ -103,6 +103,11 @@ class TestToolDiscovery:
         from tools.registry import registry
         assert "plan_mode" in registry.get_all_tool_names()
 
+    def test_coordinator_in_registry(self):
+        import model_tools  # noqa: F401 — triggers _discover_tools()
+        from tools.registry import registry
+        assert "coordinate" in registry.get_all_tool_names()
+
 
 # ── Plan Mode State Persistence ──────────────────────────────────────
 

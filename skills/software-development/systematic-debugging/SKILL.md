@@ -1,12 +1,13 @@
 ---
 name: systematic-debugging
-description: Use when encountering any bug, test failure, or unexpected behavior. 4-phase root cause investigation — NO fixes without understanding the problem first.
-version: 1.1.0
-author: Hermes Agent (adapted from obra/superpowers)
+description: Use when encountering any bug, test failure, or unexpected behavior — especially when the user seems frustrated, stuck, or something isn't working despite previous attempts. 4-phase root cause investigation with confidence tagging and explicit backtracking. NO fixes without understanding the problem first.
+version: 1.2.0
+author: Hermes Agent (adapted from obra/superpowers) + Jeff
 license: MIT
 metadata:
   hermes:
-    tags: [debugging, troubleshooting, problem-solving, root-cause, investigation]
+    tags: [debugging, troubleshooting, problem-solving, root-cause, investigation, frustration, backtracking, confidence]
+    activation_signals: [frustrated, stuck, not working, that didn't work, it's broken, still broken, tried that, nothing works, why isn't this working, fix this, this is annoying, i give up, wasting my time]
     related_skills: [test-driven-development, writing-plans, subagent-driven-development]
 ---
 
@@ -20,6 +21,29 @@ Random fixes waste time and create new bugs. Quick patches mask underlying issue
 
 **Violating the letter of this process is violating the spirit of debugging.**
 
+## Frustration Detection — Early Activation
+
+**Activate this skill IMMEDIATELY when you detect user frustration.** Don't wait for the user to explicitly say "I have a bug."
+
+Early warning signs:
+- "that didn't work" or "still broken"
+- "I tried X and Y"
+- "why isn't this working"
+- "this is annoying" or "i give up"
+- "nevermind" or "forget it"
+- User is correcting you repeatedly
+- User sounds impatient or short
+
+**When you detect frustration:** Acknowledge it directly and switch to structured debugging immediately. Do not continue guessing. Do not propose another fix without following the process.
+
+Example:
+```
+User: Still broken. I already tried that.
+Agent: I hear you — let's stop guessing and be systematic.
+  === DEBUG LOG STARTED ===
+  I'll track exactly what we've tried so we don't repeat the same paths.
+```
+
 ## The Iron Law
 
 ```
@@ -27,6 +51,36 @@ NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
 ```
 
 If you haven't completed Phase 1, you cannot propose fixes.
+
+## Confidence Levels (Mandatory)
+
+Every claim about the problem must be tagged with a confidence level. Do not use absolute language when uncertain.
+
+| Level | Tag | Meaning | Language |
+|-------|-----|---------|----------|
+| 🟢 KNOW | `KNOW` | Direct evidence — error message, log output, docs, test failure | "The error says X" |
+| 🟡 BELIEVE | `BELIEVE` | Pattern match from experience, similar issues seen before | "In my experience, X usually causes Y" |
+| 🔴 GUESS | `GUESS` | Plausible but unproven | "X could be causing this" |
+
+**Rules:**
+- Every hypothesis must state its confidence level
+- No "try this" without a confidence tag on the preceding theory
+- A GUESS followed by another GUESS is not allowed — must verify one first
+- Don't say KNOW when you mean BELIEVE or GUESS
+
+## Debugging Log (Running)
+
+Start a log when frustration is detected and maintain it throughout:
+
+```
+=== DEBUG LOG: [brief issue description] ===
+  Attempt 1: [what was tried] → [KNOW/BELIEVE/GUESS it was wrong] because [specific reason]
+  Attempt 2: [what was tried] → [KNOW/BELIEVE/GUESS it was wrong] because [specific reason]
+  Dead end reached: [when 2+ fails without clear diagnostic signal]
+===
+```
+
+Show this log at the start of each response during active debugging.
 
 ## When to Use
 
@@ -44,6 +98,7 @@ Use for ANY technical issue:
 - You've already tried multiple fixes
 - Previous fix didn't work
 - You don't fully understand the issue
+- User sounds frustrated
 
 **Don't skip when:**
 - Issue seems simple (simple bugs have root causes too)
@@ -190,13 +245,22 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 
 ## Phase 3: Hypothesis and Testing
 
-**Scientific method:**
+**Scientific method with confidence tagging:**
 
-### 1. Form a Single Hypothesis
+### 1. Form a Tagged Hypothesis
 
-- State clearly: "I think X is the root cause because Y"
-- Write it down
-- Be specific, not vague
+State clearly with confidence level:
+
+```
+=== HYPOTHESIS CARD ===
+Hypothesis: [What you think is happening]
+Confidence: [KNOW | BELIEVE | GUESS]
+Evidence: [What you actually know, not what you assume]
+Verification: [Specific thing to check — command, log, file content]
+If Confirmed: [What this means for the fix]
+If Ruled Out: [What we know is NOT the problem]
+===
+```
 
 ### 2. Test Minimally
 
@@ -204,11 +268,28 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 - One variable at a time
 - Don't fix multiple things at once
 
-### 3. Verify Before Continuing
+### 3. Backtrack on Failure — Explicit Protocol
 
-- Did it work? → Phase 4
-- Didn't work? → Form NEW hypothesis
-- DON'T add more fixes on top
+When a fix fails, STOP and output before suggesting ANYTHING else:
+
+```
+=== BACKTRACK ===
+Fix Attempt: [what was tried]
+Why I Thought It Would Work: [specific reason]
+Why It Failed: [specific failure mode observed — not just "didn't work"]
+What This Rules Out: [what we now know is NOT the problem]
+What This Doesn't Rule Out: [what could still be true]
+New Confidence: [updated based on what we learned]
+===
+
+What I now know for certain:
+1. [Fact learned from the failure — be specific]
+2. [Fact learned from the failure — be specific]
+
+I will not suggest another fix until I verify [specific thing].
+```
+
+**The backtrack is mandatory after any failed fix attempt.** Do not propose the next fix without the backtrack first.
 
 ### 4. When You Don't Know
 
@@ -311,8 +392,16 @@ If you catch yourself thinking:
 |-------|---------------|------------------|
 | **1. Root Cause** | Read errors, reproduce, check changes, gather evidence, trace data flow | Understand WHAT and WHY |
 | **2. Pattern** | Find working examples, compare, identify differences | Know what's different |
-| **3. Hypothesis** | Form theory, test minimally, one variable at a time | Confirmed or new hypothesis |
+| **3. Hypothesis** | Form theory with confidence tag, test minimally, backtrack explicitly | Confirmed or new hypothesis |
 | **4. Implementation** | Create regression test, fix root cause, verify | Bug resolved, all tests pass |
+
+## Confidence Level Quick Tags
+
+| Tag | Use when |
+|-----|---------|
+| `KNOW` | Error message, stack trace, log output, direct observation |
+| `BELIEVE` | Pattern you've seen before, similar issues, likely cause |
+| `GUESS` | Plausible but unverified, multiple possibilities |
 
 ## Hermes Agent Integration
 

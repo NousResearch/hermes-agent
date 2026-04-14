@@ -279,13 +279,27 @@ File upload routing is automatic based on extension:
 - `.pdf`, `.doc(x)`, `.xls(x)`, `.ppt(x)` → uploaded with their document type
 - Everything else → uploaded as a generic stream file
 
-## Markdown Rendering and Post Fallback
+## Markdown Rendering with Card JSON 2.0
 
-When outbound text contains markdown formatting (headings, bold, lists, code blocks, links, etc.), the adapter automatically sends it as a Feishu **post** message with an embedded `md` tag rather than as plain text. This enables rich rendering in the Feishu client.
+When outbound text contains markdown formatting (headings, bold, lists, code blocks, links, etc.), the adapter automatically sends it as a Feishu **interactive card** using **Card JSON 2.0** structure with the `markdown` element. This enables full rich text rendering in the Feishu client.
 
-If the Feishu API rejects the post payload (e.g., due to unsupported markdown constructs), the adapter automatically falls back to sending as plain text with markdown stripped. This two-stage fallback ensures messages are always delivered.
+**Supported Markdown Features:**
+
+- Headings (H1-H6)
+- **Bold**, *italic*, and ~~strikethrough~~
+- Code blocks with syntax highlighting (supports 50+ languages)
+- Tables (with pagination for long data)
+- Ordered and unordered lists (nested)
+- Blockquotes
+- Links and @mentions
+
+If the Feishu API rejects the card payload, the adapter automatically falls back to sending as plain text with markdown stripped. This two-stage fallback ensures messages are always delivered.
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
+
+**No Configuration Required:**
+
+Markdown rendering is enabled by default — no additional configuration needed.
 
 ## ACK Emoji Reactions
 

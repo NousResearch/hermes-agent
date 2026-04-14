@@ -430,6 +430,30 @@ def _build_markdown_post_payload(content: str) -> str:
     )
 
 
+def _build_rich_text_payload(content: str) -> str:
+    """Build Feishu interactive card message with markdown component (JSON 2.0).
+
+    Using interactive card type with markdown element for full Markdown support.
+    According to Feishu Card JSON 2.0 docs:
+    - markdown component supports: headings, lists, code blocks, tables, blockquotes, etc.
+    - Must use schema: "2.0" for proper rendering
+    - This renders as native rich text in Feishu client
+    """
+    card = {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": content,
+                }
+            ]
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:
@@ -3159,7 +3183,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+            return "interactive", _build_rich_text_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

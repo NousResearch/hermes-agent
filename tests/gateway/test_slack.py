@@ -967,6 +967,157 @@ class TestEditMessageStreamingPipeline:
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
 
     @pytest.mark.asyncio
+    async def test_edit_message_splits_overflow_into_thread_replies(self, adapter):
+        """Long edits should update the root and post overflow chunks in a thread."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "ts1.reply"})
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        raw_content = "\n".join(
+            f"**Line {i:04d}** " + ("x" * 120)
+            for i in range(1200)
+        )
+        formatted = adapter.format_message(raw_content)
+        expected_chunks = adapter.truncate_message(
+            formatted, adapter.MAX_MESSAGE_LENGTH
+        )
+        assert len(expected_chunks) > 1
+
+        result = await adapter.edit_message("C123", "ts1", raw_content)
+
+        assert result.success is True
+        adapter._app.client.chat_update.assert_called_once_with(
+            channel="C123",
+            ts="ts1",
+            text=expected_chunks[0],
+        )
+        assert adapter._app.client.chat_postMessage.await_count == len(expected_chunks) - 1
+        for index, call in enumerate(adapter._app.client.chat_postMessage.await_args_list, start=1):
+            assert call.kwargs == {
+                "channel": "C123",
+                "text": expected_chunks[index],
+                "mrkdwn": True,
+                "thread_ts": "ts1",
+            }
+        adapter._app.client.chat_delete.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edit_message_reuses_and_deletes_prior_overflow_replies(self, adapter):
+        """Repeated edits should reconcile prior overflow replies instead of duplicating them."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[
+                {"ok": True, "ts": "ts1.reply1"},
+                {"ok": True, "ts": "ts1.reply2"},
+            ]
+        )
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        first_content = "\n".join(
+            f"**Line {i:04d}** " + ("x" * 120)
+            for i in range(800)
+        )
+        first_chunks = adapter.truncate_message(
+            adapter.format_message(first_content), adapter.MAX_MESSAGE_LENGTH
+        )
+        assert len(first_chunks) > 2
+
+        result = await adapter.edit_message("C123", "ts1", first_content)
+
+        assert result.success is True
+        assert adapter._edit_overflow_replies["ts1"] == ["ts1.reply1", "ts1.reply2"]
+        assert adapter._app.client.chat_postMessage.await_count == 2
+
+        adapter._app.client.chat_update.reset_mock()
+        adapter._app.client.chat_delete.reset_mock()
+
+        second_content = "\n".join(
+            f"**Line {i:04d}** " + ("y" * 120)
+            for i in range(500)
+        )
+        second_chunks = adapter.truncate_message(
+            adapter.format_message(second_content), adapter.MAX_MESSAGE_LENGTH
+        )
+        assert len(second_chunks) == 2
+
+        result = await adapter.edit_message("C123", "ts1", second_content)
+
+        assert result.success is True
+        assert adapter._app.client.chat_postMessage.await_count == 2
+        assert [call.kwargs for call in adapter._app.client.chat_update.await_args_list] == [
+            {"channel": "C123", "ts": "ts1", "text": second_chunks[0]},
+            {"channel": "C123", "ts": "ts1.reply1", "text": second_chunks[1]},
+        ]
+        adapter._app.client.chat_delete.assert_awaited_once_with(
+            channel="C123",
+            ts="ts1.reply2",
+        )
+        assert adapter._edit_overflow_replies["ts1"] == ["ts1.reply1"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_tracks_root_and_overflow_with_bounded_growth(self, adapter):
+        """Long edits should track root + replies without bypassing the timestamp cap."""
+        adapter._BOT_TS_MAX = 4
+        adapter._bot_message_ts = {"old1", "old2", "old3", "old4"}
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "ts1.reply1"})
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        raw_content = "\n".join(
+            f"**Line {i:04d}** " + ("z" * 120)
+            for i in range(800)
+        )
+
+        result = await adapter.edit_message("C123", "ts1", raw_content)
+
+        assert result.success is True
+        assert len(adapter._bot_message_ts) <= adapter._BOT_TS_MAX
+        assert "ts1" in adapter._bot_message_ts
+        assert "ts1.reply1" in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_edit_message_uses_saved_thread_root_for_overflow_replies(self, adapter):
+        """Overflow replies for edited thread messages should stay in the original thread root."""
+        adapter._edit_thread_roots["ts1.reply"] = "thread.root"
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "ts1.reply.child"})
+        adapter._app.client.chat_delete = AsyncMock(return_value={"ok": True})
+
+        raw_content = "\n".join(
+            f"**Line {i:04d}** " + ("q" * 120)
+            for i in range(800)
+        )
+
+        result = await adapter.edit_message("C123", "ts1.reply", raw_content)
+
+        assert result.success is True
+        for call in adapter._app.client.chat_postMessage.await_args_list:
+            assert call.kwargs["thread_ts"] == "thread.root"
+
+    def test_prune_edit_tracking_maps_bounds_cache(self, adapter):
+        """Edit tracking maps should be pruned to avoid unbounded growth."""
+        adapter._BOT_TS_MAX = 4
+        adapter._edit_thread_roots = {
+            "m1": "t1",
+            "m2": "t2",
+            "m3": "t3",
+            "m4": "t4",
+            "m5": "t5",
+        }
+        adapter._edit_overflow_replies = {
+            "m1": ["r1"],
+            "m2": ["r2"],
+            "m3": ["r3"],
+            "m4": ["r4"],
+            "m5": ["r5"],
+        }
+
+        adapter._prune_edit_tracking_maps()
+
+        assert len(adapter._edit_thread_roots) <= adapter._BOT_TS_MAX // 2
+        assert len(adapter._edit_overflow_replies) <= adapter._BOT_TS_MAX // 2
+
+    @pytest.mark.asyncio
     async def test_edit_message_not_connected(self, adapter):
         """edit_message returns failure when adapter is not connected."""
         adapter._app = None

@@ -100,6 +100,13 @@ class SlackAdapter(BasePlatformAdapter):
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+        # Track the parent thread root for editable bot messages so later edits
+        # can keep any overflow chunks in the correct Slack thread.
+        self._edit_thread_roots: Dict[str, str] = {}
+        # Track overflow replies created when editing long messages so future
+        # edits can update/delete prior overflow chunks instead of appending
+        # stale duplicates.
+        self._edit_overflow_replies: Dict[str, List[str]] = {}
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
@@ -292,14 +299,9 @@ class SlackAdapter(BasePlatformAdapter):
             # replies without requiring @mention.
             sent_ts = last_result.get("ts") if last_result else None
             if sent_ts:
-                self._bot_message_ts.add(sent_ts)
-                # Also register the thread root so replies-to-my-replies work
+                self._track_bot_message_ts(sent_ts, thread_ts)
                 if thread_ts:
-                    self._bot_message_ts.add(thread_ts)
-                if len(self._bot_message_ts) > self._BOT_TS_MAX:
-                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
-                    for old_ts in list(self._bot_message_ts)[:excess]:
-                        self._bot_message_ts.discard(old_ts)
+                    self._remember_edit_thread_root(sent_ts, thread_ts)
 
             return SendResult(
                 success=True,
@@ -322,11 +324,53 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
+            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            client = self._get_client(chat_id)
+            thread_root_ts = self._edit_thread_roots.get(message_id, message_id)
+            prior_reply_ts = list(self._edit_overflow_replies.get(message_id, []))
+            current_reply_ts: List[str] = []
+
+            await client.chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=formatted,
+                text=chunks[0],
             )
+            self._track_bot_message_ts(message_id)
+
+            shared_count = min(len(prior_reply_ts), len(chunks) - 1)
+
+            for index in range(shared_count):
+                reply_ts = prior_reply_ts[index]
+                await client.chat_update(
+                    channel=chat_id,
+                    ts=reply_ts,
+                    text=chunks[index + 1],
+                )
+                current_reply_ts.append(reply_ts)
+                self._track_bot_message_ts(reply_ts, message_id)
+
+            for chunk in chunks[1 + shared_count:]:
+                result = await client.chat_postMessage(
+                    channel=chat_id,
+                    text=chunk,
+                    mrkdwn=True,
+                    thread_ts=thread_root_ts,
+                )
+                sent_ts = result.get("ts") if result else None
+                if sent_ts:
+                    current_reply_ts.append(sent_ts)
+                    self._track_bot_message_ts(sent_ts, thread_root_ts)
+
+            for reply_ts in prior_reply_ts[shared_count:]:
+                await client.chat_delete(channel=chat_id, ts=reply_ts)
+                self._bot_message_ts.discard(reply_ts)
+
+            if current_reply_ts:
+                self._edit_overflow_replies[message_id] = current_reply_ts
+                self._prune_edit_tracking_maps()
+            else:
+                self._edit_overflow_replies.pop(message_id, None)
+
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error(
@@ -337,6 +381,43 @@ class SlackAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    def _track_bot_message_ts(
+        self,
+        sent_ts: Optional[str],
+        thread_ts: Optional[str] = None,
+    ) -> None:
+        """Track bot-authored message timestamps with bounded growth."""
+        if not sent_ts:
+            return
+
+        self._bot_message_ts.add(sent_ts)
+        if thread_ts:
+            self._bot_message_ts.add(thread_ts)
+        if len(self._bot_message_ts) > self._BOT_TS_MAX:
+            excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+            for old_ts in list(self._bot_message_ts)[:excess]:
+                self._bot_message_ts.discard(old_ts)
+
+    def _remember_edit_thread_root(self, message_ts: str, thread_root_ts: str) -> None:
+        """Remember the root thread_ts for an editable Slack message."""
+        self._edit_thread_roots[message_ts] = thread_root_ts
+        self._prune_edit_tracking_maps()
+
+    def _prune_edit_tracking_maps(self) -> None:
+        """Keep edit-tracking caches bounded on long-lived gateway processes."""
+        max_entries = self._BOT_TS_MAX
+        if len(self._edit_thread_roots) > max_entries:
+            excess = len(self._edit_thread_roots) - max_entries // 2
+            for old_ts in list(self._edit_thread_roots)[:excess]:
+                self._edit_thread_roots.pop(old_ts, None)
+                self._edit_overflow_replies.pop(old_ts, None)
+
+        if len(self._edit_overflow_replies) > max_entries:
+            excess = len(self._edit_overflow_replies) - max_entries // 2
+            for old_ts in list(self._edit_overflow_replies)[:excess]:
+                self._edit_overflow_replies.pop(old_ts, None)
+                self._edit_thread_roots.pop(old_ts, None)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.

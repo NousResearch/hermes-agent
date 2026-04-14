@@ -91,6 +91,12 @@ const nextDetailsMode = (m: DetailsMode): DetailsMode =>
 
 const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
 
+const shortCwd = (cwd: string, max = 28) => {
+  const home = process.env.HOME
+  const path = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+  return path.length <= max ? path : `…${path.slice(-(max - 1))}`
+}
+
 const imageTokenMeta = (info: { height?: number; token_estimate?: number; width?: number } | null | undefined) => {
   const dims = info?.width && info?.height ? `${info.width}x${info.height}` : ''
 
@@ -207,6 +213,7 @@ function fmtDuration(ms: number) {
 }
 
 function StatusRule({
+  cwdLabel,
   cols,
   status,
   statusColor,
@@ -217,6 +224,7 @@ function StatusRule({
   voiceLabel,
   t
 }: {
+  cwdLabel: string
   cols: number
   status: string
   statusColor: string
@@ -239,37 +247,30 @@ function StatusRule({
   const pctLabel = pct != null ? `${pct}%` : ''
   const bar = usage.context_max ? ctxBar(pct) : ''
 
-  const segs = [
-    status,
-    model,
-    ctxLabel,
-    bar ? `[${bar}]` : '',
-    pctLabel,
-    durationLabel || '',
-    voiceLabel || '',
-    bgCount > 0 ? `${bgCount} bg` : ''
-  ].filter(Boolean)
-
-  const inner = segs.join(' │ ')
-  const pad = Math.max(0, cols - inner.length - 5)
+  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
   return (
-    <Text color={t.color.bronze}>
-      {'─ '}
-      <Text color={statusColor}>{status}</Text>
-      <Text color={t.color.dim}> │ {model}</Text>
-      {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
-      {bar ? (
-        <Text color={t.color.dim}>
-          {' │ '}
-          <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
+    <Box>
+      <Box flexShrink={1} width={leftWidth}>
+        <Text color={t.color.bronze} wrap="truncate-end">
+          {'─ '}
+          <Text color={statusColor}>{status}</Text>
+          <Text color={t.color.dim}> │ {model}</Text>
+          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
+          {bar ? (
+            <Text color={t.color.dim}>
+              {' │ '}
+              <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
+            </Text>
+          ) : null}
+          {durationLabel ? <Text color={t.color.dim}> │ {durationLabel}</Text> : null}
+          {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
         </Text>
-      ) : null}
-      {durationLabel ? <Text color={t.color.dim}> │ {durationLabel}</Text> : null}
-      {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
-      {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
-      {' ' + '─'.repeat(pad)}
-    </Text>
+      </Box>
+      <Text color={t.color.bronze}> ─ </Text>
+      <Text color={t.color.label}>{cwdLabel}</Text>
+    </Box>
   )
 }
 
@@ -2821,6 +2822,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const durationLabel = sid ? fmtDuration(clockNow - sessionStartedAt) : ''
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+  const cwdLabel = shortCwd(info?.cwd || process.env.HERMES_CWD || process.cwd())
 
   const hasReasoning = Boolean(reasoning.trim())
   const showProgressArea =
@@ -2998,6 +3000,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             <StatusRule
               bgCount={bgTasks.size}
               cols={cols}
+              cwdLabel={cwdLabel}
               durationLabel={durationLabel}
               model={info?.model?.split('/').pop() ?? ''}
               status={status}

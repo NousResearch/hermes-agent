@@ -6,6 +6,8 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 import asyncio
 import json
 import os
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -254,6 +256,77 @@ class TestToolHandler:
             assert "connection lost" in result["error"]
         finally:
             _servers.pop("test_srv", None)
+
+    def test_interrupted_call_returns_interrupted_error(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            def _interrupting_run(coro, timeout=30):
+                coro.close()
+                raise InterruptedError("User sent a new message")
+            with patch(
+                "tools.mcp_tool._run_on_mcp_loop",
+                side_effect=_interrupting_run,
+            ):
+                result = json.loads(handler({}))
+            assert result == {"error": "MCP call interrupted: user sent a new message"}
+        finally:
+            _servers.pop("test_srv", None)
+
+
+class TestRunOnMCPLoopInterrupts:
+    def test_interrupt_cancels_waiting_mcp_call(self):
+        import tools.mcp_tool as mcp_mod
+        from tools.interrupt import set_interrupt
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        cancelled = threading.Event()
+
+        async def _slow_call():
+            try:
+                await asyncio.sleep(5)
+                return "done"
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        old_loop = mcp_mod._mcp_loop
+        old_thread = mcp_mod._mcp_thread
+        mcp_mod._mcp_loop = loop
+        mcp_mod._mcp_thread = thread
+
+        waiter_tid = threading.current_thread().ident
+
+        def _interrupt_soon():
+            time.sleep(0.2)
+            set_interrupt(True, waiter_tid)
+
+        interrupter = threading.Thread(target=_interrupt_soon, daemon=True)
+        interrupter.start()
+
+        try:
+            with pytest.raises(InterruptedError, match="User sent a new message"):
+                mcp_mod._run_on_mcp_loop(_slow_call(), timeout=2)
+
+            deadline = time.time() + 2
+            while time.time() < deadline and not cancelled.is_set():
+                time.sleep(0.05)
+            assert cancelled.is_set()
+        finally:
+            set_interrupt(False, waiter_tid)
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+            mcp_mod._mcp_thread = old_thread
 
 
 # ---------------------------------------------------------------------------
@@ -1008,8 +1081,12 @@ class TestReconnection:
         asyncio.run(_test())
 
     def test_no_reconnect_on_initial_failure(self):
-        """First connection failure reports error immediately, no retry."""
-        from tools.mcp_tool import MCPServerTask
+        """First connection failure retries up to _MAX_INITIAL_CONNECT_RETRIES times.
+
+        Before the MCP resilience fix, initial failures gave up immediately.
+        Now they retry with backoff to handle transient DNS/network blips.
+        """
+        from tools.mcp_tool import MCPServerTask, _MAX_INITIAL_CONNECT_RETRIES
 
         run_count = 0
         target_server = None
@@ -1032,8 +1109,8 @@ class TestReconnection:
                  patch("asyncio.sleep", new_callable=AsyncMock):
                 await server.run({"command": "test"})
 
-            # Only one attempt, no retry on initial failure
-            assert run_count == 1
+            # Now retries up to _MAX_INITIAL_CONNECT_RETRIES before giving up
+            assert run_count == _MAX_INITIAL_CONNECT_RETRIES + 1
             assert server._error is not None
             assert "cannot connect" in str(server._error)
 

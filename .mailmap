@@ -1,0 +1,107 @@
+# .mailmap — canonical author mapping for git shortlog / git log / GitHub
+# Format: Canonical Name <canonical@email> <commit@email>
+# See: https://git-scm.com/docs/gitmailmap
+#
+# This maps commit emails to GitHub noreply addresses so that:
+# 1. `git shortlog -sn` shows deduplicated contributor counts
+# 2. GitHub's contributor graph can attribute commits correctly
+# 3. Contributors with personal/work emails get proper credit
+#
+# When adding entries: use the contributor's GitHub noreply email as canonical
+# so GitHub can link commits to their profile.
+
+# === Teknium (multiple emails) ===
+Teknium <127238744+teknium1@users.noreply.github.com> <teknium1@gmail.com>
+Teknium <127238744+teknium1@users.noreply.github.com> <teknium@nousresearch.com>
+
+# === Contributors — personal/work emails mapped to GitHub noreply ===
+# Format: Canonical Name <GH-noreply> <commit-email>
+
+# Verified via GH API email search
+luyao618 <364939526@qq.com> <364939526@qq.com>
+ethernet8023 <arilotter@gmail.com> <arilotter@gmail.com>
+nicoloboschi <boschi1997@gmail.com> <boschi1997@gmail.com>
+cherifya <chef.ya@gmail.com> <chef.ya@gmail.com>
+BongSuCHOI <chlqhdtn98@gmail.com> <chlqhdtn98@gmail.com>
+dsocolobsky <dsocolobsky@gmail.com> <dsocolobsky@gmail.com>
+pefontana <fontana.pedro93@gmail.com> <fontana.pedro93@gmail.com>
+Helmi <frank@helmschrott.de> <frank@helmschrott.de>
+hata1234 <hata1234@gmail.com> <hata1234@gmail.com>
+
+# Verified via PR investigation / salvage PR bodies
+DeployFaith <agents@kylefrench.dev> <agents@kylefrench.dev>
+flobo3 <floptopbot33@gmail.com> <floptopbot33@gmail.com>
+gaixianggeng <gaixg94@gmail.com> <gaixg94@gmail.com>
+KUSH42 <xush@xush.org> <xush@xush.org>
+konsisumer <der@konsi.org> <der@konsi.org>
+WorldInnovationsDepartment <vorvul.danylo@gmail.com> <vorvul.danylo@gmail.com>
+m0n5t3r <iacobs@m0n5t3r.info> <iacobs@m0n5t3r.info>
+sprmn24 <oncuevtv@gmail.com> <oncuevtv@gmail.com>
+fancydirty <fancydirty@gmail.com> <fancydirty@gmail.com>
+fxfitz <francis.x.fitzpatrick@gmail.com> <francis.x.fitzpatrick@gmail.com>
+limars874 <limars874@gmail.com> <limars874@gmail.com>
+AaronWong1999 <aaronwong1999@icloud.com> <aaronwong1999@icloud.com>
+dippwho <dipp.who@gmail.com> <dipp.who@gmail.com>
+duerzy <duerzy@gmail.com> <duerzy@gmail.com>
+geoffwellman <geoff.wellman@gmail.com> <geoff.wellman@gmail.com>
+hcshen0111 <shenhaocheng19990111@gmail.com> <shenhaocheng19990111@gmail.com>
+jamesarch <han.shan@live.cn> <han.shan@live.cn>
+stephenschoettler <stephenschoettler@gmail.com> <stephenschoettler@gmail.com>
+Tranquil-Flow <tranquil_flow@protonmail.com> <tranquil_flow@protonmail.com>
+Dusk1e <yusufalweshdemir@gmail.com> <yusufalweshdemir@gmail.com>
+Awsh1 <ysfalweshcan@gmail.com> <ysfalweshcan@gmail.com>
+WAXLYY <ysfwaxlycan@gmail.com> <ysfwaxlycan@gmail.com>
+donrhmexe <don.rhm@gmail.com> <don.rhm@gmail.com>
+hqhq1025 <1506751656@qq.com> <1506751656@qq.com>
+BlackishGreen33 <s5460703@gmail.com> <s5460703@gmail.com>
+tomqiaozc <zqiao@microsoft.com> <zqiao@microsoft.com>
+MagicRay1217 <mingjwan@microsoft.com> <mingjwan@microsoft.com>
+aaronagent <1115117931@qq.com> <1115117931@qq.com>
+YoungYang963 <young@YoungdeMacBook-Pro.local> <young@YoungdeMacBook-Pro.local>
+LongOddCode <haolong@microsoft.com> <haolong@microsoft.com>
+Cafexss <coffeemjj@gmail.com> <coffeemjj@gmail.com>
+Cygra <sjtuwbh@gmail.com> <sjtuwbh@gmail.com>
+DomGrieco <dgrieco@redhat.com> <dgrieco@redhat.com>
+
+# Duplicate email mapping (same person, multiple emails)
+Sertug17 <104278804+Sertug17@users.noreply.github.com> <srhtsrht17@gmail.com>
+yyovil <birdiegyal@gmail.com> <tanishq231003@gmail.com>
+DomGrieco <dgrieco@redhat.com> <dgrieco@redhat.com>
+dsocolobsky <dsocolobsky@gmail.com> <dylan.socolobsky@lambdaclass.com>
+olafthiele <programming@olafthiele.com> <olafthiele@gmail.com>
+
+# Verified via git display name matching GH contributor username
+cokemine <aptx4561@gmail.com> <aptx4561@gmail.com>
+dalianmao000 <dalianmao0107@gmail.com> <dalianmao0107@gmail.com>
+emozilla <emozilla@nousresearch.com> <emozilla@nousresearch.com>
+jjovalle99 <juan.ovalle@mistral.ai> <juan.ovalle@mistral.ai>
+kagura-agent <kagura.chen28@gmail.com> <kagura.chen28@gmail.com>
+spniyant <niyant@spicefi.xyz> <niyant@spicefi.xyz>
+olafthiele <programming@olafthiele.com> <programming@olafthiele.com>
+r266-tech <r2668940489@gmail.com> <r2668940489@gmail.com>
+xingkongliang <tianliangjay@gmail.com> <tianliangjay@gmail.com>
+win4r <win4r@outlook.com> <win4r@outlook.com>
+zhouboli <zhouboli@gmail.com> <zhouboli@gmail.com>
+yongtenglei <yongtenglei@gmail.com> <yongtenglei@gmail.com>
+
+# Nous Research team
+benbarclay <ben@nousresearch.com> <ben@nousresearch.com>
+jquesnelle <jonny@nousresearch.com> <jonny@nousresearch.com>
+
+# GH contributor list verified
+spideystreet <dhicham.pro@gmail.com> <dhicham.pro@gmail.com>
+dorukardahan <dorukardahan@hotmail.com> <dorukardahan@hotmail.com>
+MustafaKara7 <karamusti912@gmail.com> <karamusti912@gmail.com>
+Hmbown <hmbown@gmail.com> <hmbown@gmail.com>
+kamil-gwozdz <kamil@gwozdz.me> <kamil@gwozdz.me>
+kira-ariaki <kira@ariaki.me> <kira@ariaki.me>
+knopki <knopki@duck.com> <knopki@duck.com>
+Unayung <unayung@gmail.com> <unayung@gmail.com>
+SeeYangZhi <yangzhi.see@gmail.com> <yangzhi.see@gmail.com>
+Julientalbot <julien.talbot@ergonomia.re> <julien.talbot@ergonomia.re>
+lesterli <lisicheng168@gmail.com> <lisicheng168@gmail.com>
+JiayuuWang <jiayuw794@gmail.com> <jiayuw794@gmail.com>
+tesseracttars-creator <tesseracttars@gmail.com> <tesseracttars@gmail.com>
+xinbenlv <zzn+pa@zzn.im> <zzn+pa@zzn.im>
+SaulJWu <saul.jj.wu@gmail.com> <saul.jj.wu@gmail.com>
+angelos <angelos@oikos.lan.home.malaiwah.com> <angelos@oikos.lan.home.malaiwah.com>

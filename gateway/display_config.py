@@ -101,6 +101,21 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
 
+def get_platform_defaults(platform_key: str) -> dict[str, Any]:
+    """Return a copy of the built-in defaults for a platform."""
+    defaults = _PLATFORM_DEFAULTS.get(platform_key, {})
+    merged = {**_GLOBAL_DEFAULTS, **defaults}
+    return dict(merged)
+
+
+def get_effective_display(user_config: dict, platform_key: str) -> dict[str, Any]:
+    """Return the resolved display config for a platform."""
+    return {
+        key: resolve_display_setting(user_config, platform_key, key)
+        for key in OVERRIDEABLE_KEYS
+    }
+
+
 def resolve_display_setting(
     user_config: dict,
     platform_key: str,

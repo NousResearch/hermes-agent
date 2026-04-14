@@ -373,6 +373,7 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
             platform=Platform.TELEGRAM,
             chat_id="-1001",
             chat_type="group",
+            user_id="tg-user-1",
             thread_id="17585",
         ),
         message_id="1",

@@ -621,7 +621,10 @@ class GatewayRunner:
         
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
+        _pairing_dir = _hermes_home / "pairing"
+        if not _pairing_dir.exists():
+            _pairing_dir = _hermes_home / "platforms" / "pairing"
+        self.pairing_store = PairingStore(_pairing_dir)
         
         # Event hook system
         from gateway.hooks import HookRegistry
@@ -5809,10 +5812,10 @@ class GatewayRunner:
         # --- cycle mode (per-platform) ----------------------------------------
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
-            "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
-            "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
+            "off": "⚙️ /verbose: tool progress **OFF** — no tool activity shown.",
+            "new": "⚙️ /verbose: tool progress **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
+            "all": "⚙️ /verbose: tool progress **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
+            "verbose": "⚙️ /verbose: tool progress **VERBOSE** — every tool call with full arguments.",
         }
 
         # Read current effective mode for this platform via the resolver

@@ -103,3 +103,45 @@ async def test_handle_model_command_lists_custom_provider_models_dict_keys(tmp_p
     assert "My Local LLM" in result
     assert "qwen3.5:27b" in result
     assert "deepseek-r1:70b" in result
+
+
+@pytest.mark.asyncio
+async def test_handle_model_command_lists_user_provider_models_dict_keys(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "model": {
+                    "default": "model-a",
+                    "provider": "my-provider",
+                    "base_url": "http://example.com/v1",
+                },
+                "providers": {
+                    "my-provider": {
+                        "name": "My Provider",
+                        "api": "http://example.com/v1",
+                        "default_model": "model-a",
+                        "models": {
+                            "model-a": {"context_length": 32768},
+                            "model-b": {"context_length": 65536},
+                        },
+                    }
+                },
+                "custom_providers": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    result = await _make_runner()._handle_model_command(_make_event())
+
+    assert result is not None
+    assert "My Provider" in result
+    assert "model-a" in result
+    assert "model-b" in result

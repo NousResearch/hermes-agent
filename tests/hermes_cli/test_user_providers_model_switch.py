@@ -116,6 +116,39 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+def test_list_authenticated_providers_includes_models_dict_keys_from_user_providers(monkeypatch):
+    """User-defined providers should also expose model IDs from models dict keys."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "my-provider": {
+            "name": "My Provider",
+            "api": "http://example.com/v1",
+            "default_model": "model-a",
+            "models": {
+                "model-a": {"context_length": 32768},
+                "model-b": {"context_length": 65536},
+            },
+        }
+    }
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+
+    user_prov = next(
+        (p for p in providers if p.get("is_user_defined") and p["slug"] == "my-provider"),
+        None
+    )
+
+    assert user_prov is not None
+    assert user_prov["total_models"] == 2
+    assert user_prov["models"] == ["model-a", "model-b"]
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

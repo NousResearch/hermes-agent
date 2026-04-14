@@ -18,7 +18,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
 | **Public/private channels** | Hermes responds when you `@mention` it. Without a mention, Hermes ignores the message. |
-| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. Thread context stays isolated from the parent channel. |
+| **Threads** | If `MATTERMOST_REPLY_MODE=thread`, Hermes replies in a thread under your message. With `MATTERMOST_THREAD_STICKY=true` (default), the first `@mention` claims that thread for the agent and later replies in the same thread do not need another `@mention` until a different agent is explicitly mentioned. |
 | **Shared channels with multiple users** | By default, Hermes isolates session history per user inside the channel. Two people talking in the same channel do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -153,6 +153,10 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 # Optional: respond without @mention (default: true = require mention)
 # MATTERMOST_REQUIRE_MENTION=false
 
+# Optional: once a thread is claimed by @mention, later replies in that
+# thread do not need another @mention (default: true)
+# MATTERMOST_THREAD_STICKY=true
+
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
 ```
@@ -219,11 +223,23 @@ By default, the bot only responds in channels when `@mentioned`. You can change 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MATTERMOST_REQUIRE_MENTION` | `true` | Set to `false` to respond to all messages in channels (DMs always work). |
+| `MATTERMOST_THREAD_STICKY` | `true` | When a user first `@mentions` Hermes in a thread, that thread becomes sticky for the agent. Later replies in the same thread do not need another `@mention` unless a different agent is explicitly mentioned. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | _(none)_ | Comma-separated channel IDs where the bot responds without `@mention`, even when require_mention is true. |
 
 To find a channel ID in Mattermost: open the channel, click the channel name header, and look for the ID in the URL or channel details.
 
 When the bot is `@mentioned`, the mention is automatically stripped from the message before processing.
+
+### Cross-agent threads
+
+If you `@mention` a different Mattermost Hermes agent inside an already-active thread:
+
+- the newly mentioned agent opens its own session scoped to that thread
+- it reads the thread's visible public transcript before responding
+- it becomes the thread's active agent for later unmentioned replies
+
+Only the public thread transcript is shared. Hermes does **not** copy another
+agent's hidden session memory, tool output, or internal reasoning state.
 
 ## Troubleshooting
 

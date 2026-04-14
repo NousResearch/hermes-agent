@@ -85,6 +85,18 @@ class TestMattermostConfigLoading:
         assert config.platforms[Platform.MATTERMOST].extra.get("url") == ""
 
 
+class TestMattermostThreadStateStore:
+    def test_persists_active_agent_across_instances(self, tmp_path):
+        from gateway.platforms.mattermost_thread_state import MattermostThreadStateStore
+
+        with patch("gateway.platforms.mattermost_thread_state.get_default_hermes_root", return_value=tmp_path):
+            first = MattermostThreadStateStore()
+            first.claim_thread("chan", "thread", "chief")
+
+            second = MattermostThreadStateStore()
+            assert second.get_active_agent("chan", "thread") == "chief"
+
+
 # ---------------------------------------------------------------------------
 # Adapter format / truncate
 # ---------------------------------------------------------------------------
@@ -99,6 +111,17 @@ def _make_adapter():
     )
     adapter = MattermostAdapter(config)
     return adapter
+
+
+class _FakeThreadState:
+    def __init__(self, active=None):
+        self.active = active or {}
+
+    def get_active_agent(self, channel_id, thread_id):
+        return self.active.get((channel_id, thread_id))
+
+    def claim_thread(self, channel_id, thread_id, active_agent_profile):
+        self.active[(channel_id, thread_id)] = active_agent_profile
 
 
 class TestMattermostFormatMessage:
@@ -240,6 +263,81 @@ class TestMattermostSend:
         self.adapter._session.post = MagicMock(return_value=mock_resp)
 
         result = await self.adapter.send("channel_1", "Reply!", reply_to="root_post")
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_thread_metadata_sets_root_id_when_reply_mode_thread(self):
+        """Existing Mattermost thread replies should honor metadata.thread_id in thread mode."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post790"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="current_post",
+            metadata={"thread_id": "thread_root"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "thread_root"
+
+    @pytest.mark.asyncio
+    async def test_send_thread_metadata_takes_precedence_over_reply_to(self):
+        """The upstream thread root must win over the current event message id."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post791"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="current_post",
+            metadata={"thread_id": "thread_root"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "thread_root"
+
+    @pytest.mark.asyncio
+    async def test_send_thread_metadata_is_ignored_when_reply_mode_off(self):
+        """Off mode should keep sending flat messages even if thread metadata exists."""
+        self.adapter._reply_mode = "off"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post792"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="current_post",
+            metadata={"thread_id": "thread_root"},
+        )
 
         assert result.success is True
         payload = self.adapter._session.post.call_args[1]["json"]
@@ -424,13 +522,15 @@ class TestMattermostMentionBehavior:
         self.adapter._bot_username = "hermes-bot"
         self.adapter.handle_message = AsyncMock()
 
-    def _make_event(self, message, channel_type="O", channel_id="chan_456"):
+    def _make_event(self, message, channel_type="O", channel_id="chan_456", root_id=None):
         post_data = {
             "id": "post_mention",
             "user_id": "user_123",
             "channel_id": channel_id,
             "message": message,
         }
+        if root_id:
+            post_data["root_id"] = root_id
         return {
             "event": "posted",
             "data": {
@@ -492,6 +592,98 @@ class TestMattermostMentionBehavior:
             msg = self.adapter.handle_message.call_args[0][0]
             assert "@hermes-bot" not in msg.text
             assert "2+2" in msg.text
+
+    @pytest.mark.asyncio
+    async def test_thread_sticky_continues_without_repeat_mention(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "true"}, clear=False):
+            self.adapter._thread_state = _FakeThreadState({("chan_456", "root_1"): "chief"})
+            self.adapter._profile_name = "chief"
+            await self.adapter._handle_ws_event(self._make_event("follow up", root_id="root_1"))
+            assert self.adapter.handle_message.called
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert msg.source.thread_id == "root_1"
+            assert msg.text == "follow up"
+
+    @pytest.mark.asyncio
+    async def test_thread_sticky_does_not_leak_to_other_agent(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "true"}, clear=False):
+            self.adapter._thread_state = _FakeThreadState({("chan_456", "root_1"): "chief"})
+            self.adapter._profile_name = "reviewer"
+            await self.adapter._handle_ws_event(self._make_event("follow up", root_id="root_1"))
+            assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_thread_strict_mode_still_requires_mention(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "false"}, clear=False):
+            self.adapter._thread_state = _FakeThreadState({("chan_456", "root_1"): "chief"})
+            self.adapter._profile_name = "chief"
+            await self.adapter._handle_ws_event(self._make_event("follow up", root_id="root_1"))
+            assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_explicit_thread_mention_claims_thread_for_agent(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "true"}, clear=False):
+            store = _FakeThreadState()
+            self.adapter._thread_state = store
+            self.adapter._profile_name = "chief"
+            self.adapter._api_get = AsyncMock(return_value={})
+            self.adapter._bot_username = "chief"
+            await self.adapter._handle_ws_event(
+                self._make_event("@chief please review", root_id="root_1")
+            )
+            assert self.adapter.handle_message.called
+            assert store.get_active_agent("chan_456", "root_1") == "chief"
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert "@chief" not in msg.text
+            assert "please review" in msg.text
+
+    @pytest.mark.asyncio
+    async def test_cross_agent_thread_entry_loads_public_transcript_and_switches_active_agent(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "true"}, clear=False):
+            store = _FakeThreadState({("chan_456", "root_1"): "chief"})
+            self.adapter._thread_state = store
+            self.adapter._profile_name = "reviewer"
+            self.adapter._bot_username = "reviewer"
+            self.adapter._session = object()
+            self.adapter._api_get = AsyncMock(return_value={
+                "order": ["root_1", "p2", "post_mention"],
+                "posts": {
+                    "root_1": {"id": "root_1", "user_id": "alice", "message": "project idea"},
+                    "p2": {"id": "p2", "user_id": "chief_bot", "message": "initial plan"},
+                    "post_mention": {"id": "post_mention", "user_id": "user_123", "message": "@reviewer please review"},
+                },
+            })
+            await self.adapter._handle_ws_event(
+                self._make_event("@reviewer please review", root_id="root_1")
+            )
+            assert self.adapter.handle_message.called
+            assert store.get_active_agent("chan_456", "root_1") == "reviewer"
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert "[Mattermost thread context]" in msg.text
+            assert "project idea" in msg.text
+            assert "initial plan" in msg.text
+            assert "please review" in msg.text
+            assert msg.text.count("please review") == 1
+
+    @pytest.mark.asyncio
+    async def test_remention_same_agent_in_thread_keeps_same_session_without_reloading_transcript(self):
+        with patch.dict(os.environ, {"MATTERMOST_THREAD_STICKY": "true"}, clear=False):
+            store = _FakeThreadState({("chan_456", "root_1"): "chief"})
+            self.adapter._thread_state = store
+            self.adapter._profile_name = "chief"
+            self.adapter._bot_username = "chief"
+            self.adapter._api_get = AsyncMock(return_value={
+                "order": ["root_1"],
+                "posts": {"root_1": {"id": "root_1", "user_id": "alice", "message": "hello"}},
+            })
+            await self.adapter._handle_ws_event(
+                self._make_event("@chief continue", root_id="root_1")
+            )
+            assert self.adapter.handle_message.called
+            self.adapter._api_get.assert_not_called()
+            msg = self.adapter.handle_message.call_args[0][0]
+            assert "[Mattermost thread context]" not in msg.text
+            assert "continue" in msg.text
 
 
 # ---------------------------------------------------------------------------

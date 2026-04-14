@@ -23,12 +23,14 @@ from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
+from gateway.platforms.mattermost_thread_state import MattermostThreadStateStore
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
+from hermes_cli.profiles import get_active_profile_name
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +97,117 @@ class MattermostAdapter(BasePlatformAdapter):
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
         ).lower()
+        self._profile_name = get_active_profile_name()
+        self._thread_state = MattermostThreadStateStore()
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+    def _mention_patterns(self) -> List[str]:
+        return [
+            f"@{self._bot_username}",
+            f"@{self._bot_user_id}",
+        ]
+
+    def _is_thread_sticky_enabled(self) -> bool:
+        return (
+            os.getenv("MATTERMOST_THREAD_STICKY", "true").lower()
+            not in ("false", "0", "no")
+        )
+
+    def _has_mention(self, message_text: str) -> bool:
+        if not message_text:
+            return False
+        return any(
+            pattern.lower() in message_text.lower()
+            for pattern in self._mention_patterns()
+        )
+
+    def _strip_mentions(self, message_text: str) -> str:
+        cleaned = message_text
+        for pattern in self._mention_patterns():
+            cleaned = re.sub(
+                re.escape(pattern), "", cleaned, flags=re.IGNORECASE
+            ).strip()
+        return cleaned
+
+    def _thread_is_claimed_for_me(self, channel_id: str, thread_id: Optional[str]) -> bool:
+        if not self._is_thread_sticky_enabled() or not thread_id:
+            return False
+        active_agent = self._thread_state.get_active_agent(channel_id, thread_id)
+        return active_agent == self._profile_name
+
+    async def _build_thread_transcript(self, thread_root_id: str, exclude_post_id: Optional[str] = None) -> str:
+        if self._session is None:
+            return ""
+        thread_data = await self._api_get(f"posts/{thread_root_id}/thread")
+        if not thread_data:
+            return ""
+
+        posts = thread_data.get("posts") or {}
+        order = thread_data.get("order") or []
+        if not posts:
+            return ""
+
+        if not order:
+            order = [
+                post_id
+                for post_id, _ in sorted(
+                    posts.items(),
+                    key=lambda item: item[1].get("create_at", 0),
+                )
+            ]
+
+        visible_lines: List[str] = []
+        total_chars = 0
+        truncated = False
+        max_posts = 50
+        max_chars = 24000
+
+        if len(order) > max_posts:
+            truncated = True
+
+        for post_id in order[-max_posts:]:
+            if exclude_post_id and post_id == exclude_post_id:
+                continue
+            post = posts.get(post_id) or {}
+            if post.get("type"):
+                continue
+            message = (post.get("message") or "").strip()
+            if not message:
+                continue
+            author = post.get("user_id") or "unknown"
+            line = f"{author}: {message}"
+            total_chars += len(line)
+            visible_lines.append(line)
+
+        while visible_lines and total_chars > max_chars:
+            removed = visible_lines.pop(0)
+            total_chars -= len(removed)
+            truncated = True
+
+        if not visible_lines:
+            return ""
+
+        if truncated:
+            visible_lines.insert(0, "[Earlier thread messages truncated]")
+
+        return "\n".join(visible_lines)
+
+    def _prepend_thread_context(self, transcript: str, message_text: str) -> str:
+        if not transcript:
+            return message_text
+        if not message_text:
+            return (
+                "[Mattermost thread context]\n"
+                f"{transcript}"
+            )
+        return (
+            "[Mattermost thread context]\n"
+            f"{transcript}\n\n"
+            "[New message]\n"
+            f"{message_text}"
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -262,6 +372,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
+        thread_root_id = metadata.get("thread_id") if metadata else None
 
         last_id = None
         for chunk in chunks:
@@ -269,9 +380,15 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            # Thread support:
+            # - MATTERMOST_REPLY_MODE=thread enables threaded replies.
+            # - When enabled, metadata["thread_id"] is authoritative for an
+            #   existing Mattermost thread.
+            if self._reply_mode == "thread":
+                if thread_root_id:
+                    payload["root_id"] = thread_root_id
+                elif reply_to:
+                    payload["root_id"] = reply_to
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -326,7 +443,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Download an image and upload it as a file attachment."""
         return await self._send_url_as_file(
-            chat_id, image_url, caption, reply_to, "image"
+            chat_id, image_url, caption, reply_to, "image", metadata
         )
 
     async def send_image_file(
@@ -339,7 +456,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local image file."""
         return await self._send_local_file(
-            chat_id, image_path, caption, reply_to
+            chat_id, image_path, caption, reply_to, metadata=metadata
         )
 
     async def send_document(
@@ -353,7 +470,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a local file as a document."""
         return await self._send_local_file(
-            chat_id, file_path, caption, reply_to, file_name
+            chat_id, file_path, caption, reply_to, file_name, metadata
         )
 
     async def send_voice(
@@ -366,7 +483,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload an audio file."""
         return await self._send_local_file(
-            chat_id, audio_path, caption, reply_to
+            chat_id, audio_path, caption, reply_to, metadata=metadata
         )
 
     async def send_video(
@@ -379,7 +496,7 @@ class MattermostAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Upload a video file."""
         return await self._send_local_file(
-            chat_id, video_path, caption, reply_to
+            chat_id, video_path, caption, reply_to, metadata=metadata
         )
 
     def format_message(self, content: str) -> str:
@@ -403,6 +520,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         kind: str = "file",
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
         from tools.url_safety import is_safe_url
@@ -452,8 +570,12 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+        thread_root_id = metadata.get("thread_id") if metadata else None
+        if self._reply_mode == "thread":
+            if thread_root_id:
+                payload["root_id"] = thread_root_id
+            elif reply_to:
+                payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -467,6 +589,7 @@ class MattermostAdapter(BasePlatformAdapter):
         caption: Optional[str],
         reply_to: Optional[str],
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file and attach it to a post."""
         import mimetypes
@@ -490,8 +613,12 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+        thread_root_id = metadata.get("thread_id") if metadata else None
+        if self._reply_mode == "thread":
+            if thread_root_id:
+                payload["root_id"] = thread_root_id
+            elif reply_to:
+                payload["root_id"] = reply_to
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -612,6 +739,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
+        thread_id = post.get("root_id") or None
 
         # Mention-gating for non-DM channels.
         # Config (env vars):
@@ -626,16 +754,10 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
-            mention_patterns = [
-                f"@{self._bot_username}",
-                f"@{self._bot_user_id}",
-            ]
-            has_mention = any(
-                pattern.lower() in message_text.lower()
-                for pattern in mention_patterns
-            )
+            has_mention = self._has_mention(message_text)
+            thread_claimed_for_me = self._thread_is_claimed_for_me(channel_id, thread_id)
 
-            if require_mention and not is_free_channel and not has_mention:
+            if require_mention and not is_free_channel and not has_mention and not thread_claimed_for_me:
                 logger.debug(
                     "Mattermost: skipping non-DM message without @mention (channel=%s)",
                     channel_id,
@@ -644,17 +766,20 @@ class MattermostAdapter(BasePlatformAdapter):
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
-                for pattern in mention_patterns:
-                    message_text = re.sub(
-                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
-                    ).strip()
+                message_text = self._strip_mentions(message_text)
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        if channel_type_raw != "D" and thread_id and self._is_thread_sticky_enabled():
+            active_agent = self._thread_state.get_active_agent(channel_id, thread_id)
+            entering_new_agent = has_mention and active_agent != self._profile_name
+            if has_mention:
+                self._thread_state.claim_thread(channel_id, thread_id, self._profile_name)
+            if entering_new_agent:
+                transcript = await self._build_thread_transcript(thread_id, exclude_post_id=post_id)
+                message_text = self._prepend_thread_context(transcript, message_text)
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -729,5 +854,3 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
-

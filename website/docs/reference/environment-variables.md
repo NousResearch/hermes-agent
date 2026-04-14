@@ -31,9 +31,6 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `GLM_BASE_URL` | Override z.ai base URL (default: `https://api.z.ai/api/paas/v4`) |
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |
-| `KIMI_CN_API_KEY` | Kimi / Moonshot China API key ([moonshot.cn](https://platform.moonshot.cn)) |
-| `ARCEEAI_API_KEY` | Arcee AI API key ([chat.arcee.ai](https://chat.arcee.ai/)) |
-| `ARCEE_BASE_URL` | Override Arcee base URL (default: `https://api.arcee.ai/api/v1`) |
 | `MINIMAX_API_KEY` | MiniMax API key — global endpoint ([minimax.io](https://www.minimax.io)) |
 | `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
 | `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
@@ -70,7 +67,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `arcee`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
+| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`, `xiaomi`, `alibaba`, `deepseek`, `opencode-zen`, `opencode-go`, `ai-gateway` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -262,20 +259,12 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
 | `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
 | `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
-| `QQ_APP_ID` | QQ Bot App ID from [q.qq.com](https://q.qq.com) |
-| `QQ_CLIENT_SECRET` | QQ Bot App Secret from [q.qq.com](https://q.qq.com) |
-| `QQ_STT_API_KEY` | API key for external STT fallback provider (optional, used when QQ built-in ASR returns no text) |
-| `QQ_STT_BASE_URL` | Base URL for external STT provider (optional) |
-| `QQ_STT_MODEL` | Model name for external STT provider (optional) |
-| `QQ_ALLOWED_USERS` | Comma-separated QQ user openIDs allowed to message the bot |
-| `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ group IDs for group @-message access |
-| `QQ_ALLOW_ALL_USERS` | Allow all users (`true`/`false`, overrides `QQ_ALLOWED_USERS`) |
-| `QQ_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |
 | `MATTERMOST_HOME_CHANNEL` | Channel ID for proactive message delivery (cron, notifications) |
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
+| `MATTERMOST_THREAD_STICKY` | Keep a thread bound to the most recently `@mentioned` agent so later replies in that thread do not need another `@mention` (default: `true`). Set to `false` to require `@mention` on every thread turn. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
@@ -340,19 +329,16 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 
 ## Context Compression (config.yaml only)
 
-Context compression is configured exclusively through `config.yaml` — there are no environment variables for it. Threshold settings live in the `compression:` block, while the summarization model/provider lives under `auxiliary.compression:`.
+Context compression is configured exclusively through the `compression` section in `config.yaml` — there are no environment variables for it.
 
 ```yaml
 compression:
   enabled: true
   threshold: 0.50
-  target_ratio: 0.20         # fraction of threshold to preserve as recent tail
-  protect_last_n: 20         # minimum recent messages to keep uncompressed
+  summary_model: ""                            # empty = use main configured model
+  summary_provider: auto
+  summary_base_url: null  # Custom OpenAI-compatible endpoint for summaries
 ```
-
-:::info Legacy migration
-Older configs with `compression.summary_model`, `compression.summary_provider`, and `compression.summary_base_url` are automatically migrated to `auxiliary.compression.*` on first load.
-:::
 
 ## Auxiliary Task Overrides
 

@@ -3620,7 +3620,13 @@ class HermesCLI:
             chosen_id = self._pick_session_interactive(sessions)
             if chosen_id:
                 self._handle_resume_command(f"/resume {chosen_id}")
-        except Exception:
+        except Exception as e:
+            # Log the actual error so we know why the picker failed
+            import traceback
+            _err_lines = traceback.format_exc().strip().split("\n")
+            _err_msg = _err_lines[-1] if _err_lines else str(e)
+            _cprint(f"  {e.__class__.__name__}: {_err_msg}")
+            _cprint(f"  Picker failed, falling back to pager.")
             # Fallback: less pager
             import shutil as _shutil, subprocess as _subprocess
             from hermes_cli.main import _relative_time

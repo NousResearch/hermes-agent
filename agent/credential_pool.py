@@ -1152,6 +1152,30 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                 },
             )
 
+    elif provider == "copilot":
+        # Copilot tokens are resolved dynamically via `gh auth token` or
+        # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
+        # the auth store or credential pool, so we resolve them here.
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token
+            token, source = resolve_copilot_token()
+            if token:
+                source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
+                active_sources.add(source_name)
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    source_name,
+                    {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_API_KEY,
+                        "access_token": token,
+                        "label": source,
+                    },
+                )
+        except Exception as exc:
+            logger.debug("Copilot token seed failed: %s", exc)
+
     elif provider == "openai-codex":
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None

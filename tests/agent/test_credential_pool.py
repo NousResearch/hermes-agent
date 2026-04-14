@@ -1071,3 +1071,40 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
 
     # Should NOT have seeded the claude_code entry
     assert pool.entries() == []
+
+
+def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
+    """Copilot credentials from `gh auth token` should be seeded into the pool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "gh_cli"
+    assert entries[0].access_token == "gho_fake_token_abc123"
+
+
+def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
+    """Copilot pool should be empty when resolve_copilot_token() returns nothing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("", ""),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []

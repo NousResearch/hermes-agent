@@ -372,6 +372,24 @@ class TestBackup:
         assert [n for n in names if n == "state.db" or n.endswith("/state.db")] == ["state.db"]
 
 
+    def test_clamps_pre_1980_file_timestamps(self, tmp_path, monkeypatch):
+        """Pre-1980 source data survives backup with a ZIP-representable timestamp."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        old_file = hermes_home / "logs" / "ancient.log"
+        old_file.write_text("very old log\n")
+        os.utime(old_file, (1, 1))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        assert run_backup(Namespace(output=str(out_zip))) is True
+        with zipfile.ZipFile(out_zip) as zf:
+            assert zf.getinfo("logs/ancient.log").date_time == (1980, 1, 1, 0, 0, 0)
+            assert zf.read("logs/ancient.log") == b"very old log\n"
+
 # ---------------------------------------------------------------------------
 # _validate_backup_zip tests
 # ---------------------------------------------------------------------------

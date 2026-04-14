@@ -646,7 +646,7 @@ def _run_backup_locked(args, hermes_root: Path) -> bool:
         logger.info("backup phase=archive status=progress completed=%d total=%d", i, file_count)
 
     with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
         total_bytes = _write_zip_entries(
             zf, files_to_add, out_path, on_progress=_progress, track_bytes=True,
             on_db_failure=lambda rel: errors.append(f"{rel}: SQLite safe copy failed"),
@@ -1556,7 +1556,7 @@ def _write_full_zip_backup_locked(out_path: Path, hermes_root: Path) -> Optional
     archive_started = time.monotonic()
     try:
         with _atomic_output_path(out_path) as archive_path, zipfile.ZipFile(
-                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+                archive_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6, strict_timestamps=False) as zf:
             _write_zip_entries(
                 zf, files_to_add, out_path, on_db_failure=_db_failure, track_bytes=False,
                 on_error=lambda rel, exc: logger.debug("Skipping %s in zip backup: %s", rel, exc),

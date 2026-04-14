@@ -400,7 +400,12 @@ async def _send_message(
     text: str,
     context_token: Optional[str],
     client_id: str,
-) -> None:
+) -> Dict[str, Any]:
+    """Send a text message via iLink sendmessage API.
+
+    Returns the raw API response dict (may contain error codes like
+    ``errcode: -14`` for session expiry that the caller can inspect).
+    """
     if not text or not text.strip():
         raise ValueError("_send_message: text must not be empty")
     message: Dict[str, Any] = {
@@ -413,7 +418,7 @@ async def _send_message(
     }
     if context_token:
         message["context_token"] = context_token
-    await _api_post(
+    return await _api_post(
         session,
         base_url=base_url,
         endpoint=EP_SEND_MESSAGE,
@@ -1452,11 +1457,18 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token: Optional[str],
         client_id: str,
     ) -> None:
-        """Send a single text chunk with per-chunk retry and backoff."""
+        """Send a single text chunk with per-chunk retry and backoff.
+
+        On session-expired errors (errcode -14), automatically retries
+        *without* ``context_token`` — iLink accepts tokenless sends as a
+        degraded fallback, which keeps cron-initiated push messages working
+        even when no user message has refreshed the session recently.
+        """
         last_error: Optional[Exception] = None
+        retried_without_token = False
         for attempt in range(self._send_chunk_retries + 1):
             try:
-                await _send_message(
+                resp = await _send_message(
                     self._send_session,
                     base_url=self._base_url,
                     token=self._token,
@@ -1465,6 +1477,31 @@ class WeixinAdapter(BasePlatformAdapter):
                     context_token=context_token,
                     client_id=client_id,
                 )
+                # Check iLink response for session-expired error
+                if resp and isinstance(resp, dict):
+                    ret = resp.get("ret")
+                    errcode = resp.get("errcode")
+                    if (ret is not None and ret not in (0,)) or (errcode is not None and errcode not in (0,)):
+                        is_session_expired = (
+                            ret == SESSION_EXPIRED_ERRCODE
+                            or errcode == SESSION_EXPIRED_ERRCODE
+                        )
+                        # Session expired — strip token and retry once
+                        if is_session_expired and not retried_without_token and context_token:
+                            retried_without_token = True
+                            context_token = None
+                            self._token_store._cache.pop(
+                                self._token_store._key(self._account_id, chat_id), None
+                            )
+                            logger.warning(
+                                "[%s] session expired for %s; retrying without context_token",
+                                self.name, _safe_id(chat_id),
+                            )
+                            continue
+                        errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
+                        raise RuntimeError(
+                            f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
+                        )
                 return
             except Exception as exc:
                 last_error = exc

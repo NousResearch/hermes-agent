@@ -805,6 +805,76 @@ class TestModelContextLength:
         assert isinstance(result["model"], dict)
         assert result["model"]["context_length"] == 32000
 
+    def test_denormalize_syncs_provider_when_model_changes(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            }
+        })
+
+        with patch(
+            "hermes_cli.models.detect_provider_for_model",
+            return_value=("minimax-cn", "MiniMax-M2.7"),
+        ):
+            result = _denormalize_config_from_web({
+                "model": "MiniMax-M2.7",
+                "model_context_length": 0,
+            })
+
+        assert result["model"]["default"] == "MiniMax-M2.7"
+        assert result["model"]["provider"] == "minimax-cn"
+        assert "base_url" not in result["model"]
+
+    def test_denormalize_does_not_redetect_when_model_unchanged(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+            }
+        })
+
+        with patch("hermes_cli.models.detect_provider_for_model") as detect:
+            result = _denormalize_config_from_web({
+                "model": "anthropic/claude-opus-4.6",
+                "model_context_length": 0,
+            })
+
+        detect.assert_not_called()
+        assert result["model"]["provider"] == "openrouter"
+        assert result["model"]["base_url"] == "https://openrouter.ai/api/v1"
+
+    def test_denormalize_skips_custom_provider_autodetect(self):
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "local-model",
+                "provider": "custom",
+                "base_url": "http://localhost:11434/v1",
+            }
+        })
+
+        with patch("hermes_cli.models.detect_provider_for_model") as detect:
+            result = _denormalize_config_from_web({
+                "model": "different-local-model",
+                "model_context_length": 0,
+            })
+
+        detect.assert_not_called()
+        assert result["model"]["default"] == "different-local-model"
+        assert result["model"]["provider"] == "custom"
+        assert result["model"]["base_url"] == "http://localhost:11434/v1"
+
 
 class TestModelContextLengthSchema:
     """Tests for model_context_length placement in CONFIG_SCHEMA."""

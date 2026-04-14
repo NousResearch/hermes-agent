@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { formatTokenCount } from "@/lib/format";
 import {
   BarChart3,
   Cpu,
@@ -18,11 +19,7 @@ const PERIODS = [
 
 const CHART_HEIGHT_PX = 160;
 
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
+const formatTokens = formatTokenCount;
 
 function formatDate(day: string): string {
   try {

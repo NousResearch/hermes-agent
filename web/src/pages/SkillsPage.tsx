@@ -162,7 +162,7 @@ export default function SkillsPage() {
         return a[0].localeCompare(b[0]);
       })
       .map(([key, count]) => ({ key, name: prettyCategory(key === "__none__" ? null : key, t.common.general), count }));
-  }, [skills]);
+  }, [skills, t]);
 
   const enabledCount = skills.filter((s) => s.enabled).length;
 
@@ -292,7 +292,7 @@ export default function SkillsPage() {
                     {t.skills.title}
                   </CardTitle>
                   <Badge variant="secondary" className="text-[10px]">
-                    {searchMatchedSkills.length} result{searchMatchedSkills.length !== 1 ? "s" : ""}
+                    {t.skills.resultCount.replace("{count}", String(searchMatchedSkills.length)).replace("{s}", searchMatchedSkills.length !== 1 ? "s" : "")}
                   </Badge>
                 </div>
               </CardHeader>
@@ -405,7 +405,7 @@ export default function SkillsPage() {
                               )}
                               {ts.tools.length === 0 && (
                                 <span className="text-[10px] text-muted-foreground/60">
-                                  {ts.enabled ? `${ts.name} toolset` : t.skills.disabledForCli}
+                                  {ts.enabled ? t.skills.toolsetLabel.replace("{name}", ts.name) : t.skills.disabledForCli}
                                 </span>
                               )}
                             </div>

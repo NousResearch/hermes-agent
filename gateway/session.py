@@ -573,9 +573,19 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        session_key = data["session_key"]
+        session_id = data["session_id"]
+
+        # Validate path-sensitive fields to prevent directory traversal attacks
+        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
+            if _val and (".." in str(_val) or str(_val).startswith(("/", "\\"))):
+                raise ValueError(
+                    f"Invalid {_field}: potential directory traversal detected"
+                )
+
         return cls(
-            session_key=data["session_key"],
-            session_id=data["session_id"],
+            session_key=session_key,
+            session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
             origin=origin,

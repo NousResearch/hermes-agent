@@ -86,22 +86,6 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=None)
 
-# Wipe stale global MiniMax key only when the user is configured for the
-# China endpoint. A shell-exported MINIMAX_API_KEY would otherwise shadow
-# MINIMAX_CN_API_KEY when the gateway inherits the interactive environment.
-import os as _os
-_config_path = _hermes_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        _model = _cfg.get("model", {}) or {}
-        if _model.get("provider") == "minimax-cn" and _os.environ.get("MINIMAX_API_KEY"):
-            _os.environ.pop("MINIMAX_API_KEY")
-    except Exception:
-        pass
-
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
 _config_path = _hermes_home / 'config.yaml'

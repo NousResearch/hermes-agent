@@ -957,6 +957,20 @@ def test_minimax_cn_v1_url_uses_chat_completions(monkeypatch):
     assert resolved["base_url"] == "https://api.minimaxi.com/v1"
 
 
+def test_minimax_cn_prefers_cn_key_even_when_global_key_exists(monkeypatch):
+    """MiniMax-CN runtime auth must not be affected by the global MiniMax key."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax-cn")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-global-key")
+    monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-minimax-cn-key")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax-cn")
+
+    assert resolved["provider"] == "minimax-cn"
+    assert resolved["api_key"] == "test-minimax-cn-key"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+
+
 def test_minimax_explicit_api_mode_respected(monkeypatch):
     """Explicit api_mode config should override MiniMax auto-detection."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")

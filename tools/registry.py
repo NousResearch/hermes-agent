@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Central registry for all hermes-agent tools.
 
 Each tool file calls ``registry.register()`` at module level to declare its

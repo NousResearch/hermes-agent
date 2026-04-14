@@ -2414,6 +2414,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_message_read_event(data)
         elif event_type == "im.chat.member.bot.added_v1":
             self._on_bot_added_to_chat(data)
+        elif event_type == "im.chat.access_event.bot_p2p_chat_entered_v1":
+            self._on_bot_added_to_chat(data)
         elif event_type == "im.chat.member.bot.deleted_v1":
             self._on_bot_removed_from_chat(data)
         elif event_type in ("im.message.reaction.created_v1", "im.message.reaction.deleted_v1"):

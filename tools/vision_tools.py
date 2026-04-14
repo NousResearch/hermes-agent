@@ -787,3 +787,99 @@ registry.register(
     is_async=True,
     emoji="👁️",
 )
+
+
+# ---------------------------------------------------------------------------
+# mmx Vision — MiniMax VLM via mmx CLI (primary vision tool)
+# ---------------------------------------------------------------------------
+
+def check_mmx_vision_requirements() -> bool:
+    """Check if mmx CLI is available."""
+    import shutil
+    return shutil.which("mmx") is not None
+
+
+MMX_VISION_SCHEMA = {
+    "name": "mmx_vision_describe",
+    "description": "Analyze images using MiniMax VLM via the mmx CLI tool. This is the primary vision tool — use this instead of vision_analyze whenever possible. Supports local file paths and HTTP/HTTPS image URLs. Returns a detailed description of the image content.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "image_url": {
+                "type": "string",
+                "description": "Image URL (http/https) or local file path to analyze."
+            },
+            "question": {
+                "type": "string",
+                "description": "Your specific question or request about the image to resolve. The AI will automatically provide a complete image description AND answer your specific question."
+            }
+        },
+        "required": ["image_url", "question"]
+    }
+}
+
+
+def _handle_mmx_vision(args: Dict[str, Any], **kw: Any) -> str:
+    """Handle mmx_vision_describe by calling the mmx CLI."""
+    image_url = args.get("image_url", "")
+    question = args.get("question", "Describe this image in detail.")
+
+    if not image_url:
+        return tool_error("image_url is required")
+
+    import json, subprocess, shlex
+
+    cmd = [
+        "mmx", "vision", "describe",
+        "--image", image_url,
+        "--prompt", question,
+        "--output", "json",
+        "--quiet",
+        "--non-interactive",
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return tool_error("mmx vision describe timed out after 120s")
+    except FileNotFoundError:
+        return tool_error("mmx CLI not found — install with: npm install -g mmx-cli")
+
+    if result.returncode != 0:
+        return tool_error("mmx vision failed: %s" % result.stderr.strip())
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return tool_error("mmx returned invalid JSON: %s" % result.stdout[:200])
+
+    status = data.get("base_resp", {})
+    if status.get("status_code") != 0:
+        return tool_error("mmx vision API error: %s" % status.get("status_msg", "unknown"))
+
+    content = data.get("content", "")
+    if not content:
+        return tool_error("mmx returned empty description")
+
+    return json.dumps({
+        "description": content,
+        "image_url": image_url,
+        "question": question,
+        "model": "MiniMax-VLM-via-mmx",
+    })
+
+
+registry.register(
+    name="mmx_vision_describe",
+    toolset="vision",
+    schema=MMX_VISION_SCHEMA,
+    handler=_handle_mmx_vision,
+    check_fn=check_mmx_vision_requirements,
+    is_async=False,
+    emoji="🖼️",
+)

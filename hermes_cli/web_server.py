@@ -587,16 +587,21 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                 resolved_model = model_val  # default: keep raw input
                 if model_val != disk_default:
                     current_provider = disk_model.get("provider", "") or ""
-                    try:
-                        from hermes_cli.models import detect_provider_for_model
+                    current_base_url = disk_model.get("base_url", "") or ""
+                    is_custom = current_provider in ("custom", "local") or (
+                        "localhost" in current_base_url or "127.0.0.1" in current_base_url
+                    )
+                    if not is_custom:
+                        try:
+                            from hermes_cli.models import detect_provider_for_model
 
-                        detected = detect_provider_for_model(model_val, current_provider)
-                        if detected is not None:
-                            new_provider, resolved_model = detected
-                            disk_model["provider"] = new_provider
-                        # else: resolved_model stays as raw model_val
-                    except Exception:
-                        pass  # auto-detection failed — keep existing provider
+                            detected = detect_provider_for_model(model_val, current_provider)
+                            if detected is not None:
+                                new_provider, resolved_model = detected
+                                disk_model["provider"] = new_provider
+                            # else: resolved_model stays as raw model_val
+                        except Exception:
+                            pass  # auto-detection failed — keep existing provider
 
                 # Update default to the resolved model name (may differ from
                 # the raw input if detect_provider_for_model rewrote it).

@@ -258,3 +258,27 @@ class TestAgentCacheLifecycle:
         cb3 = lambda *a: None
         agent.tool_progress_callback = cb3
         assert agent.tool_progress_callback is cb3
+
+    def test_cached_agent_activity_is_refreshed_for_new_turn(self):
+        """Reused cached agents must not carry stale idle timestamps into a fresh turn."""
+        from run_agent import AIAgent
+
+        runner = _make_runner()
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4", api_key="test",
+            base_url="https://openrouter.ai/api/v1", provider="openrouter",
+            max_iterations=5, quiet_mode=True, skip_context_files=True,
+            skip_memory=True,
+        )
+
+        # Simulate a poisoned cached agent from a prior turn.
+        agent._last_activity_ts = 1.0
+        agent._last_activity_desc = "API call #39 completed"
+        agent._current_tool = "terminal"
+
+        runner._refresh_cached_agent_activity(agent)
+
+        summary = agent.get_activity_summary()
+        assert summary["seconds_since_activity"] < 5
+        assert summary["last_activity_desc"] == "starting conversation turn"
+        assert summary["current_tool"] is None

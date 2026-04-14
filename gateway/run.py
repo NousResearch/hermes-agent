@@ -7403,6 +7403,40 @@ class GatewayRunner:
             with _lock:
                 self._agent_cache.pop(session_key, None)
 
+    @staticmethod
+    def _refresh_cached_agent_activity(agent: Any) -> None:
+        """Reset per-turn activity state on a reused cached agent.
+
+        Cache reuse is desirable for prompt/session stability, but the prior
+        turn's heartbeat must not leak into the next turn. Refresh activity
+        before the watchdog can inspect the reused agent.
+        """
+        if agent is None:
+            return
+        try:
+            if hasattr(agent, "_current_tool"):
+                agent._current_tool = None
+            if hasattr(agent, "_touch_activity"):
+                agent._touch_activity("starting conversation turn")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _should_evict_cached_agent_after_run(
+        result: Optional[Dict[str, Any]],
+        *,
+        inactivity_timeout: bool = False,
+    ) -> bool:
+        """Return True when a cached agent should be evicted after a run.
+
+        Ordinary failed runs keep the cached agent to avoid fallback/MCP loops
+        (#7130). Inactivity timeouts are different: they indicate a poisoned or
+        stale cached agent state, so the next turn should start fresh.
+        """
+        if inactivity_timeout:
+            return True
+        return not bool(result.get("failed") if result else False)
+
     async def _run_agent(
         self,
         message: str,
@@ -7890,6 +7924,7 @@ class GatewayRunner:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
                         agent = cached[0]
+                        self._refresh_cached_agent_activity(agent)
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
@@ -8544,10 +8579,15 @@ class GatewayRunner:
             # MCP reinit → same 400 → loop, burning 91% CPU for hours.
             _agent = agent_holder[0]
             _result_for_fb = result_holder[0]
-            _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
-            if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
+            _should_evict_after_run = self._should_evict_cached_agent_after_run(
+                _result_for_fb,
+                inactivity_timeout=_inactivity_timeout,
+            )
+            if _agent is not None and hasattr(_agent, 'model') and _should_evict_after_run:
                 _cfg_model = _resolve_gateway_model()
-                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
+                if _inactivity_timeout:
+                    self._evict_cached_agent(session_key)
+                elif _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)

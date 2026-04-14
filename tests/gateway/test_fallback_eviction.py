@@ -42,3 +42,27 @@ class TestFallbackEvictionGating:
         result = {"completed": True, "final_response": "Hello!"}
         _run_failed = result.get("failed") if result else False
         assert not _run_failed, "Missing 'failed' key should be falsy"
+
+    def test_inactivity_timeout_failure_evicts_cached_agent(self):
+        """Inactivity timeouts are poisoned cached-agent failures and must be evicted."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        result = {"failed": True, "final_response": None, "error": "timeout"}
+
+        assert runner._should_evict_cached_agent_after_run(
+            result,
+            inactivity_timeout=True,
+        ) is True
+
+    def test_non_timeout_failure_does_not_evict_cached_agent(self):
+        """Ordinary failed runs still keep the cached agent to avoid fallback loops."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        result = {"failed": True, "final_response": None, "error": "400 invalid model"}
+
+        assert runner._should_evict_cached_agent_after_run(
+            result,
+            inactivity_timeout=False,
+        ) is False

@@ -25,6 +25,8 @@ from hermes_constants import get_default_hermes_root, get_hermes_home, display_h
 
 logger = logging.getLogger(__name__)
 
+_ZIP_MIN_DATETIME = (1980, 1, 1, 0, 0, 0)
+
 
 # ---------------------------------------------------------------------------
 # Exclusion rules
@@ -111,6 +113,33 @@ def _format_size(nbytes: int) -> str:
     return f"{nbytes:.1f} TB"
 
 
+def _zip_datetime_for_path(path: Path) -> tuple[int, int, int, int, int, int]:
+    """Return a ZIP-safe timestamp for ``path``.
+
+    ZIP stores timestamps in DOS datetime format, which cannot represent dates
+    before 1980-01-01. Clamp older mtimes instead of aborting the backup.
+    """
+    try:
+        date_time = time.localtime(path.stat().st_mtime)[:6]
+    except OSError:
+        return _ZIP_MIN_DATETIME
+    return date_time if date_time[0] >= 1980 else _ZIP_MIN_DATETIME
+
+
+def _write_path_to_zip(zf: zipfile.ZipFile, source: Path, arcname: Path) -> None:
+    """Write ``source`` into ``zf`` while tolerating pre-1980 mtimes."""
+    st = source.stat()
+    info = zipfile.ZipInfo(str(arcname), date_time=_zip_datetime_for_path(source))
+    info.compress_type = zf.compression
+    info.create_system = 3  # Unix
+    info.external_attr = (st.st_mode & 0xFFFF) << 16
+    if getattr(zf, "compresslevel", None) is not None:
+        info._compresslevel = zf.compresslevel
+
+    with source.open("rb") as src, zf.open(info, "w") as dst:
+        shutil.copyfileobj(src, dst)
+
+
 def run_backup(args) -> None:
     """Create a zip backup of the Hermes home directory."""
     hermes_root = get_default_hermes_root()
@@ -191,7 +220,7 @@ def run_backup(args) -> None:
                     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
                         tmp_db = Path(tmp.name)
                     if _safe_copy_db(abs_path, tmp_db):
-                        zf.write(tmp_db, arcname=str(rel_path))
+                        _write_path_to_zip(zf, tmp_db, rel_path)
                         total_bytes += tmp_db.stat().st_size
                         tmp_db.unlink(missing_ok=True)
                     else:
@@ -199,7 +228,7 @@ def run_backup(args) -> None:
                         errors.append(f"  {rel_path}: SQLite safe copy failed")
                         continue
                 else:
-                    zf.write(abs_path, arcname=str(rel_path))
+                    _write_path_to_zip(zf, abs_path, rel_path)
                     total_bytes += abs_path.stat().st_size
             except (PermissionError, OSError) as exc:
                 errors.append(f"  {rel_path}: {exc}")

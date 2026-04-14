@@ -215,6 +215,31 @@ class TestBackup:
             pid_files = [n for n in names if n.endswith(".pid")]
             assert pid_files == []
 
+    def test_clamps_pre_1980_file_timestamps(self, tmp_path, monkeypatch):
+        """Backup should not fail when included files have mtimes before 1980."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+
+        old_file = hermes_home / "logs" / "ancient.log"
+        old_file.write_text("very old log\n")
+        os.utime(old_file, (1, 1))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            info = zf.getinfo("logs/ancient.log")
+            assert info.date_time == (1980, 1, 1, 0, 0, 0)
+            assert zf.read("logs/ancient.log") == b"very old log\n"
+
     def test_default_output_path(self, tmp_path, monkeypatch):
         """When no output path given, zip goes to ~/hermes-backup-*.zip."""
         hermes_home = tmp_path / ".hermes"

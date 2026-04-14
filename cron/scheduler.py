@@ -750,7 +750,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
-            skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_memory=_cfg.get("cron", {}).get("skip_memory", True),  # Configurable; default True for backward compat
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,

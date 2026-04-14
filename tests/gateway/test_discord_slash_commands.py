@@ -19,10 +19,34 @@ def _ensure_discord_mock():
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
+
+    # Lightweight mock for app_commands.Group and Command used by
+    # _register_skill_group.
+    class _FakeGroup:
+        def __init__(self, *, name, description, parent=None):
+            self.name = name
+            self.description = description
+            self.parent = parent
+            self._children: dict[str, object] = {}
+            if parent is not None:
+                parent.add_command(self)
+
+        def add_command(self, cmd):
+            self._children[cmd.name] = cmd
+
+    class _FakeCommand:
+        def __init__(self, *, name, description, callback, parent=None):
+            self.name = name
+            self.description = description
+            self.callback = callback
+            self.parent = parent
+
     discord_mod.app_commands = SimpleNamespace(
         describe=lambda **kwargs: (lambda fn: fn),
         choices=lambda **kwargs: (lambda fn: fn),
         Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+        Group=_FakeGroup,
+        Command=_FakeCommand,
     )
 
     ext_mod = MagicMock()
@@ -50,6 +74,12 @@ class FakeTree:
             return fn
 
         return decorator
+
+    def add_command(self, cmd):
+        self.commands[cmd.name] = cmd
+
+    def get_commands(self):
+        return [SimpleNamespace(name=n) for n in self.commands]
 
 
 @pytest.fixture
@@ -498,3 +528,79 @@ def test_discord_auto_thread_config_bridge(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_AUTO_THREAD") == "true"
+
+
+# ------------------------------------------------------------------
+# /skill group registration
+# ------------------------------------------------------------------
+
+
+def test_register_skill_group_creates_group(adapter):
+    """_register_skill_group should register a '/skill' Group on the tree."""
+    mock_categories = {
+        "creative": [
+            ("ascii-art", "Generate ASCII art", "/ascii-art"),
+            ("excalidraw", "Hand-drawn diagrams", "/excalidraw"),
+        ],
+        "media": [
+            ("gif-search", "Search for GIFs", "/gif-search"),
+        ],
+    }
+    mock_uncategorized = [
+        ("dogfood", "Exploratory QA testing", "/dogfood"),
+    ]
+
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=(mock_categories, mock_uncategorized, 0),
+    ):
+        adapter._register_slash_commands()
+
+    tree = adapter._client.tree
+    assert "skill" in tree.commands, "Expected /skill group to be registered"
+    skill_group = tree.commands["skill"]
+    assert skill_group.name == "skill"
+    # Should have 2 category subgroups + 1 uncategorized subcommand
+    children = skill_group._children
+    assert "creative" in children
+    assert "media" in children
+    assert "dogfood" in children
+    # Category groups should have their skills
+    assert "ascii-art" in children["creative"]._children
+    assert "excalidraw" in children["creative"]._children
+    assert "gif-search" in children["media"]._children
+
+
+def test_register_skill_group_empty_skills_no_group(adapter):
+    """No /skill group should be added when there are zero skills."""
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=({}, [], 0),
+    ):
+        adapter._register_slash_commands()
+
+    tree = adapter._client.tree
+    assert "skill" not in tree.commands
+
+
+def test_register_skill_group_handler_dispatches_command(adapter):
+    """Skill subcommand handlers should dispatch the correct /cmd-key text."""
+    mock_categories = {
+        "media": [
+            ("gif-search", "Search for GIFs", "/gif-search"),
+        ],
+    }
+
+    with patch(
+        "hermes_cli.commands.discord_skill_commands_by_category",
+        return_value=(mock_categories, [], 0),
+    ):
+        adapter._register_slash_commands()
+
+    skill_group = adapter._client.tree.commands["skill"]
+    media_group = skill_group._children["media"]
+    gif_cmd = media_group._children["gif-search"]
+    assert gif_cmd.callback is not None
+    # The callback name should reflect the skill
+    assert "gif_search" in gif_cmd.callback.__name__
+

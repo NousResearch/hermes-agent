@@ -4,8 +4,8 @@ Provides cross-session user modeling with dialectic Q&A, semantic search,
 peer cards, and persistent conclusions via the Honcho SDK. Honcho provides AI-native cross-session user
 modeling with dialectic Q&A, semantic search, peer cards, and conclusions.
 
-The 4 tools (profile, search, context, conclude) are exposed through
-the MemoryProvider interface.
+The 5 tools (profile, search, context, reasoning, conclude) are exposed
+through the MemoryProvider interface.
 
 Config: Uses the existing Honcho config chain:
   1. $HERMES_HOME/honcho.json (profile-scoped)
@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -218,6 +220,14 @@ class HonchoMemoryProvider(MemoryProvider):
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
 
+        # Context cache — peer.context() result, refreshed on TTL
+        self._context_cache: str = ""
+        self._context_cache_time: float = 0.0
+        self._context_cache_ttl: float = 300.0  # 5 minutes
+
+        # Dialectic cache — fires every N turns, result cached until next refresh
+        self._dialectic_cache: str = ""
+
     @property
     def name(self) -> str:
         return "honcho"
@@ -386,12 +396,30 @@ class HonchoMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 
-        # ----- B7: Pre-warming context at init -----
+        # ----- B7: Pre-warming context + dialectic at init -----
         if self._recall_mode in ("context", "hybrid"):
             try:
-                self._manager.prefetch_context(self._session_key)
-                self._manager.prefetch_dialectic(self._session_key, "What should I know about this user?")
-                logger.debug("Honcho pre-warm threads started for session: %s", self._session_key)
+                # Warm the context cache (representation + card)
+                ctx = self._manager.get_prefetch_context(self._session_key)
+                parts = []
+                if ctx.get("representation"):
+                    parts.append(ctx["representation"])
+                if ctx.get("card"):
+                    card = ctx["card"]
+                    if isinstance(card, list):
+                        card = "\n".join(f"- {f}" for f in card)
+                    parts.append(card)
+                if parts:
+                    self._context_cache = "\n\n".join(parts)
+                    self._context_cache_time = time.monotonic()
+
+                # Fire dialectic to warm the knowledge graph + cache result
+                self._manager.prefetch_dialectic(
+                    self._session_key,
+                    "Summarize what you know about this user. "
+                    "Focus on preferences, current projects, and working style."
+                )
+                logger.debug("Honcho pre-warm started for session: %s", self._session_key)
             except Exception as e:
                 logger.debug("Honcho pre-warm failed: %s", e)
 
@@ -510,11 +538,15 @@ class HonchoMemoryProvider(MemoryProvider):
         return header
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched dialectic context from background thread.
+        """Return context for injection into the system prompt.
+
+        Architecture (inspired by claude-honcho):
+          - Base layer: peer.context() result (representation + card), cached with TTL.
+          - Supplement: dialectic result from last cadence fire, cached until next.
+          - Trivial prompts ("ok", "yes", slash commands) skip injection entirely.
 
         B1: Returns empty when recall_mode is "tools" (no injection).
-        B5: Respects injection_frequency — "first-turn" returns cached/empty after turn 0.
-        Port #3265: Truncates to context_tokens budget.
+        B5: Respects injection_frequency — "first-turn" returns empty after turn 0.
         """
         if self._cron_skipped:
             return ""
@@ -527,18 +559,52 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._injection_frequency == "first-turn" and self._turn_count > 0:
             return ""
 
+        # Skip trivial prompts — no context needed for "ok", "y", etc.
+        if self._is_trivial_prompt(query):
+            return ""
+
+        # --- Base layer: peer.context() from cache ---
+        now = time.monotonic()
+        if not self._context_cache or (now - self._context_cache_time) > self._context_cache_ttl:
+            # Cache miss or stale — try to refresh
+            if self._manager and self._session_key:
+                try:
+                    ctx = self._manager.get_prefetch_context(self._session_key)
+                    parts = []
+                    if ctx.get("representation"):
+                        parts.append(ctx["representation"])
+                    if ctx.get("card"):
+                        card = ctx["card"]
+                        if isinstance(card, list):
+                            card = "\n".join(f"- {f}" for f in card)
+                        parts.append(card)
+                    if parts:
+                        self._context_cache = "\n\n".join(parts)
+                        self._context_cache_time = now
+                except Exception as e:
+                    logger.debug("Context cache refresh failed: %s", e)
+
+        # --- Supplement: dialectic result (refreshed on cadence) ---
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
-            result = self._prefetch_result
+            fresh_dialectic = self._prefetch_result
             self._prefetch_result = ""
-        if not result:
+        if fresh_dialectic and fresh_dialectic.strip():
+            self._dialectic_cache = fresh_dialectic
+
+        # --- Assemble injection ---
+        parts = []
+        if self._context_cache:
+            parts.append(self._context_cache)
+        if self._dialectic_cache:
+            parts.append(self._dialectic_cache)
+
+        if not parts:
             return ""
 
-        # ----- Port #3265: token budget enforcement -----
-        result = self._truncate_to_budget(result)
-
-        return result
+        result = "\n\n".join(parts)
+        return self._truncate_to_budget(result)
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to fit within context_tokens budget if set."""
@@ -600,6 +666,26 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._manager.prefetch_context(self._session_key, query)
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
+
+    # Patterns that don't need context injection — trivial acknowledgements,
+    # slash commands, and very short prompts that carry no semantic signal.
+    _TRIVIAL_PROMPT_RE = re.compile(
+        r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
+        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _is_trivial_prompt(cls, text: str) -> bool:
+        """Return True if the prompt is too trivial to warrant context injection."""
+        stripped = text.strip()
+        if not stripped:
+            return True
+        if stripped.startswith("/"):
+            return True
+        if cls._TRIVIAL_PROMPT_RE.match(stripped):
+            return True
+        return False
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""

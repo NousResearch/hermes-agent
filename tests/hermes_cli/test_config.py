@@ -151,6 +151,16 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
+    def test_load_env_windows_falls_back_to_latin1_for_cp1252_files(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_bytes(b"MESSAGING_CWD=Caf\xe9\n")
+
+        with patch("hermes_cli.config._IS_WINDOWS", True), \
+             patch("hermes_cli.config.get_env_path", return_value=env_path):
+            env_values = load_env()
+
+        assert env_values["MESSAGING_CWD"] == "Caf\xe9"
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):

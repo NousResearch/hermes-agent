@@ -2637,11 +2637,16 @@ def load_env() -> Dict[str, str]:
     env_vars = {}
     
     if env_path.exists():
-        # On Windows, open() defaults to the system locale (cp1252) which can
-        # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
-        open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-        with open(env_path, **open_kw) as f:
-            raw_lines = f.readlines()
+        # On Windows, .env files may be saved in cp1252. Try UTF-8 first so
+        # modern files still work, then fall back instead of silently
+        # replacing bytes and corrupting values like paths/passwords.
+        try:
+            open_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+            with open(env_path, **open_kw) as f:
+                raw_lines = f.readlines()
+        except UnicodeDecodeError:
+            with open(env_path, encoding="latin-1") as f:
+                raw_lines = f.readlines()
         # Sanitize before parsing: split concatenated lines & drop stale
         # placeholders so corrupted .env files don't produce invalid tokens.
         lines = _sanitize_env_lines(raw_lines)
@@ -2715,11 +2720,15 @@ def sanitize_env_file() -> int:
     if not env_path.exists():
         return 0
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
     write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
 
-    with open(env_path, **read_kw) as f:
-        original_lines = f.readlines()
+    try:
+        read_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+        with open(env_path, **read_kw) as f:
+            original_lines = f.readlines()
+    except UnicodeDecodeError:
+        with open(env_path, encoding="latin-1") as f:
+            original_lines = f.readlines()
 
     sanitized = _sanitize_env_lines(original_lines)
 
@@ -2763,13 +2772,17 @@ def save_env_value(key: str, value: str):
     
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
     write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
 
     lines = []
     if env_path.exists():
-        with open(env_path, **read_kw) as f:
-            lines = f.readlines()
+        try:
+            read_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+            with open(env_path, **read_kw) as f:
+                lines = f.readlines()
+        except UnicodeDecodeError:
+            with open(env_path, encoding="latin-1") as f:
+                lines = f.readlines()
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
     
@@ -2827,11 +2840,15 @@ def remove_env_value(key: str) -> bool:
         os.environ.pop(key, None)
         return False
 
-    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
     write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
 
-    with open(env_path, **read_kw) as f:
-        lines = f.readlines()
+    try:
+        read_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+        with open(env_path, **read_kw) as f:
+            lines = f.readlines()
+    except UnicodeDecodeError:
+        with open(env_path, encoding="latin-1") as f:
+            lines = f.readlines()
     lines = _sanitize_env_lines(lines)
 
     new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]

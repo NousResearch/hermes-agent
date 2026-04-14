@@ -595,15 +595,20 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
-    # Subagent delegation — override the provider:model used by delegate_task
-    # so child agents can run on a different (cheaper/faster) provider and model.
-    # Uses the same runtime provider resolution as CLI/gateway startup, so all
-    # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
+    # Subagent delegation — choose named routes for delegated tasks so child
+    # agents can run on a different provider/model pair than the parent.
+    # Routes are selected explicitly by delegate_task(routing_profile=...) or
+    # fall back to delegation.route / delegation.routes.default.
     "delegation": {
-        "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
-        "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
-        "base_url": "",    # direct OpenAI-compatible endpoint for subagents
-        "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "route": "default",
+        "routes": {
+            "default": {
+                "model": "",
+                "provider": "",
+                "base_url": "",
+                "api_key": "",
+            },
+        },
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
@@ -1916,6 +1921,82 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    base_url: https://...",
         ))
 
+    # ── delegation routes should be well-formed ──────────────────────────
+    delegation = config.get("delegation")
+    if delegation is not None:
+        if not isinstance(delegation, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"delegation should be a dict, got {type(delegation).__name__}",
+                "Change to:\n  delegation:\n    route: default\n    routes:\n      default:\n        provider: openai-codex\n        model: gpt-5.3-codex",
+            ))
+        else:
+            routes = delegation.get("routes")
+            if routes is not None and not isinstance(routes, dict):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.routes should be a dict of named routes, got {type(routes).__name__}",
+                    "Change to:\n  delegation:\n    routes:\n      default:\n        provider: openai-codex\n        model: gpt-5.3-codex",
+                ))
+            elif isinstance(routes, dict):
+                if "default" not in routes:
+                    issues.append(ConfigIssue(
+                        "warning",
+                        "delegation.routes does not define a 'default' route — Hermes will synthesize one at runtime",
+                        "Add delegation.routes.default to make the fallback route explicit",
+                    ))
+                for route_name, route_cfg in routes.items():
+                    if not isinstance(route_name, str):
+                        issues.append(ConfigIssue(
+                            "error",
+                            f"delegation.routes contains non-string route key {route_name!r}",
+                            "Use string route names like 'default', 'coding', 'research', or 'fast'",
+                        ))
+                        continue
+                    if not isinstance(route_cfg, dict):
+                        issues.append(ConfigIssue(
+                            "error",
+                            f"delegation.routes.{route_name} should be a dict with model/provider/base_url/api_key",
+                            f"Change delegation.routes.{route_name} to a mapping, not {type(route_cfg).__name__}",
+                        ))
+                        continue
+                    for field in ("model", "provider", "base_url", "api_key"):
+                        value = route_cfg.get(field)
+                        if value is not None and not isinstance(value, str):
+                            issues.append(ConfigIssue(
+                                "error",
+                                f"delegation.routes.{route_name}.{field} should be a string, got {type(value).__name__}",
+                                f"Change delegation.routes.{route_name}.{field} to a string value",
+                            ))
+            max_iterations = delegation.get("max_iterations")
+            if max_iterations is not None and (not isinstance(max_iterations, int) or isinstance(max_iterations, bool) or max_iterations <= 0):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.max_iterations should be a positive integer, got {type(max_iterations).__name__ if max_iterations is not None else 'None'}",
+                    "Change delegation.max_iterations to a positive integer like 50",
+                ))
+            route_name = delegation.get("route")
+            if route_name is not None and not isinstance(route_name, str):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"delegation.route should be a string, got {type(route_name).__name__}",
+                    "Change delegation.route to a route name like 'default', 'coding', 'research', or 'fast'",
+                ))
+            elif route_name and isinstance(routes, dict):
+                selected_route = str(route_name).strip()
+                if selected_route.lower() == "auto":
+                    issues.append(ConfigIssue(
+                        "warning",
+                        "delegation.route='auto' is deprecated for delegation routing and will be treated as 'default'",
+                        "Change delegation.route to 'default' (or another explicit route name)",
+                    ))
+                elif selected_route not in routes:
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"delegation.route points to '{selected_route}' but that route is not defined",
+                        f"Add delegation.routes.{selected_route} or change delegation.route to one of: {', '.join(sorted(routes.keys()))}",
+                    ))
+
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
         if key.startswith("_"):
@@ -2230,6 +2311,67 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+    # ── Legacy delegation cleanup: flat keys → named routes ──
+    config = load_config()
+    delegation = config.get("delegation")
+    legacy_delegation_keys = ("model", "provider", "base_url", "api_key")
+    needs_delegation_route_migration = False
+    if isinstance(delegation, dict):
+        if any(key in delegation for key in legacy_delegation_keys):
+            needs_delegation_route_migration = True
+        if not isinstance(delegation.get("routes"), dict):
+            needs_delegation_route_migration = True
+        route_name = delegation.get("route")
+        if not route_name or (isinstance(route_name, str) and route_name.strip().lower() == "auto"):
+            needs_delegation_route_migration = True
+
+    if needs_delegation_route_migration and isinstance(delegation, dict):
+        changed = False
+        migrated_legacy_keys = False
+
+        routes = delegation.get("routes")
+        if not isinstance(routes, dict):
+            routes = {}
+            delegation["routes"] = routes
+            changed = True
+
+        default_route = routes.get("default")
+        if not isinstance(default_route, dict):
+            default_route = {}
+            routes["default"] = default_route
+            changed = True
+
+        for key in legacy_delegation_keys:
+            if key in delegation:
+                legacy_value = delegation.get(key)
+                if not default_route.get(key):
+                    if isinstance(legacy_value, str):
+                        default_route[key] = legacy_value
+                    elif legacy_value is None:
+                        default_route[key] = ""
+                    else:
+                        default_route[key] = str(legacy_value)
+                    changed = True
+                del delegation[key]
+                changed = True
+                migrated_legacy_keys = True
+
+        for key in legacy_delegation_keys:
+            default_route.setdefault(key, "")
+
+        route_name = delegation.get("route")
+        if not route_name or (isinstance(route_name, str) and route_name.strip().lower() == "auto"):
+            delegation["route"] = "default"
+            changed = True
+
+        if changed:
+            config["delegation"] = delegation
+            save_config(config)
+            if migrated_legacy_keys:
+                results["config_added"].append("delegation.routes.default (migrated from legacy delegation.model/provider/base_url/api_key)")
+            if not quiet:
+                print("  ✓ Migrated delegation config to named routes")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

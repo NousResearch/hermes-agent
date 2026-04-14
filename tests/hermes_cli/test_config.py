@@ -609,3 +609,119 @@ class TestInterimAssistantMessageConfig:
         assert raw["_config_version"] == 17
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
+
+
+class TestDelegationRouteConfig:
+    def _write_config(self, tmp_path, payload):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+    def test_load_config_includes_default_delegation_routes(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert config["delegation"]["route"] == "default"
+            assert "default" in config["delegation"]["routes"]
+
+    def test_migrate_config_moves_legacy_delegation_fields_into_routes(self, tmp_path):
+        self._write_config(tmp_path, {
+            "_config_version": 17,
+            "delegation": {
+                "model": "gpt-5.3-codex",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "",
+                "max_iterations": 44,
+                "reasoning_effort": "high",
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            config = load_config()
+            assert config["delegation"]["route"] == "default"
+            assert config["delegation"]["routes"]["default"]["model"] == "gpt-5.3-codex"
+            assert config["delegation"]["routes"]["default"]["provider"] == "openai-codex"
+            assert config["delegation"]["reasoning_effort"] == "high"
+            assert "model" not in config["delegation"]
+            assert "provider" not in config["delegation"]
+
+    def test_load_config_preserves_named_delegation_routes(self, tmp_path):
+        self._write_config(tmp_path, {
+            "delegation": {
+                "route": "research",
+                "routes": {
+                    "default": {"model": "gpt-5.3-codex", "provider": "openai-codex"},
+                    "research": {"model": "gpt-5.4", "provider": "openai-codex"},
+                    "fast": {"model": "gpt-5.3-codex-spark", "provider": "openai-codex"},
+                },
+                "reasoning_effort": "medium",
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            assert config["delegation"]["route"] == "research"
+            assert config["delegation"]["routes"]["fast"]["model"] == "gpt-5.3-codex-spark"
+            assert config["delegation"]["reasoning_effort"] == "medium"
+
+    def test_validate_config_structure_flags_non_string_delegation_route(self, tmp_path):
+        self._write_config(tmp_path, {
+            "delegation": {
+                "route": 123,
+                "routes": {"default": {"model": "gpt-5.3-codex", "provider": "openai-codex"}},
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from hermes_cli.config import validate_config_structure
+            issues = validate_config_structure()
+            assert any("delegation.route should be a string" in issue.message for issue in issues)
+
+    def test_validate_config_structure_flags_invalid_delegation_route_field_types(self, tmp_path):
+        self._write_config(tmp_path, {
+            "delegation": {
+                "max_iterations": "bad",
+                "routes": {"default": {"model": 123, "provider": "openai-codex"}},
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from hermes_cli.config import validate_config_structure
+            issues = validate_config_structure()
+            assert any("delegation.max_iterations should be a positive integer" in issue.message for issue in issues)
+            assert any("delegation.routes.default.model should be a string" in issue.message for issue in issues)
+
+    def test_validate_config_structure_warns_on_delegation_route_auto(self, tmp_path):
+        self._write_config(tmp_path, {
+            "delegation": {
+                "route": "auto",
+                "routes": {"default": {"model": "gpt-5.3-codex", "provider": "openai-codex"}},
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from hermes_cli.config import validate_config_structure
+            issues = validate_config_structure()
+            assert any("treated as 'default'" in issue.message for issue in issues)
+
+    def test_migrate_config_preserves_explicit_empty_legacy_delegation_fields(self, tmp_path):
+        self._write_config(tmp_path, {
+            "_config_version": 17,
+            "delegation": {
+                "model": "gpt-5.3-codex",
+                "provider": "openai-codex",
+                "api_key": "",
+                "base_url": "",
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            config = load_config()
+            assert "api_key" in config["delegation"]["routes"]["default"]
+            assert config["delegation"]["routes"]["default"]["api_key"] == ""
+            assert config["delegation"]["routes"]["default"]["base_url"] == ""
+
+    def test_validate_config_structure_flags_non_string_delegation_route_keys(self, tmp_path):
+        self._write_config(tmp_path, {
+            "delegation": {
+                "routes": {1: {"model": "gpt-5.3-codex", "provider": "openai-codex"}},
+            },
+        })
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from hermes_cli.config import validate_config_structure
+            issues = validate_config_structure()
+            assert any("non-string route key" in issue.message for issue in issues)

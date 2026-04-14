@@ -17,6 +17,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import hermes_cli.runtime_provider  # ensure patch("hermes_cli.runtime_provider...") resolves
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -29,6 +31,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _normalize_delegation_config,
+    _resolve_delegation_route,
 )
 
 
@@ -67,7 +71,10 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
-        self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+        self.assertIn("routing_profile", props)
+        self.assertIn("routing_profile", props["tasks"]["items"]["properties"])
+        self.assertIn("acp_command", props)
+        self.assertNotIn("maxItems", props["tasks"])  # runtime-configured limit
 
 
 class TestChildSystemPrompt(unittest.TestCase):
@@ -128,6 +135,12 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
+
+    def test_resolve_effective_max_iterations_rejects_invalid_values(self):
+        parent = _make_mock_parent(depth=0)
+        result = json.loads(delegate_task(goal="bad", max_iterations=0, parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("positive integer", result["error"])
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
@@ -570,13 +583,14 @@ class TestBlockedTools(unittest.TestCase):
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):
-    """Tests for provider:model credential resolution in delegation config."""
+    """Test provider/base_url credential resolution for subagents."""
 
-    def test_no_provider_returns_none_credentials(self):
-        """When delegation.provider is empty, all credentials are None (inherit parent)."""
+    def test_empty_config_inherits_parent(self):
+        """When delegation config is empty, child inherits parent's model/provider."""
         parent = _make_mock_parent(depth=0)
-        cfg = {"model": "", "provider": ""}
+        cfg = {}
         creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertIsNone(creds["model"])
         self.assertIsNone(creds["provider"])
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
@@ -599,7 +613,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         mock_resolve.return_value = {
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "sk-or-test-key",
+            "api_key": "***",
             "api_mode": "chat_completions",
         }
         parent = _make_mock_parent(depth=0)
@@ -608,7 +622,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["model"], "google/gemini-3-flash-preview")
         self.assertEqual(creds["provider"], "openrouter")
         self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
-        self.assertEqual(creds["api_key"], "sk-or-test-key")
+        self.assertEqual(creds["api_key"], "***")
         self.assertEqual(creds["api_mode"], "chat_completions")
         mock_resolve.assert_called_once_with(requested="openrouter")
 
@@ -708,8 +722,53 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestDelegationRouteResolution(unittest.TestCase):
+    def test_normalize_delegation_config_folds_legacy_keys_into_default_route(self):
+        cfg = {
+            "model": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "max_iterations": 33,
+        }
+        normalized = _normalize_delegation_config(cfg)
+        self.assertEqual(normalized["route"], "default")
+        self.assertEqual(normalized["routes"]["default"]["model"], "gpt-5.3-codex")
+        self.assertEqual(normalized["routes"]["default"]["provider"], "openai-codex")
+        self.assertEqual(normalized["max_iterations"], 33)
+
+    def test_resolve_delegation_route_uses_requested_profile(self):
+        cfg = {
+            "route": "default",
+            "routes": {
+                "default": {"model": "gpt-5.3-codex", "provider": "openai-codex"},
+                "research": {"model": "gpt-5.4", "provider": "openai-codex"},
+            },
+        }
+        route_name, route_cfg, normalized = _resolve_delegation_route(cfg, "research")
+        self.assertEqual(route_name, "research")
+        self.assertEqual(route_cfg["model"], "gpt-5.4")
+        self.assertIn("default", normalized["routes"])
+
+    def test_resolve_delegation_route_rejects_unknown_profile(self):
+        cfg = {
+            "routes": {
+                "default": {"model": "gpt-5.3-codex", "provider": "openai-codex"},
+            },
+        }
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_route(cfg, "missing")
+        self.assertIn("routing_profile 'missing'", str(ctx.exception))
+
+    def test_model_only_route_rejects_incompatible_parent_provider(self):
+        parent = _make_mock_parent(depth=0)
+        parent.provider = "openai-codex"
+        cfg = {"model": "anthropic/claude-sonnet-4-6"}
+        with self.assertRaises(ValueError) as ctx:
+            _resolve_delegation_credentials(cfg, parent, route_name="research")
+        self.assertIn("research", str(ctx.exception))
+        self.assertIn("openai-codex", str(ctx.exception))
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
-    """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
@@ -899,6 +958,66 @@ class TestDelegationProviderIntegration(unittest.TestCase):
                 self.assertEqual(call.kwargs.get("override_base_url"), "https://openrouter.ai/api/v1")
                 self.assertEqual(call.kwargs.get("override_api_key"), "sk-or-batch")
                 self.assertEqual(call.kwargs.get("override_api_mode"), "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_batch_mode_unknown_routing_profile_fails_whole_call(self, mock_cfg):
+        mock_cfg.return_value = {
+            "route": "default",
+            "routes": {
+                "default": {"model": "gpt-5.3-codex", "provider": "openai-codex"},
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+        result = json.loads(delegate_task(tasks=[{"goal": "A"}, {"goal": "B", "routing_profile": "missing"}], parent_agent=parent))
+        self.assertIn("error", result)
+        self.assertIn("routing_profile 'missing'", result["error"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_uses_per_task_routing_profiles(self, mock_run, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "route": "default",
+            "routes": {
+                "default": {"model": "gpt-5.3-codex", "provider": "openai-codex"},
+                "research": {"model": "gpt-5.4", "provider": "openai-codex"},
+            },
+        }
+        mock_creds.side_effect = [
+            {
+                "model": "gpt-5.3-codex",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            },
+            {
+                "model": "gpt-5.4",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            },
+        ]
+        mock_run.side_effect = [
+            {"task_index": 0, "status": "completed", "summary": "A", "api_calls": 1, "duration_seconds": 1.0},
+            {"task_index": 1, "status": "completed", "summary": "B", "api_calls": 1, "duration_seconds": 1.0},
+        ]
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_build.return_value = MagicMock()
+            tasks = [
+                {"goal": "Task A"},
+                {"goal": "Task B", "routing_profile": "research"},
+            ]
+            delegate_task(tasks=tasks, parent_agent=parent)
+
+        self.assertEqual(mock_build.call_args_list[0].kwargs["model"], "gpt-5.3-codex")
+        self.assertEqual(mock_build.call_args_list[1].kwargs["model"], "gpt-5.4")
+        self.assertEqual(mock_creds.call_args_list[0].kwargs["route_name"], "default")
+        self.assertEqual(mock_creds.call_args_list[1].kwargs["route_name"], "research")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

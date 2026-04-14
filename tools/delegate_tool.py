@@ -78,6 +78,8 @@ def _get_max_concurrent_children() -> int:
             pass
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 DEFAULT_MAX_ITERATIONS = 50
+DEFAULT_DELEGATION_ROUTE = "default"
+DELEGATION_ROUTE_FIELDS = ("model", "provider", "base_url", "api_key")
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
@@ -626,6 +628,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    routing_profile: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -654,16 +657,12 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
-    default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    effective_max_iter = max_iterations or default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
+    normalized_cfg = _normalize_delegation_config(cfg)
     try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
+        effective_max_iter = _resolve_effective_max_iterations(
+            normalized_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+            max_iterations,
+        )
     except ValueError as exc:
         return tool_error(str(exc))
 
@@ -680,7 +679,12 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "routing_profile": routing_profile,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -711,6 +715,13 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            selected_route = t.get("routing_profile") or routing_profile
+            try:
+                route_name, route_cfg, _ = _resolve_delegation_route(normalized_cfg, selected_route)
+                creds = _resolve_delegation_credentials(route_cfg, parent_agent, route_name=route_name)
+            except ValueError as exc:
+                return tool_error(str(exc))
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
@@ -845,21 +856,103 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
-    """Resolve credentials for subagent delegation.
+def _empty_delegation_route() -> dict:
+    return {key: "" for key in DELEGATION_ROUTE_FIELDS}
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. Otherwise, if ``delegation.provider`` is
-    configured, the full credential bundle (base_url, api_key, api_mode,
-    provider) is resolved via the runtime provider system — the same path used
-    by CLI/gateway startup. This lets subagents run on a completely different
-    provider:model pair.
 
-    If neither base_url nor provider is configured, returns None values so the
-    child inherits everything from the parent agent.
+def _normalize_delegation_config(cfg: Optional[dict]) -> dict:
+    """Return delegation config in canonical routing form."""
+    cfg = cfg if isinstance(cfg, dict) else {}
+    normalized_routes: Dict[str, Dict[str, str]] = {}
 
-    Raises ValueError with a user-friendly message on credential failure.
-    """
+    raw_routes = cfg.get("routes")
+    if isinstance(raw_routes, dict):
+        for raw_name, raw_route in raw_routes.items():
+            name = str(raw_name or "").strip()
+            if not name or not isinstance(raw_route, dict):
+                continue
+            normalized_routes[name] = {
+                key: (raw_route.get(key).strip() if isinstance(raw_route.get(key), str) else "")
+                for key in DELEGATION_ROUTE_FIELDS
+            }
+
+    legacy_route = {
+        key: (cfg.get(key).strip() if isinstance(cfg.get(key), str) else "")
+        for key in DELEGATION_ROUTE_FIELDS
+    }
+    if any(legacy_route.values()):
+        default_route = normalized_routes.setdefault(
+            DEFAULT_DELEGATION_ROUTE,
+            _empty_delegation_route(),
+        )
+        for key, value in legacy_route.items():
+            if value and not default_route.get(key):
+                default_route[key] = value
+
+    normalized_routes.setdefault(DEFAULT_DELEGATION_ROUTE, _empty_delegation_route())
+
+    route_name = cfg.get("route") if isinstance(cfg.get("route"), str) else ""
+    route_name = route_name.strip() or DEFAULT_DELEGATION_ROUTE
+    if route_name.lower() == "auto":
+        route_name = DEFAULT_DELEGATION_ROUTE
+
+    return {
+        "route": route_name,
+        "routes": normalized_routes,
+        "max_iterations": cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS),
+        "reasoning_effort": cfg.get("reasoning_effort", ""),
+        "max_concurrent_children": cfg.get("max_concurrent_children"),
+    }
+
+
+def _resolve_delegation_route(cfg: Optional[dict], requested_route: Optional[str] = None) -> tuple[str, dict, dict]:
+    """Resolve a named delegation route from config."""
+    normalized = _normalize_delegation_config(cfg)
+    route_name = requested_route if isinstance(requested_route, str) else normalized.get("route")
+    route_name = str(route_name or DEFAULT_DELEGATION_ROUTE).strip()
+    if not route_name or route_name.lower() == "auto":
+        route_name = DEFAULT_DELEGATION_ROUTE
+
+    routes = normalized.get("routes") or {}
+    route_cfg = routes.get(route_name)
+    if route_cfg is None:
+        available = ", ".join(sorted(routes.keys())) or DEFAULT_DELEGATION_ROUTE
+        raise ValueError(
+            f"Unknown delegation routing_profile '{route_name}'. "
+            f"Available routes: {available}."
+        )
+    return route_name, route_cfg, normalized
+
+
+def _validate_inherited_route_model(configured_model: Optional[str], parent_agent, route_name: str) -> None:
+    """Fail fast on provider/model mismatches when inheriting the parent provider."""
+    if not configured_model:
+        return
+
+    parent_provider = str(getattr(parent_agent, "provider", "") or "").strip().lower()
+    if parent_provider == "openai-codex" and "/" in configured_model:
+        raise ValueError(
+            f"Delegation route '{route_name}' sets model '{configured_model}' but no provider/base_url. "
+            "That would inherit the parent openai-codex provider, which only supports Codex model slugs here. "
+            f"Set delegation.routes.{route_name}.provider explicitly or use a Codex-compatible model slug."
+        )
+
+
+def _resolve_effective_max_iterations(configured_value: Any, override_value: Optional[int]) -> int:
+    if override_value is not None:
+        if not isinstance(override_value, int) or isinstance(override_value, bool) or override_value <= 0:
+            raise ValueError("delegate_task max_iterations must be a positive integer.")
+        return override_value
+
+    if configured_value is None:
+        return DEFAULT_MAX_ITERATIONS
+    if not isinstance(configured_value, int) or isinstance(configured_value, bool) or configured_value <= 0:
+        raise ValueError("delegation.max_iterations must be a positive integer.")
+    return configured_value
+
+
+def _resolve_delegation_credentials(cfg: dict, parent_agent, *, route_name: str = DEFAULT_DELEGATION_ROUTE) -> dict:
+    """Resolve credentials for one selected subagent delegation route."""
     configured_model = str(cfg.get("model") or "").strip() or None
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
@@ -872,8 +965,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         )
         if not api_key:
             raise ValueError(
-                "Delegation base_url is configured but no API key was found. "
-                "Set delegation.api_key or OPENAI_API_KEY."
+                f"Delegation route '{route_name}' configures base_url but no API key was found. "
+                "Set delegation.routes.<name>.api_key or OPENAI_API_KEY."
             )
 
         base_lower = configured_base_url.lower()
@@ -895,7 +988,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         }
 
     if not configured_provider:
-        # No provider override — child inherits everything from parent
+        _validate_inherited_route_model(configured_model, parent_agent, route_name)
         return {
             "model": configured_model,
             "provider": None,
@@ -904,22 +997,21 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
         }
 
-    # Provider is configured — resolve full credentials
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         runtime = resolve_runtime_provider(requested=configured_provider)
     except Exception as exc:
         raise ValueError(
-            f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
+            f"Cannot resolve delegation provider '{configured_provider}' for route '{route_name}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
+            f"or set delegation.routes.{route_name}.base_url/delegation.routes.{route_name}.api_key for a direct endpoint. "
             f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
-            f"Delegation provider '{configured_provider}' resolved but has no API key. "
+            f"Delegation provider '{configured_provider}' for route '{route_name}' resolved but has no API key. "
             f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
@@ -938,9 +1030,9 @@ def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
     Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    to the persistent config (hermes_cli/config.py load_config()) so routing,
+    legacy delegation.model/provider, and related settings are picked up
+    regardless of the entry point (CLI, gateway, cron).
     """
     try:
         from cli import CLI_CONFIG
@@ -1031,6 +1123,10 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "routing_profile": {
+                            "type": "string",
+                            "description": "Per-task delegation route override, e.g. 'coding', 'research', or 'fast'.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -1057,6 +1153,14 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "routing_profile": {
+                "type": "string",
+                "description": (
+                    "Select a named delegation route from config, e.g. 'coding', "
+                    "'research', or 'fast'. When omitted, Hermes uses delegation.route "
+                    "or delegation.routes.default."
                 ),
             },
             "acp_command": {
@@ -1095,6 +1199,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        routing_profile=args.get("routing_profile"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),

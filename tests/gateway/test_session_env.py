@@ -186,10 +186,13 @@ def test_set_session_env_includes_session_key():
         session_key="tg:-1001:17585",
     )
 
+    # Capture baseline value before setting (may be non-empty from another
+    # test in the same pytest-xdist worker sharing the context).
+    baseline = get_session_env("HERMES_SESSION_KEY")
     tokens = runner._set_session_env(context)
     assert get_session_env("HERMES_SESSION_KEY") == "tg:-1001:17585"
     runner._clear_session_env(tokens)
-    assert get_session_env("HERMES_SESSION_KEY") == ""
+    assert get_session_env("HERMES_SESSION_KEY") == baseline
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):

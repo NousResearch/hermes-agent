@@ -334,10 +334,12 @@ class TestChannelDirectory(unittest.TestCase):
     """Verify email in channel directory session-based discovery."""
 
     def test_email_in_session_discovery(self):
-        import gateway.channel_directory
-        import inspect
-        source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        from gateway.config import Platform
+        # Verify email is a Platform enum member — the dynamic loop in
+        # build_channel_directory iterates all Platform members, so email
+        # is included automatically as long as it's in the enum.
+        email_values = [p.value for p in Platform]
+        self.assertIn("email", email_values)
 
 
 class TestGatewaySetup(unittest.TestCase):

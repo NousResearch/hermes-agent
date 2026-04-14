@@ -9985,25 +9985,29 @@ class AIAgent:
 
                     assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                     
-                    # If this turn has both content AND tool_calls, capture the content
-                    # as a fallback final response. Common pattern: model delivers its
-                    # answer and calls memory/skill tools as a side-effect in the same
-                    # turn. If the follow-up turn after tools is empty, we use this.
+                    # Only carry forward earlier turn content as a fallback
+                    # when EVERY tool call is post-response housekeeping
+                    # (memory, todo, skill_manage, etc.). Using substantive
+                    # tool turns as fallback content silently abandons
+                    # unfinished multi-step tasks on the next empty response.
+                    _HOUSEKEEPING_TOOLS = frozenset({
+                        "memory", "todo", "skill_manage", "session_search",
+                    })
+                    _all_housekeeping = all(
+                        tc.function.name in _HOUSEKEEPING_TOOLS
+                        for tc in assistant_message.tool_calls
+                    )
                     turn_content = assistant_message.content or ""
                     if turn_content and self._has_content_after_think_block(turn_content):
-                        self._last_content_with_tools = turn_content
+                        if _all_housekeeping:
+                            self._last_content_with_tools = turn_content
+                        else:
+                            self._last_content_with_tools = None
                         # Only mute subsequent output when EVERY tool call in
-                        # this turn is post-response housekeeping (memory, todo,
-                        # skill_manage, etc.).  If any substantive tool is present
-                        # (search_files, read_file, write_file, terminal, ...),
-                        # keep output visible so the user sees progress.
-                        _HOUSEKEEPING_TOOLS = frozenset({
-                            "memory", "todo", "skill_manage", "session_search",
-                        })
-                        _all_housekeeping = all(
-                            tc.function.name in _HOUSEKEEPING_TOOLS
-                            for tc in assistant_message.tool_calls
-                        )
+                        # this turn is post-response housekeeping. If any
+                        # substantive tool is present (search_files, read_file,
+                        # write_file, terminal, ...), keep output visible so
+                        # the user sees progress.
                         if _all_housekeeping and self._has_stream_consumers():
                             self._mute_post_response = True
                         elif self.quiet_mode:

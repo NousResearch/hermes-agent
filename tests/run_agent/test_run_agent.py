@@ -2079,6 +2079,72 @@ class TestRunConversation:
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
 
+    def test_empty_after_substantive_tool_turn_retries_instead_of_using_stale_content(self, agent):
+        """Substantive tool turns must not become the final answer fallback."""
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        resp1 = _mock_response(
+            content="I found a lead and I'm checking one more source.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content=None, finish_reason="stop")
+        resp3 = _mock_response(
+            content="Here is the completed answer after the follow-up retry.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [resp1, resp2, resp3]
+
+        status_messages = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Here is the completed answer after the follow-up retry."
+        assert result["api_calls"] == 3
+        assert not any(
+            "using earlier content as final answer" in msg.lower()
+            for msg in status_messages
+        )
+
+    def test_empty_after_housekeeping_tool_turn_uses_prior_content_fallback(self, agent_with_memory_tool):
+        """Housekeeping-only tool turns may still reuse prior visible content."""
+        self._setup_agent(agent_with_memory_tool)
+        tc = _mock_tool_call(name="memory", arguments='{"content":"saved note"}', call_id="c1")
+        resp1 = _mock_response(
+            content="Saved that to memory.",
+            finish_reason="tool_calls",
+            tool_calls=[tc],
+        )
+        resp2 = _mock_response(content=None, finish_reason="stop")
+        agent_with_memory_tool.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        status_messages = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="saved"),
+            patch.object(agent_with_memory_tool, "_persist_session"),
+            patch.object(agent_with_memory_tool, "_save_trajectory"),
+            patch.object(agent_with_memory_tool, "_cleanup_task_resources"),
+            patch.object(agent_with_memory_tool, "_emit_status", side_effect=status_messages.append),
+        ):
+            result = agent_with_memory_tool.run_conversation("remember this")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Saved that to memory."
+        assert result["api_calls"] == 2
+        assert any(
+            "using earlier content as final answer" in msg.lower()
+            for msg in status_messages
+        )
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

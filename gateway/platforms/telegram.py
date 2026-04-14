@@ -362,6 +362,43 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    async def rename_forum_topic(
+        self,
+        chat_id: int,
+        thread_id: int,
+        title: str,
+    ) -> bool:
+        """Rename a Telegram forum topic.
+
+        Uses the Bot API editForumTopic endpoint.  Returns True on success.
+        Silently returns False if the bot is unavailable or the API call fails
+        (e.g. topic was deleted, insufficient permissions).
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.edit_forum_topic(
+                chat_id=chat_id,
+                message_thread_id=thread_id,
+                name=title,
+            )
+            logger.info(
+                "[%s] Renamed forum topic %s in chat %s → '%s'",
+                self.name, thread_id, chat_id, title,
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to rename forum topic %s in chat %s: %s",
+                self.name, thread_id, chat_id, e,
+            )
+            return False
+
+    def _is_auto_rename_topics_enabled(self) -> bool:
+        """Return True if auto_rename_topics is enabled in Telegram config."""
+        from utils import is_truthy_value
+        return is_truthy_value(self.config.extra.get("auto_rename_topics", False))
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:

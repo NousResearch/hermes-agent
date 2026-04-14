@@ -61,6 +61,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     assistant_response: str,
+    on_title_set=None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -69,6 +70,11 @@ def auto_title_session(
     - session_db is None
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
+
+    If on_title_set is provided, it is called with (session_id, title) after
+    a title is successfully set.  This lets the gateway hook platform-specific
+    behaviour (e.g. renaming a Telegram forum topic) without coupling
+    title_generator to any platform code.
     """
     if not session_db or not session_id:
         return
@@ -88,6 +94,8 @@ def auto_title_session(
     try:
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
+        if on_title_set:
+            on_title_set(session_id, title)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
 
@@ -98,12 +106,16 @@ def maybe_auto_title(
     user_message: str,
     assistant_response: str,
     conversation_history: list,
+    on_title_set=None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
     Only generates a title when:
     - This appears to be the first user→assistant exchange
     - No title is already set
+
+    If on_title_set is provided, it is called with (session_id, title) after
+    a title is successfully generated and stored.
     """
     if not session_db or not session_id or not user_message or not assistant_response:
         return
@@ -119,6 +131,7 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
+        kwargs={"on_title_set": on_title_set},
         daemon=True,
         name="auto-title",
     )

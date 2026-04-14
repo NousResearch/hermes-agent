@@ -377,6 +377,35 @@ platforms:
 To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and look at the URL: `https://t.me/c/1234567890/5` — the last number (`5`) is the `thread_id`. The `chat_id` for supergroups is the group ID prefixed with `-100` (e.g., group `1234567890` becomes `-1001234567890`).
 :::
 
+## Auto-Rename Forum Topics
+
+When enabled, Hermes automatically renames Telegram forum topics to match the session title — whether that title was auto-generated after the first exchange or set manually via `/title`.
+
+This keeps your Telegram topic list scannable at a glance: instead of generic names like "General" or "Topic 3", each topic shows what the conversation is actually about.
+
+### Enable
+
+Add `auto_rename_topics: true` under `platforms.telegram.extra` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      auto_rename_topics: true
+```
+
+### How it works
+
+1. **Auto-generated titles:** After the first user→assistant exchange, Hermes generates a short title via an auxiliary LLM call (runs in the background, never delays your reply). Once generated, the forum topic is renamed to match.
+2. **Manual `/title`:** When you set a title with `/title My Topic`, the forum topic is renamed immediately.
+3. **Only forum topics:** The rename only fires when the source has a `thread_id` (i.e., it's a forum topic in a supergroup or DM with topics enabled). Regular DM messages and group messages without topics are unaffected.
+
+### Requirements
+
+- The bot must be an **admin** in the supergroup (or the topic creator in DM topics) to rename topics.
+- This only applies to the **Telegram** platform — other platforms are unaffected.
+- The feature is **off by default** — opt in via the config shown above.
+
 ## Recent Bot API Features
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.

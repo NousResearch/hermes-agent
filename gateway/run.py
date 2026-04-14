@@ -6025,6 +6025,65 @@ class GatewayRunner:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
 
+    def _make_title_rename_callback(self, source: SessionSource):
+        """Return a (session_id, title) callback that renames a Telegram forum topic.
+
+        Returns None if the platform is not Telegram, the source has no thread_id,
+        or auto_rename_topics is disabled.  The callback is thread-safe — it
+        schedules the async rename on the running event loop via
+        call_soon_threadsafe.
+        """
+        from gateway.config import Platform as _Platform
+        if source.platform != _Platform.TELEGRAM:
+            return None
+        if not source.thread_id:
+            return None
+        adapter = self.adapters.get(_Platform.TELEGRAM)
+        if not adapter:
+            return None
+        if not getattr(adapter, "_is_auto_rename_topics_enabled", None):
+            return None
+        if not adapter._is_auto_rename_topics_enabled():
+            return None
+
+        import asyncio
+        _loop = asyncio.get_running_loop()
+        chat_id = int(source.chat_id)
+        thread_id = int(source.thread_id)
+
+        def _on_title_set(_session_id: str, title: str) -> None:
+            try:
+                _loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
+                    adapter.rename_forum_topic(chat_id, thread_id, title),
+                )
+            except Exception:
+                pass
+
+        return _on_title_set
+
+    async def _rename_topic_for_source(self, source: SessionSource, title: str) -> None:
+        """Rename the Telegram forum topic for the given source, if enabled.
+
+        This is the async helper used by _handle_title_command (manual /title).
+        """
+        from gateway.config import Platform as _Platform
+        if source.platform != _Platform.TELEGRAM or not source.thread_id:
+            return
+        adapter = self.adapters.get(_Platform.TELEGRAM)
+        if not adapter:
+            return
+        if not getattr(adapter, "_is_auto_rename_topics_enabled", lambda: False)():
+            return
+        try:
+            await adapter.rename_forum_topic(
+                int(source.chat_id),
+                int(source.thread_id),
+                title,
+            )
+        except Exception:
+            pass
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
@@ -6060,6 +6119,11 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Also rename the Telegram forum topic if auto-rename is on
+                    try:
+                        await self._rename_topic_for_source(source, sanitized)
+                    except Exception:
+                        pass
                     return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."
@@ -8558,12 +8622,16 @@ class GatewayRunner:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    # Build an on_title_set callback that renames the Telegram
+                    # forum topic when auto_rename_topics is enabled.
+                    _title_callback = self._make_title_rename_callback(source)
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
                         message,
                         final_response,
                         all_msgs,
+                        on_title_set=_title_callback,
                     )
                 except Exception:
                     pass

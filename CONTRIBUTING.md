@@ -583,6 +583,24 @@ If your PR affects security, note it explicitly in the description.
 
 ## Pull Request Process
 
+### Git workflow policy (required)
+
+Priority order:
+
+1. **`main` stays clean and fast-forward only**
+   - Do not do local feature/customization work on `main`
+   - Update `main` with `git pull --ff-only`
+2. **Customizations live on dedicated branches (or your fork)**
+   - Keep a long-lived baseline branch (example: `custom/michael-baseline`)
+   - Do daily work on short-lived `feat/*`, `fix/*`, `refactor/*`, `docs/*` branches
+3. **Use rebase-first sync for active branches**
+   - `git fetch` then rebase your branch onto the latest base branch
+   - Keep history linear and conflict scope small
+4. **Use PRs as integration checkpoints**
+   - Even for solo/multi-machine work, push branches and integrate through PRs
+5. **Resolve conflicts early and document meaningful resolutions**
+   - Prefer small, frequent rebases instead of large catch-up merges
+
 ### Branch naming
 
 ```
@@ -591,6 +609,7 @@ feat/description       # New features
 docs/description       # Documentation
 test/description       # Tests
 refactor/description   # Code restructuring
+custom/description     # Long-lived customization baseline
 ```
 
 ### Before submitting
@@ -599,6 +618,34 @@ refactor/description   # Code restructuring
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider Windows and macOS
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.
+
+### Multi-machine workflow (required)
+
+When switching machines:
+
+1. Commit your work-in-progress to a branch (never leave important changes only in working tree)
+2. Push branch to remote: `git push -u origin <branch>`
+3. On the next machine: `git fetch origin` then `git switch <branch>`
+4. Rebase onto latest base branch before continuing work
+
+This prevents hidden drift and makes conflict resolution reproducible.
+
+### Pull/update protocol
+
+For routine updates:
+
+1. `git switch main`
+2. Ensure clean tree: `git status`
+3. `git pull --ff-only origin main`
+4. `git switch <your-branch>`
+5. `git rebase main` (or your chosen base branch)
+
+### Conflict resolution protocol
+
+- Resolve conflicts in the smallest possible batch
+- Run targeted tests immediately after each resolution batch
+- Commit conflict-only fixes with explicit messages (`fix: resolve rebase conflict in <area>`)
+- Enable `git rerere` locally to amortize repeated conflicts
 
 ### PR description
 

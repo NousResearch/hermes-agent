@@ -43,6 +43,9 @@ Fixes #
 ### Code
 
 - [ ] I've read the [Contributing Guide](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md)
+- [ ] I did not develop this change on `main` (feature/fix/docs branch only)
+- [ ] My local `main` updates with `git pull --ff-only` (no local-only commits on `main`)
+- [ ] My branch is rebased onto the latest base branch (`main` or approved alternative)
 - [ ] My commit messages follow [Conventional Commits](https://www.conventionalcommits.org/) (`fix(scope):`, `feat(scope):`, etc.)
 - [ ] I searched for [existing PRs](https://github.com/NousResearch/hermes-agent/pulls) to make sure this isn't a duplicate
 - [ ] My PR contains **only** changes related to this fix/feature (no unrelated commits)

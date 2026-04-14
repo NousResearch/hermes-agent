@@ -156,6 +156,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi": 262144,
     # Arcee
     "trinity": 262144,
+    # OpenRouter
+    "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
     "Qwen/Qwen3.5-397B-A17B": 131072,
     "Qwen/Qwen3.5-35B-A3B": 131072,

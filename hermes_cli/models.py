@@ -29,6 +29,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("qwen/qwen3.6-plus",               ""),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
+    ("openrouter/elephant-alpha",       "free"),
     ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",             ""),
     ("xiaomi/mimo-v2-pro",               ""),
@@ -97,6 +98,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
+        "openrouter/elephant-alpha",
     ],
     "openai-codex": _codex_curated_models(),
     "copilot-acp": [

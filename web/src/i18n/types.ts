@@ -83,6 +83,7 @@ export interface Translations {
     notRunning: string;
     startFailed: string;
     pid: string;
+    runningRemote: string;
     noneRunning: string;
     gatewayFailedToStart: string;
     lastUpdate: string;

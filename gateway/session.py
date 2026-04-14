@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path

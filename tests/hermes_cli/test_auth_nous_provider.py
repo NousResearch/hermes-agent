@@ -129,6 +129,76 @@ def _mint_payload(api_key: str = "agent-key") -> dict:
     }
 
 
+def test_get_nous_auth_status_checks_credential_pool(tmp_path, monkeypatch):
+    """get_nous_auth_status() should find Nous credentials in the pool
+    even when the auth store has no Nous provider entry — this is the
+    case when login happened via the dashboard device-code flow which
+    saves to the pool only.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    # Empty auth store — no Nous provider entry
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Seed the credential pool with a Nous entry
+    from agent.credential_pool import PooledCredential, load_pool
+    pool = load_pool("nous")
+    entry = PooledCredential.from_dict("nous", {
+        "access_token": "test-access-token",
+        "refresh_token": "test-refresh-token",
+        "portal_base_url": "https://portal.example.com",
+        "inference_base_url": "https://inference.example.com/v1",
+        "agent_key": "test-agent-key",
+        "agent_key_expires_at": "2099-01-01T00:00:00+00:00",
+        "label": "dashboard device_code",
+        "auth_type": "oauth",
+        "source": "manual:dashboard_device_code",
+        "base_url": "https://inference.example.com/v1",
+    })
+    pool.add_entry(entry)
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert "example.com" in str(status.get("portal_base_url", ""))
+
+
+def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
+    """get_nous_auth_status() falls back to auth store when credential
+    pool is empty.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-123")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+
+
+def test_get_nous_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatch):
+    """get_nous_auth_status() returns logged_in=False when both pool
+    and auth store are empty.
+    """
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1, "providers": {},
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is False
+
+
 def test_refresh_token_persisted_when_mint_returns_insufficient_credits(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, refresh_token="refresh-old")

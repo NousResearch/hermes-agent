@@ -21,7 +21,6 @@ from tools.vision_tools import (
     _RESIZE_TARGET_BYTES,
     vision_analyze_tool,
     check_vision_requirements,
-    get_debug_session_info,
 )
 
 
@@ -441,7 +440,7 @@ class TestVisionSafetyGuards:
 
 
 # ---------------------------------------------------------------------------
-# check_vision_requirements & get_debug_session_info
+# check_vision_requirements
 # ---------------------------------------------------------------------------
 
 
@@ -465,14 +464,6 @@ class TestVisionRequirements:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         assert check_vision_requirements() is True
-
-    def test_debug_session_info_returns_dict(self):
-        info = get_debug_session_info()
-        assert isinstance(info, dict)
-        # DebugSession.get_session_info() returns these keys
-        assert "enabled" in info
-        assert "session_id" in info
-        assert "total_calls" in info
 
 
 # ---------------------------------------------------------------------------

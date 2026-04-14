@@ -139,6 +139,22 @@ class TestSendOrEditMediaStripping:
 
         adapter.send.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_cursor_only_update_skips_send(self):
+        """A bare streaming cursor should not be sent as its own message."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(cursor=" ▉"),
+        )
+        await consumer._send_or_edit(" ▉")
+
+        adapter.send.assert_not_called()
+
 
 # ── Integration: full stream run ─────────────────────────────────────────
 

@@ -88,11 +88,6 @@ def test_modal_backend_with_managed_gateway_does_not_require_direct_creds_or_min
     monkeypatch.setenv("TERMINAL_MODAL_MODE", "managed")
     monkeypatch.setattr(terminal_tool_module, "is_managed_tool_gateway_ready", lambda _vendor: True)
     monkeypatch.setattr(
-        terminal_tool_module,
-        "ensure_minisweagent_on_path",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not be called")),
-    )
-    monkeypatch.setattr(
         terminal_tool_module.importlib.util,
         "find_spec",
         lambda _name: (_ for _ in ()).throw(AssertionError("should not be called")),

@@ -258,6 +258,10 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    # Approval approvers — list of user IDs who can approve denied commands.
+    # If empty, any allowed user can approve. Format: ["5137755622", "123456789"]
+    approvers: List[str] = field(default_factory=list)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -357,6 +361,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "approvers": self.approvers,
         }
     
     @classmethod
@@ -404,6 +409,15 @@ class GatewayConfig:
             "pair",
         )
 
+        # Load approvers list from approvals section or top-level
+        approvals_data = data.get("approvals", {})
+        if isinstance(approvals_data, dict):
+            approvers = approvals_data.get("approvers", [])
+        else:
+            approvers = data.get("approvers", [])
+        if not isinstance(approvers, list):
+            approvers = []
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -418,6 +432,7 @@ class GatewayConfig:
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            approvers=approvers,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:

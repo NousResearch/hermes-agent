@@ -174,6 +174,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Reaction task references to prevent GC of fire-and-forget tasks
+        self._reaction_tasks: set = set()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -2865,7 +2867,10 @@ class TelegramAdapter(BasePlatformAdapter):
         Args:
             chat_id: Target chat (int or str).
             message_id: Message to react to (int or str).
-            emoji: A single emoji string, e.g. ``"👍"``.
+            emoji: A single emoji string, e.g. ``"👍"``. Must be from Telegram's
+                default reaction set: 👍 ❤️ 🔥 🥰 👏 😁 😍 🤩 😘 🤔 😱 🤯
+                😢 😡 🎉 🤮 💩 🙏 👎 😐 😊 🥱 😴 🤡 🤣 😎 🤗 🫣 😏 👌 🤝
+                ✌️ 🫶 👀 💀 🙈
             is_big: Whether to show the reaction as a big animation.
 
         Returns:
@@ -2882,7 +2887,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            logger.warning("[%s] set_message_reaction failed (%s): %s %s", self.name, emoji, type(e).__name__, e)
             return False
 
     # ── Smart reaction selection ──────────────────────────────────────────
@@ -2893,6 +2898,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
         The function applies a priority-ordered list of keyword / regex rules.
         First matching category wins.  Falls back to ``"👍"`` for generic replies.
+
+        Note: All emojis are chosen from Telegram's default reaction set to ensure
+        compatibility across all chats (groups, channels, private).
+        Reference: https://core.telegram.org/bots/api#messagereactionupdated
         """
         if not text:
             return "👍"
@@ -2909,7 +2918,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "重试", "超时", "内存不足", "不支持",
         ]
         if any(p in lower for p in _ERROR_PATTERNS):
-            return "❌"
+            return "😢"
 
         # --- Success / completion ---
         _SUCCESS_PATTERNS = [
@@ -2920,16 +2929,16 @@ class TelegramAdapter(BasePlatformAdapter):
             "已部署", "已更新", "已创建", "已修复", "已解决",
         ]
         if any(p in lower for p in _SUCCESS_PATTERNS):
-            return "✅"
+            return "👍"
 
         # --- Warning ---
         _WARN_PATTERNS = ["warning", "caution", "be careful", "note that", "keep in mind", "警告", "注意", "小心", "谨慎", "提醒"]
         if any(p in lower for p in _WARN_PATTERNS):
-            return "⚠️"
+            return "😮"
 
         # --- Code / technical ---
         if re.search(r"```[\s\S]*?```|`[^`]+`", text):
-            return "💻"
+            return "🤔"
         _CODE_PATTERNS = [
             "function", "class ", "def ", "import ", "pip install",
             "npm install", "git clone", "api endpoint", "http://", "https://",
@@ -2940,7 +2949,7 @@ class TelegramAdapter(BasePlatformAdapter):
             "前端", "后端", "测试", "编译", "运行", "安装", "依赖",
         ]
         if any(p in lower for p in _CODE_PATTERNS):
-            return "💻"
+            return "🤔"
 
         # --- News / information ---
         _NEWS_PATTERNS = [
@@ -2950,14 +2959,14 @@ class TelegramAdapter(BasePlatformAdapter):
             "早报", "晚报", "开盘", "收盘",
         ]
         if any(p in lower for p in _NEWS_PATTERNS):
-            return "📰"
+            return "🤩"
 
         # --- Weather ---
         _WEATHER_KEYWORDS = ["weather", "temperature", "forecast", "°c", "°f", "rain", "snow", "sunny", "cloudy", "humid", "天气", "温度", "预报", "℃", "°c", "°f", "下雨", "雪", "晴", "阴", "湿度", "℃", "度"]
         if any(p in lower for p in _WEATHER_KEYWORDS):
             if any(bad in lower for bad in ("rain", "snow", "storm", "cloudy", "overcast", "下雨", "雪", "阴", "多云")):
-                return "🌧️"
-            return "☀️"
+                return "😢"
+            return "🔥"
 
         # --- Humor / jokes ---
         _HUMOR_PATTERNS = [
@@ -2966,36 +2975,36 @@ class TelegramAdapter(BasePlatformAdapter):
             "哈哈", "笑话", "搞笑", "😂", "😄", "笑死", "乐", "逗", "幽默", "hh",
         ]
         if any(p in lower for p in _HUMOR_PATTERNS):
-            return "😄"
+            return "😂"
 
         # --- Location / maps ---
         _LOCATION_PATTERNS = ["location", "address", "map", "distance", "direction", "route", "navigation", "位置", "地址", "地图", "距离", "方向", "路线", "导航", "在哪里", "在哪"]
         if any(p in lower for p in _LOCATION_PATTERNS):
-            return "📍"
+            return "🤔"
 
         # --- Image / photo ---
         _IMAGE_PATTERNS = ["image", "photo", "picture", "screenshot", "diagram", "chart"]
         if any(p in lower for p in _IMAGE_PATTERNS):
-            return "🖼️"
+            return "🤩"
 
         # --- Math ---
         if re.search(r'\d+\s*[+\-*/×÷=]\s*\d+|\bequation\b|\bformula\b|\bcalculate\b', lower):
-            return "🔢"
+            return "🤔"
 
         # --- Music ---
         _MUSIC_PATTERNS = ["song", "music", "lyrics", "album", "playlist", "melody", "chord"]
         if any(p in lower for p in _MUSIC_PATTERNS):
-            return "🎵"
+            return "😍"
 
         # --- Book / learning ---
         _BOOK_PATTERNS = ["book", "chapter", "read", "study", "learn", "course", "tutorial", "lecture"]
         if any(p in lower for p in _BOOK_PATTERNS):
-            return "📚"
+            return "🤔"
 
         # --- Heart / love / appreciation ---
         _HEART_PATTERNS = ["love", "beautiful", "amazing", "wonderful", "thank you", "appreciate", "great"]
         if any(p in lower for p in _HEART_PATTERNS):
-            return "❤️"
+            return "❤\ufe0f"
 
         # --- Question / thinking ---
         if text.endswith("?") and len(text) < 100:
@@ -3007,29 +3016,24 @@ class TelegramAdapter(BasePlatformAdapter):
     # ── Processing lifecycle hooks ────────────────────────────────────────
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction (👁️) when message processing begins."""
+        """Add an in-progress reaction (👀) when message processing begins."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            # Fire-and-forget — never block the processing pipeline
-            asyncio.ensure_future(
-                self.set_message_reaction(chat_id, message_id, "👁️"),
+            # Use create_task with a stored reference to prevent GC
+            task = asyncio.create_task(
+                self._do_reaction(chat_id, message_id, "👀", "start")
             )
+            self._reaction_tasks.add(task)
+            task.add_done_callback(self._reaction_tasks.discard)
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome,
         response_text: str = "",
     ) -> None:
-        """Swap the in-progress reaction for a final emoji.
-
-        Unlike Discord (additive reactions), Telegram's ``setMessageReaction``
-        replaces all existing reactions in one call — no remove step needed.
-
-        The reaction is picked intelligently based on *response_text* when
-        processing succeeded, or is ❌ / ⭕ for failure / cancelled.
-        """
+        """Swap the in-progress reaction for a final emoji."""
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
@@ -3037,15 +3041,41 @@ class TelegramAdapter(BasePlatformAdapter):
         if not (chat_id and message_id):
             return
         if outcome == ProcessingOutcome.CANCELLED:
-            return  # leave the 👁️ in place
+            return
         if outcome == ProcessingOutcome.FAILURE:
-            emoji = "❌"
+            emoji = "😢"
         else:
             emoji = self._pick_reaction_emoji(response_text)
-        # Fire-and-forget
-        asyncio.ensure_future(
-            self.set_message_reaction(chat_id, message_id, emoji),
+        task = asyncio.create_task(
+            self._do_reaction(chat_id, message_id, emoji, "complete")
         )
+        self._reaction_tasks.add(task)
+        task.add_done_callback(self._reaction_tasks.discard)
+
+    async def _do_reaction(
+        self, chat_id, message_id, emoji: str, stage: str
+    ) -> None:
+        """Execute a reaction API call with logging."""
+        try:
+            logger.info(
+                "[%s] Setting reaction %s on msg %s in chat %s (stage=%s)",
+                self.name, emoji, message_id, chat_id, stage,
+            )
+            ok = await self.set_message_reaction(
+                chat_id, message_id, emoji,
+            )
+            if not ok:
+                logger.warning(
+                    "[%s] Reaction %s FAILED (stage=%s)", self.name, emoji, stage,
+                )
+            else:
+                logger.info(
+                    "[%s] Reaction %s OK (stage=%s)", self.name, emoji, stage,
+                )
+        except Exception as e:
+            logger.error(
+                "[%s] Reaction exception (%s): %s", self.name, stage, e, exc_info=True,
+            )
 
     # ── Incoming reaction events (user reacts to bot messages) ────────────
 

@@ -1385,10 +1385,27 @@ class BasePlatformAdapter(ABC):
     # (e.g. Discord adds 👀/✅/❌ reactions).
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Hook called when background processing begins."""
+        """Hook called when background processing begins.
 
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Hook called when background processing completes."""
+        Subclasses override to react to processing start (e.g. add 👀 reaction).
+        """
+        pass
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome,
+        response_text: str = "",
+    ) -> None:
+        """Hook called when background processing completes.
+
+        Subclasses override to react to completion (e.g. set ✅/❌ reaction).
+
+        Args:
+            event: The original incoming message event.
+            outcome: SUCCESS, FAILURE, or CANCELLED.
+            response_text: The response that was sent to the user (empty when
+                the handler returned None or an error occurred).
+        """
+        pass
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
@@ -1850,10 +1867,14 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            # Pass the response text to the hook so subclasses can pick a
+            # smart emoji reaction based on content.
+            _hook_response_text = (text_content or "") if response else ""
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
                 ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                _hook_response_text,
             )
 
             # Check if there's a pending message that was queued during our processing

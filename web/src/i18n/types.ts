@@ -178,8 +178,10 @@ export interface Translations {
     noSkills: string;
     noSkillsMatch: string;
     skillCount: string;
+    resultCount: string;
     noDescription: string;
     toolsets: string;
+    toolsetLabel: string;
     noToolsetsMatch: string;
     setupNeeded: string;
     disabledForCli: string;

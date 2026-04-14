@@ -449,12 +449,13 @@ NAMESPACE_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
 
 def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
-    """将 'namespace:skill-name' 拆分为 (namespace, bare_name)。
+    """Split 'namespace:skill-name' into (namespace, bare_name).
 
-    仅在第一个 ':' 处拆分 — 含多个冒号的名称将剩余部分保留在 bare_name 中。
-    验证由 is_valid_namespace() 单独完成。
+    Splits on the first ':' only — names with multiple colons keep the
+    remainder in bare_name. Validation is done separately via
+    is_valid_namespace().
 
-    不含 ':' 时返回 (None, name)。
+    Returns (None, name) when there is no ':'.
     """
     if ":" not in name:
         return None, name
@@ -463,9 +464,9 @@ def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
 
 
 def build_qualified_name(namespace: Optional[str], bare: str) -> str:
-    """parse_qualified_name 的逆操作 — 拼接 'namespace:bare'。
+    """Inverse of parse_qualified_name — compose 'namespace:bare'.
 
-    当 namespace 为 None 或空字符串时，直接返回 bare 名称。
+    Returns the bare name unchanged when namespace is None or empty.
     """
     if not namespace:
         return bare
@@ -473,10 +474,11 @@ def build_qualified_name(namespace: Optional[str], bare: str) -> str:
 
 
 def is_valid_namespace(candidate: Optional[str]) -> bool:
-    """检查命名空间是否合法。
+    """Check whether a namespace is valid.
 
-    合法的命名空间匹配 [a-zA-Z0-9_-]+。设计上严格限制 —
-    该集合之外的任何字符都会与 ':' 分隔符冲突或在限定名称解析中造成歧义。
+    Valid namespaces match [a-zA-Z0-9_-]+. This is strict by design —
+    any character outside this set would conflict with the ':' separator
+    or create ambiguity in qualified name parsing.
     """
     if not candidate:
         return False

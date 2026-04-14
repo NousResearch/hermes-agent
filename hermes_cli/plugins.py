@@ -330,7 +330,8 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
-        # 插件技能注册表：键为 "plugin:skill" 的限定名，值为技能元数据字典
+        # Plugin skill registry: keyed by qualified name "plugin:skill",
+        # values are dicts with skill metadata.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
@@ -609,7 +610,7 @@ class PluginManager:
         return result
 
     # -----------------------------------------------------------------------
-    # 插件技能注册表
+    # Plugin skill registry
     # -----------------------------------------------------------------------
 
     def _register_plugin_skill(
@@ -619,9 +620,9 @@ class PluginManager:
         path: Path,
         description: str,
     ) -> None:
-        """由 PluginContext.register_skill() 调用。
+        """Called from PluginContext.register_skill().
 
-        以限定名 'plugin:skill' 为键存储技能条目。
+        Stores the skill entry keyed by qualified name 'plugin:skill'.
         """
         qualified = f"{plugin_name}:{skill_name}"
         self._plugin_skills[qualified] = {
@@ -632,12 +633,12 @@ class PluginManager:
         }
 
     def find_plugin_skill(self, qualified_name: str) -> Optional[Path]:
-        """返回插件技能 SKILL.md 的 Path，若未找到则返回 None。"""
+        """Return the Path to a plugin skill's SKILL.md, or None if not found."""
         entry = self._plugin_skills.get(qualified_name)
         return entry["path"] if entry else None
 
     def list_plugin_skills(self, plugin_name: str) -> List[str]:
-        """返回某插件注册的所有技能的裸名（bare name），按字母排序。"""
+        """Return the bare names of all skills registered by a plugin, sorted."""
         prefix = f"{plugin_name}:"
         return sorted(
             entry["bare_name"]
@@ -646,11 +647,12 @@ class PluginManager:
         )
 
     def _remove_plugin_skill(self, qualified_name: str) -> None:
-        """按限定名删除一条插件技能注册条目。
+        """Remove a plugin skill registry entry by qualified name.
 
-        缺失的键会被静默忽略——即使条目可能不存在也可安全调用。
-        是否需要删除由调用方决定（例如 skill_view 限定名路径中的
-        过期文件检测）。
+        Silently ignores missing keys — safe to call even when the entry
+        may not exist. Callers are responsible for deciding when removal
+        is warranted (e.g. stale-file detection in skill_view's qualified
+        name path).
         """
         self._plugin_skills.pop(qualified_name, None)
 

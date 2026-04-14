@@ -1091,7 +1091,7 @@ class TestSkillViewQualifiedNameDispatch:
 
 class TestSkillViewPluginSkillResolution:
     def _setup_plugin_skill(self, tmp_path, plugin_name="superpowers", skill_name="writing-plans"):
-        """创建一个假的插件目录，包含一个 skill，返回 (plugin_dir, skill_md)。"""
+        """Create a fake plugin dir with a single skill and return (plugin_dir, skill_md)."""
         plugin_dir = tmp_path / "plugins" / plugin_name
         skill_dir = plugin_dir / "skills" / skill_name
         skill_dir.mkdir(parents=True)
@@ -1106,7 +1106,7 @@ class TestSkillViewPluginSkillResolution:
         return plugin_dir, skill_md
 
     def _register_fake_plugin(self, plugin_name, skill_name, skill_md):
-        """直接向 PluginManager 注册一个假的插件 skill。"""
+        """Register a fake plugin skill directly in the PluginManager."""
         from hermes_cli.plugins import get_plugin_manager
         pm = get_plugin_manager()
         pm._register_plugin_skill(
@@ -1124,7 +1124,7 @@ class TestSkillViewPluginSkillResolution:
         monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "empty-local")
         (tmp_path / "empty-local").mkdir()
 
-        # 清除前一个测试可能残留的 PluginManager 状态
+        # Clear any leftover plugin manager state from prior tests
         from hermes_cli.plugins import PluginManager
         import hermes_cli.plugins as plugins_mod
         monkeypatch.setattr(plugins_mod, "_plugin_manager", PluginManager())
@@ -1404,7 +1404,7 @@ class TestSkillViewStaleRegistrySelfHeal:
         pm = plugins_mod.get_plugin_manager()
         pm._register_plugin_skill("myplugin", "foo", skill_md, "")
 
-        # 已注册，但现在在注册表不知情的情况下删除文件
+        # Registered, but now delete the file behind the registry's back
         skill_md.unlink()
 
         raw = skill_view("myplugin:foo")
@@ -1412,5 +1412,5 @@ class TestSkillViewStaleRegistrySelfHeal:
 
         assert result["success"] is False
         assert "no longer exists" in result["error"]
-        # 条目应已从注册表中移除
+        # The entry should have been removed from the registry
         assert pm.find_plugin_skill("myplugin:foo") is None

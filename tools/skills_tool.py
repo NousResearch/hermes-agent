@@ -793,10 +793,11 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
 
 def _build_bundle_context_banner(namespace: str, siblings: List[str]) -> str:
-    """构建插件 skill 响应前置的元数据 banner。
+    """Build the metadata banner prepended to plugin skill content.
 
-    告知 agent 此 skill 属于某个插件 bundle，并列出兄弟 skill，
-    以便正文中的裸名引用可在上下文中被解读为限定引用。
+    Informs the agent that this skill is part of a plugin bundle and
+    which sibling skills exist, so bare-name references in the body can
+    be contextually interpreted as qualified references.
     """
     if not siblings:
         return f"[Bundle context: This skill is part of the '{namespace}' plugin.]"
@@ -815,10 +816,13 @@ def _serve_plugin_skill(
     bare: str,
     file_path: Optional[str],
 ) -> str:
-    """读取插件 skill，执行平台/禁用/注入检查，返回 JSON 响应。"""
+    """Read a plugin skill, apply platform/disabled/injection checks, return JSON.
+
+    Banner injection is handled at the end of this function.
+    """
     from hermes_cli.plugins import _get_disabled_plugins
 
-    # 检查：插件是否已被禁用（最优先，无需 I/O）
+    # Check: plugin disabled (cheapest gate, no I/O required)
     if namespace in _get_disabled_plugins():
         return json.dumps(
             {
@@ -831,7 +835,7 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
-    # 读取文件内容
+    # Read file content
     try:
         content = skill_md.read_text(encoding="utf-8")
     except Exception as e:
@@ -843,14 +847,14 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
-    # 解析 frontmatter
+    # Parse frontmatter
     parsed_frontmatter: Dict[str, Any] = {}
     try:
         parsed_frontmatter, _ = _parse_frontmatter(content)
     except Exception:
         parsed_frontmatter = {}
 
-    # 平台检查
+    # Platform check
     if not skill_matches_platform(parsed_frontmatter):
         return json.dumps(
             {
@@ -863,8 +867,9 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
-    # 注入模式扫描 — 记录警告但仍提供 skill（与现有行为保持一致）
-    # 模式列表见模块级 _INJECTION_PATTERNS 常量
+    # Injection pattern scan — log a warning but still serve the skill
+    # (matches existing local-skill behavior). Pattern list lives at
+    # module level as _INJECTION_PATTERNS.
     content_lower = content.lower()
     if any(p in content_lower for p in _INJECTION_PATTERNS):
         logger.warning(
@@ -876,11 +881,12 @@ def _serve_plugin_skill(
     if len(description) > MAX_DESCRIPTION_LENGTH:
         description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
 
-    # 构建 bundle 上下文 banner — 失败时降级处理
+    # Build the bundle context banner — degrade gracefully on failure
     from hermes_cli.plugins import get_plugin_manager
     try:
         all_skills = get_plugin_manager().list_plugin_skills(namespace)
-        # 排除当前正在服务的 skill —— "siblings" 表示 bundle 中的其他 skill
+        # Exclude the currently-served skill — "siblings" means OTHER skills
+        # in the same bundle, not including the one being requested.
         siblings = [s for s in all_skills if s != bare]
         banner = _build_bundle_context_banner(namespace, siblings)
     except Exception as exc:
@@ -889,13 +895,14 @@ def _serve_plugin_skill(
 
     final_content = f"{banner}\n\n{content}" if banner else content
 
-    # 注意：`name` 字段回显调用方提供的限定名称
-    # （plugin_name:directory_name），而不是 frontmatter 中的 `name`。
-    # 插件 skill 在注册时按目录名作为 key 存入 registry
-    # （参见 Task 3 的 ctx.register_skill），所以通过
-    # skill_view(result["name"]) 往返查询时必须产出相同的限定名称。
-    # 这与本地 skill 路径不同 —— 本地路径从 frontmatter 派生 skill_name，
-    # 但插件 skill 必须保持 registry-key 不变，故采用此形式。
+    # Note: the `name` field echoes the caller-supplied qualified name
+    # (plugin_name:directory_name), NOT the frontmatter `name`. Plugin
+    # skills are keyed in the registry by the directory name at registration
+    # time (see PluginContext.register_skill), so round-tripping via
+    # skill_view(result["name"]) must produce the same qualified name.
+    # This differs from the local-skill path which derives skill_name from
+    # frontmatter, but the registry-key invariant requires this form for
+    # plugin skills.
     return json.dumps(
         {
             "success": True,
@@ -922,7 +929,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
-        # 新增：带命名空间的限定名称分发 — 路由到插件提供的 skill
+        # Qualified name dispatch — route plugin-provided skills via the
+        # PluginManager registry. Bare names fall through to the existing
+        # flat-tree scan below, so this branch is purely additive.
         if ":" in name:
             from agent.skill_utils import (
                 is_valid_namespace,
@@ -946,13 +955,15 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 get_plugin_manager,
             )
 
-            discover_plugins()  # 幂等的懒发现
+            discover_plugins()  # idempotent lazy discovery
             pm = get_plugin_manager()
             plugin_skill_md = pm.find_plugin_skill(name)
 
             if plugin_skill_md is not None:
                 if not plugin_skill_md.exists():
-                    # 自愈：文件已被删除但注册表条目仍存在，清理过期条目
+                    # Self-heal: the registry entry is stale (file was
+                    # deleted out of band). Clean it up and surface a
+                    # clear error so the caller knows what happened.
                     pm._remove_plugin_skill(name)
                     return json.dumps(
                         {
@@ -970,7 +981,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     plugin_skill_md, namespace, bare, file_path
                 )
 
-            # 插件注册表未命中 — 检查插件本身是否存在但技能缺失
+            # Registry miss — check whether the plugin itself exists
+            # but the requested skill is missing. If so, return a precise
+            # error listing the plugin's available skills as suggestions.
             available = pm.list_plugin_skills(namespace)
             if available:
                 return json.dumps(
@@ -987,7 +1000,9 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     },
                     ensure_ascii=False,
                 )
-            # 插件本身不存在 — 穿透到平铺扫描以获取 "not found" 错误
+            # The plugin itself doesn't exist — fall through to the
+            # flat-tree scan, which will return a "not found" error
+            # along with available local skill suggestions.
 
         from agent.skill_utils import get_external_skills_dirs
 
@@ -1083,7 +1098,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 continue
 
         # Security: detect common prompt injection patterns
-        # 模式列表见模块级 _INJECTION_PATTERNS 常量
+        # (pattern list lives at module level as _INJECTION_PATTERNS)
         _content_lower = content.lower()
         _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
 

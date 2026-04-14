@@ -324,6 +324,13 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
+    "matrix": (
+        "You are connected via Matrix, a decentralized messaging protocol. "
+        "When the Matrix-specific toolset is available, you can manage Matrix rooms and events "
+        "using tools such as matrix_send_reaction, matrix_redact_message, matrix_create_room, "
+        "matrix_invite_user, matrix_fetch_history, and matrix_set_presence. "
+        "Messages support rich HTML formatting via org.matrix.custom.html."
+    ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "

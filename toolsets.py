@@ -202,6 +202,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "matrix": {
+        "description": "Matrix room interaction and management tools",
+        "tools": [
+            "matrix_send_reaction",
+            "matrix_redact_message",
+            "matrix_create_room",
+            "matrix_invite_user",
+            "matrix_fetch_history",
+            "matrix_set_presence",
+        ],
+        "includes": []
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -222,6 +235,9 @@ TOOLSETS = {
         "tools": [
             "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
             "spotify_playlists", "spotify_albums", "spotify_library",
+        ],
+        "includes": []
+    },
         ],
         "includes": []
     },
@@ -377,7 +393,7 @@ TOOLSETS = {
     "hermes-matrix": {
         "description": "Matrix bot toolset - decentralized encrypted messaging (full access)",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["matrix"]
     },
 
     "hermes-dingtalk": {

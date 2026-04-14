@@ -609,6 +609,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 await api.session.close()
                 return False
 
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(self)
+        except ImportError:
+            pass
+
         # Register event handlers.
         from mautrix.client import InternalEventType as IntEvt
         from mautrix.client.dispatcher import MembershipEventDispatcher
@@ -673,6 +679,12 @@ class MatrixAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Matrix."""
         self._closing = True
+
+        try:
+            from tools.matrix_tools import set_matrix_adapter
+            set_matrix_adapter(None)
+        except ImportError:
+            pass
 
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1591,6 +1603,10 @@ class MatrixAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
             return None
+
+    async def send_reaction(self, room_id: str, event_id: str, emoji: str) -> Optional[str]:
+        """Public wrapper for sending an emoji reaction to a Matrix event."""
+        return await self._send_reaction(room_id, event_id, emoji)
 
     async def _redact_reaction(
         self,

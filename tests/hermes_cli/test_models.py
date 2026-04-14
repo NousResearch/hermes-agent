@@ -1,7 +1,5 @@
 """Tests for the hermes_cli models module."""
 
-import sys
-import types
 from unittest.mock import patch
 
 from hermes_cli.models import (
@@ -17,18 +15,6 @@ LIVE_OPENROUTER_MODELS = [
     ("qwen/qwen3.6-plus", ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
 ]
-
-
-def _fake_models_dev_module(model_ids=None, error=None):
-    module = types.ModuleType("agent.models_dev")
-
-    def list_agentic_models(_provider):
-        if error is not None:
-            raise error
-        return list(model_ids or [])
-
-    module.list_agentic_models = list_agentic_models
-    return module
 
 
 
@@ -70,8 +56,7 @@ class TestFetchOpenRouterModels:
                 return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text","image"],"output_modalities":["text"]}},{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text"],"output_modalities":["text"]}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text"],"output_modalities":["text"]}}]}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch.dict(sys.modules, {"agent.models_dev": _fake_models_dev_module([])}), \
-             patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
@@ -80,27 +65,26 @@ class TestFetchOpenRouterModels:
             ("qwen/qwen3.6-plus", ""),
         ]
 
-    def test_falls_back_to_models_dev_when_live_fetch_fails(self, monkeypatch):
+    def test_returns_empty_when_live_fetch_fails(self, monkeypatch):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch.dict(
-            sys.modules,
-            {"agent.models_dev": _fake_models_dev_module(["openai/gpt-5.4", "anthropic/claude-opus-4.6"])},
-        ), \
-             patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
-        assert models == [
-            ("anthropic/claude-opus-4.6", ""),
-            ("openai/gpt-5.4", ""),
-        ]
+        assert models == []
 
-    def test_returns_empty_when_no_catalog_source_is_available(self, monkeypatch):
+    def test_returns_empty_when_payload_is_not_a_model_list(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":{"not":"a-list"}}'
+
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch.dict(
-            sys.modules,
-            {"agent.models_dev": _fake_models_dev_module(error=RuntimeError("no models.dev"))},
-        ), \
-             patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == []

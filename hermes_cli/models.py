@@ -643,20 +643,6 @@ def fetch_openrouter_models(
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
-    models_dev_ids: list[str] = []
-    try:
-        from agent.models_dev import list_agentic_models
-
-        models_dev_ids = sorted(
-            {
-                mid for mid in list_agentic_models("openrouter")
-                if isinstance(mid, str) and mid.strip()
-            },
-            key=_openrouter_picker_sort_key,
-        )
-    except Exception:
-        models_dev_ids = []
-
     try:
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/models",
@@ -665,19 +651,14 @@ def fetch_openrouter_models(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
-        fallback = [(mid, "") for mid in models_dev_ids]
-        _openrouter_catalog_cache = fallback
-        return list(fallback)
+        return []
 
     live_items = payload.get("data", [])
     if not isinstance(live_items, list):
-        fallback = [(mid, "") for mid in models_dev_ids]
-        _openrouter_catalog_cache = fallback
-        return list(fallback)
+        return []
 
     discovered: list[tuple[str, str]] = []
     seen: set[str] = set()
-    models_dev_set = set(models_dev_ids)
 
     for item in live_items:
         if not isinstance(item, dict):
@@ -689,17 +670,12 @@ def fetch_openrouter_models(
             or model_id in seen
         ):
             continue
-        if model_id in models_dev_set or _openrouter_live_item_is_agentic(item):
+        if _openrouter_live_item_is_agentic(item):
             discovered.append((
                 model_id,
                 "free" if _openrouter_model_is_free(item.get("pricing")) else "",
             ))
             seen.add(model_id)
-
-    if not discovered:
-        fallback = [(mid, "") for mid in models_dev_ids]
-        _openrouter_catalog_cache = fallback
-        return list(fallback)
 
     discovered.sort(key=lambda item: _openrouter_picker_sort_key(item[0]))
     _openrouter_catalog_cache = discovered

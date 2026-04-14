@@ -15,14 +15,15 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent import core as agent_core
 
 
 def _patch_bootstrap(monkeypatch):
-    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kwargs: [{
+    monkeypatch.setattr(agent_core, "get_tool_definitions", lambda **kwargs: [{
         "type": "function",
         "function": {"name": "t", "description": "t", "parameters": {"type": "object", "properties": {}}},
     }])
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(agent_core, "check_toolset_requirements", lambda: {})
 
 
 class _FakeAnthropicClient:

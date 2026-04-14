@@ -18,6 +18,7 @@ sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
 sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import run_agent
+from agent import core as agent_core
 
 
 class _FakeOpenAI:
@@ -32,7 +33,7 @@ class _FakeOpenAI:
 
 def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter"):
     """Build an AIAgent with mocked internals, ready for flush_memories testing."""
-    monkeypatch.setattr(run_agent, "get_tool_definitions", lambda **kw: [
+    monkeypatch.setattr(agent_core, "get_tool_definitions", lambda **kw: [
         {
             "type": "function",
             "function": {
@@ -49,8 +50,8 @@ def _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
             },
         },
     ])
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
-    monkeypatch.setattr(run_agent, "OpenAI", _FakeOpenAI)
+    monkeypatch.setattr(agent_core, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(agent_core, "OpenAI", _FakeOpenAI)
 
     agent = run_agent.AIAgent(
         api_key="test-key",

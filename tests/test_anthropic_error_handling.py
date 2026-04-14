@@ -23,6 +23,7 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 
 import gateway.run as gateway_run
 import run_agent
+from agent import core as agent_core
 from gateway.config import Platform
 from gateway.session import SessionSource
 
@@ -47,7 +48,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(agent_core, "check_toolset_requirements", lambda: {})
 
 
 def _anthropic_response(text: str):
@@ -151,7 +152,7 @@ def _run_with_agent(monkeypatch, agent_cls):
     monkeypatch.setattr(
         "agent.anthropic_adapter.build_anthropic_client", _fake_build_anthropic_client
     )
-    monkeypatch.setattr(run_agent, "AIAgent", agent_cls)
+    monkeypatch.setattr(agent_core, "AIAgent", agent_cls)
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
@@ -287,7 +288,7 @@ def test_401_credential_refresh_recovers(monkeypatch):
                 user_message, conversation_history=conversation_history, task_id=task_id
             )
 
-    monkeypatch.setattr(run_agent, "AIAgent", _Auth401ThenSuccessAgent)
+    monkeypatch.setattr(agent_core, "AIAgent", _Auth401ThenSuccessAgent)
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
@@ -360,7 +361,7 @@ def test_401_refresh_fails_is_non_retryable(monkeypatch):
                 user_message, conversation_history=conversation_history, task_id=task_id
             )
 
-    monkeypatch.setattr(run_agent, "AIAgent", _Auth401AlwaysFailAgent)
+    monkeypatch.setattr(agent_core, "AIAgent", _Auth401AlwaysFailAgent)
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",
@@ -448,7 +449,7 @@ def test_prompt_too_long_triggers_compression(monkeypatch):
             )
 
     _PromptTooLongThenSuccessAgent.compress_called = 0
-    monkeypatch.setattr(run_agent, "AIAgent", _PromptTooLongThenSuccessAgent)
+    monkeypatch.setattr(agent_core, "AIAgent", _PromptTooLongThenSuccessAgent)
     monkeypatch.setattr(
         gateway_run,
         "_resolve_runtime_agent_kwargs",

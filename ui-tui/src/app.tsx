@@ -3227,7 +3227,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           )}
 
           {!isBlocked && (
-            <Box flexDirection="column">
+            <Box flexDirection="column" marginBottom={1}>
               {inputBuf.map((line, i) => (
                 <Box key={i}>
                   <Box width={3}>

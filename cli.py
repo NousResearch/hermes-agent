@@ -239,6 +239,12 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+            # Semantic aliases for multi-agent workflows:
+            # supervisor_model: the orchestrating agent's model (maps to model.default)
+            # execution_model:  default model for all subagents (maps to delegation.model)
+            # Both accept provider/model strings: "anthropic/claude-opus-4-6"
+            "supervisor_model": "",
+            "execution_model": "",
         },
     }
     
@@ -319,6 +325,19 @@ def load_cli_config() -> Dict[str, Any]:
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
+
+    # Resolve semantic model aliases:
+    #   delegation.supervisor_model → model.default  (main agent model)
+    #   delegation.execution_model  → delegation.model (default subagent model)
+    # These are convenience keys for multi-agent setups; explicit model.default
+    # or delegation.model always takes precedence if both are set.
+    _delegation_cfg = defaults.get("delegation", {})
+    _supervisor = str(_delegation_cfg.get("supervisor_model") or "").strip()
+    _execution = str(_delegation_cfg.get("execution_model") or "").strip()
+    if _supervisor and not defaults["model"].get("default"):
+        defaults["model"]["default"] = _supervisor
+    if _execution and not _delegation_cfg.get("model"):
+        defaults["delegation"]["model"] = _execution
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -7753,22 +7772,26 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Up/Down arrow behaviour (matches CC / Pi) ---
+        # In multiline input: move cursor line by line preserving column.
+        # At the very first line: go to previous history entry.
+        # At the very last line: go to next history entry.
+        # This is auto_up/auto_down — but we call cursor_up/cursor_down first
+        # so prompt_toolkit tracks the preferred column correctly, then fall
+        # back to history only when already on the boundary line.
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            lambda: not self._clarify_state and not self._approval_state
+            and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
+            """Up: cursor up in multiline, history backward on first line."""
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down: cursor down in multiline, history forward on last line."""
             event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
@@ -8249,7 +8272,10 @@ class HermesCLI:
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the line-count threshold and display are consistent cross-platform.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
-            if self._try_attach_clipboard_image():
+            # Only check clipboard for an image when the paste carries no text.
+            # If text is present the clipboard holds text (not an image), and
+            # running osascript/xclip here would block the TUI event loop.
+            if not pasted_text and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
                 line_count = pasted_text.count('\n')
@@ -8890,24 +8916,20 @@ class HermesCLI:
         # the corresponding interactive prompt is active.
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
 
-        layout = Layout(
-            HSplit(
-                self._build_tui_layout_children(
-                    sudo_widget=sudo_widget,
-                    secret_widget=secret_widget,
-                    approval_widget=approval_widget,
-                    clarify_widget=clarify_widget,
-                    spinner_widget=spinner_widget,
-                    spacer=spacer,
-                    status_bar=status_bar,
-                    input_rule_top=input_rule_top,
-                    image_bar=image_bar,
-                    input_area=input_area,
-                    input_rule_bot=input_rule_bot,
-                    voice_status_bar=voice_status_bar,
-                    completions_menu=completions_menu,
-                )
-            )
+        _layout_children = self._build_tui_layout_children(
+            sudo_widget=sudo_widget,
+            secret_widget=secret_widget,
+            approval_widget=approval_widget,
+            clarify_widget=clarify_widget,
+            spinner_widget=spinner_widget,
+            spacer=spacer,
+            status_bar=status_bar,
+            input_rule_top=input_rule_top,
+            image_bar=image_bar,
+            input_area=input_area,
+            input_rule_bot=input_rule_bot,
+            voice_status_bar=voice_status_bar,
+            completions_menu=completions_menu,
         )
         # Inject the subagent panel widget just before the status bar.
         # Done here (not via _get_extra_tui_widgets) so the extension hook
@@ -9209,6 +9231,9 @@ class HermesCLI:
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
                             )
+                        _hint = " Ctrl+P to peek"
+                        _dashes = max(0, 40 - 1 - len(_hint))
+                        ChatConsole().print(f"[{_accent_hex()}]╰{'─' * _dashes}{_hint}[/]")
                         user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"

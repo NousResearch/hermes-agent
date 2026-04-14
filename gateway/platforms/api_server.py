@@ -7,8 +7,6 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
-- POST /v1/runs                    — start a run, returns run_id immediately (202)
-- GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - GET  /health                     — health check
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
@@ -389,10 +387,6 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
-        # Active run streams: run_id -> asyncio.Queue of SSE event dicts
-        self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
-        # Creation timestamps for orphaned-run TTL sweep
-        self._run_streams_created: Dict[str, float] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
@@ -478,7 +472,7 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            if token == self._api_key:
                 return None  # Auth OK
 
         return web.json_response(
@@ -514,6 +508,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -522,23 +517,26 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        If *model_override* is provided and is not "hermes-agent", it is used
+        as the model instead of the value from config.yaml.  This lets Open
+        WebUI (or any OpenAI-compatible frontend) select the underlying LLM
+        via the ``model`` field in the chat completions request.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        if model_override and model_override not in ("hermes-agent",):
+            model = model_override
+        else:
+            model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-
-        # Load fallback provider chain so the API server platform has the
-        # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        from gateway.run import GatewayRunner
-        fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
             model=model,
@@ -553,7 +551,6 @@ class APIServerAdapter(BasePlatformAdapter):
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             session_db=self._ensure_session_db(),
-            fallback_model=fallback_model,
         )
         return agent
 
@@ -566,8 +563,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"status": "ok", "platform": "hermes-agent"})
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — return hermes-agent as an available model."""
-        auth_err = self._check_auth(request)
+        """GET /v1/models — return hermes-agent plus per-provider model list."""
+        auth_err=self._...est)
         if auth_err:
             return auth_err
 
@@ -746,6 +743,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=model_name,
             ))
 
             return await self._write_sse_chat_completion(
@@ -760,6 +758,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -991,29 +990,9 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 
-        # Accept explicit conversation_history from the request body.
-        # This lets stateless clients supply their own history instead of
-        # relying on server-side response chaining via previous_response_id.
-        # Precedence: explicit conversation_history > previous_response_id.
+        # Reconstruct conversation history from previous_response_id
         conversation_history: List[Dict[str, str]] = []
-        raw_history = body.get("conversation_history")
-        if raw_history:
-            if not isinstance(raw_history, list):
-                return web.json_response(
-                    _openai_error("'conversation_history' must be an array of message objects"),
-                    status=400,
-                )
-            for i, entry in enumerate(raw_history):
-                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
-                    return web.json_response(
-                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
-                        status=400,
-                    )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
-            if previous_response_id:
-                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
-
-        if not conversation_history and previous_response_id:
+        if previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
@@ -1170,18 +1149,6 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
-        # Wrap as staticmethod to prevent descriptor binding — these are plain
-        # module functions, not instance methods.  Without this, self._cron_*()
-        # injects ``self`` as the first positional argument and every call
-        # raises TypeError.
-        _cron_list = staticmethod(_cron_list)
-        _cron_get = staticmethod(_cron_get)
-        _cron_create = staticmethod(_cron_create)
-        _cron_update = staticmethod(_cron_update)
-        _cron_remove = staticmethod(_cron_remove)
-        _cron_pause = staticmethod(_cron_pause)
-        _cron_resume = staticmethod(_cron_resume)
-        _cron_trigger = staticmethod(_cron_trigger)
         _CRON_AVAILABLE = True
     except ImportError:
         pass
@@ -1465,6 +1432,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1485,6 +1453,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -1798,17 +1767,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
-            # Structured event streaming
-            self._app.router.add_post("/v1/runs", self._handle_runs)
-            self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
-            # Start background sweep to clean up orphaned (unconsumed) run streams
-            sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
-            try:
-                self._background_tasks.add(sweep_task)
-            except TypeError:
-                pass
-            if hasattr(sweep_task, "add_done_callback"):
-                sweep_task.add_done_callback(self._background_tasks.discard)
 
             # Refuse to start network-accessible without authentication
             if is_network_accessible(self._host) and not self._api_key:

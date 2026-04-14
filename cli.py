@@ -8422,9 +8422,19 @@ class HermesCLI:
             event.current_buffer.insert_text('\n')
 
         @kb.add('c-j')
-        def handle_ctrl_enter(event):
-            """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
-            event.current_buffer.insert_text('\n')
+        def handle_ctrl_j(event):
+            """Ctrl+J / \\n — treat as Enter (submit).
+
+            prompt_toolkit's built-in c-j handler re-feeds the keypress as
+            ControlM (Enter) to accommodate terminals that send \\n (0x0a)
+            instead of \\r (0x0d) for the Enter key (Ghostty, WSL, and others).
+            The previous binding here shadowed that safety net and broke Enter
+            on affected terminals.  Alt+Enter (escape enter) is the dedicated
+            binding for inserting newlines in multi-line input.
+
+            See: https://github.com/NousResearch/hermes-agent/issues/9299
+            """
+            handle_enter(event)
 
         @kb.add('tab', eager=True)
         def handle_tab(event):

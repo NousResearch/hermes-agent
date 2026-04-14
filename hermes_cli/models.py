@@ -1082,11 +1082,16 @@ def detect_provider_for_model(
         # Keep the active Codex OAuth session for models Codex can already
         # serve, but still allow switching to non-Codex OpenRouter models.
         if current_provider == "openai-codex" and _has_active_codex_auth():
-            codex_models = _codex_curated_models()
+            try:
+                codex_models = provider_model_ids("openai-codex")
+            except Exception:
+                codex_models = []
             codex_bare = {m.split("/")[-1] for m in codex_models}
             bare = or_slug.split("/")[-1]
             if bare in codex_bare:
-                return None
+                # Return the normalized bare model name so the caller
+                # (web_server) can persist a provider-native model ID.
+                return ("openai-codex", bare)
         if current_provider != "openrouter":
             return ("openrouter", or_slug)
         # Already on openrouter, just return the resolved slug

@@ -162,8 +162,14 @@ class TestDetectProviderForModel:
         ), patch(
             "hermes_cli.auth.get_codex_auth_status",
             return_value={"logged_in": True},
+        ), patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["openai/gpt-5.4-mini"],
         ):
-            assert detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex") is None
+            result = detect_provider_for_model("openai/gpt-5.4-mini", "openai-codex")
+            # Returns normalized (provider, bare_model) so the caller
+            # persists a provider-native model ID instead of an OpenRouter slug.
+            assert result == ("openai-codex", "gpt-5.4-mini")
 
     def test_codex_curated_openrouter_model_falls_back_without_codex_auth(self):
         with patch(

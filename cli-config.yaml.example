@@ -50,6 +50,12 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # Optional extra HTTP headers to attach to provider requests.
+  # Useful for internal routing, auditing, or cost-center tagging.
+  # custom_headers:
+  #   X-Source: "hermes-agent"
+  #   X-Cost-Center: "team-ai-infra"
+
   # ── Token limits — two settings, easy to confuse ──────────────────────────
   #
   # context_length: TOTAL context window (input + output tokens combined).

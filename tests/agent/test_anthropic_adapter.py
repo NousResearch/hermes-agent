@@ -115,6 +115,15 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
+    def test_custom_headers_merge_with_anthropic_defaults(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.anthropic_adapter.get_model_custom_headers", return_value={"X-Source": "hermes-agent"}):
+            build_anthropic_client("sk-ant-api03-something")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["X-Source"] == "hermes-agent"
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "interleaved-thinking-2025-05-14" in betas
+
 
 class TestReadClaudeCodeCredentials:
     def test_reads_valid_credentials(self, tmp_path, monkeypatch):

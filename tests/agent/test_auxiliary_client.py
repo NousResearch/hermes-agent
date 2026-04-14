@@ -459,10 +459,14 @@ class TestExplicitProviderRouting:
     def test_explicit_openrouter(self, monkeypatch):
         """provider='openrouter' should use OPENROUTER_API_KEY."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-explicit")
-        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             patch("agent.auxiliary_client.get_model_custom_headers", return_value={"X-Source": "hermes-agent"}):
             mock_openai.return_value = MagicMock()
             client, model = resolve_provider_client("openrouter")
             assert client is not None
+        headers = mock_openai.call_args.kwargs["default_headers"]
+        assert headers["X-Source"] == "hermes-agent"
+        assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
 
     def test_explicit_kimi(self, monkeypatch):
         """provider='kimi-coding' should use KIMI_API_KEY."""

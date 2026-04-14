@@ -43,6 +43,7 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 from hermes_constants import get_hermes_home
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -894,6 +895,7 @@ class AIAgent:
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
         else:
+            custom_headers = get_model_custom_headers()
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
                 # The runtime provider resolver already handled auth for us.
@@ -918,6 +920,11 @@ class AIAgent:
                     }
                 elif "portal.qwen.ai" in effective_base.lower():
                     client_kwargs["default_headers"] = _qwen_portal_headers()
+                if custom_headers:
+                    client_kwargs["default_headers"] = merge_default_headers(
+                        client_kwargs.get("default_headers"),
+                        custom_headers,
+                    )
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -931,6 +938,8 @@ class AIAgent:
                     # Preserve any default_headers the router set
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    elif custom_headers:
+                        client_kwargs["default_headers"] = dict(custom_headers)
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -952,6 +961,11 @@ class AIAgent:
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
+                    if custom_headers:
+                        client_kwargs["default_headers"] = merge_default_headers(
+                            client_kwargs.get("default_headers"),
+                            custom_headers,
+                        )
             
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 

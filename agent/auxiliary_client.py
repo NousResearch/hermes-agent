@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openai import OpenAI
 
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
@@ -120,6 +121,10 @@ _OR_HEADERS = {
     "X-OpenRouter-Title": "Hermes Agent",
     "X-OpenRouter-Categories": "productivity,cli-agent",
 }
+
+
+def _headers_with_config(base_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    return merge_default_headers(base_headers, get_model_custom_headers())
 
 # Nous Portal extra_body for product attribution.
 # Callers should pass this as extra_body in chat.completions.create()
@@ -724,6 +729,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            extra_headers = _headers_with_config(extra.get("default_headers"))
+            if extra_headers:
+                extra["default_headers"] = extra_headers
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -745,6 +753,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        extra_headers = _headers_with_config(extra.get("default_headers"))
+        if extra_headers:
+            extra["default_headers"] = extra_headers
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -763,14 +774,14 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                       default_headers=_headers_with_config(_OR_HEADERS)), _OPENROUTER_MODEL
 
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                   default_headers=_headers_with_config(_OR_HEADERS)), _OPENROUTER_MODEL
 
 
 def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -794,13 +805,14 @@ def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
                          model, "vision" if vision else "text")
     except Exception:
         pass
-    return (
-        OpenAI(
-            api_key=_nous_api_key(nous),
-            base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
-        ),
-        model,
-    )
+    openai_kwargs = {
+        "api_key": _nous_api_key(nous),
+        "base_url": str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
+    }
+    merged_headers = _headers_with_config()
+    if merged_headers:
+        openai_kwargs["default_headers"] = merged_headers
+    return (OpenAI(**openai_kwargs), model)
 
 
 def _read_main_model() -> str:
@@ -912,9 +924,17 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
     if custom_mode == "codex_responses":
-        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        openai_kwargs = {"api_key": custom_key, "base_url": custom_base}
+        merged_headers = _headers_with_config()
+        if merged_headers:
+            openai_kwargs["default_headers"] = merged_headers
+        real_client = OpenAI(**openai_kwargs)
         return CodexAuxiliaryClient(real_client, model), model
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
+    openai_kwargs = {"api_key": custom_key, "base_url": custom_base}
+    merged_headers = _headers_with_config()
+    if merged_headers:
+        openai_kwargs["default_headers"] = merged_headers
+    return OpenAI(**openai_kwargs), model
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
@@ -934,7 +954,11 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=base_url)
+    openai_kwargs = {"api_key": codex_token, "base_url": base_url}
+    merged_headers = _headers_with_config()
+    if merged_headers:
+        openai_kwargs["default_headers"] = merged_headers
+    real_client = OpenAI(**openai_kwargs)
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
@@ -1236,13 +1260,17 @@ def _to_async_client(sync_client, model: str):
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
-        async_kwargs["default_headers"] = dict(_OR_HEADERS)
+        async_kwargs["default_headers"] = _headers_with_config(dict(_OR_HEADERS))
     elif "api.githubcopilot.com" in base_lower:
         from hermes_cli.models import copilot_default_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
+        async_kwargs["default_headers"] = _headers_with_config(copilot_default_headers())
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+        async_kwargs["default_headers"] = _headers_with_config({"User-Agent": "KimiCLI/1.30.0"})
+    else:
+        merged_headers = _headers_with_config()
+        if merged_headers:
+            async_kwargs["default_headers"] = merged_headers
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1423,6 +1451,9 @@ def resolve_provider_client(
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
+            extra_headers = _headers_with_config(extra.get("default_headers"))
+            if extra_headers:
+                extra["default_headers"] = extra_headers
             client = OpenAI(api_key=custom_key, base_url=custom_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model) if async_mode
@@ -1457,7 +1488,11 @@ def resolve_provider_client(
                     model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
-                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                openai_kwargs = {"api_key": custom_key, "base_url": custom_base}
+                merged_headers = _headers_with_config()
+                if merged_headers:
+                    openai_kwargs["default_headers"] = merged_headers
+                client = OpenAI(**openai_kwargs)
                 client = _wrap_if_needed(client, final_model, custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
@@ -1523,6 +1558,7 @@ def resolve_provider_client(
 
             headers.update(copilot_default_headers())
 
+        headers = _headers_with_config(headers)
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 

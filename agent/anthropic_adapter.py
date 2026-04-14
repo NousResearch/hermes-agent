@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 
+from agent.client_headers import get_model_custom_headers, merge_default_headers
 from hermes_constants import get_hermes_home
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -253,6 +254,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    custom_headers = get_model_custom_headers()
     kwargs = {
         "timeout": Timeout(timeout=900.0, connect=10.0),
     }
@@ -269,7 +271,12 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
@@ -277,23 +284,36 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # misclassified as OAuth tokens.
         kwargs["api_key"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
         all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
-        kwargs["default_headers"] = {
-            "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
-            "x-app": "cli",
-        }
+        kwargs["default_headers"] = merge_default_headers(
+            {
+                "anthropic-beta": ",".join(all_betas),
+                "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+                "x-app": "cli",
+            },
+            custom_headers,
+        )
     else:
         # Regular API key → x-api-key header + common betas
         kwargs["api_key"] = api_key
         if common_betas:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+            kwargs["default_headers"] = merge_default_headers(
+                {"anthropic-beta": ",".join(common_betas)},
+                custom_headers,
+            )
+        elif custom_headers:
+            kwargs["default_headers"] = dict(custom_headers)
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

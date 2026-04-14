@@ -200,9 +200,18 @@ class TestHandleUpdateCommand:
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
 
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(cmd)
+            if "rev-parse --abbrev-ref HEAD" in joined:
+                return MagicMock(stdout="main\n")
+            if "status --porcelain" in joined:
+                return MagicMock(stdout="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
         with patch("gateway.run._hermes_home", hermes_home), \
              patch("gateway.run.__file__", fake_file), \
              patch("shutil.which", side_effect=lambda x: "/usr/bin/hermes" if x == "hermes" else "/usr/bin/setsid"), \
+             patch("subprocess.run", side_effect=fake_run), \
              patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
@@ -212,6 +221,10 @@ class TestHandleUpdateCommand:
         assert data["platform"] == "telegram"
         assert data["chat_id"] == "99999"
         assert "timestamp" in data
+        assert data["update_source"] == "gateway_message"
+        assert data["checkout_branch"] == "main"
+        assert data["checkout_dirty"] is False
+        assert data["dev_checkout"] is False
         assert not (hermes_home / ".update_exit_code").exists()
 
     @pytest.mark.asyncio

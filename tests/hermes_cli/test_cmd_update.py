@@ -1,4 +1,4 @@
-"""Tests for cmd_update — branch fallback when remote branch doesn't exist."""
+"""Focused tests for cmd_update checkout protection."""
 
 import subprocess
 from types import SimpleNamespace
@@ -6,32 +6,29 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update
 
 
-def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
-    """Build a side_effect function for subprocess.run that simulates git commands."""
+def _make_run_side_effect(*, branch="main", dirty=False, commit_count="0"):
+    recorded = []
 
     def side_effect(cmd, **kwargs):
+        recorded.append(cmd)
         joined = " ".join(str(c) for c in cmd)
 
-        # git rev-parse --abbrev-ref HEAD  (get current branch)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{branch}\n", stderr="")
 
-        # git rev-parse --verify origin/{branch}  (check remote branch exists)
-        if "rev-parse" in joined and "--verify" in joined:
-            rc = 0 if verify_ok else 128
-            return subprocess.CompletedProcess(cmd, rc, stdout="", stderr="")
+        if "status --porcelain" in joined:
+            stdout = " M hermes_cli/main.py\n" if dirty else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
 
-        # git rev-list HEAD..origin/{branch} --count
         if "rev-list" in joined:
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{commit_count}\n", stderr="")
 
-        # Fallback: return a successful CompletedProcess with empty stdout
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    return side_effect
+    return side_effect, recorded
 
 
 @pytest.fixture
@@ -39,90 +36,51 @@ def mock_args():
     return SimpleNamespace()
 
 
-class TestCmdUpdateBranchFallback:
-    """cmd_update falls back to main when current branch has no remote counterpart."""
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_blocks_non_main_checkout(mock_run, _mock_which, mock_args, capsys):
+    """cmd_update should refuse feature branches instead of silently switching."""
+    mock_run.side_effect, recorded = _make_run_side_effect(branch="feature/safe-branch")
 
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_falls_back_to_main_when_branch_not_on_remote(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="fix/stoicneko", verify_ok=False, commit_count="3"
-        )
-
+    with pytest.raises(SystemExit, match="1"):
         cmd_update(mock_args)
 
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+    commands = [" ".join(str(a) for a in cmd) for cmd in recorded]
+    assert all("fetch origin" not in command for command in commands)
 
-        # rev-list should use origin/main, not origin/fix/stoicneko
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
-        assert "origin/fix/stoicneko" not in rev_list_cmds[0]
+    out = capsys.readouterr().out
+    assert "Refusing to update this checkout" in out
+    assert "feature/safe-branch" in out
 
-        # pull should use main, not fix/stoicneko
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
 
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_uses_current_branch_when_on_remote(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="2"
-        )
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_blocks_dirty_checkout(mock_run, _mock_which, mock_args, capsys):
+    """Dirty worktrees should fail before any network or reset action."""
+    mock_run.side_effect, recorded = _make_run_side_effect(dirty=True)
 
+    with pytest.raises(SystemExit, match="1"):
         cmd_update(mock_args)
 
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+    commands = [" ".join(str(a) for a in cmd) for cmd in recorded]
+    assert all("fetch origin" not in command for command in commands)
 
-        rev_list_cmds = [c for c in commands if "rev-list" in c]
-        assert len(rev_list_cmds) == 1
-        assert "origin/main" in rev_list_cmds[0]
+    out = capsys.readouterr().out
+    assert "working tree has local changes" in out
 
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 1
-        assert "main" in pull_cmds[0]
 
-    @patch("shutil.which", return_value=None)
-    @patch("subprocess.run")
-    def test_update_already_up_to_date(
-        self, mock_run, _mock_which, mock_args, capsys
-    ):
-        mock_run.side_effect = _make_run_side_effect(
-            branch="main", verify_ok=True, commit_count="0"
-        )
+@patch("shutil.which", return_value=None)
+@patch("subprocess.run")
+def test_update_blocks_dev_checkout_env(mock_run, _mock_which, mock_args, capsys, monkeypatch):
+    """An explicit dev-checkout env flag should hard-block self-update."""
+    monkeypatch.setenv("HERMES_DEV_CHECKOUT", "1")
+    mock_run.side_effect, recorded = _make_run_side_effect()
 
+    with pytest.raises(SystemExit, match="1"):
         cmd_update(mock_args)
 
-        captured = capsys.readouterr()
-        assert "Already up to date!" in captured.out
+    commands = [" ".join(str(a) for a in cmd) for cmd in recorded]
+    assert all("fetch origin" not in command for command in commands)
 
-        # Should NOT have called pull
-        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
-        pull_cmds = [c for c in commands if "pull" in c]
-        assert len(pull_cmds) == 0
-
-    def test_update_non_interactive_skips_migration_prompt(self, mock_args, capsys):
-        """When stdin/stdout aren't TTYs, config migration prompt is skipped."""
-        with patch("shutil.which", return_value=None), patch(
-            "subprocess.run"
-        ) as mock_run, patch("builtins.input") as mock_input, patch(
-            "hermes_cli.config.get_missing_env_vars", return_value=["MISSING_KEY"]
-        ), patch("hermes_cli.config.get_missing_config_fields", return_value=[]), patch(
-            "hermes_cli.config.check_config_version", return_value=(1, 2)
-        ), patch("hermes_cli.main.sys") as mock_sys:
-            mock_sys.stdin.isatty.return_value = False
-            mock_sys.stdout.isatty.return_value = False
-            mock_run.side_effect = _make_run_side_effect(
-                branch="main", verify_ok=True, commit_count="1"
-            )
-
-            cmd_update(mock_args)
-
-            mock_input.assert_not_called()
-            captured = capsys.readouterr()
-            assert "Non-interactive session" in captured.out
+    out = capsys.readouterr().out
+    assert "protected from self-update" in out

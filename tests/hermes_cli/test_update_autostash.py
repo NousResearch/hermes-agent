@@ -321,9 +321,11 @@ def test_cmd_update_retries_optional_extras_individually_when_all_fails(monkeypa
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         if cmd == ["/usr/bin/uv", "pip", "install", "-e", ".[all]", "--quiet"]:
             raise CalledProcessError(returncode=1, cmd=cmd)
@@ -366,9 +368,11 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             return SimpleNamespace(stdout="main\n", stderr="", returncode=0)
+        if cmd == ["git", "status", "--porcelain"]:
+            return SimpleNamespace(stdout="", stderr="", returncode=0)
         if cmd == ["git", "rev-list", "HEAD..origin/main", "--count"]:
             return SimpleNamespace(stdout="1\n", stderr="", returncode=0)
-        if cmd == ["git", "pull", "origin", "main"]:
+        if cmd == ["git", "pull", "--ff-only", "origin", "main"]:
             return SimpleNamespace(stdout="Updating\n", stderr="", returncode=0)
         return SimpleNamespace(returncode=0)
 
@@ -388,6 +392,7 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    dirty=False,
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -405,6 +410,9 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if "status" in joined and "--porcelain" in joined:
+            stdout = " M hermes_cli/main.py\n" if dirty else ""
+            return SimpleNamespace(stdout=stdout, stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
@@ -459,76 +467,94 @@ def test_cmd_update_no_reset_when_ff_only_succeeds(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Non-main branch → auto-checkout main
+# Unsafe checkout state → block update
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_switches_to_main_from_feature_branch(monkeypatch, tmp_path, capsys):
-    """When on a feature branch, update checks out main before pulling."""
+def test_cmd_update_blocks_feature_branch(monkeypatch, tmp_path, capsys):
+    """Feature branches are dev checkouts; update must refuse instead of switching."""
     _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
 
-    checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
-    assert len(checkout_calls) == 1
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    fetch_calls = [c for c in recorded if c[:3] == ["git", "fetch", "origin"]]
+    assert checkout_calls == []
+    assert fetch_calls == []
 
     out = capsys.readouterr().out
+    assert "Refusing to update this checkout" in out
     assert "fix/something" in out
-    assert "switching to main" in out
 
 
-def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, capsys):
-    """When in detached HEAD state, update checks out main before pulling."""
+def test_cmd_update_blocks_detached_head(monkeypatch, tmp_path, capsys):
+    """Detached HEAD is not a safe runtime checkout for self-update."""
     _setup_update_mocks(monkeypatch, tmp_path)
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
     side_effect, recorded = _make_update_side_effect(current_branch="HEAD")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
-    hermes_main.cmd_update(SimpleNamespace())
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
 
-    checkout_calls = [c for c in recorded if "checkout" in c and "main" in c]
-    assert len(checkout_calls) == 1
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert checkout_calls == []
 
     out = capsys.readouterr().out
     assert "detached HEAD" in out
+    assert "Refusing to update this checkout" in out
 
 
-def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
-    """When on a feature branch with no updates, stash is restored and branch switched back."""
+def test_cmd_update_blocks_dirty_worktree(monkeypatch, tmp_path, capsys):
+    """Local changes must be resolved explicitly before update runs."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    side_effect, recorded = _make_update_side_effect(dirty=True)
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "working tree has local changes" in out
+    fetch_calls = [c for c in recorded if c[:3] == ["git", "fetch", "origin"]]
+    assert fetch_calls == []
+
+
+def test_cmd_update_blocks_dev_checkout_marker(monkeypatch, tmp_path, capsys):
+    """A dev-checkout marker should hard-block self-update even on main."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    (tmp_path / ".hermes-dev-checkout").write_text("")
+
+    side_effect, recorded = _make_update_side_effect()
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit, match="1"):
+        hermes_main.cmd_update(SimpleNamespace())
+
+    out = capsys.readouterr().out
+    assert "protected from self-update" in out
+    fetch_calls = [c for c in recorded if c[:3] == ["git", "fetch", "origin"]]
+    assert fetch_calls == []
+
+
+def test_cmd_update_already_up_to_date_on_main(monkeypatch, tmp_path, capsys):
+    """Clean main checkouts should still report already-up-to-date cleanly."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    # Enable stash so it returns a ref
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
-
-    side_effect, recorded = _make_update_side_effect(
-        current_branch="fix/something", commit_count="0",
-    )
+    side_effect, recorded = _make_update_side_effect(current_branch="main", commit_count="0")
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    # Stash should have been restored
-    assert len(restore_calls) == 1
-
-    # Should have checked out back to the original branch
-    checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
-    assert len(checkout_back) == 1
-
-    out = capsys.readouterr().out
-    assert "Already up to date" in out
+    pull_calls = [c for c in recorded if "pull" in c]
+    checkout_calls = [c for c in recorded if "checkout" in c]
+    assert pull_calls == []
+    assert checkout_calls == []
+    assert "Already up to date" in capsys.readouterr().out
 
 
 def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
@@ -584,22 +610,12 @@ def test_cmd_update_auth_error_shows_friendly_message(monkeypatch, tmp_path, cap
 
 
 # ---------------------------------------------------------------------------
-# reset --hard failure — don't attempt stash restore
+# reset --hard failure — stop with a clear error
 # ---------------------------------------------------------------------------
 
-def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
-    """When reset --hard fails, stash restore is skipped with a helpful message."""
+def test_cmd_update_exits_when_reset_fails(monkeypatch, tmp_path, capsys):
+    """When reset --hard fails, update stops with a clear manual recovery hint."""
     _setup_update_mocks(monkeypatch, tmp_path)
-    # Re-enable stash so it actually returns a ref
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
-    restore_calls = []
-    monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
-        lambda *a, **kw: restore_calls.append(1) or True,
-    )
 
     side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
@@ -607,8 +623,5 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit, match="1"):
         hermes_main.cmd_update(SimpleNamespace())
 
-    # Stash restore should NOT have been called
-    assert len(restore_calls) == 0
-
     out = capsys.readouterr().out
-    assert "preserved in stash" in out
+    assert "Failed to reset to origin/main" in out

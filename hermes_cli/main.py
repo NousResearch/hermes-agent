@@ -44,6 +44,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -165,12 +166,16 @@ except Exception:
 
 import logging
 import time as _time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from hermes_cli import __version__, __release_date__
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+_UPDATE_PROTECTION_MARKERS = (".hermes-dev-checkout", ".hermes-no-self-update")
+_UPDATE_DEV_ENV_VARS = ("HERMES_DEV_CHECKOUT", "HERMES_NO_SELF_UPDATE")
+_UPDATE_GUARD_LOG_NAME = "update_guard.jsonl"
 
 
 def _relative_time(ts) -> str:
@@ -189,6 +194,32 @@ def _relative_time(ts) -> str:
     if delta < 604800:
         return f"{int(delta / 86400)}d ago"
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+
+
+def _is_truthy_env_var(name: str) -> bool:
+    value = os.getenv(name, "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _append_update_guard_event(event: str, **fields) -> None:
+    """Write a small JSONL trace for update attempts and guard decisions."""
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": event,
+        "project_root": str(PROJECT_ROOT),
+        **fields,
+    }
+
+    try:
+        log_dir = get_hermes_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / _UPDATE_GUARD_LOG_NAME
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+    except Exception as e:
+        logger.debug("Failed to append update guard event: %s", e)
+
+    logger.info("Hermes update event: %s", payload)
 
 
 def _has_any_provider_configured() -> bool:
@@ -3534,6 +3565,97 @@ def _invalidate_update_cache():
             pass
 
 
+def _collect_update_guard_state(git_cmd: list[str], cwd: Path) -> dict:
+    marker_hits = [name for name in _UPDATE_PROTECTION_MARKERS if (cwd / name).exists()]
+    env_hits = [name for name in _UPDATE_DEV_ENV_VARS if _is_truthy_env_var(name)]
+
+    state = {
+        "branch": None,
+        "dirty": False,
+        "status_sample": [],
+        "dev_checkout": bool(marker_hits or env_hits),
+        "protection_sources": marker_hits + env_hits,
+        "inspection_error": None,
+    }
+
+    try:
+        branch_result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        state["branch"] = branch_result.stdout.strip()
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        state["inspection_error"] = stderr or str(exc)
+        return state
+
+    try:
+        status_result = subprocess.run(
+            git_cmd + ["status", "--porcelain"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        status_lines = [line for line in status_result.stdout.splitlines() if line.strip()]
+        state["dirty"] = bool(status_lines)
+        state["status_sample"] = status_lines[:5]
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        state["inspection_error"] = stderr or str(exc)
+
+    return state
+
+
+def _update_guard_reasons(state: dict) -> list[str]:
+    reasons: list[str] = []
+    if state.get("inspection_error"):
+        reasons.append(
+            "could not inspect repository state safely "
+            f"({state['inspection_error']})"
+        )
+        return reasons
+
+    branch = state.get("branch")
+    if branch != "main":
+        if branch == "HEAD":
+            reasons.append(
+                "current checkout is detached HEAD; self-update only runs from the "
+                "`main` runtime checkout"
+            )
+        elif branch:
+            reasons.append(
+                f"current branch is `{branch}`; self-update only runs from `main`"
+            )
+        else:
+            reasons.append("current branch could not be determined")
+
+    if state.get("dirty"):
+        sample = ", ".join(state.get("status_sample") or [])
+        detail = f" ({sample})" if sample else ""
+        reasons.append(f"working tree has local changes{detail}")
+
+    if state.get("dev_checkout"):
+        sources = ", ".join(state.get("protection_sources") or [])
+        reasons.append(
+            "checkout is protected from self-update"
+            + (f" via {sources}" if sources else "")
+        )
+
+    return reasons
+
+
+def _print_update_guard_block(reasons: list[str]) -> None:
+    print("✗ Refusing to update this checkout.")
+    for reason in reasons:
+        print(f"  - {reason}")
+    print("  Use a clean runtime checkout on `main` for `hermes update`.")
+    print("  For development clones, create `.hermes-dev-checkout` at the repo root.")
+
+
 def _load_installable_optional_extras() -> list[str]:
     """Return the optional extras referenced by the ``all`` group.
 
@@ -3621,8 +3743,6 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
-    # In gateway mode, use file-based IPC for prompts instead of stdin
-    gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
     print("⚕ Updating Hermes Agent...")
     print()
@@ -3653,7 +3773,37 @@ def cmd_update(args):
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    # Detect if we're updating from a fork (before any branch logic)
+    if use_zip_update:
+        # ZIP-based update for Windows when git is broken
+        _update_via_zip(args)
+        return
+
+    update_guard_state = _collect_update_guard_state(git_cmd, PROJECT_ROOT)
+    _append_update_guard_event(
+        "attempt",
+        gateway_mode=gateway_mode,
+        branch=update_guard_state.get("branch"),
+        dirty=update_guard_state.get("dirty"),
+        dev_checkout=update_guard_state.get("dev_checkout"),
+        protection_sources=update_guard_state.get("protection_sources"),
+        status_sample=update_guard_state.get("status_sample"),
+        inspection_error=update_guard_state.get("inspection_error"),
+    )
+    guard_reasons = _update_guard_reasons(update_guard_state)
+    if guard_reasons:
+        _append_update_guard_event(
+            "blocked",
+            gateway_mode=gateway_mode,
+            branch=update_guard_state.get("branch"),
+            dirty=update_guard_state.get("dirty"),
+            dev_checkout=update_guard_state.get("dev_checkout"),
+            protection_sources=update_guard_state.get("protection_sources"),
+            reasons=guard_reasons,
+        )
+        _print_update_guard_block(guard_reasons)
+        sys.exit(1)
+
+    # Detect if we're updating from a fork after guard checks succeed.
     origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
     is_fork = _is_fork(origin_url)
 
@@ -3662,14 +3812,8 @@ def cmd_update(args):
         print(f"  {origin_url}")
         print()
 
-    if use_zip_update:
-        # ZIP-based update for Windows when git is broken
-        _update_via_zip(args)
-        return
-
     # Fetch and pull
     try:
-
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
             git_cmd + ["fetch", "origin"],
@@ -3679,6 +3823,12 @@ def cmd_update(args):
         )
         if fetch_result.returncode != 0:
             stderr = fetch_result.stderr.strip()
+            _append_update_guard_event(
+                "fetch_failed",
+                gateway_mode=gateway_mode,
+                branch=update_guard_state.get("branch"),
+                stderr=stderr,
+            )
             if "Could not resolve host" in stderr or "unable to access" in stderr:
                 print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
@@ -3699,29 +3849,7 @@ def cmd_update(args):
             check=True,
         )
         current_branch = result.stdout.strip()
-
-        # Always update against main
         branch = "main"
-
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
-            label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-
-        prompt_for_restore = auto_stash_ref is not None and (
-            gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
-        )
 
         # Check if there are updates
         result = subprocess.run(
@@ -3735,67 +3863,60 @@ def cmd_update(args):
 
         if commit_count == 0:
             _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd, PROJECT_ROOT, auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in ("main", "HEAD"):
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
-                )
+            _append_update_guard_event(
+                "already_up_to_date",
+                gateway_mode=gateway_mode,
+                branch=current_branch,
+            )
             print("✓ Already up to date!")
             return
 
         print(f"→ Found {commit_count} new commit(s)")
 
         print("→ Pulling updates...")
-        update_succeeded = False
-        try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
+        pull_result = subprocess.run(
+            git_cmd + ["pull", "--ff-only", "origin", branch],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if pull_result.returncode != 0:
+            # ff-only failed — local and remote have diverged. A clean runtime
+            # checkout may still safely hard reset to match origin/main.
+            print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
+            _append_update_guard_event(
+                "reset_to_origin",
+                gateway_mode=gateway_mode,
+                branch=current_branch,
+                reason="fast_forward_failed",
+            )
+            reset_result = subprocess.run(
+                git_cmd + ["reset", "--hard", f"origin/{branch}"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
             )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
+            if reset_result.returncode != 0:
+                _append_update_guard_event(
+                    "reset_failed",
+                    gateway_mode=gateway_mode,
+                    branch=current_branch,
+                    stderr=reset_result.stderr.strip(),
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print("  Try manually: git fetch origin && git reset --hard origin/main")
-                    sys.exit(1)
-            update_succeeded = True
-        finally:
-            if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
-                    print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
-                    print(f"  Restore manually with: git stash apply")
-                else:
-                    _restore_stashed_changes(
-                        git_cmd,
-                        PROJECT_ROOT,
-                        auto_stash_ref,
-                        prompt_user=prompt_for_restore,
-                        input_fn=gw_input_fn,
-                    )
+                print(f"✗ Failed to reset to origin/{branch}.")
+                if reset_result.stderr.strip():
+                    print(f"  {reset_result.stderr.strip()}")
+                print("  Try manually: git fetch origin && git reset --hard origin/main")
+                sys.exit(1)
         
         _invalidate_update_cache()
+        _append_update_guard_event(
+            "updated",
+            gateway_mode=gateway_mode,
+            branch=current_branch,
+            commit_count=commit_count,
+            used_reset=pull_result.returncode != 0,
+        )
 
         # Clear stale .pyc bytecode cache — prevents ImportError on gateway
         # restart when updated source references names that didn't exist in

@@ -16,6 +16,18 @@ hermes update
 
 This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
 
+:::warning Use separate runtime and development checkouts
+`hermes update` is intended for the clean runtime checkout that actually runs your live Hermes gateway or CLI install.
+
+If you actively develop inside a separate clone or worktree, mark that checkout as development-only:
+
+```bash
+touch .hermes-dev-checkout
+```
+
+Hermes now refuses self-update when the checkout is not on `main`, has local changes, or is marked with `.hermes-dev-checkout` / `.hermes-no-self-update`.
+:::
+
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::

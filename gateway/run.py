@@ -6579,13 +6579,56 @@ class GatewayRunner:
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         session_key = self._session_key_for_source(event.source)
+        branch_name = None
+        dirty = None
+        status_sample = []
+        dev_checkout = any(
+            (project_root / marker).exists()
+            for marker in (".hermes-dev-checkout", ".hermes-no-self-update")
+        )
+        try:
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            branch_name = branch_result.stdout.strip() or None
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=project_root,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            status_lines = [line for line in status_result.stdout.splitlines() if line.strip()]
+            dirty = bool(status_lines)
+            status_sample = status_lines[:5]
+        except Exception as e:
+            logger.debug("Could not inspect repo state for /update request: %s", e)
+
         pending = {
             "platform": event.source.platform.value,
             "chat_id": event.source.chat_id,
             "user_id": event.source.user_id,
             "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
+            "update_source": "gateway_message",
+            "project_root": str(project_root),
+            "checkout_branch": branch_name,
+            "checkout_dirty": dirty,
+            "status_sample": status_sample,
+            "dev_checkout": dev_checkout,
         }
+        logger.info(
+            "Gateway /update requested: platform=%s chat_id=%s branch=%s dirty=%s dev_checkout=%s",
+            event.source.platform.value,
+            event.source.chat_id,
+            branch_name,
+            dirty,
+            dev_checkout,
+        )
         _tmp_pending = pending_path.with_suffix(".tmp")
         _tmp_pending.write_text(json.dumps(pending))
         _tmp_pending.replace(pending_path)

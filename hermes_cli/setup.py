@@ -1677,7 +1677,7 @@ def setup_model_provider(config: dict):
             if custom:
                 _set_default_model(config, custom)
         elif selected_provider == "openai-codex":
-            from hermes_cli.codex_models import get_codex_model_ids
+            from hermes_cli.codex_models import get_codex_model_ids, is_codex_latest_choice
 
             codex_token = None
             try:
@@ -1688,9 +1688,12 @@ def setup_model_provider(config: dict):
 
             codex_models = get_codex_model_ids(access_token=codex_token)
 
-            model_choices = codex_models + [f"Keep current ({current_model})"]
+            codex_latest_choice = "Latest available (auto)"
+            model_choices = codex_models + [codex_latest_choice, f"Keep current ({current_model})"]
             default_codex = 0
-            if current_model in codex_models:
+            if is_codex_latest_choice(current_model):
+                default_codex = len(codex_models)
+            elif current_model in codex_models:
                 default_codex = codex_models.index(current_model)
             elif current_model:
                 default_codex = len(model_choices) - 1
@@ -1701,6 +1704,8 @@ def setup_model_provider(config: dict):
             if model_idx < len(codex_models):
                 _set_default_model(config, codex_models[model_idx])
             elif model_idx == len(codex_models):
+                _set_default_model(config, "codex-latest")
+            elif model_idx == len(codex_models) + 1:
                 custom = prompt("Enter model name")
                 if custom:
                     _set_default_model(config, custom)

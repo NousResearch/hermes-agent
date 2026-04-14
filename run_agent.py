@@ -518,6 +518,17 @@ class AIAgent:
         if self.api_mode == "chat_completions" and self._is_direct_openai_url():
             self.api_mode = "codex_responses"
 
+        if self.provider == "openai-codex":
+            try:
+                from hermes_cli.auth import resolve_codex_runtime_credentials
+                from hermes_cli.codex_models import resolve_codex_model_id
+
+                codex_creds = resolve_codex_runtime_credentials()
+                codex_token = str(codex_creds.get("api_key") or "").strip() if codex_creds else None
+                self.model = resolve_codex_model_id(self.model, access_token=codex_token or None)
+            except Exception:
+                pass
+
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
         # HTTP request on the first API response when pricing is estimated.

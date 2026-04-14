@@ -18,6 +18,8 @@ DEFAULT_CODEX_MODELS: List[str] = [
     "gpt-5.1-codex-mini",
 ]
 
+CODEX_LATEST_MODEL_CHOICES = {"latest", "codex-latest"}
+
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.3-codex", ("gpt-5.2-codex",)),
     ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
@@ -47,6 +49,33 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
             seen.add(synthetic_model)
 
     return ordered
+
+
+def is_codex_latest_choice(model_id: Optional[str]) -> bool:
+    """Return True when the user requested the moving Codex latest alias."""
+    return (model_id or "").strip().lower() in CODEX_LATEST_MODEL_CHOICES
+
+
+def get_latest_codex_model_id(access_token: Optional[str] = None) -> str:
+    """Return the best current Codex model slug.
+
+    Prefers the live catalog when available, then falls back to the curated
+    defaults. The first entry is always the newest/most preferred model.
+    """
+    models = get_codex_model_ids(access_token=access_token)
+    return models[0] if models else DEFAULT_CODEX_MODELS[0]
+
+
+def resolve_codex_model_id(model_id: Optional[str], access_token: Optional[str] = None) -> str:
+    """Resolve Codex aliases like ``latest`` to a concrete model slug."""
+    requested = (model_id or "").strip()
+    if ":" in requested:
+        prefix, remainder = requested.split(":", 1)
+        if prefix.strip().lower() in {"openai-codex", "codex"}:
+            requested = remainder.strip()
+    if is_codex_latest_choice(requested):
+        return get_latest_codex_model_id(access_token=access_token)
+    return requested
 
 
 def _fetch_models_from_api(access_token: str) -> List[str]:

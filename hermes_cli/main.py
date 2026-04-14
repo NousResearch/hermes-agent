@@ -1072,7 +1072,7 @@ def _model_flow_openai_codex(config, current_model=""):
         _update_config_for_provider, _login_openai_codex,
         PROVIDER_REGISTRY, DEFAULT_CODEX_BASE_URL,
     )
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.codex_models import get_codex_model_ids, is_codex_latest_choice
     from hermes_cli.config import get_env_value, save_env_value
     import argparse
 
@@ -1099,9 +1099,14 @@ def _model_flow_openai_codex(config, current_model=""):
         pass
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
+    codex_latest_choice = "Latest available (auto)"
+    codex_choices = codex_models + [codex_latest_choice]
+    current_choice = codex_latest_choice if is_codex_latest_choice(current_model) else current_model
 
-    selected = _prompt_model_selection(codex_models, current_model=current_model)
+    selected = _prompt_model_selection(codex_choices, current_model=current_choice)
     if selected:
+        if selected == codex_latest_choice:
+            selected = "codex-latest"
         _save_model_choice(selected)
         _update_config_for_provider("openai-codex", DEFAULT_CODEX_BASE_URL)
         # Clear custom endpoint env vars that would otherwise override Codex.

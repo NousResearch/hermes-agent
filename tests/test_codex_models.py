@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import (
+    DEFAULT_CODEX_MODELS,
+    get_codex_model_ids,
+    get_latest_codex_model_id,
+    is_codex_latest_choice,
+    resolve_codex_model_id,
+)
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -34,6 +40,21 @@ def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch
     # Non-codex-suffixed models are included when the cache says they're available
     assert "gpt-5.4" in models
     assert "gpt-5-hidden-codex" not in models
+
+
+def test_get_latest_codex_model_id_and_alias_resolution(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_model_ids",
+        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
+    )
+
+    assert is_codex_latest_choice("codex-latest") is True
+    assert is_codex_latest_choice("latest") is True
+    assert is_codex_latest_choice("gpt-5.4") is False
+    assert get_latest_codex_model_id(access_token="codex-token") == "gpt-5.4"
+    assert resolve_codex_model_id("codex-latest", access_token="codex-token") == "gpt-5.4"
+    assert resolve_codex_model_id("openai-codex:latest", access_token="codex-token") == "gpt-5.4"
+    assert resolve_codex_model_id("gpt-5.3-codex") == "gpt-5.3-codex"
 
 
 def test_setup_wizard_codex_import_resolves():
@@ -102,7 +123,7 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     _model_flow_openai_codex({}, current_model="openai/gpt-5.4")
 
     assert captured["access_token"] == "codex-access-token"
-    assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2"]
+    assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2", "Latest available (auto)"]
     assert captured["current_model"] == "openai/gpt-5.4"
 
 

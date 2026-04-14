@@ -52,10 +52,15 @@ class TestWeComAdapterInit:
         adapter = WeComAdapter(config)
 
         assert adapter._bot_id == "cfg-bot"
-        assert adapter._secret == "cfg-secret"
+        assert adapter._secret == "***"
         assert adapter._ws_url == "wss://custom.wecom.example/ws"
         assert adapter._group_policy == "allowlist"
         assert adapter._group_allow_from == ["group-1"]
+
+    def test_disables_message_editing(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
 
     def test_falls_back_to_env_vars(self, monkeypatch):
         monkeypatch.setenv("WECOM_BOT_ID", "env-bot")

@@ -1,6 +1,6 @@
 """Tests for the central command registry and autocomplete."""
 
-from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.completion import CompleteEvent, Completion
 from prompt_toolkit.document import Document
 
 from hermes_cli.commands import (
@@ -360,6 +360,26 @@ class TestSlashCommandCompleter:
 
     def test_no_completions_for_empty_input(self):
         assert _completions(SlashCommandCompleter(), "") == []
+
+    def test_context_completion_uses_instance_fuzzy_completions(self, monkeypatch):
+        completer = SlashCommandCompleter()
+        seen = {}
+
+        def fake_fuzzy(word, query, limit):
+            seen["args"] = (word, query, limit)
+            yield Completion(
+                "@file:tests/hermes_cli/test_commands.py",
+                start_position=-len(word),
+                display="test_commands.py",
+                display_meta="1 KB",
+            )
+
+        monkeypatch.setattr(completer, "_fuzzy_file_completions", fake_fuzzy)
+
+        completions = _completions(completer, "@")
+
+        assert seen["args"] == ("@", "", 30)
+        assert any(item.text == "@file:tests/hermes_cli/test_commands.py" for item in completions)
 
     # -- skill commands via provider ------------------------------------
 

@@ -2695,9 +2695,14 @@ class SlackAdapter(BasePlatformAdapter):
             # gateway command dispatcher by prepending the slash.
             text = f"/{slash_name} {text}".strip()
 
+        # Slack slash commands can originate from DMs or shared channels.
+        # Preserve DM semantics only for DM channel IDs; shared channels must
+        # keep group semantics so different users do not collide into one
+        # session key.
+        is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,
-            chat_type="dm",  # Slash commands are always in DM-like context
+            chat_type="dm" if is_dm else "group",
             user_id=user_id,
         )
 

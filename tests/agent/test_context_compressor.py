@@ -781,3 +781,38 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+
+class TestRollingCompaction:
+    def test_compresses_oldest_chunk_not_entire_middle(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "rolling summary"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=2,
+                protect_last_n=20,
+                rolling_max_turns_per_pass=8,
+                quiet_mode=True,
+            )
+
+        # Build a long conversation so middle span is much larger than 8 turns.
+        msgs = [{"role": "system", "content": "system"}]
+        for i in range(1, 40):
+            role = "user" if i % 2 == 0 else "assistant"
+            msgs.append({"role": role, "content": f"msg {i}"})
+
+        head_start = c._align_boundary_forward(msgs, c.protect_first_n)
+        natural_end = c._find_tail_cut_by_tokens(msgs, head_start)
+        assert natural_end - head_start > c.rolling_max_turns_per_pass
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs, current_tokens=120_000)
+
+        # The first unsummarized middle message right before the tail should
+        # still be present, showing we only compacted the oldest chunk.
+        expected_survivor = msgs[head_start + c.rolling_max_turns_per_pass]["content"]
+        assert any((m.get("content") or "") == expected_survivor for m in result)
+        assert any((m.get("content") or "").startswith(SUMMARY_PREFIX) for m in result)

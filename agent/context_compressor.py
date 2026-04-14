@@ -107,6 +107,7 @@ class ContextCompressor(ContextEngine):
         protect_first_n: int = 3,
         protect_last_n: int = 20,
         summary_target_ratio: float = 0.20,
+        rolling_max_turns_per_pass: int = 60,
         quiet_mode: bool = False,
         summary_model_override: str = None,
         base_url: str = "",
@@ -124,6 +125,9 @@ class ContextCompressor(ContextEngine):
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
+        # Rolling compaction: summarize only the oldest chunk each pass
+        # instead of removing the entire middle in one shot.
+        self.rolling_max_turns_per_pass = max(0, int(rolling_max_turns_per_pass or 0))
         self.quiet_mode = quiet_mode
 
         self.context_length = get_model_context_length(
@@ -659,6 +663,29 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         return max(cut_idx, head_end + 1)
 
+    def _cap_compression_span(self, messages: List[Dict[str, Any]], start: int, end: int) -> int:
+        """Limit one compression pass to a bounded number of oldest turns.
+
+        This enables rolling compaction: multiple smaller passes preserve
+        recent in-flight task context better than a single large middle cut.
+        """
+        if self.rolling_max_turns_per_pass <= 0:
+            return end
+
+        span = end - start
+        if span <= self.rolling_max_turns_per_pass:
+            return end
+
+        capped = start + self.rolling_max_turns_per_pass
+        capped = self._align_boundary_backward(messages, capped)
+
+        # If boundary alignment moved us too far back (e.g. landed on the
+        # start of a tool-call group), disable capping for this pass to avoid
+        # returning a no-op compression region.
+        if capped <= start:
+            return end
+        return min(capped, end)
+
     # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
@@ -709,6 +736,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # Use token-budget tail protection instead of fixed message count
         compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        # Rolling mode: compress only part of the middle each pass.
+        compress_end = self._cap_compression_span(messages, compress_start, compress_end)
 
         if compress_start >= compress_end:
             return messages

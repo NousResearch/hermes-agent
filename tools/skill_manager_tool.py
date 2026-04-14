@@ -637,6 +637,21 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        # Auto-fix frontmatter quality issues after create/edit/patch
+        skill_dir_rel = result.get("path", "")
+        if skill_dir_rel and action in ("create", "edit", "patch"):
+            try:
+                from tools.skills_tool import validate_and_fix_skill
+                import os
+                skill_dir_abs = os.path.join(str(SKILLS_DIR), skill_dir_rel) if not os.path.isabs(skill_dir_rel) else skill_dir_rel
+                fix_json = validate_and_fix_skill(skill_dir_abs, dry_run=False)
+                import json as _json
+                fix_result = _json.loads(fix_json)
+                if fix_result.get("fixed_fields"):
+                    result["auto_fixed"] = fix_result["fixed_fields"]
+            except Exception:
+                pass  # Non-fatal — quality fix should never block skill operations
+
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)

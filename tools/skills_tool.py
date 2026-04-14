@@ -1203,6 +1203,243 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
+# Skill Auto-Fix (used after install / create / edit / patch)
+# ---------------------------------------------------------------------------
+
+def _derive_category(skill_dir: Path) -> str:
+    """Derive category from skill directory path.
+
+    For skills/ai/vision/SKILL.md -> "ai"
+    For skills/mmx/SKILL.md -> "mmx" (root-level skill uses its own name)
+    For paths outside SKILLS_DIR -> use the immediate parent directory name.
+    """
+    try:
+        rel = skill_dir.relative_to(SKILLS_DIR)
+        parts = rel.parts
+        if len(parts) >= 2:
+            return parts[0]
+        return skill_dir.name
+    except ValueError:
+        # Skill is outside SKILLS_DIR (e.g. quarantine temp dir)
+        return skill_dir.name
+
+
+def _derive_triggers(name: str, description: str) -> str:
+    """Derive triggers from skill name and description keywords."""
+    import re as _re
+
+    STOPWORDS = frozenset({
+        "a", "an", "and", "or", "the", "for", "to", "of", "in", "on", "with", "by", "as",
+        "at", "from", "via", "using", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could", "should",
+        "may", "might", "can", "this", "that", "these", "those", "it", "its", "but", "if",
+        "then", "else", "when", "up", "down", "out", "no", "so", "than", "too", "very",
+        "just", "also", "now", "here", "there", "all", "each", "every", "both", "few",
+        "more", "most", "other", "some", "such", "only", "own", "same", "through",
+        "about", "into", "over", "after", "before", "between", "under", "again",
+        "further", "once", "what", "which", "who", "whom", "where", "why", "how",
+        "any", "screen", "located",
+    })
+
+    name_words = name.replace("-", " ").replace("_", " ").lower().split()
+    desc_words = _re.findall(r'\b[a-z][a-z0-9]+\b', description.lower())
+    keywords = []
+    seen = set()
+    for w in name_words + desc_words:
+        wl = w.lower()
+        if wl not in seen and wl not in STOPWORDS and len(wl) > 2 and not wl.isdigit():
+            seen.add(wl)
+            keywords.append(w)
+    triggers_words = [name]
+    triggers_words.extend([k for k in keywords if k.lower() != name.lower()][:5])
+    return ", ".join(triggers_words)
+
+
+def _fix_frontmatter(fm: dict, skill_dir: Path) -> dict:
+    """Fill in missing frontmatter fields from skill metadata. Returns updated fm dict."""
+    import yaml as _yaml
+    import re as _re
+
+    updated = dict(fm)
+
+    if not updated.get("category"):
+        updated["category"] = _derive_category(skill_dir)
+
+    if not updated.get("version"):
+        updated["version"] = "1.0.0"
+
+    triggers_val = updated.get("triggers") or updated.get("trigger") or ""
+    if not triggers_val or not str(triggers_val).strip():
+        name = updated.get("name", skill_dir.name)
+        desc = updated.get("description", "")
+        updated["triggers"] = _derive_triggers(name, desc)
+
+    return updated
+
+
+def _serialize_frontmatter(fm: dict) -> str:
+    """Serialize frontmatter dict to YAML string with priority field ordering."""
+    import yaml as _yaml
+
+    def _str_repr(dumper, data):
+        if '\n' in data or len(data) > 80:
+            return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
+        return dumper.represent_scalar('tag:yaml.org,2002:str', data)
+
+    _yaml.add_representer(str, _str_repr, Dumper=_yaml.SafeDumper)
+
+    priority = ["name", "title", "description", "triggers", "category", "version"]
+    ordered = {k: fm.pop(k) for k in list(priority) if k in fm}
+    ordered.update(fm)
+    return _yaml.safe_dump(ordered, default_flow_style=False, allow_unicode=True, sort_keys=False).strip()
+
+
+def validate_and_fix_skill(skill_path: str, dry_run: bool = True) -> str:
+    """
+    Validate and auto-fix a single skill's frontmatter quality.
+
+    Checks for missing required fields (name, description, category),
+    missing recommended fields (triggers, version), and empty triggers.
+    When dry_run=False, actually writes the fixed SKILL.md.
+
+    Args:
+        skill_path: Absolute path to the skill directory OR relative to SKILLS_DIR.
+        dry_run: If True, only report issues without modifying files.
+
+    Returns:
+        JSON string with validation results (success, issues, fixed_fields).
+    """
+    import re as _re
+    import yaml as _yaml
+
+    REQUIRED_FM = ["name", "description", "category"]
+
+    # Resolve skill_dir
+    p = Path(skill_path)
+    if not p.is_absolute():
+        p = SKILLS_DIR / p
+    skill_md = p / "SKILL.md"
+
+    if not skill_md.exists():
+        return json.dumps({
+            "success": False,
+            "error": f"SKILL.md not found at {skill_md}",
+            "issues": [],
+            "fixed_fields": [],
+        })
+
+    content = skill_md.read_text(encoding="utf-8")
+    fm_match = _re.match(r'^---\n(.*?)\n---', content, _re.DOTALL)
+    if fm_match is None:
+        return json.dumps({
+            "success": False,
+            "error": "No YAML frontmatter found",
+            "issues": [{"field": "frontmatter", "issue": "missing YAML frontmatter", "severity": "error"}],
+            "fixed_fields": [],
+        })
+
+    fm_text = fm_match.group(1)
+    try:
+        fm = _yaml.safe_load(fm_text) or {}
+    except Exception as e:
+        return json.dumps({
+            "success": False,
+            "error": f"YAML parse error: {e}",
+            "issues": [{"field": "frontmatter", "issue": f"YAML parse error: {e}", "severity": "error"}],
+            "fixed_fields": [],
+        })
+
+    issues = []
+    fixed_fields = []
+
+    # Check required fields
+    for field in REQUIRED_FM:
+        val = fm.get(field)
+        if not val or (isinstance(val, str) and not val.strip()):
+            issues.append({
+                "field": field,
+                "issue": f"missing required field: '{field}'",
+                "severity": "error",
+                "action": "auto-fix" if field != "description" else "manual",
+            })
+
+    # Check triggers (both singular and plural accepted)
+    triggers_val = fm.get("triggers") or fm.get("trigger") or ""
+    if not triggers_val or not str(triggers_val).strip():
+        issues.append({
+            "field": "triggers",
+            "issue": "triggers field is empty or missing",
+            "severity": "warning",
+            "action": "auto-fix",
+        })
+
+    # Check version
+    if not fm.get("version"):
+        issues.append({
+            "field": "version",
+            "issue": "missing version field",
+            "severity": "warning",
+            "action": "auto-fix",
+        })
+
+    skill_rel = None
+    try:
+        skill_rel = str(p.relative_to(SKILLS_DIR))
+    except ValueError:
+        skill_rel = str(p)
+
+    if dry_run:
+        return json.dumps({
+            "success": True,
+            "dry_run": True,
+            "skill": skill_rel,
+            "issues": issues,
+            "fixed_fields": [],
+        })
+
+    # --- Actually apply fixes ---
+    needs_fix = any(
+        (i.get("action") == "auto-fix") for i in issues
+    )
+    if not needs_fix:
+        return json.dumps({
+            "success": True,
+            "dry_run": False,
+            "skill": skill_rel,
+            "issues": [],
+            "fixed_fields": [],
+        })
+
+    # Apply auto-fixes
+    fm_fixed = _fix_frontmatter(fm, p)
+
+    # Save original values before serialization mutates dict
+    original_vals = {k: fm.get(k) for k in ["category", "version", "triggers", "trigger"]}
+
+    # Serialize from a shallow copy so we don't mutate fm_fixed
+    new_fm_text = _serialize_frontmatter(dict(fm_fixed))
+    body = content[fm_match.end():]
+    new_content = content[:fm_match.start()] + "---\n" + new_fm_text + "\n---\n" + body
+    skill_md.write_text(new_content, encoding="utf-8")
+
+    # Detect which fields were actually changed
+    fixed_fields = []
+    for k in ["category", "version", "triggers"]:
+        old_val = original_vals.get(k) or original_vals.get("trigger" if k == "triggers" else "")
+        new_val = fm_fixed.get(k)
+        if old_val != new_val:
+            fixed_fields.append(k)
+
+    return json.dumps({
+        "success": True,
+        "dry_run": False,
+        "skill": skill_rel,
+        "issues": [i for i in issues if i.get("action") != "auto-fix"],
+        "fixed_fields": fixed_fields,
+    })
+
+
+# ---------------------------------------------------------------------------
 # Skill Quality Audit
 # ---------------------------------------------------------------------------
 
@@ -1309,7 +1546,7 @@ def audit_skills(name: str = None) -> str:
                     "severity": "error",
                 })
 
-        # Check for empty triggers
+        # Check for empty triggers (check both 'triggers' and 'trigger')
         triggers = fm.get("triggers") or fm.get("trigger") or ""
         if isinstance(triggers, str) and not triggers.strip():
             results["issues"]["warnings"].append({
@@ -1319,8 +1556,18 @@ def audit_skills(name: str = None) -> str:
             })
 
         # --- WARNINGS ---
+        # Check 'triggers' missing (but 'trigger' singular counts as OK)
+        if "triggers" not in fm or not fm.get("triggers"):
+            if not fm.get("trigger"):  # Only warn if trigger singular is also absent
+                results["issues"]["warnings"].append({
+                    "skill": rel_path,
+                    "issue": f"missing recommended frontmatter field: 'triggers'",
+                    "severity": "warning",
+                })
 
         for field in RECOMMENDED_FM:
+            if field == "triggers":
+                continue  # Already checked above
             if field not in fm or not fm.get(field):
                 results["issues"]["warnings"].append({
                     "skill": rel_path,
@@ -1328,30 +1575,13 @@ def audit_skills(name: str = None) -> str:
                     "severity": "warning",
                 })
 
-        # Check referenced files exist
-        try:
-            full_content = skill_md.read_text(encoding="utf-8")
-        except Exception:
-            continue
+        # Special case: if 'triggers' is missing but 'trigger' exists, that's OK
+        # (both names are valid, trigger= is the singular alias)
 
-        for subdir in ("templates", "references", "scripts", "assets"):
-            # Match patterns like (templates/foo.md) or [templates/foo.md]
-            pattern = _re.compile(
-                rf"[\(\[][^\)\]]*?{_re.escape(subdir)}/[^\)\]]*?[\)\]]"
-            )
-            for match in pattern.finditer(full_content):
-                ref = match.group().strip("()[]")
-                # Handle markdown links with fragment: file.md#section
-                ref_path = ref.split("#")[0].split()[0]
-                if not ref_path:
-                    continue
-                file_path = skill_dir / ref_path
-                if not file_path.exists():
-                    results["issues"]["errors"].append({
-                        "skill": rel_path,
-                        "issue": f"references '{ref_path}' but file does not exist",
-                        "severity": "error",
-                    })
+        # NOTE: File reference checking was removed because the regex produced
+        # too many false positives (e.g., matching 'name="skill"' as a file path).
+        # If re-enabled, requires a proper path parser that ignores content inside
+        # code blocks, frontmatter, and quoted strings.
 
         # Track by category
         cat = fm.get("category")
@@ -1458,4 +1688,35 @@ registry.register(
     handler=lambda args, **kw: audit_skills(name=args.get("name")),
     check_fn=check_skills_requirements,
     emoji="🔍",
+)
+
+VALIDATE_SKILL_SCHEMA = {
+    "name": "validate_skill",
+    "description": "Validate and auto-fix a single skill's frontmatter quality. Checks for missing required fields (name, description, category), missing recommended fields (triggers, version), and empty triggers. Automatically fixes when dry_run=False. Called automatically after skill install/create/edit/patch — usually not needed directly.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "skill_path": {
+                "type": "string",
+                "description": "Absolute path to the skill directory (e.g. '/home/user/.hermes/skills/github/code-review')",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "If true, only report issues without fixing. Default: true",
+            },
+        },
+        "required": ["skill_path"],
+    },
+}
+
+registry.register(
+    name="validate_skill",
+    toolset="skills",
+    schema=VALIDATE_SKILL_SCHEMA,
+    handler=lambda args, **kw: validate_and_fix_skill(
+        skill_path=args.get("skill_path"),
+        dry_run=args.get("dry_run", True),
+    ),
+    check_fn=check_skills_requirements,
+    emoji="🩹",
 )

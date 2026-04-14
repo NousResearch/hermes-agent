@@ -453,6 +453,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
+    # Auto-fix frontmatter quality issues
+    from tools.skills_tool import validate_and_fix_skill
+    fix_result_json = validate_and_fix_skill(str(install_dir), dry_run=False)
+    import json as _json
+    fix_result = _json.loads(fix_result_json)
+    if fix_result.get("fixed_fields"):
+        c.print(f"[dim]🩹 Auto-fixed frontmatter: {', '.join(fix_result['fixed_fields'])}[/]\n")
+
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
         try:

@@ -58,10 +58,17 @@ class LCMEngine(ContextEngine):
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Return True if compaction should fire this turn."""
 
-    def compress(self, messages: list, current_tokens: int = None) -> list:
+    def compress(self, messages: list, current_tokens: int = None,
+                 focus_topic: str = None) -> list:
         """Compact the message list and return a new (possibly shorter) list.
 
         The returned list must be a valid OpenAI-format message sequence.
+
+        Args:
+            messages: Full conversation message list.
+            current_tokens: Approximate current token count.
+            focus_topic: Optional focus string for guided compression,
+                passed by /compact <topic>.
         """
 ```
 
@@ -87,7 +94,7 @@ These have sensible defaults in the ABC. Override as needed:
 | `on_session_start(session_id, **kwargs)` | No-op | You need to load persisted state (DAG, DB) |
 | `on_session_end(session_id, messages)` | No-op | You need to flush state, close connections |
 | `on_session_reset()` | Resets token counters | You have per-session state to clear |
-| `update_model(model, context_length, ...)` | Updates context_length + threshold | You need to recalculate budgets on model switch |
+| `update_model(model, context_length, ..., api_mode="")` | Updates context_length + threshold | You need to recalculate budgets on model switch |
 | `get_tool_schemas()` | Returns `[]` | Your engine provides agent-callable tools (e.g., `lcm_grep`) |
 | `handle_tool_call(name, args, **kwargs)` | Returns error JSON | You implement tool handlers |
 | `should_compress_preflight(messages)` | Returns `False` | You can do a cheap pre-API-call estimate |

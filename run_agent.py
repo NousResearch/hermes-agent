@@ -119,7 +119,10 @@ from agent.display import (
     get_cute_tool_message as _get_cute_tool_message_impl,
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
+    _render_inline_unified_diff,
+    _split_unified_diff_sections,
 )
+from agent.cancellation_token import CancellationToken
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -824,6 +827,7 @@ class AIAgent:
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        self._cancel_token = CancellationToken(task_name="AIAgent")  # Collaborative cancellation
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -2965,6 +2969,7 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        self._cancel_token.cancel(f"Interrupt: {message}" if message else "User interrupt")
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
@@ -2985,6 +2990,104 @@ class AIAgent:
         self._interrupt_requested = False
         self._interrupt_message = None
         _set_interrupt(False, self._execution_thread_id)
+        # Create a fresh cancellation token — cancellation is permanent but
+        # the agent can handle a new interrupt after clearing.
+        self._cancel_token = CancellationToken(task_name="AIAgent")
+
+    def save_state(self) -> dict:
+        """
+        Save agent execution state for later resume.
+
+        Returns a dict with the key execution state. Use with load_state().
+
+        Returns:
+            dict with keys: session_id, api_call_count, interrupt_requested,
+            interrupt_message, cancel_token_state, last_activity_ts
+
+        Note: Does NOT save conversation_history — the caller manages that.
+        Only captures what is needed to resume an interrupted session.
+        """
+        with self._client_lock:
+            return {
+                "session_id": self.session_id,
+                "api_call_count": self._api_call_count,
+                "interrupt_requested": self._interrupt_requested,
+                "interrupt_message": self._interrupt_message,
+                "cancel_token_cancelled": self._cancel_token.is_cancelled,
+                "cancel_token_reason": self._cancel_token.cancel_reason,
+                "last_activity_ts": self._last_activity_ts,
+                "checkpoint_saved_at": time.time(),
+            }
+
+    def load_state(self, state: dict) -> None:
+        """
+        Load agent execution state from a previously saved state dict.
+
+        Args:
+            state: dict from save_state()
+
+        Restores api_call_count and interrupt state.
+        Creates a fresh cancel token (cancelled state is NOT restored — token is reset).
+        Note: conversation_history must be restored by the caller.
+        """
+        with self._client_lock:
+            self.session_id = state.get("session_id", self.session_id)
+            self._api_call_count = state.get("api_call_count", 0)
+            self._interrupt_requested = state.get("interrupt_requested", False)
+            self._interrupt_message = state.get("interrupt_message", None)
+            self._last_activity_ts = state.get("last_activity_ts", time.time())
+            # Cancel token is always fresh — cancellation is not inherited
+            self._cancel_token = CancellationToken(task_name="AIAgent")
+            logger.info(
+                "Loaded state: session=%s api_calls=%d",
+                self.session_id, self._api_call_count
+            )
+
+    def pause(self) -> dict:
+        """
+        Pause agent execution and return current state.
+
+        Requests cancellation via the cancel token and returns state via save_state().
+        The agent loop should check the cancel token and exit when cancelled.
+
+        Returns:
+            dict from save_state()
+
+        Usage::
+
+            state = agent.pause()  # save and signal stop
+            # Later:
+            agent.load_state(state)
+            agent.resume()
+        """
+        self._cancel_token.cancel("Pause requested")
+        self._interrupt_requested = True
+        self._interrupt_message = None
+        _set_interrupt(True, self._execution_thread_id)
+        return self.save_state()
+
+    def resume(self, state: dict | None = None) -> None:
+        """
+        Resume agent from a paused state.
+
+        If state is provided, loads it first. Clears interrupt and creates
+        a fresh cancel token so execution can continue.
+
+        Args:
+            state: optional dict from save_state()
+
+        Usage::
+
+            agent.resume(paused_state)
+        """
+        if state:
+            self.load_state(state)
+        self._interrupt_requested = False
+        self._interrupt_message = None
+        self._cancel_token = CancellationToken(task_name="AIAgent")
+        _set_interrupt(False, self._execution_thread_id)
+        logger.info("Agent resumed from pause")
+
 
     def _touch_activity(self, desc: str) -> None:
         """Update the last-activity timestamp and description (thread-safe)."""

@@ -2923,6 +2923,22 @@ class GatewayRunner:
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        # ── Transport recovery guard ──────────────────────────────────
+        # If the adapter is actively recovering from transport errors
+        # (e.g. Telegram 409 conflicts, network errors), suppress LLM
+        # dispatch entirely.  This prevents transcript rehydration and
+        # token burn during transport error-recovery cycles.  The message
+        # is logged but dropped — the user can resend after recovery.
+        _adapter = self.adapters.get(source.platform)
+        if _adapter and getattr(_adapter, "transport_recovering", False):
+            logger.warning(
+                "Suppressing LLM dispatch during transport recovery: platform=%s user=%s msg=%r",
+                source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+                source.user_name or source.user_id or "unknown",
+                (event.text or "")[:80],
+            )
+            return None
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,

@@ -154,6 +154,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # Transport health flag — True while actively recovering from
+        # polling errors.  The gateway checks this to suppress LLM dispatch
+        # (and therefore transcript rehydration) during transport recovery.
+        self.transport_recovering: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -212,6 +216,7 @@ class TelegramAdapter(BasePlatformAdapter):
         BASE_DELAY = 5
         MAX_DELAY = 60
 
+        self.transport_recovering = True
         self._polling_network_error_count += 1
         attempt = self._polling_network_error_count
 
@@ -225,9 +230,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._notify_fatal_error()
             return
 
-        delay = min(BASE_DELAY * (2 ** (attempt - 1)), MAX_DELAY)
+        from agent.retry_utils import jittered_backoff
+        delay = jittered_backoff(attempt, base_delay=BASE_DELAY, max_delay=MAX_DELAY, jitter_ratio=0.5)
         logger.warning(
-            "[%s] Telegram network error (attempt %d/%d), reconnecting in %ds. Error: %s",
+            "[%s] Telegram network error (attempt %d/%d), reconnecting in %.1fs. Error: %s",
             self.name, attempt, MAX_NETWORK_RETRIES, delay, error,
         )
         await asyncio.sleep(delay)
@@ -249,6 +255,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, attempt,
             )
             self._polling_network_error_count = 0
+            self.transport_recovering = False
         except Exception as retry_err:
             logger.warning("[%s] Telegram polling reconnect failed: %s", self.name, retry_err)
             # start_polling failed — polling is dead and no further error
@@ -266,25 +273,34 @@ class TelegramAdapter(BasePlatformAdapter):
         # Track consecutive conflicts — transient 409s can occur when a
         # previous gateway instance hasn't fully released its long-poll
         # session on Telegram's server (e.g. during --replace handoffs or
-        # systemd Restart=on-failure respawns).  Retry a few times before
-        # giving up, so the old session has time to expire.
+        # systemd Restart=on-failure respawns).  Retry with exponential
+        # backoff + jitter, then circuit-break if the conflict persists.
+        self.transport_recovering = True
         self._polling_conflict_count += 1
 
-        MAX_CONFLICT_RETRIES = 3
-        RETRY_DELAY = 10  # seconds
+        MAX_CONFLICT_RETRIES = 10
+        BASE_DELAY = 1.0   # start at ~1s
+        MAX_DELAY = 60.0   # cap at ~60s
 
         if self._polling_conflict_count <= MAX_CONFLICT_RETRIES:
+            from agent.retry_utils import jittered_backoff
+            delay = jittered_backoff(
+                self._polling_conflict_count,
+                base_delay=BASE_DELAY,
+                max_delay=MAX_DELAY,
+                jitter_ratio=0.5,
+            )
             logger.warning(
-                "[%s] Telegram polling conflict (%d/%d), will retry in %ds. Error: %s",
+                "[%s] Telegram polling conflict (%d/%d), will retry in %.1fs. Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
-                RETRY_DELAY, error,
+                delay, error,
             )
             try:
                 if self._app and self._app.updater and self._app.updater.running:
                     await self._app.updater.stop()
             except Exception:
                 pass
-            await asyncio.sleep(RETRY_DELAY)
+            await asyncio.sleep(delay)
             try:
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
@@ -293,6 +309,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
                 self._polling_conflict_count = 0  # reset on success
+                self.transport_recovering = False
                 return
             except Exception as retry_err:
                 logger.warning("[%s] Telegram polling retry failed: %s", self.name, retry_err)
@@ -300,11 +317,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # to trigger another retry attempt (up to MAX_CONFLICT_RETRIES).
                 return
 
-        # Exhausted retries — fatal
+        # Circuit breaker: exhausted retries — stop polling, log, and alert.
         message = (
-            "Another process is already polling this Telegram bot token "
+            "CIRCUIT BREAKER: Another process is already polling this Telegram bot token "
             "(possibly OpenClaw or another Hermes instance). "
-            "Hermes stopped Telegram polling after %d retries. "
+            "Hermes stopped Telegram polling after %d consecutive 409 conflicts. "
             "Only one poller can run per token — stop the other process "
             "and restart with 'hermes start'."
             % MAX_CONFLICT_RETRIES

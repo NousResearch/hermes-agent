@@ -167,6 +167,63 @@ class TestBlueBubblesWebhookParsing:
             chat_identifier = sender
         assert chat_identifier == "user@example.com"
 
+    def test_webhook_extracts_chat_guid_from_chats_array_dm(self, monkeypatch):
+        """BB v1.9+ webhook payloads omit top-level chatGuid; GUID is in chats[0].guid."""
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [
+                    {"guid": "any;-;+15551234567", "chatIdentifier": "+15551234567"}
+                ],
+            },
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "any;-;+15551234567"
+
+    def test_webhook_extracts_chat_guid_from_chats_array_group(self, monkeypatch):
+        """Group chat GUIDs contain ;+; and must be extracted from chats array."""
+        adapter = _make_adapter(monkeypatch)
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "MESSAGE-GUID",
+                "text": "hello everyone",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "isGroup": True,
+                "chats": [{"guid": "any;+;chat-uuid-abc123"}],
+            },
+        }
+        record = adapter._extract_payload_record(payload) or {}
+        chat_guid = adapter._value(
+            record.get("chatGuid"),
+            payload.get("chatGuid"),
+            record.get("chat_guid"),
+            payload.get("chat_guid"),
+            payload.get("guid"),
+        )
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
+        assert chat_guid == "any;+;chat-uuid-abc123"
+
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {

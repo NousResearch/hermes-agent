@@ -835,6 +835,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             payload.get("chat_guid"),
             payload.get("guid"),
         )
+        # Fallback: BlueBubbles v1.9+ webhook payloads omit top-level chatGuid;
+        # the chat GUID is nested under data.chats[0].guid instead.
+        if not chat_guid:
+            _chats = record.get("chats") or []
+            if _chats and isinstance(_chats[0], dict):
+                chat_guid = _chats[0].get("guid") or _chats[0].get("chatGuid")
         chat_identifier = self._value(
             record.get("chatIdentifier"),
             record.get("identifier"),

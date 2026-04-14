@@ -294,7 +294,11 @@ class BaseEnvironment(ABC):
         instead of running with ``bash -l``.
         """
         # Full capture: env vars, functions (filtered), aliases, shell options.
+        quoted_init_cwd = (
+            shlex.quote(self.cwd) if self.cwd != "~" and not self.cwd.startswith("~/") else self.cwd
+        )
         bootstrap = (
+            f"cd {quoted_init_cwd} || exit 126\n"
             f"export -p > {self._snapshot_path}\n"
             f"declare -f | grep -vE '^_[^_]' >> {self._snapshot_path}\n"
             f"alias -p >> {self._snapshot_path}\n"

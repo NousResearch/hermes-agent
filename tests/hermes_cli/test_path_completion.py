@@ -164,6 +164,61 @@ class TestIntegration:
         assert any("host" in n.lower() for n in names)
 
 
+class TestContextCompletion:
+    """Tests for @ context reference completion (regression: was @staticmethod)."""
+
+    def test_bare_at_does_not_crash(self, completer, tmp_path, monkeypatch):
+        """Typing bare '@' must not raise NameError (self not defined).
+
+        _context_completions was incorrectly decorated @staticmethod but
+        called self._fuzzy_file_completions on line 806.  This test
+        verifies the fix by ensuring bare '@' yields completions without
+        crashing.
+        """
+        # Provide a predictable file list so the test is deterministic.
+        monkeypatch.setattr(
+            completer,
+            "_file_cache",
+            ["src/main.py", "README.md"],
+        )
+        monkeypatch.setattr(
+            completer,
+            "_file_cache_time",
+            999999.0,
+        )
+        monkeypatch.setattr(
+            completer,
+            "_file_cache_cwd",
+            str(tmp_path),
+        )
+
+        doc = Document("@", cursor_position=1)
+        event = MagicMock()
+        # This used to crash with NameError: name 'self' is not defined
+        completions = list(completer.get_completions(doc, event))
+        # Should produce completions (static refs like @diff, @staged, etc.)
+        texts = [c.text for c in completions]
+        assert any("@diff" in t or "@staged" in t or "@file:" in t for t in texts)
+
+    def test_at_partial_matches_static_refs(self, completer):
+        """'@di' should match @diff but not @staged."""
+        doc = Document("@di", cursor_position=3)
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+        texts = [c.text for c in completions]
+        assert "@diff" in texts
+        assert not any("@staged" in t for t in texts)
+
+    def test_at_file_prefix_completions(self, completer, tmp_path):
+        """'@file:' should produce path completions."""
+        (tmp_path / "hello.py").touch()
+        doc = Document(f"@file:{tmp_path}/", cursor_position=len(f"@file:{tmp_path}/"))
+        event = MagicMock()
+        completions = list(completer.get_completions(doc, event))
+        texts = [c.text for c in completions]
+        assert any("hello.py" in t for t in texts)
+
+
 class TestFileSizeLabel:
     def test_bytes(self, tmp_path):
         f = tmp_path / "small.txt"

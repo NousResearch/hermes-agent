@@ -1115,6 +1115,131 @@ class TestResponsesEndpoint:
             assert resp.status == 400
 
 
+class TestResponsesStreaming:
+    @pytest.mark.asyncio
+    async def test_stream_true_returns_responses_sse(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Hello")
+                    cb(" world")
+                return (
+                    {"final_response": "Hello world", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                body = await resp.text()
+                assert "event: response.created" in body
+                assert "event: response.output_text.delta" in body
+                assert "event: response.output_text.done" in body
+                assert "event: response.completed" in body
+                assert "Hello" in body
+                assert " world" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_function_call_and_output_items(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_123", "read_file", {"path": "/tmp/test.txt"})
+                if complete_cb:
+                    complete_cb("call_123", "read_file", {"path": "/tmp/test.txt"}, '{"content":"hello"}')
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_123",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"/tmp/test.txt"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_123",
+                                "content": '{"content":"hello"}',
+                            },
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: response.output_item.added" in body
+                assert "event: response.output_item.done" in body
+                assert '"type": "function_call"' in body
+                assert '"type": "function_call_output"' in body
+                assert '"call_id": "call_123"' in body
+                assert '"name": "read_file"' in body
+                assert '"output": "{\\"content\\":\\"hello\\"}"' in body
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_is_stored_for_get(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Stored response")
+                return (
+                    {"final_response": "Stored response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "store this", "stream": True},
+                )
+                body = await resp.text()
+                response_id = None
+                for line in body.splitlines():
+                    if line.startswith("data: "):
+                        try:
+                            payload = json.loads(line[len("data: "):])
+                        except json.JSONDecodeError:
+                            continue
+                        if payload.get("type") == "response.completed":
+                            response_id = payload["response"]["id"]
+                            break
+                assert response_id
+
+                get_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert get_resp.status == 200
+                data = await get_resp.json()
+                assert data["id"] == response_id
+                assert data["status"] == "completed"
+                assert data["output"][-1]["content"][0]["text"] == "Stored response"
+
+
 # ---------------------------------------------------------------------------
 # Auth on endpoints
 # ---------------------------------------------------------------------------

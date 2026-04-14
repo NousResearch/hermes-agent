@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Select, SelectOption } from "@/components/ui/select";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -147,7 +147,7 @@ export default function CronPage() {
               <Label htmlFor="cron-prompt">Prompt</Label>
               <textarea
                 id="cron-prompt"
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder="What should the agent do on each run?"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -170,13 +170,13 @@ export default function CronPage() {
                 <Select
                   id="cron-deliver"
                   value={deliver}
-                  onChange={(e) => setDeliver(e.target.value)}
+                  onValueChange={setDeliver}
                 >
-                  <option value="local">Local</option>
-                  <option value="telegram">Telegram</option>
-                  <option value="discord">Discord</option>
-                  <option value="slack">Slack</option>
-                  <option value="email">Email</option>
+                  <SelectOption value="local">Local</SelectOption>
+                  <SelectOption value="telegram">Telegram</SelectOption>
+                  <SelectOption value="discord">Discord</SelectOption>
+                  <SelectOption value="slack">Slack</SelectOption>
+                  <SelectOption value="email">Email</SelectOption>
                 </Select>
               </div>
 

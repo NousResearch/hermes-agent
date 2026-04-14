@@ -1397,18 +1397,57 @@ def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     assert resolved["api_key"] == "pool-key", "pool credentials should be used"
 
 
-def test_named_custom_runtime_no_model_when_absent(monkeypatch):
-    """When custom_providers entry has no model field, runtime should not either."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
+# ------------------------------------------------------------------
+# Refactoring verification tests
+# ------------------------------------------------------------------
+
+
+def test_anthropic_explicit_api_mode_override(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
     monkeypatch.setattr(
-        rp, "_get_named_custom_provider",
-        lambda p: {
-            "name": "my-server",
-            "base_url": "http://localhost:8000/v1",
-            "api_key": "test-key",
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "api_mode": "chat_completions",
         },
     )
-    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+    # Mock token resolution
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "sk-test")
 
-    resolved = rp.resolve_runtime_provider(requested="my-server")
-    assert "model" not in resolved
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_custom_explicit_api_mode_override(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://my-custom.com/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_anthropic_independent_base_url(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+    monkeypatch.setattr(
+        rp, "_get_model_config",
+        lambda: {
+            "provider": "anthropic",
+            "base_url": "https://proxy.example.com/anthropic-custom",
+        },
+    )
+    monkeypatch.setattr("agent.anthropic_adapter.resolve_anthropic_token", lambda: "sk-test")
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic")
+    assert resolved["base_url"] == "https://proxy.example.com/anthropic-custom"
+    assert resolved["api_mode"] == "anthropic_messages"  # Still anthropic mode

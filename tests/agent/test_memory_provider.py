@@ -381,6 +381,7 @@ class TestPluginMemoryDiscovery:
         providers = discover_memory_providers()
         names = [name for name, _, _ in providers]
         assert "holographic" in names  # always available (no external deps)
+        assert "layered" in names
 
     def test_load_provider_by_name(self):
         """load_memory_provider returns a working provider instance."""

@@ -194,6 +194,8 @@ class TestWebServerEndpoints:
         schema = data["fields"]
         assert len(schema) > 100  # Should have 150+ fields
         assert "model" in schema
+        assert "memory.provider" in schema
+        assert "layered" in schema["memory.provider"]["options"]
         # Verify category_order is a non-empty list
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0

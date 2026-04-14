@@ -1,0 +1,9 @@
+name: layered
+version: 0.6.0
+description: "Layered local memory provider — SQLite + FTS5 long-term memory bus with identity, semantic, episodic, reflection, archive, procedural promotion, and skill-candidate lifecycle support."
+hooks:
+  - on_memory_write
+  - sync_turn
+  - on_pre_compress
+  - on_session_end
+  - on_delegation

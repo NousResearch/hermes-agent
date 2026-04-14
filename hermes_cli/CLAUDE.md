@@ -2,7 +2,7 @@
 
 # Hermes CLI 模块 - 命令行界面
 
-> 最后更新：2026-04-08 18:28:35
+> 最后更新：2026-04-13 16:35:00
 
 ## 模块职责
 
@@ -10,6 +10,7 @@
 
 主要职责：
 - **CLI 入口**：`hermes` 命令的主入口点
+- **Web UI 服务器**：FastAPI 后端服务器，提供 Web 管理界面
 - **配置管理**：加载、保存、迁移配置文件
 - **命令注册**：中央化的斜杠命令注册表
 - **设置向导**：引导用户完成初始设置
@@ -245,6 +246,65 @@ def load_project_env(project_dir: Path) -> None:
     """加载项目特定的 .env 文件。"""
 ```
 
+### Web UI 服务器 (web_server.py)
+
+**FastAPI 应用**：
+```python
+app = FastAPI(title="Hermes Agent", version=__version__)
+
+# 主要端点
+@app.get("/api/config")
+async def get_config() -> dict:
+    """获取当前配置。"""
+
+@app.post("/api/config")
+async def update_config(config: dict) -> dict:
+    """更新配置。"""
+
+@app.get("/api/env")
+async def get_env() -> dict:
+    """获取环境变量（已脱敏）。"""
+
+@app.post("/api/env/{key}")
+async def set_env_value(key: str, value: str) -> dict:
+    """设置环境变量值。"""
+
+@app.delete("/api/env/{key}")
+async def delete_env_value(key: str) -> dict:
+    """删除环境变量值。"""
+
+@app.get("/api/sessions")
+async def list_sessions() -> list:
+    """列出所有会话。"""
+
+@app.get("/api/skills")
+async def list_skills() -> list:
+    """列出所有技能。"""
+
+@app.get("/api/cron")
+async def list_cron_jobs() -> list:
+    """列出所有 cron 任务。"""
+
+@app.post("/api/reveal/{key}")
+async def reveal_secret(key: str, token: str) -> dict:
+    """揭示敏感环境变量值（需要会话令牌）。"""
+```
+
+**安全特性**：
+- **会话令牌**：每次启动生成唯一的 `_SESSION_TOKEN`
+- **CORS 限制**：仅允许 localhost 源访问
+- **速率限制**：敏感端点（reveal）有速率限制
+- **静态文件服务**：从 `web_dist/` 目录提供构建的前端
+
+**主要函数**：
+```python
+def start_web_server(port: int = 9119, open_browser: bool = True) -> None:
+    """启动 Web UI 服务器。"""
+
+def get_config_schema() -> dict:
+    """生成配置的 JSON Schema（包含字段类型和选项）。"""
+```
+
 ## 关键依赖与配置
 
 ### 依赖项
@@ -252,6 +312,8 @@ def load_project_env(project_dir: Path) -> None:
 - **Rich**：终端格式化和美化
 - **PyYAML**：配置文件解析
 - **python-dotenv**：环境变量加载
+- **FastAPI**：Web UI 后端服务器
+- **uvicorn**：ASGI 服务器（Web UI）
 
 ### 配置文件
 - `~/.hermes/config.yaml` - 主配置文件
@@ -342,6 +404,7 @@ def load_project_env(project_dir: Path) -> None:
 - `tests/hermes_cli/test_setup.py` - 设置向导测试
 - `tests/hermes_cli/test_skin_engine.py` - 皮肤引擎测试
 - `tests/hermes_cli/test_env_loader.py` - 环境加载测试
+- `tests/hermes_cli/test_web_server.py` - Web UI 服务器测试（约 675 个测试用例）
 
 ### 测试覆盖
 - **单元测试**：每个模块都有对应的测试文件
@@ -384,6 +447,7 @@ A: 设置 `HERMES_DEBUG=1` 环境变量，查看详细的配置加载日志。
 - `hermes_cli/main.py` - CLI 主入口
 - `hermes_cli/cli.py` - CLI 类和交互循环
 - `hermes_cli/config.py` - 配置管理
+- `hermes_cli/web_server.py` - Web UI 服务器（FastAPI 后端）
 - `hermes_cli/commands.py` - 命令注册表
 - `hermes_cli/setup.py` - 设置向导
 - `hermes_cli/skin_engine.py` - 皮肤引擎
@@ -404,6 +468,13 @@ A: 设置 `HERMES_DEBUG=1` 环境变量，查看详细的配置加载日志。
 - `tests/hermes_cli/` - 完整的测试套件
 
 ## 变更记录 (Changelog)
+
+### 2026-04-13 16:35:00 - Web UI 服务器集成 🌐
+- ✅ **新增 Web UI 服务器**：FastAPI 后端，提供配置管理、环境变量、会话管理等 API
+- 📊 **新增 API 端点**：config、env、sessions、skills、cron、logs 等端点
+- 🔒 **安全特性**：会话令牌、CORS 限制、速率限制
+- 🧪 **测试覆盖**：约 675 个 Web 服务器测试用例
+- 📖 **文档更新**：添加 Web 服务器接口文档
 
 ### 2026-04-08 - 初始化模块文档 🚀
 - ✅ **创建模块文档**：生成 hermes_cli 模块的完整 CLAUDE.md

@@ -1,6 +1,6 @@
 # Hermes Agent - AI 上下文文档
 
-> 更新时间：2026-04-08 18:33:30
+> 更新时间：2026-04-13 16:35:00
 
 ## 项目愿景
 
@@ -8,6 +8,7 @@ Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https:
 
 核心特性：
 - **真正的终端界面**：完整的 TUI，支持多行编辑、斜杠命令自动补全、对话历史、中断重定向和流式工具输出
+- **Web UI Dashboard**：基于浏览器的管理界面，支持配置管理、会话监控、技能管理、环境变量配置和日志查看
 - **多平台集成**：Telegram、Discord、Slack、WhatsApp、Signal、CLI —— 单一网关进程支持所有平台
 - **封闭学习循环**：代理策展记忆、定期推送、自主技能创建、技能自我改进、FTS5 会话搜索
 - **定时自动化**：内置 cron 调度器，支持向任何平台传递
@@ -17,12 +18,13 @@ Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https:
 ## 架构总览
 
 ### 技术栈
-- **语言**：Python 3.11+
+- **语言**：Python 3.11+、TypeScript
 - **核心框架**：OpenAI SDK、Anthropic SDK
 - **CLI 框架**：prompt_toolkit、Rich
+- **Web UI**：FastAPI、React 19、Vite、Tailwind CSS v4
 - **消息平台**：python-telegram-bot、discord.py、slack-bolt、aiohttp
 - **测试框架**：pytest、pytest-asyncio、pytest-xdist（~3000 测试用例）
-- **依赖管理**：pyproject.toml、setuptools
+- **依赖管理**：pyproject.toml、setuptools、npm
 
 ### 架构模式
 - **同步代理循环**：核心对话循环完全同步，简化状态管理
@@ -48,7 +50,8 @@ graph TD
     A --> G["cron"];
     A --> H["acp_adapter"];
     A --> I["plugins"];
-    A --> J["tests"];
+    A --> J["web"];
+    A --> K["tests"];
 
     B --> B1["prompt_builder.py"];
     B --> B2["context_compressor.py"];
@@ -61,6 +64,7 @@ graph TD
     C --> C3["commands.py"];
     C --> C4["setup.py"];
     C --> C5["skin_engine.py"];
+    C --> C6["web_server.py"];
 
     D --> D1["registry.py"];
     D --> D2["terminal_tool.py"];
@@ -76,6 +80,10 @@ graph TD
     F --> F1["agent_loop.py"];
     F --> F2["benchmarks/"];
 
+    J --> J1["src/pages/"];
+    J --> J2["src/components/"];
+    J --> J3["src/lib/api.ts"];
+
     click B "./agent/CLAUDE.md" "查看 agent 模块文档"
     click C "./hermes_cli/CLAUDE.md" "查看 hermes_cli 模块文档"
     click D "./tools/CLAUDE.md" "查看 tools 模块文档"
@@ -84,6 +92,7 @@ graph TD
     click G "./cron/CLAUDE.md" "查看 cron 模块文档"
     click H "./acp_adapter/CLAUDE.md" "查看 acp_adapter 模块文档"
     click I "./plugins/CLAUDE.md" "查看 plugins 模块文档"
+    click J "./web/README.md" "查看 Web UI 文档"
 ```
 
 ## 模块交互流程
@@ -276,6 +285,7 @@ sequenceDiagram
 | **CLI Interface** | `hermes_cli/` | 命令行界面 | `main.py` | ✅ 高 | ✅ 已完成 |
 | **Tools System** | `tools/` | 工具注册与执行 | `registry.py` | ✅ 高 | ✅ 已完成 |
 | **Gateway** | `gateway/` | 消息平台网关 | `run.py` | ✅ 高 | ✅ 已完成 |
+| **Web UI** | `web/` | Web 管理界面 | `src/main.tsx` | ✅ 高 | ✅ 已完成 |
 | **Environments** | `environments/` | RL 训练环境 | `agent_loop.py` | ✅ 中 | ✅ 已完成 |
 | **Cron Scheduler** | `cron/` | 定时任务调度 | `scheduler.py` | ✅ 高 | ✅ 已完成 |
 | **ACP Adapter** | `acp_adapter/` | ACP 协议适配器 | `entry.py` | ✅ 高 | ✅ 已完成 |
@@ -373,6 +383,9 @@ hermes model
 
 # 启动消息网关
 hermes gateway
+
+# 启动 Web UI Dashboard
+hermes web
 ```
 
 ### 开发环境设置
@@ -397,6 +410,7 @@ python -m pytest tests/ -q
 - `hermes tools` - 配置启用的工具
 - `hermes config set` - 设置配置值
 - `hermes gateway` - 启动消息网关
+- `hermes web` - 启动 Web UI Dashboard（默认 http://127.0.0.1:9119）
 - `hermes setup` - 运行完整设置向导
 - `hermes doctor` - 诊断问题
 
@@ -515,6 +529,18 @@ run_agent.py, cli.py, batch_runner.py, environments/
 - **Tinker**：RL 工具集成（可选）
 
 ## 变更记录 (Changelog)
+
+### 2026-04-13 16:35:00 - 代码变更同步更新 🔄
+- ✅ **新增 Web UI Dashboard**：基于 React 19 + Vite + Tailwind CSS v4 的浏览器管理界面
+- 📊 **新增 9 个页面**：Status、Config、Env、Sessions、Skills、Cron、Logs、Analytics 页面
+- 🔧 **Gateway 改进**：重启通知机制、服务重启支持（systemd）
+- 🛡️ **安全修复**：Home Assistant 工具的路径遍历验证
+- 🔤 **模型名称修复**：保留 OpenCode Zen 和 ZAI 提供商模型名称中的点
+- 📱 **WhatsApp UX 改进**：分块、格式化、流式输出改进
+- 📨 **Telegram 修复**：使用 UTF-16 代码单元进行消息长度分割
+- 🖥️ **Web 服务器**：FastAPI 后端 + React 前端的完整 Web 界面
+- 📦 **新命令**：`hermes web` 启动 Web UI Dashboard
+- 📖 **文档更新**：更新技术栈、模块结构图和核心命令
 
 ### 2026-04-08 18:33:30 - 完善 ADR 体系 📋
 - ✅ **新增 3 个 ADR**：命令系统、会话管理、技能系统

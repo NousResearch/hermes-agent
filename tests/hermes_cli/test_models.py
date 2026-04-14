@@ -1,5 +1,6 @@
 """Tests for the hermes_cli models module."""
 
+import json
 from unittest.mock import patch
 
 from hermes_cli.models import (
@@ -44,6 +45,16 @@ class TestModelIds:
 
 
 class TestFetchOpenRouterModels:
+    def _write_disk_cache(self, tmp_path, models, fetched_at):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        cache_path = hermes_home / "openrouter_models_cache.json"
+        cache_path.write_text(
+            json.dumps({"fetched_at": fetched_at, "models": models}),
+            encoding="utf-8",
+        )
+        return hermes_home, cache_path
+
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
         class _Resp:
             def __enter__(self):
@@ -65,14 +76,75 @@ class TestFetchOpenRouterModels:
             ("qwen/qwen3.6-plus", ""),
         ]
 
-    def test_returns_empty_when_live_fetch_fails(self, monkeypatch):
+    def test_uses_fresh_disk_cache_without_hitting_api(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_time", 0.0)
+        monkeypatch.setattr("hermes_cli.models.time.time", lambda: 2_000_000.0)
+        hermes_home, _cache_path = self._write_disk_cache(
+            tmp_path,
+            [["openai/gpt-5.4", ""], ["anthropic/claude-opus-4.6", ""]],
+            2_000_000.0 - 60,
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("hermes_cli.models.urllib.request.urlopen") as mock_urlopen:
+            models = fetch_openrouter_models()
+
+        assert models == [
+            ("openai/gpt-5.4", ""),
+            ("anthropic/claude-opus-4.6", ""),
+        ]
+        mock_urlopen.assert_not_called()
+
+    def test_falls_back_to_stale_disk_cache_when_live_fetch_fails(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_time", 0.0)
+        monkeypatch.setattr("hermes_cli.models.time.time", lambda: 2_000_000.0)
+        hermes_home, _cache_path = self._write_disk_cache(
+            tmp_path,
+            [["openai/gpt-5.4", ""], ["anthropic/claude-opus-4.6", ""]],
+            2_000_000.0 - (_models_mod._OPENROUTER_CATALOG_CACHE_TTL + 10),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
         with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
             models = fetch_openrouter_models(force_refresh=True)
 
-        assert models == []
+        assert models == [
+            ("openai/gpt-5.4", ""),
+            ("anthropic/claude-opus-4.6", ""),
+        ]
 
-    def test_returns_empty_when_payload_is_not_a_model_list(self, monkeypatch):
+    def test_refreshes_stale_disk_cache_from_api(self, monkeypatch, tmp_path):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"},"supported_parameters":["tools","tool_choice"],"architecture":{"input_modalities":["text"],"output_modalities":["text"]}}]}'
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_time", 0.0)
+        monkeypatch.setattr("hermes_cli.models.time.time", lambda: 2_000_000.0)
+        hermes_home, cache_path = self._write_disk_cache(
+            tmp_path,
+            [["openai/gpt-5.4", ""]],
+            2_000_000.0 - (_models_mod._OPENROUTER_CATALOG_CACHE_TTL + 10),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [("qwen/qwen3.6-plus", "")]
+        disk_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert disk_payload["models"] == [["qwen/qwen3.6-plus", ""]]
+        assert disk_payload["fetched_at"] == 2_000_000.0
+
+    def test_returns_empty_when_payload_is_not_a_model_list_and_no_cache_exists(self, monkeypatch, tmp_path):
         class _Resp:
             def __enter__(self):
                 return self
@@ -84,6 +156,10 @@ class TestFetchOpenRouterModels:
                 return b'{"data":{"not":"a-list"}}'
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache_time", 0.0)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
             models = fetch_openrouter_models(force_refresh=True)
 

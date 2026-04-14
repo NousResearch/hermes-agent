@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
@@ -22,6 +23,8 @@ COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_catalog_cache_time: float = 0.0
+_OPENROUTER_CATALOG_CACHE_TTL = 24 * 60 * 60
 _OPENROUTER_PICKER_NOISE_PATTERNS: re.Pattern[str] = re.compile(
     r"-tts\b|embedding|live-|-(preview|exp)-\d{2,4}[-_]|"
     r"-image\b|-image-preview\b|-customtools\b",
@@ -632,16 +635,88 @@ def _openrouter_picker_sort_key(model_id: str) -> tuple[str, int, str]:
     return (vendor, 1 if bare.endswith(":free") else 0, bare)
 
 
+def _openrouter_catalog_cache_path():
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "openrouter_models_cache.json"
+
+
+def _cache_is_fresh(cached_at: float) -> bool:
+    return cached_at > 0 and (time.time() - cached_at) < _OPENROUTER_CATALOG_CACHE_TTL
+
+
+def _set_openrouter_catalog_cache(models: list[tuple[str, str]], *, cached_at: float | None = None) -> None:
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_time
+
+    _openrouter_catalog_cache = list(models)
+    _openrouter_catalog_cache_time = cached_at if cached_at is not None else time.time()
+
+
+def _load_openrouter_disk_cache() -> tuple[list[tuple[str, str]], float]:
+    try:
+        path = _openrouter_catalog_cache_path()
+        if not path.exists():
+            return ([], 0.0)
+        with open(path, encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return ([], 0.0)
+
+        cached_at = float(payload.get("fetched_at") or 0.0)
+        raw_models = payload.get("models")
+        if not isinstance(raw_models, list):
+            return ([], 0.0)
+
+        models: list[tuple[str, str]] = []
+        for item in raw_models:
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            model_id = str(item[0] or "").strip()
+            desc = str(item[1] or "").strip()
+            if model_id:
+                models.append((model_id, desc))
+        return (models, cached_at)
+    except Exception:
+        return ([], 0.0)
+
+
+def _save_openrouter_disk_cache(models: list[tuple[str, str]], *, cached_at: float) -> None:
+    try:
+        path = _openrouter_catalog_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "fetched_at": cached_at,
+            "models": models,
+        }
+        tmp_path = path.with_name(f".{path.name}.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=None, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except Exception:
+        pass
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
     force_refresh: bool = False,
 ) -> list[tuple[str, str]]:
     """Return the canonical OpenRouter catalog as ``(model_id, desc)`` tuples."""
-    global _openrouter_catalog_cache
+    global _openrouter_catalog_cache, _openrouter_catalog_cache_time
 
-    if _openrouter_catalog_cache is not None and not force_refresh:
+    if (
+        _openrouter_catalog_cache is not None
+        and not force_refresh
+        and _cache_is_fresh(_openrouter_catalog_cache_time)
+    ):
         return list(_openrouter_catalog_cache)
+
+    disk_models, disk_cached_at = _load_openrouter_disk_cache()
+    if not force_refresh and disk_models and _cache_is_fresh(disk_cached_at):
+        _set_openrouter_catalog_cache(disk_models, cached_at=disk_cached_at)
+        return list(disk_models)
 
     try:
         req = urllib.request.Request(
@@ -651,10 +726,20 @@ def fetch_openrouter_models(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
+        if disk_models:
+            _set_openrouter_catalog_cache(disk_models, cached_at=disk_cached_at)
+            return list(disk_models)
+        if _openrouter_catalog_cache is not None:
+            return list(_openrouter_catalog_cache)
         return []
 
     live_items = payload.get("data", [])
     if not isinstance(live_items, list):
+        if disk_models:
+            _set_openrouter_catalog_cache(disk_models, cached_at=disk_cached_at)
+            return list(disk_models)
+        if _openrouter_catalog_cache is not None:
+            return list(_openrouter_catalog_cache)
         return []
 
     discovered: list[tuple[str, str]] = []
@@ -677,8 +762,18 @@ def fetch_openrouter_models(
             ))
             seen.add(model_id)
 
+    if not discovered:
+        if disk_models:
+            _set_openrouter_catalog_cache(disk_models, cached_at=disk_cached_at)
+            return list(disk_models)
+        if _openrouter_catalog_cache is not None:
+            return list(_openrouter_catalog_cache)
+        return []
+
     discovered.sort(key=lambda item: _openrouter_picker_sort_key(item[0]))
-    _openrouter_catalog_cache = discovered
+    cached_at = time.time()
+    _set_openrouter_catalog_cache(discovered, cached_at=cached_at)
+    _save_openrouter_disk_cache(discovered, cached_at=cached_at)
     return list(discovered)
 
 

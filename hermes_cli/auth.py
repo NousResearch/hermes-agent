@@ -224,7 +224,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
-        name="AI Gateway",
+        name="Vercel AI Gateway",
         auth_type="api_key",
         inference_base_url="https://ai-gateway.vercel.sh/v1",
         api_key_env_vars=("AI_GATEWAY_API_KEY",),

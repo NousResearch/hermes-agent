@@ -8,6 +8,7 @@ import {
   Box,
   NoSelect,
   ScrollBox,
+  type ScrollBoxHandle,
   Text,
   useApp,
   useHasSelection,
@@ -15,7 +16,7 @@ import {
   useSelection,
   useStdout
 } from '@hermes/ink'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import { Banner, Panel, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
@@ -44,7 +45,8 @@ import {
   pick,
   sameToolTrailGroup,
   stripTrailingPasteNewlines,
-  toolTrailLabel
+  toolTrailLabel,
+  userDisplay
 } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
@@ -70,6 +72,7 @@ const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 const LARGE_PASTE = { chars: 8000, lines: 80 }
 const MAX_HISTORY = 800
 const REASONING_PULSE_MS = 700
+const STREAM_BATCH_MS = 16
 const WHEEL_SCROLL_STEP = 3
 const MOUSE_TRACKING = !/^(1|true|yes|on)$/.test((process.env.HERMES_TUI_DISABLE_MOUSE ?? '').trim().toLowerCase())
 const PASTE_SNIPPET_RE = /\[\[[^\n]*?\]\]/g
@@ -78,14 +81,18 @@ const DETAILS_MODES: DetailsMode[] = ['hidden', 'collapsed', 'expanded']
 
 const parseDetailsMode = (v: unknown): DetailsMode | null => {
   const s = typeof v === 'string' ? v.trim().toLowerCase() : ''
+
   return DETAILS_MODES.includes(s as DetailsMode) ? (s as DetailsMode) : null
 }
 
 const resolveDetailsMode = (d: any): DetailsMode =>
-  parseDetailsMode(d?.details_mode)
-  ?? ({ full: 'expanded' as const, collapsed: 'collapsed' as const, truncated: 'collapsed' as const }[
-    String(d?.thinking_mode ?? '').trim().toLowerCase()
-  ] ?? 'collapsed')
+  parseDetailsMode(d?.details_mode) ??
+  { full: 'expanded' as const, collapsed: 'collapsed' as const, truncated: 'collapsed' as const }[
+    String(d?.thinking_mode ?? '')
+      .trim()
+      .toLowerCase()
+  ] ??
+  'collapsed'
 
 const nextDetailsMode = (m: DetailsMode): DetailsMode =>
   DETAILS_MODES[(DETAILS_MODES.indexOf(m) + 1) % DETAILS_MODES.length]!
@@ -98,6 +105,7 @@ type PasteSnippet = { label: string; text: string }
 const shortCwd = (cwd: string, max = 28) => {
   const home = process.env.HOME
   const path = home && cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd
+
   return path.length <= max ? path : `…${path.slice(-(max - 1))}`
 }
 
@@ -288,6 +296,78 @@ function PromptBox({ children, color }: { children: React.ReactNode; color: stri
   )
 }
 
+const upperBound = (arr: ArrayLike<number>, target: number) => {
+  let lo = 0
+  let hi = arr.length
+
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+
+    if (arr[mid]! <= target) {
+      lo = mid + 1
+    } else {
+      hi = mid
+    }
+  }
+
+  return lo
+}
+
+function StickyPromptTracker({
+  messages,
+  offsets,
+  scrollRef,
+  onChange
+}: {
+  messages: readonly Msg[]
+  offsets: ArrayLike<number>
+  scrollRef: RefObject<ScrollBoxHandle | null>
+  onChange: (text: string) => void
+}) {
+  useSyncExternalStore(
+    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
+    () => {
+      const s = scrollRef.current
+
+      if (!s) {
+        return NaN
+      }
+      const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
+
+      return s.isSticky() ? -1 - top : top
+    },
+    () => NaN
+  )
+
+  const s = scrollRef.current
+  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
+
+  let text = ''
+
+  if (!(s?.isSticky() ?? true) && messages.length) {
+    const first = Math.max(0, Math.min(messages.length - 1, upperBound(offsets, top) - 1))
+
+    if (!(messages[first]?.role === 'user' && (offsets[first] ?? 0) + 1 >= top)) {
+      for (let i = first - 1; i >= 0; i--) {
+        if (messages[i]?.role !== 'user') {
+          continue
+        }
+
+        if ((offsets[i] ?? 0) + 1 >= top) {
+          continue
+        }
+        text = userDisplay(messages[i]!.text.trim()).replace(/\s+/g, ' ').trim()
+
+        break
+      }
+    }
+  }
+
+  useEffect(() => onChange(text), [onChange, text])
+
+  return null
+}
+
 // ── App ──────────────────────────────────────────────────────────────
 
 export function App({ gw }: { gw: GatewayClient }) {
@@ -343,6 +423,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [reasoningStreaming, setReasoningStreaming] = useState(false)
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
+  const [stickyPrompt, setStickyPrompt] = useState('')
   const [pasteSnips, setPasteSnips] = useState<PasteSnippet[]>([])
   const [streaming, setStreaming] = useState('')
   const [turnTrail, setTurnTrail] = useState<string[]>([])
@@ -371,11 +452,13 @@ export function App({ gw }: { gw: GatewayClient }) {
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
   const persistedToolLabelsRef = useRef<Set<string>>(new Set())
+  const streamTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reasoningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reasoningStreamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const busyRef = useRef(busy)
   const sidRef = useRef<string | null>(sid)
-  const scrollRef = useRef<import('@hermes/ink').ScrollBoxHandle | null>(null)
+  const scrollRef = useRef<ScrollBoxHandle | null>(null)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const configMtimeRef = useRef(0)
   colsRef.current = cols
@@ -407,6 +490,28 @@ export function App({ gw }: { gw: GatewayClient }) {
     }, REASONING_PULSE_MS)
   }, [])
 
+  const scheduleStreaming = useCallback(() => {
+    if (streamTimerRef.current) {
+      return
+    }
+
+    streamTimerRef.current = setTimeout(() => {
+      streamTimerRef.current = null
+      setStreaming(buf.current.trimStart())
+    }, STREAM_BATCH_MS)
+  }, [])
+
+  const scheduleReasoning = useCallback(() => {
+    if (reasoningTimerRef.current) {
+      return
+    }
+
+    reasoningTimerRef.current = setTimeout(() => {
+      reasoningTimerRef.current = null
+      setReasoning(reasoningRef.current)
+    }, STREAM_BATCH_MS)
+  }, [])
+
   const endReasoningPhase = useCallback(() => {
     if (reasoningStreamingTimerRef.current) {
       clearTimeout(reasoningStreamingTimerRef.current)
@@ -419,6 +524,14 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   useEffect(
     () => () => {
+      if (streamTimerRef.current) {
+        clearTimeout(streamTimerRef.current)
+      }
+
+      if (reasoningTimerRef.current) {
+        clearTimeout(reasoningTimerRef.current)
+      }
+
       if (reasoningStreamingTimerRef.current) {
         clearTimeout(reasoningStreamingTimerRef.current)
       }
@@ -432,6 +545,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const empty = !messages.length
   const isBlocked = blocked()
+
   const virtualRows = useMemo(
     () =>
       historyItems.map((msg, index) => ({
@@ -441,6 +555,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       })),
     [historyItems]
   )
+
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows)
 
   // ── Resize RPC ───────────────────────────────────────────────────
@@ -651,8 +766,24 @@ export function App({ gw }: { gw: GatewayClient }) {
     setApproval(null)
     setSudo(null)
     setSecret(null)
+
+    if (streamTimerRef.current) {
+      clearTimeout(streamTimerRef.current)
+      streamTimerRef.current = null
+    }
+
     setStreaming('')
     buf.current = ''
+  }
+
+  const clearReasoning = () => {
+    if (reasoningTimerRef.current) {
+      clearTimeout(reasoningTimerRef.current)
+      reasoningTimerRef.current = null
+    }
+
+    reasoningRef.current = ''
+    setReasoning('')
   }
 
   const die = () => {
@@ -670,13 +801,14 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const resetSession = () => {
     idle()
-    setReasoning('')
+    clearReasoning()
     setVoiceRecording(false)
     setVoiceProcessing(false)
     setSid(null as any) // will be set by caller
     setInfo(null)
     setHistoryItems([])
     setMessages([])
+    setStickyPrompt('')
     setPasteSnips([])
     setActivity([])
     setBgTasks(new Set())
@@ -688,11 +820,12 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const resetVisibleHistory = (info: SessionInfo | null = null) => {
     idle()
-    setReasoning('')
+    clearReasoning()
     setMessages([])
     setHistoryItems(info ? [introMsg(info)] : [])
     setInfo(info)
     setUsage(info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+    setStickyPrompt('')
     setPasteSnips([])
     setActivity([])
     setLastUserMsg('')
@@ -888,10 +1021,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const send = (text: string) => {
     const expandPasteSnips = (value: string) => {
       const byLabel = new Map<string, string[]>()
+
       for (const item of pasteSnips) {
         const list = byLabel.get(item.label)
         list ? list.push(item.text) : byLabel.set(item.label, [item.text])
       }
+
       return value.replace(PASTE_SNIPPET_RE, token => byLabel.get(token)?.shift() ?? token)
     }
 
@@ -1192,11 +1327,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.wheelUp) {
       scrollRef.current?.scrollBy(-WHEEL_SCROLL_STEP)
+
       return
     }
 
     if (key.wheelDown) {
       scrollRef.current?.scrollBy(WHEEL_SCROLL_STEP)
+
       return
     }
 
@@ -1204,6 +1341,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       const viewport = scrollRef.current?.getViewportHeight() ?? Math.max(6, (stdout?.rows ?? 24) - 8)
       const step = Math.max(4, viewport - 2)
       scrollRef.current?.scrollBy(key.pageUp ? -step : step)
+
       return
     }
 
@@ -1272,7 +1410,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         partial ? appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' }) : sys('interrupted')
 
         idle()
-        setReasoning('')
+        clearReasoning()
         setActivity([])
         turnToolsRef.current = []
         setStatus('interrupted')
@@ -1287,6 +1425,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         }, 1500)
       } else if (hasSelection) {
         const copied = selection.copySelection()
+
         if (copied) {
           sys('copied selection')
         }
@@ -1457,7 +1596,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'message.start':
           setBusy(true)
           endReasoningPhase()
-          setReasoning('')
+          clearReasoning()
           setActivity([])
           setTurnTrail([])
           turnToolsRef.current = []
@@ -1534,7 +1673,8 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'reasoning.delta':
           if (p?.text) {
-            setReasoning(prev => prev + p.text)
+            reasoningRef.current += p.text
+            scheduleReasoning()
             pulseReasoningStreaming()
           }
 
@@ -1657,7 +1797,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           if (p?.text && !interruptedRef.current) {
             buf.current = p.rendered ?? buf.current + p.text
-            setStreaming(buf.current.trimStart())
+            scheduleStreaming()
           }
 
           break
@@ -1673,7 +1813,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           const finalText = (p?.rendered ?? p?.text ?? buf.current).trimStart()
 
           idle()
-          setReasoning('')
+          clearReasoning()
           setStreaming('')
 
           if (!wasInterrupted) {
@@ -1715,7 +1855,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'error':
           idle()
-          setReasoning('')
+          clearReasoning()
           turnToolsRef.current = []
           persistedToolLabelsRef.current.clear()
 
@@ -1734,6 +1874,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     [
       appendMessage,
       bellOnComplete,
+      clearReasoning,
       dequeue,
       endReasoningPhase,
       gw,
@@ -1743,6 +1884,8 @@ export function App({ gw }: { gw: GatewayClient }) {
       pushActivity,
       pushTrail,
       rpc,
+      scheduleReasoning,
+      scheduleStreaming,
       sendQueued,
       sys,
       stdout
@@ -1883,8 +2026,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           {
             const mode = arg.trim().toLowerCase()
+
             if (!['hidden', 'collapsed', 'expanded', 'cycle', 'toggle'].includes(mode)) {
               sys('usage: /details [hidden|collapsed|expanded|cycle]')
+
               return true
             }
 
@@ -1895,12 +2040,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           return true
-
         case 'copy': {
           if (!arg && hasSelection) {
             const copied = selection.copySelection()
+
             if (copied) {
               sys('copied selection')
+
               return true
             }
           }
@@ -1949,6 +2095,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'sb':
           if (arg && !['on', 'off', 'toggle'].includes(arg.trim().toLowerCase())) {
             sys('usage: /statusbar [on|off|toggle]')
+
             return true
           }
 
@@ -2798,7 +2945,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           idle()
-          setReasoning('')
+          clearReasoning()
           setActivity([])
           turnToolsRef.current = []
           setStatus('interrupted')
@@ -2855,15 +3002,16 @@ export function App({ gw }: { gw: GatewayClient }) {
   const durationLabel = sid ? fmtDuration(clockNow - sessionStartedAt) : ''
   const voiceLabel = voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
   const cwdLabel = shortCwd(info?.cwd || process.env.HERMES_CWD || process.cwd())
+  const showStreamingArea = Boolean(streaming)
+  const visibleHistory = virtualRows.slice(virtualHistory.start, virtualHistory.end)
+  const showStickyPrompt = !!stickyPrompt
 
   const hasReasoning = Boolean(reasoning.trim())
+
   const showProgressArea =
     detailsMode === 'hidden'
       ? activity.some(i => i.tone !== 'info')
       : Boolean(busy || tools.length || turnTrail.length || hasReasoning || activity.length)
-
-  const showStreamingArea = Boolean(streaming)
-  const visibleHistory = virtualRows.slice(virtualHistory.start, virtualHistory.end)
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -2891,23 +3039,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             {virtualHistory.bottomSpacer > 0 ? <Box height={virtualHistory.bottomSpacer} /> : null}
 
-            {showStreamingArea && (
-              <Box marginTop={1}>
-                <MessageLine
-                  cols={cols}
-                  compact={compact}
-                  detailsMode={detailsMode}
-                  msg={{ role: 'assistant', text: streaming }}
-                  t={theme}
-                />
-              </Box>
-            )}
-          </Box>
-        </ScrollBox>
-
-        <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
-          {showProgressArea && (
-            <Box>
+            {showProgressArea && (
               <ToolTrail
                 activity={activity}
                 busy={busy && !streaming}
@@ -2919,9 +3051,29 @@ export function App({ gw }: { gw: GatewayClient }) {
                 tools={tools}
                 trail={turnTrail}
               />
-            </Box>
-          )}
+            )}
 
+            {showStreamingArea && (
+              <MessageLine
+                cols={cols}
+                compact={compact}
+                detailsMode={detailsMode}
+                isStreaming
+                msg={{ role: 'assistant', text: streaming }}
+                t={theme}
+              />
+            )}
+          </Box>
+        </ScrollBox>
+
+        <StickyPromptTracker
+          messages={historyItems}
+          offsets={virtualHistory.offsets}
+          onChange={setStickyPrompt}
+          scrollRef={scrollRef}
+        />
+
+        <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
           {clarify && (
             <PromptBox color={theme.color.bronze}>
               <ClarifyPrompt
@@ -3026,7 +3178,14 @@ export function App({ gw }: { gw: GatewayClient }) {
             </Text>
           )}
 
-          <Text> </Text>
+          {showStickyPrompt ? (
+            <Text color={theme.color.dim} dimColor wrap="truncate-end">
+              <Text color={theme.color.label}>↳ </Text>
+              {stickyPrompt}
+            </Text>
+          ) : (
+            <Text> </Text>
+          )}
 
           {statusBar && (
             <StatusRule

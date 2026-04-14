@@ -705,6 +705,10 @@ def switch_model(
             error_message=msg,
         )
 
+    # Apply auto-correction if validation found a closer match
+    if validation.get("corrected_model"):
+        new_model = validation["corrected_model"]
+
     # --- OpenCode api_mode override ---
     if target_provider in {"opencode-zen", "opencode-go", "opencode", "opencode-go"}:
         api_mode = opencode_model_api_mode(target_provider, new_model)

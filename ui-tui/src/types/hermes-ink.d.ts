@@ -49,8 +49,10 @@ declare module '@hermes/ink' {
   export type ScrollBoxHandle = {
     readonly scrollTo: (y: number) => void
     readonly scrollBy: (dy: number) => void
+    readonly scrollToElement: (el: unknown, offset?: number) => void
     readonly scrollToBottom: () => void
     readonly getScrollTop: () => number
+    readonly getPendingDelta: () => number
     readonly getViewportHeight: () => number
     readonly isSticky: () => boolean
     readonly subscribe: (listener: () => void) => () => void

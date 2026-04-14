@@ -120,7 +120,7 @@ hermes-agent/
 │   └── platforms/            # 18 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, wecom_callback, weixin,
-│                             #   bluebubbles, homeassistant, webhook, api_server
+│                             #   bluebubbles, qqbot, homeassistant, webhook, api_server
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)

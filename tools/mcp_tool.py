@@ -70,6 +70,7 @@ Thread safety:
 """
 
 import asyncio
+import concurrent.futures
 import inspect
 import json
 import logging
@@ -1167,13 +1168,43 @@ def _ensure_mcp_loop():
 
 
 def _run_on_mcp_loop(coro, timeout: float = 30):
-    """Schedule a coroutine on the MCP event loop and block until done."""
+    """Schedule a coroutine on the MCP event loop and block until done.
+
+    Poll in short intervals so the calling agent thread can honor user
+    interrupts while the MCP work is still running on the background loop.
+    """
+    from tools.interrupt import is_interrupted
+
     with _lock:
         loop = _mcp_loop
     if loop is None or not loop.is_running():
         raise RuntimeError("MCP event loop is not running")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=timeout)
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    while True:
+        if is_interrupted():
+            future.cancel()
+            raise InterruptedError("User sent a new message")
+
+        wait_timeout = 0.1
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return future.result(timeout=0)
+            wait_timeout = min(wait_timeout, remaining)
+
+        try:
+            return future.result(timeout=wait_timeout)
+        except concurrent.futures.TimeoutError:
+            continue
+
+
+def _interrupted_call_result() -> str:
+    """Standardized JSON error for a user-interrupted MCP tool call."""
+    return json.dumps({
+        "error": "MCP call interrupted: user sent a new message"
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -1299,6 +1330,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
         except Exception as exc:
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -1342,6 +1375,8 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
         except Exception as exc:
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
@@ -1386,6 +1421,8 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
         except Exception as exc:
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
@@ -1433,6 +1470,8 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
         except Exception as exc:
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
@@ -1488,6 +1527,8 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
+        except InterruptedError:
+            return _interrupted_call_result()
         except Exception as exc:
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,

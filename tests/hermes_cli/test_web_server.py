@@ -673,3 +673,282 @@ class TestNewEndpoints:
         resp = self.client.get("/api/auth/session-token")
         assert resp.status_code == 200
         assert resp.json()["token"] == _SESSION_TOKEN
+
+
+# ---------------------------------------------------------------------------
+# Model context length: normalize/denormalize + /api/model/info
+# ---------------------------------------------------------------------------
+
+
+class TestModelContextLength:
+    """Tests for model_context_length in normalize/denormalize and /api/model/info."""
+
+    def test_normalize_extracts_context_length_from_dict(self):
+        """normalize should surface context_length from model dict."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 200000,
+            }
+        }
+        result = _normalize_config_for_web(cfg)
+        assert result["model"] == "anthropic/claude-opus-4.6"
+        assert result["model_context_length"] == 200000
+
+    def test_normalize_bare_string_model_yields_zero(self):
+        """normalize should set model_context_length=0 for bare string model."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        result = _normalize_config_for_web({"model": "anthropic/claude-sonnet-4"})
+        assert result["model"] == "anthropic/claude-sonnet-4"
+        assert result["model_context_length"] == 0
+
+    def test_normalize_dict_without_context_length_yields_zero(self):
+        """normalize should default to 0 when model dict has no context_length."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {"model": {"default": "test/model", "provider": "openrouter"}}
+        result = _normalize_config_for_web(cfg)
+        assert result["model_context_length"] == 0
+
+    def test_normalize_non_int_context_length_yields_zero(self):
+        """normalize should coerce non-int context_length to 0."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        cfg = {"model": {"default": "test/model", "context_length": "invalid"}}
+        result = _normalize_config_for_web(cfg)
+        assert result["model_context_length"] == 0
+
+    def test_denormalize_writes_context_length_into_model_dict(self):
+        """denormalize should write model_context_length back into model dict."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        # Set up disk config with model as a dict
+        save_config({
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-opus-4.6",
+            "model_context_length": 100000,
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["context_length"] == 100000
+        assert "model_context_length" not in result  # virtual field removed
+
+    def test_denormalize_zero_removes_context_length(self):
+        """denormalize with model_context_length=0 should remove context_length key."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 50000,
+            }
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-opus-4.6",
+            "model_context_length": 0,
+        })
+        assert isinstance(result["model"], dict)
+        assert "context_length" not in result["model"]
+
+    def test_denormalize_upgrades_bare_string_to_dict(self):
+        """denormalize should upgrade bare string model to dict when context_length set."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        # Disk has model as bare string
+        save_config({"model": "anthropic/claude-sonnet-4"})
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-sonnet-4",
+            "model_context_length": 65000,
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["default"] == "anthropic/claude-sonnet-4"
+        assert result["model"]["context_length"] == 65000
+
+    def test_denormalize_bare_string_stays_string_when_zero(self):
+        """denormalize should keep bare string model as string when context_length=0."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({"model": "anthropic/claude-sonnet-4"})
+
+        result = _denormalize_config_from_web({
+            "model": "anthropic/claude-sonnet-4",
+            "model_context_length": 0,
+        })
+        assert result["model"] == "anthropic/claude-sonnet-4"
+
+    def test_denormalize_coerces_string_context_length(self):
+        """denormalize should handle string model_context_length from frontend."""
+        from hermes_cli.web_server import _denormalize_config_from_web
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"default": "test/model", "provider": "openrouter"}
+        })
+
+        result = _denormalize_config_from_web({
+            "model": "test/model",
+            "model_context_length": "32000",
+        })
+        assert isinstance(result["model"], dict)
+        assert result["model"]["context_length"] == 32000
+
+
+class TestModelContextLengthSchema:
+    """Tests for model_context_length placement in CONFIG_SCHEMA."""
+
+    def test_schema_has_model_context_length(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        assert "model_context_length" in CONFIG_SCHEMA
+
+    def test_schema_model_context_length_after_model(self):
+        """model_context_length should appear immediately after model in schema."""
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        keys = list(CONFIG_SCHEMA.keys())
+        model_idx = keys.index("model")
+        assert keys[model_idx + 1] == "model_context_length"
+
+    def test_schema_model_context_length_is_number(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+        entry = CONFIG_SCHEMA["model_context_length"]
+        assert entry["type"] == "number"
+        assert "category" in entry
+
+
+class TestModelInfoEndpoint:
+    """Tests for GET /api/model/info endpoint."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app
+        self.client = TestClient(app)
+
+    def test_model_info_returns_200(self):
+        resp = self.client.get("/api/model/info")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "model" in data
+        assert "provider" in data
+        assert "auto_context_length" in data
+        assert "config_context_length" in data
+        assert "effective_context_length" in data
+        assert "capabilities" in data
+
+    def test_model_info_with_dict_config(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "provider": "openrouter",
+                "context_length": 100000,
+            }
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-opus-4.6"
+        assert data["provider"] == "openrouter"
+        assert data["auto_context_length"] == 200000
+        assert data["config_context_length"] == 100000
+        assert data["effective_context_length"] == 100000  # override wins
+
+    def test_model_info_auto_detect_when_no_override(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["auto_context_length"] == 200000
+        assert data["config_context_length"] == 0
+        assert data["effective_context_length"] == 200000  # auto wins
+
+    def test_model_info_empty_model(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {"model": ""})
+
+        resp = self.client.get("/api/model/info")
+        data = resp.json()
+        assert data["model"] == ""
+        assert data["effective_context_length"] == 0
+
+    def test_model_info_bare_string_model(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": "anthropic/claude-sonnet-4"
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000):
+            resp = self.client.get("/api/model/info")
+
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-sonnet-4"
+        assert data["provider"] == ""
+        assert data["config_context_length"] == 0
+        assert data["effective_context_length"] == 200000
+
+    def test_model_info_capabilities(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"}
+        })
+
+        mock_caps = MagicMock()
+        mock_caps.supports_tools = True
+        mock_caps.supports_vision = True
+        mock_caps.supports_reasoning = True
+        mock_caps.context_window = 200000
+        mock_caps.max_output_tokens = 32000
+        mock_caps.model_family = "claude-opus"
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=200000), \
+             patch("agent.models_dev.get_model_capabilities", return_value=mock_caps):
+            resp = self.client.get("/api/model/info")
+
+        caps = resp.json()["capabilities"]
+        assert caps["supports_tools"] is True
+        assert caps["supports_vision"] is True
+        assert caps["supports_reasoning"] is True
+        assert caps["max_output_tokens"] == 32000
+        assert caps["model_family"] == "claude-opus"
+
+    def test_model_info_graceful_on_metadata_error(self, monkeypatch):
+        """Endpoint should return zeros on import/resolution errors, not 500."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "load_config", lambda: {
+            "model": "some/obscure-model"
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", side_effect=Exception("boom")):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["auto_context_length"] == 0

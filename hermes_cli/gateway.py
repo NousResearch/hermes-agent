@@ -1913,6 +1913,29 @@ _PLATFORMS = [
              "help": "Phone number or Apple ID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "qqbot",
+        "label": "QQ Bot",
+        "emoji": "🐧",
+        "token_var": "QQ_APP_ID",
+        "setup_instructions": [
+            "1. Register a QQ Bot application at q.qq.com",
+            "2. Note your App ID and App Secret from the application page",
+            "3. Enable the required intents (C2C, Group, Guild messages)",
+            "4. Configure sandbox or publish the bot",
+        ],
+        "vars": [
+            {"name": "QQ_APP_ID", "prompt": "QQ Bot App ID", "password": False,
+             "help": "Your QQ Bot App ID from q.qq.com."},
+            {"name": "QQ_CLIENT_SECRET", "prompt": "QQ Bot App Secret", "password": True,
+             "help": "Your QQ Bot App Secret from q.qq.com."},
+            {"name": "QQ_ALLOWED_USERS", "prompt": "Allowed user OpenIDs (comma-separated, leave empty for open access)", "password": False,
+             "is_allowlist": True,
+             "help": "Optional — restrict DM access to specific user OpenIDs."},
+            {"name": "QQ_HOME_CHANNEL", "prompt": "Home channel (user/group OpenID for cron delivery, or empty)", "password": False,
+             "help": "OpenID to deliver cron results and notifications to."},
+        ],
+    },
 ]
 
 

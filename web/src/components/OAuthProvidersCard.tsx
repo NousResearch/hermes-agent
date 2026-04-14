@@ -5,29 +5,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
-
-/**
- * OAuthProvidersCard — surfaces every OAuth-capable LLM provider with its
- * current connection status, a truncated token preview when connected, and
- * action buttons (Copy CLI command for setup, Disconnect for cleanup).
- *
- * Phase 1 scope: read-only status + disconnect + copy-to-clipboard CLI
- * command. Phase 2 will add in-browser PKCE / device-code flows so users
- * never need to drop to a terminal.
- */
+import { useI18n } from "@/i18n";
 
 interface Props {
   onError?: (msg: string) => void;
   onSuccess?: (msg: string) => void;
 }
 
-const FLOW_LABELS: Record<OAuthProvider["flow"], string> = {
-  pkce: "Browser login (PKCE)",
-  device_code: "Device code",
-  external: "External CLI",
-};
-
-function formatExpiresAt(expiresAt: string | null | undefined): string | null {
+function formatExpiresAt(expiresAt: string | null | undefined, expiresInTemplate: string): string | null {
   if (!expiresAt) return null;
   try {
     const dt = new Date(expiresAt);
@@ -36,11 +21,11 @@ function formatExpiresAt(expiresAt: string | null | undefined): string | null {
     const diff = dt.getTime() - now;
     if (diff < 0) return "expired";
     const mins = Math.floor(diff / 60_000);
-    if (mins < 60) return `expires in ${mins}m`;
+    if (mins < 60) return expiresInTemplate.replace("{time}", `${mins}m`);
     const hours = Math.floor(mins / 60);
-    if (hours < 24) return `expires in ${hours}h`;
+    if (hours < 24) return expiresInTemplate.replace("{time}", `${hours}h`);
     const days = Math.floor(hours / 24);
-    return `expires in ${days}d`;
+    return expiresInTemplate.replace("{time}", `${days}d`);
   } catch {
     return null;
   }
@@ -51,10 +36,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  // Provider that the login modal is currently open for. null = modal closed.
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
+  const { t } = useI18n();
 
-  // Use refs for callbacks to avoid re-creating refresh() when parent re-renders
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -83,16 +67,16 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   };
 
   const handleDisconnect = async (provider: OAuthProvider) => {
-    if (!confirm(`Disconnect ${provider.name}? You'll need to log in again to use this provider.`)) {
+    if (!confirm(`${t.oauth.disconnect} ${provider.name}?`)) {
       return;
     }
     setBusyId(provider.id);
     try {
       await api.disconnectOAuthProvider(provider.id);
-      onSuccess?.(`${provider.name} disconnected`);
+      onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
       refresh();
     } catch (e) {
-      onError?.(`Disconnect failed: ${e}`);
+      onError?.(`${t.oauth.disconnect} failed: ${e}`);
     } finally {
       setBusyId(null);
     }
@@ -107,7 +91,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">Provider Logins (OAuth)</CardTitle>
+            <CardTitle className="text-base">{t.oauth.providerLogins}</CardTitle>
           </div>
           <Button
             variant="ghost"
@@ -117,12 +101,11 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             className="text-xs"
           >
             <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} />
-            Refresh
+            {t.common.refresh}
           </Button>
         </div>
         <CardDescription>
-          {connectedCount} of {totalCount} OAuth providers connected. Login flows currently
-          run via the CLI; click <em>Copy command</em> and paste into a terminal to set up.
+          {t.oauth.description.replace("{connected}", String(connectedCount)).replace("{total}", String(totalCount))}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -133,12 +116,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         )}
         {providers && providers.length === 0 && (
           <p className="text-sm text-muted-foreground text-center py-8">
-            No OAuth-capable providers detected.
+            {t.oauth.noProviders}
           </p>
         )}
         <div className="flex flex-col divide-y divide-border">
           {providers?.map((p) => {
-            const expiresLabel = formatExpiresAt(p.status.expires_at);
+            const expiresLabel = formatExpiresAt(p.status.expires_at, t.oauth.expiresIn);
             const isBusy = busyId === p.id;
             return (
               <div
@@ -156,16 +139,16 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{p.name}</span>
                       <Badge variant="outline" className="text-[11px] uppercase tracking-wide">
-                        {FLOW_LABELS[p.flow]}
+                        {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (
                         <Badge variant="success" className="text-[11px]">
-                          Connected
+                          {t.oauth.connected}
                         </Badge>
                       )}
                       {expiresLabel === "expired" && (
                         <Badge variant="destructive" className="text-[11px]">
-                          Expired
+                          {t.oauth.expired}
                         </Badge>
                       )}
                       {expiresLabel && expiresLabel !== "expired" && (
@@ -187,11 +170,11 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     )}
                     {!p.status.logged_in && (
                       <span className="text-xs text-muted-foreground/80">
-                        Not connected. Run{" "}
+                        {t.oauth.notConnected.split("{command}")[0]}
                         <code className="text-foreground bg-secondary/40 px-1 rounded">
                           {p.cli_command}
-                        </code>{" "}
-                        in a terminal.
+                        </code>
+                        {t.oauth.notConnected.split("{command}")[1]}
                       </span>
                     )}
                     {p.status.error && (
@@ -222,10 +205,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       size="sm"
                       onClick={() => setLoginFor(p)}
                       className="text-xs h-7"
-                      title={`Start ${p.flow === "pkce" ? "browser" : "device code"} login`}
                     >
                       <LogIn className="h-3 w-3 mr-1" />
-                      Login
+                      {t.oauth.login}
                     </Button>
                   )}
                   {!p.status.logged_in && (
@@ -234,14 +216,14 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       size="sm"
                       onClick={() => handleCopy(p)}
                       className="text-xs h-7"
-                      title="Copy CLI command (for external / fallback)"
+                      title={t.oauth.copyCliCommand}
                     >
                       {copiedId === p.id ? (
-                        <>Copied ✓</>
+                        <>{t.oauth.copied}</>
                       ) : (
                         <>
                           <Copy className="h-3 w-3 mr-1" />
-                          CLI
+                          {t.oauth.cli}
                         </>
                       )}
                     </Button>
@@ -259,13 +241,13 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       ) : (
                         <LogOut className="h-3 w-3 mr-1" />
                       )}
-                      Disconnect
+                      {t.oauth.disconnect}
                     </Button>
                   )}
                   {p.status.logged_in && p.flow === "external" && (
                     <span className="text-[11px] text-muted-foreground italic px-2">
                       <Terminal className="h-3 w-3 inline mr-0.5" />
-                      Managed externally
+                      {t.oauth.managedExternally}
                     </span>
                   )}
                 </div>
@@ -279,7 +261,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
           provider={loginFor}
           onClose={() => {
             setLoginFor(null);
-            refresh();  // always refresh on close so token preview updates after login
+            refresh();
           }}
           onSuccess={(msg) => onSuccess?.(msg)}
           onError={(msg) => onError?.(msg)}

@@ -464,6 +464,7 @@ def handle_function_call(
     session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
+    skip_pre_tool_call_hook: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -484,31 +485,53 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
-    # Notify the read-loop tracker when a non-read/search tool runs,
-    # so the *consecutive* counter resets (reads after other work are fine).
-    if function_name not in _READ_SEARCH_TOOLS:
-        try:
-            from tools.file_tools import notify_other_tool_call
-            notify_other_tool_call(task_id or "default")
-        except Exception:
-            pass  # file_tools may not be loaded yet
-
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        try:
-            from hermes_cli.plugins import invoke_hook
-            invoke_hook(
-                "pre_tool_call",
-                tool_name=function_name,
-                args=function_args,
-                task_id=task_id or "",
-                session_id=session_id or "",
-                tool_call_id=tool_call_id or "",
-            )
-        except Exception:
-            pass
+        # Check plugin hooks for a block directive (unless caller already
+        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # avoid double-firing the hook).
+        if not skip_pre_tool_call_hook:
+            block_message: Optional[str] = None
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name,
+                    function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+            if block_message is not None:
+                return json.dumps({"error": block_message}, ensure_ascii=False)
+        else:
+            # Still fire the hook for observers — just don't check for blocking
+            # (the caller already did that).
+            try:
+                from hermes_cli.plugins import invoke_hook
+                invoke_hook(
+                    "pre_tool_call",
+                    tool_name=function_name,
+                    args=function_args,
+                    task_id=task_id or "",
+                    session_id=session_id or "",
+                    tool_call_id=tool_call_id or "",
+                )
+            except Exception:
+                pass
+
+        # Notify the read-loop tracker when a non-read/search tool runs,
+        # so the *consecutive* counter resets (reads after other work are fine).
+        if function_name not in _READ_SEARCH_TOOLS:
+            try:
+                from tools.file_tools import notify_other_tool_call
+                notify_other_tool_call(task_id or "default")
+            except Exception:
+                pass  # file_tools may not be loaded yet
 
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite

@@ -167,6 +167,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
     ),
+    "arcee": ProviderConfig(
+        id="arcee",
+        name="Arcee AI",
+        auth_type="api_key",
+        inference_base_url="https://api.arcee.ai/api/v1",
+        api_key_env_vars=("ARCEEAI_API_KEY",),
+        base_url_env_var="ARCEE_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -900,6 +908,7 @@ def resolve_provider(
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",

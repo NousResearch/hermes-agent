@@ -68,6 +68,7 @@ termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
   # faster-whisper -> ctranslate2 via the voice extra).
+  "python-telegram-bot[webhooks]>=22.6,<23",
   "hermes-agent[cron]",
   "hermes-agent[cli]",
   "hermes-agent[pty]",

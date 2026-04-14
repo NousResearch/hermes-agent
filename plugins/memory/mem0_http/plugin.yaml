@@ -1,0 +1,3 @@
+name: mem0_http
+version: 1.0.0
+description: "Mem0 over direct HTTP — lightweight memory provider without the mem0ai SDK."

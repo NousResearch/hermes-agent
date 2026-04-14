@@ -239,6 +239,26 @@ class TestBridgeRuntimeFailure:
         assert adapter._bridge_log_fh is None
 
     @pytest.mark.asyncio
+    async def test_send_voice_routes_to_audio_media_bridge(self):
+        adapter = _make_adapter()
+        expected = MagicMock(success=True, message_id="wamid-123")
+        adapter._send_media_to_bridge = AsyncMock(return_value=expected)
+
+        result = await adapter.send_voice(
+            chat_id="chat-123",
+            audio_path="/tmp/reply.ogg",
+            caption="voice reply",
+        )
+
+        assert result is expected
+        adapter._send_media_to_bridge.assert_awaited_once_with(
+            "chat-123",
+            "/tmp/reply.ogg",
+            "audio",
+            "voice reply",
+        )
+
+    @pytest.mark.asyncio
     async def test_poll_messages_marks_retryable_fatal_when_managed_bridge_exits(self):
         adapter = _make_adapter()
         fatal_handler = AsyncMock()

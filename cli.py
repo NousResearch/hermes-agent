@@ -380,6 +380,21 @@ def load_cli_config() -> Dict[str, Any]:
                 and agent_file_config.get("max_turns") is not None
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
+
+            # Handle root-level personalities (backwards compat).
+            # Canonical config schema exposes it at root level, but CLI reads
+            # agent.personalities.  Merge root-level personalities into agent
+            # when the nested section is empty or missing.
+            root_personalities = file_config.get("personalities")
+            if root_personalities and isinstance(root_personalities, dict):
+                existing = defaults["agent"].get("personalities", {})
+                if not existing:
+                    defaults["agent"]["personalities"] = root_personalities
+                elif isinstance(existing, dict):
+                    # Merge: root-level entries fill in gaps but don't
+                    # overwrite explicit agent.personalities entries.
+                    merged = {**root_personalities, **existing}
+                    defaults["agent"]["personalities"] = merged
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 

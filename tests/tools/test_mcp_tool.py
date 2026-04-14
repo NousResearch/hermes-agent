@@ -365,10 +365,13 @@ class TestDiscoverAndRegister:
 
         _servers.pop("fs", None)
 
-    def test_toolset_created(self):
-        """A custom toolset is created for the MCP server."""
+    def test_toolset_resolves_live_from_registry(self):
+        """MCP toolsets resolve through the live registry without TOOLSETS mutation."""
+        from tools.registry import ToolRegistry
         from tools.mcp_tool import _discover_and_register_server, _servers, MCPServerTask
+        from toolsets import resolve_toolset, validate_toolset
 
+        mock_registry = ToolRegistry()
         mock_tools = [_make_mcp_tool("ping", "Ping")]
         mock_session = MagicMock()
 
@@ -378,16 +381,16 @@ class TestDiscoverAndRegister:
             server._tools = mock_tools
             return server
 
-        mock_create = MagicMock()
         with patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("toolsets.create_custom_toolset", mock_create):
+             patch("tools.registry.registry", mock_registry):
             asyncio.run(
                 _discover_and_register_server("myserver", {"command": "test"})
             )
 
-        mock_create.assert_called_once()
-        call_kwargs = mock_create.call_args
-        assert call_kwargs[1]["name"] == "mcp-myserver" or call_kwargs[0][0] == "mcp-myserver"
+            assert validate_toolset("myserver") is True
+            assert validate_toolset("mcp-myserver") is True
+            assert "mcp_myserver_ping" in resolve_toolset("myserver")
+            assert "mcp_myserver_ping" in resolve_toolset("mcp-myserver")
 
         _servers.pop("myserver", None)
 
@@ -550,12 +553,15 @@ class TestMCPServerTask:
 # ---------------------------------------------------------------------------
 
 class TestToolsetInjection:
-    def test_mcp_tools_added_to_all_hermes_toolsets(self):
-        """Discovered MCP tools are dynamically injected into all hermes-* toolsets."""
+    def test_mcp_tools_resolve_through_server_aliases(self):
+        """Discovered MCP tools resolve through raw server-name aliases."""
         from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+        from toolsets import resolve_toolset, validate_toolset
 
         mock_tools = [_make_mcp_tool("list_files", "List files")]
         mock_session = MagicMock()
+        mock_registry = ToolRegistry()
 
         fresh_servers = {}
 
@@ -565,43 +571,32 @@ class TestToolsetInjection:
             server._tools = mock_tools
             return server
 
-        fake_toolsets = {
-            "hermes-cli": {"tools": ["terminal"], "description": "CLI", "includes": []},
-            "hermes-telegram": {"tools": ["terminal"], "description": "TG", "includes": []},
-            "hermes-gateway": {"tools": [], "description": "GW", "includes": []},
-            "non-hermes": {"tools": [], "description": "other", "includes": []},
-        }
         fake_config = {"fs": {"command": "npx", "args": []}}
 
         with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
-             patch("toolsets.TOOLSETS", fake_toolsets):
+             patch("tools.registry.registry", mock_registry):
             from tools.mcp_tool import discover_mcp_tools
             result = discover_mcp_tools()
 
-        assert "mcp_fs_list_files" in result
-        # All hermes-* toolsets get injection
-        assert "mcp_fs_list_files" in fake_toolsets["hermes-cli"]["tools"]
-        assert "mcp_fs_list_files" in fake_toolsets["hermes-telegram"]["tools"]
-        assert "mcp_fs_list_files" in fake_toolsets["hermes-gateway"]["tools"]
-        # Non-hermes toolset should NOT get injection
-        assert "mcp_fs_list_files" not in fake_toolsets["non-hermes"]["tools"]
-        # Original tools preserved
-        assert "terminal" in fake_toolsets["hermes-cli"]["tools"]
-        # Server name becomes a standalone toolset
-        assert "fs" in fake_toolsets
-        assert "mcp_fs_list_files" in fake_toolsets["fs"]["tools"]
-        assert fake_toolsets["fs"]["description"].startswith("MCP server '")
+            assert "mcp_fs_list_files" in result
+            assert validate_toolset("fs") is True
+            assert validate_toolset("mcp-fs") is True
+            assert "mcp_fs_list_files" in resolve_toolset("fs")
+            assert "mcp_fs_list_files" in resolve_toolset("mcp-fs")
 
     def test_server_toolset_skips_builtin_collision(self):
-        """MCP server named after a built-in toolset shouldn't overwrite it."""
+        """MCP raw aliases never overwrite a built-in toolset name."""
         from tools.mcp_tool import MCPServerTask
+        from tools.registry import ToolRegistry
+        from toolsets import resolve_toolset, validate_toolset
 
         mock_tools = [_make_mcp_tool("run", "Run command")]
         mock_session = MagicMock()
         fresh_servers = {}
+        mock_registry = ToolRegistry()
 
         async def fake_connect(name, config):
             server = MCPServerTask(name)
@@ -620,12 +615,15 @@ class TestToolsetInjection:
              patch("tools.mcp_tool._servers", fresh_servers), \
              patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
+             patch("tools.registry.registry", mock_registry), \
              patch("toolsets.TOOLSETS", fake_toolsets):
             from tools.mcp_tool import discover_mcp_tools
             discover_mcp_tools()
 
-        # Built-in toolset preserved — description unchanged
-        assert fake_toolsets["terminal"]["description"] == "Terminal tools"
+            assert fake_toolsets["terminal"]["description"] == "Terminal tools"
+            assert "mcp_terminal_run" not in resolve_toolset("terminal")
+            assert validate_toolset("mcp-terminal") is True
+            assert "mcp_terminal_run" in resolve_toolset("mcp-terminal")
 
     def test_server_connection_failure_skipped(self):
         """If one server fails to connect, others still proceed."""
@@ -3038,14 +3036,22 @@ class TestSanitizeMcpNameComponent:
             assert "/" not in name
             assert "." not in name
 
-    def test_slash_in_sync_mcp_toolsets(self):
-        """_sync_mcp_toolsets uses sanitize consistently with _convert_mcp_schema."""
-        from tools.mcp_tool import sanitize_mcp_name_component
+    def test_slash_in_server_alias_resolution(self):
+        """Server names with slashes resolve through their live MCP alias."""
+        from tools.registry import ToolRegistry
+        from toolsets import resolve_toolset, validate_toolset
 
-        # Verify the prefix generation matches what _convert_mcp_schema produces
-        server_name = "ai.exa/exa"
-        safe_prefix = f"mcp_{sanitize_mcp_name_component(server_name)}_"
-        assert safe_prefix == "mcp_ai_exa_exa_"
+        reg = ToolRegistry()
+        reg.register(
+            name="mcp_ai_exa_exa_search",
+            toolset="mcp-ai.exa/exa",
+            schema={"name": "mcp_ai_exa_exa_search", "description": "Search", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+
+        with patch("tools.registry.registry", reg):
+            assert validate_toolset("ai.exa/exa") is True
+            assert "mcp_ai_exa_exa_search" in resolve_toolset("ai.exa/exa")
 
 
 # ---------------------------------------------------------------------------

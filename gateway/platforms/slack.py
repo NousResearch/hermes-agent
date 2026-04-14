@@ -1610,10 +1610,8 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Slack] Failed to write update response: %s", exc)
 
-        # Clear the pending flag for this session
-        update_prompts = getattr(self, "_gateway_update_pending", None)
-        if update_prompts and session_key:
-            update_prompts.pop(session_key, None)
+        # Note: the pending flag for this session lives in GatewayRunner._update_prompt_pending,
+        # not on the adapter. The watcher clears it when it reads the .update_response file.
 
     # ----- Generic choice prompt (Block Kit) -----
 
@@ -1950,7 +1948,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.warning("[Slack] Failed to update cron action message: %s", e)
 
         # Inject the button value as a new message into the agent
-        source = self._build_source(
+        source = self.build_source(
             channel_id=channel_id,
             chat_type="dm",
             user_id=user_id,

@@ -297,6 +297,15 @@ class TestStreamingPerPlatform:
         result = resolve_display_setting(config, "telegram", "streaming")
         assert result is None  # caller should check global StreamingConfig
 
+    def test_global_display_streaming_is_cli_only(self):
+        """display.streaming must not act as a gateway streaming override."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in (True, False):
+            config = {"display": {"streaming": value}}
+            assert resolve_display_setting(config, "telegram", "streaming") is None
+            assert resolve_display_setting(config, "discord", "streaming") is None
+
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""
         from gateway.display_config import resolve_display_setting

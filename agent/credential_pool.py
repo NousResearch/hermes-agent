@@ -1176,6 +1176,35 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except Exception as exc:
             logger.debug("Copilot token seed failed: %s", exc)
 
+    elif provider == "qwen-oauth":
+        # Qwen OAuth tokens live in ~/.qwen/oauth_creds.json, written by
+        # the Qwen CLI (`qwen auth qwen-oauth`).  They aren't in the
+        # Hermes auth store or env vars, so resolve them here.
+        # Use refresh_if_expiring=False to avoid network calls during
+        # pool loading / provider discovery.
+        try:
+            from hermes_cli.auth import resolve_qwen_runtime_credentials
+            creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+            token = creds.get("api_key", "")
+            if token:
+                source_name = creds.get("source", "qwen-cli")
+                active_sources.add(source_name)
+                changed |= _upsert_entry(
+                    entries,
+                    provider,
+                    source_name,
+                    {
+                        "source": source_name,
+                        "auth_type": AUTH_TYPE_OAUTH,
+                        "access_token": token,
+                        "expires_at_ms": creds.get("expires_at_ms"),
+                        "base_url": creds.get("base_url", ""),
+                        "label": creds.get("auth_file", source_name),
+                    },
+                )
+        except Exception as exc:
+            logger.debug("Qwen OAuth token seed failed: %s", exc)
+
     elif provider == "openai-codex":
         state = _load_provider_state(auth_store, "openai-codex")
         tokens = state.get("tokens") if isinstance(state, dict) else None

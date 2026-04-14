@@ -688,6 +688,11 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+        _start = time.time()
+        logger.info(
+            "[api_server] chat session=%s stream=%s msg=%r",
+            session_id, stream, user_message[:80],
+        )
 
         if stream:
             import queue as _q
@@ -751,6 +756,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
+                start_time=_start,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -809,11 +815,17 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
+        logger.info(
+            "[api_server] chat done session=%s tokens=%d/%d elapsed=%.1fs",
+            session_id, usage.get("input_tokens", 0),
+            usage.get("output_tokens", 0), time.time() - _start,
+        )
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
+        start_time: float = None,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -923,6 +935,12 @@ class APIServerAdapter(BasePlatformAdapter):
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
             await response.write(b"data: [DONE]\n\n")
+            _elapsed = f" elapsed={time.time() - start_time:.1f}s" if start_time else ""
+            logger.info(
+                "[api_server] chat done session=%s tokens=%d/%d (stream)%s",
+                session_id, usage.get("input_tokens", 0),
+                usage.get("output_tokens", 0), _elapsed,
+            )
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Client disconnected mid-stream.  Interrupt the agent so it
             # stops making LLM API calls at the next loop iteration, then
@@ -1037,6 +1055,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Run the agent (with Idempotency-Key support)
         session_id = str(uuid.uuid4())
+        _start = time.time()
+        logger.info(
+            "[api_server] response session=%s msg=%r",
+            session_id, user_message[:80],
+        )
 
         async def _compute_response():
             return await self._run_agent(
@@ -1117,6 +1140,12 @@ class APIServerAdapter(BasePlatformAdapter):
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
+        logger.info(
+            "[api_server] response done session=%s response_id=%s tokens=%d/%d elapsed=%.1fs",
+            session_id, response_id,
+            usage.get("input_tokens", 0), usage.get("output_tokens", 0),
+            time.time() - _start,
+        )
         return web.json_response(response_data)
 
     # ------------------------------------------------------------------
@@ -1480,6 +1509,8 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_event_loop()
 
         def _run():
+            from hermes_logging import set_session_context
+            set_session_context(session_id)
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -1645,6 +1676,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
+        _start = time.time()
+        logger.info(
+            "[api_server] run started run_id=%s session=%s msg=%r",
+            run_id, session_id, user_message[:80],
+        )
 
         async def _run_and_close():
             try:
@@ -1655,6 +1691,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 def _run_sync():
+                    from hermes_logging import set_session_context
+                    set_session_context(session_id)
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,
@@ -1669,6 +1707,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                logger.info(
+                    "[api_server] run done run_id=%s session=%s tokens=%d/%d elapsed=%.1fs",
+                    run_id, session_id, usage.get("input_tokens", 0),
+                    usage.get("output_tokens", 0), time.time() - _start,
+                )
                 q.put_nowait({
                     "event": "run.completed",
                     "run_id": run_id,

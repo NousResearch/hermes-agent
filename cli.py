@@ -7146,9 +7146,13 @@ class HermesCLI:
                     pass
 
             print("Resume this session with:")
-            print(f"  hermes --resume {self.session_id}")
+            # Get the active profile so the resume command works across profiles
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name()
+            profile_flag = "" if profile in ("default", "custom") else f" -p {profile}"
+            print(f"  hermes --resume {self.session_id}{profile_flag}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"")
+                print(f"  hermes -c \"{session_title}\"{profile_flag}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:

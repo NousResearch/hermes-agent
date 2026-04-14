@@ -26,6 +26,14 @@ class TestMemorySchema:
         assert "temporary task state" in description
         assert ">80%" not in description
 
+    def test_routes_durable_feedback_to_the_right_persistence_path(self):
+        description = MEMORY_SCHEMA["description"]
+        assert "Treat repeated friction and explicit correction as high-signal durable feedback" in description
+        assert "Stable personal preferences -> target='user'" in description
+        assert "Stable environment or project facts -> target='memory'" in description
+        assert "Reusable procedures or workflows -> use skill_manage instead" in description
+        assert "Recurring product/system failures -> create a plan, issue, or code follow-up instead" in description
+
 
 # =========================================================================
 # Security scanning

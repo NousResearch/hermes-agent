@@ -45,6 +45,13 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
+    def test_memory_guidance_routes_durable_feedback(self):
+        assert "repeated friction and explicit correction" in MEMORY_GUIDANCE
+        assert "stable personal preferences to user memory" in MEMORY_GUIDANCE
+        assert "stable environment or project facts to memory" in MEMORY_GUIDANCE
+        assert "recurring product or system deficiency" in MEMORY_GUIDANCE
+        assert "plan, issue, or code change" in MEMORY_GUIDANCE
+
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE

@@ -149,10 +149,15 @@ MEMORY_GUIDANCE = (
     "Prioritize what reduces future user steering — the most valuable memory is one "
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
+    "Treat repeated friction and explicit correction as high-signal durable feedback. "
+    "Route stable personal preferences to user memory and stable environment or project "
+    "facts to memory.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
     "state to memory; use session_search to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
-    "necessary later, save it as a skill with the skill tool."
+    "necessary later, save it as a skill with the skill tool.\n"
+    "If the lesson is a recurring product or system deficiency, do not misclassify it as "
+    "memory — turn it into implementation follow-up such as a plan, issue, or code change."
 )
 
 SESSION_SEARCH_GUIDANCE = (

@@ -495,6 +495,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
         self._allowed_user_ids: set = set()  # For button approval authorization
+        self._allowed_role_ids: set = set()  # For DISCORD_ALLOWED_ROLES filtering
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
         # Text batching: merge rapid successive messages (Telegram-style)
@@ -573,6 +574,15 @@ class DiscordAdapter(BasePlatformAdapter):
                     if uid.strip()
                 }
 
+            # Parse DISCORD_ALLOWED_ROLES — comma-separated role IDs.
+            # Users with ANY of these roles can interact with the bot.
+            roles_env = os.getenv("DISCORD_ALLOWED_ROLES", "")
+            if roles_env:
+                self._allowed_role_ids = {
+                    int(rid.strip()) for rid in roles_env.split(",")
+                    if rid.strip().isdigit()
+                }
+
             # Set up intents.
             # Message Content is required for normal text replies.
             # Server Members is only needed when the allowlist contains usernames
@@ -584,7 +594,10 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.members = (
+                any(not entry.isdigit() for entry in self._allowed_user_ids)
+                or bool(self._allowed_role_ids)  # Need members intent for role lookup
+            )
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
@@ -653,8 +666,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
                 else:
-                    # Non-bot: enforce the configured user allowlist.
-                    if not self._is_allowed_user(str(message.author.id)):
+                    # Non-bot: enforce the configured user/role allowlists.
+                    if not self._is_allowed_user(str(message.author.id), message.author):
                         return
                 
                 # Multi-agent filtering: if the message mentions specific bots
@@ -1365,11 +1378,43 @@ class DiscordAdapter(BasePlatformAdapter):
             except OSError:
                 pass
 
-    def _is_allowed_user(self, user_id: str) -> bool:
-        """Check if user is in DISCORD_ALLOWED_USERS."""
-        if not self._allowed_user_ids:
+    def _is_allowed_user(self, user_id: str, author=None) -> bool:
+        """Check if user is allowed via DISCORD_ALLOWED_USERS or DISCORD_ALLOWED_ROLES.
+
+        Uses OR semantics: if the user matches EITHER allowlist, they're allowed.
+        If both allowlists are empty, everyone is allowed (backwards compatible).
+        When author is a Member, checks .roles directly; otherwise falls back
+        to scanning the bot's mutual guilds for a Member record.
+        """
+        has_users = bool(self._allowed_user_ids)
+        has_roles = bool(self._allowed_role_ids)
+        if not has_users and not has_roles:
             return True
-        return user_id in self._allowed_user_ids
+        # Check user ID allowlist
+        if has_users and user_id in self._allowed_user_ids:
+            return True
+        # Check role allowlist
+        if has_roles:
+            # Try direct role check from Member object
+            direct_roles = getattr(author, "roles", None) if author is not None else None
+            if direct_roles:
+                if any(getattr(r, "id", None) in self._allowed_role_ids for r in direct_roles):
+                    return True
+            # Fallback: scan mutual guilds for member's roles
+            if self._client is not None:
+                try:
+                    uid_int = int(user_id)
+                except (TypeError, ValueError):
+                    uid_int = None
+                if uid_int is not None:
+                    for guild in self._client.guilds:
+                        m = guild.get_member(uid_int)
+                        if m is None:
+                            continue
+                        m_roles = getattr(m, "roles", None) or []
+                        if any(getattr(r, "id", None) in self._allowed_role_ids for r in m_roles):
+                            return True
+        return False
 
     async def send_image_file(
         self,

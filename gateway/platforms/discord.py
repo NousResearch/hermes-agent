@@ -75,6 +75,50 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce bool-ish platform config values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        return default
+    return bool(value)
+
+
+def _normalize_allow_bots_mode(value: Any) -> str:
+    """Normalize Discord bot-ingress mode to none|mentions|all."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"none", "mentions", "all"}:
+            return normalized
+    return "none"
+
+
+def _normalize_discord_id_list(value: Any) -> tuple[str, ...]:
+    """Normalize config/env/message metadata into a tuple of Discord IDs."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        items = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = [value]
+
+    cleaned: list[str] = []
+    for item in items:
+        entry = _clean_discord_id(str(item))
+        if entry and entry not in cleaned:
+            cleaned.append(entry)
+    return tuple(cleaned)
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
@@ -462,6 +506,94 @@ class DiscordAdapter(BasePlatformAdapter):
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
+        self._allow_bots_mode: str = _normalize_allow_bots_mode(
+            self.config.extra.get("allow_bots", os.getenv("DISCORD_ALLOW_BOTS", "none"))
+        )
+        self._accept_bot_replies: bool = _coerce_bool(
+            self.config.extra.get("accept_bot_replies", os.getenv("DISCORD_ACCEPT_BOT_REPLIES")),
+            default=True,
+        )
+        self._target_bot_ids: tuple[str, ...] = _normalize_discord_id_list(
+            self.config.extra.get("target_bot_ids", os.getenv("DISCORD_TARGET_BOT_IDS", ""))
+        )
+        self._auto_mention_target_bots: bool = _coerce_bool(
+            self.config.extra.get(
+                "auto_mention_target_bots",
+                os.getenv("DISCORD_AUTO_MENTION_TARGET_BOTS"),
+            ),
+            default=False,
+        )
+
+    def _is_reply_to_own_message(self, message: DiscordMessage) -> bool:
+        """Return True when a Discord message is replying to this bot."""
+        if not self._client or not self._client.user:
+            return False
+        reference = getattr(message, "reference", None)
+        if not reference:
+            return False
+        resolved = getattr(reference, "resolved", None) or getattr(reference, "cached_message", None)
+        if resolved is None:
+            return False
+        author = getattr(resolved, "author", None)
+        if author is None:
+            return False
+        author_id = getattr(author, "id", None)
+        self_id = getattr(self._client.user, "id", None)
+        return author == self._client.user or (author_id is not None and author_id == self_id)
+
+    def _should_accept_bot_message(self, message: DiscordMessage) -> bool:
+        """Apply bot-ingress policy for messages authored by other bots."""
+        if not getattr(message.author, "bot", False):
+            return True
+        if self._allow_bots_mode == "all":
+            return True
+
+        self_user = self._client.user if self._client else None
+        self_mentioned = bool(self_user and self_user in getattr(message, "mentions", []))
+        if self_mentioned:
+            return True
+
+        if self._accept_bot_replies and self._is_reply_to_own_message(message):
+            return True
+
+        return False
+
+    def _resolve_outbound_bot_mentions(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> tuple[str, ...]:
+        """Return bot IDs that should be @mentioned on outbound messages."""
+        metadata = metadata or {}
+        explicit_ids = _normalize_discord_id_list(metadata.get("mention_bot_ids"))
+        if explicit_ids:
+            return explicit_ids
+        if metadata.get("mention_target_bots"):
+            return self._target_bot_ids
+        if self._auto_mention_target_bots:
+            return self._target_bot_ids
+        return ()
+
+    def _prefix_outbound_bot_mentions(self, content: str, bot_ids: tuple[str, ...]) -> str:
+        """Prefix any missing bot mentions onto the outgoing content."""
+        if not bot_ids:
+            return content
+        missing = [
+            bot_id for bot_id in bot_ids
+            if f"<@{bot_id}>" not in content and f"<@!{bot_id}>" not in content
+        ]
+        if not missing:
+            return content
+        prefix = " ".join(f"<@{bot_id}>" for bot_id in missing)
+        return f"{prefix} {content}".strip()
+
+    def _build_allowed_mentions(self, bot_ids: tuple[str, ...]):
+        """Allow explicit user mentions while blocking @everyone/@here escalation."""
+        if not bot_ids or discord is None or not hasattr(discord, "AllowedMentions"):
+            return None
+        try:
+            return discord.AllowedMentions(users=True, roles=False, everyone=False, replied_user=False)
+        except Exception:
+            return None
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -572,18 +704,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not self._is_allowed_user(str(message.author.id)):
                     return
 
-                # Bot message filtering (DISCORD_ALLOW_BOTS):
+                # Bot message filtering (config.extra.allow_bots / DISCORD_ALLOW_BOTS):
                 #   "none"     — ignore all other bots (default)
-                #   "mentions" — accept bot messages only when they @mention us
+                #   "mentions" — accept bot messages that @mention us, plus
+                #                  reply-based follow-ups when accept_bot_replies is enabled
                 #   "all"      — accept all bot messages
-                if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
-                            return
-                    # "all" falls through to handle_message
+                if not self._should_accept_bot_message(message):
+                    return
                 
                 # Multi-agent filtering: if the message mentions specific bots
                 # but NOT this bot, the sender is talking to another agent —
@@ -799,7 +926,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
+            outbound_bot_mentions = self._resolve_outbound_bot_mentions(metadata)
+            formatted = self._prefix_outbound_bot_mentions(formatted, outbound_bot_mentions)
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            allowed_mentions = self._build_allowed_mentions(outbound_bot_mentions)
 
             message_ids = []
             reference = None
@@ -817,10 +947,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 else:  # "first" (default) or "off"
                     chunk_reference = reference if i == 0 else None
                 try:
-                    msg = await channel.send(
-                        content=chunk,
-                        reference=chunk_reference,
-                    )
+                    send_kwargs = {
+                        "content": chunk,
+                        "reference": chunk_reference,
+                    }
+                    if allowed_mentions is not None:
+                        send_kwargs["allowed_mentions"] = allowed_mentions
+                    msg = await channel.send(**send_kwargs)
                 except Exception as e:
                     err_text = str(e)
                     if (
@@ -833,10 +966,13 @@ class DiscordAdapter(BasePlatformAdapter):
                             self.name,
                             reply_to,
                         )
-                        msg = await channel.send(
-                            content=chunk,
-                            reference=None,
-                        )
+                        retry_kwargs = {
+                            "content": chunk,
+                            "reference": None,
+                        }
+                        if allowed_mentions is not None:
+                            retry_kwargs["allowed_mentions"] = allowed_mentions
+                        msg = await channel.send(**retry_kwargs)
                     else:
                         raise
                 message_ids.append(str(msg.id))

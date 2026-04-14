@@ -78,3 +78,69 @@ async def test_send_retries_without_reference_when_reply_target_is_system_messag
     assert channel.send.await_count == 2
     assert send_calls[0]["reference"] is ref_msg
     assert send_calls[1]["reference"] is None
+
+
+@pytest.mark.asyncio
+async def test_send_prefixes_explicit_bot_mentions_from_metadata():
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=456)
+    send_calls = []
+
+    async def fake_send(**kwargs):
+        send_calls.append(kwargs)
+        return sent_msg
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send(
+        "555",
+        "hello there",
+        metadata={"mention_bot_ids": ["123456789"]},
+    )
+
+    assert result.success is True
+    assert send_calls[0]["content"].startswith("<@123456789> hello there")
+    assert "allowed_mentions" in send_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_send_can_auto_mention_configured_target_bots():
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={
+                "target_bot_ids": ["111", "222"],
+                "auto_mention_target_bots": True,
+            },
+        )
+    )
+
+    sent_msg = SimpleNamespace(id=789)
+    send_calls = []
+
+    async def fake_send(**kwargs):
+        send_calls.append(kwargs)
+        return sent_msg
+
+    channel = SimpleNamespace(
+        fetch_message=AsyncMock(),
+        send=AsyncMock(side_effect=fake_send),
+    )
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "ping")
+
+    assert result.success is True
+    assert send_calls[0]["content"].startswith("<@111> <@222> ping")

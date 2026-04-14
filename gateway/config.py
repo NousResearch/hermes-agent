@@ -804,6 +804,38 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.DISCORD not in config.platforms:
             config.platforms[Platform.DISCORD] = PlatformConfig()
         config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
+
+    discord_allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "").lower().strip()
+    if discord_allow_bots in ("none", "mentions", "all"):
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra["allow_bots"] = discord_allow_bots
+
+    discord_target_bot_ids = os.getenv("DISCORD_TARGET_BOT_IDS", "").strip()
+    if discord_target_bot_ids:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra["target_bot_ids"] = [
+            bot_id.strip() for bot_id in discord_target_bot_ids.split(",") if bot_id.strip()
+        ]
+
+    discord_auto_mention_target_bots = os.getenv("DISCORD_AUTO_MENTION_TARGET_BOTS", "")
+    if discord_auto_mention_target_bots:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra["auto_mention_target_bots"] = _coerce_bool(
+            discord_auto_mention_target_bots,
+            default=False,
+        )
+
+    discord_accept_bot_replies = os.getenv("DISCORD_ACCEPT_BOT_REPLIES", "")
+    if discord_accept_bot_replies:
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].extra["accept_bot_replies"] = _coerce_bool(
+            discord_accept_bot_replies,
+            default=True,
+        )
     
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")

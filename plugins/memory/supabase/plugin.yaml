@@ -1,0 +1,5 @@
+name: supabase
+version: 0.1.0
+description: "Supabase/Postgres-backed Hermes memory provider."
+pip_dependencies:
+  - httpx

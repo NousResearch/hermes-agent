@@ -1501,30 +1501,17 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _update_approval_card(
         self, message_id: str, label: str, user_name: str, choice: str,
     ) -> None:
-        """Replace the approval card with a resolved status card."""
-        if not self._client or not message_id:
+        """Log the approval decision.
+        
+        Note: Feishu does not support updating interactive card messages (API error 230054).
+        The approval is resolved via resolve_gateway_approval(), and a follow-up message
+        is sent in _handle_card_action_event() instead of updating the original card.
+        """
+        if not self._client:
             return
+        
         icon = "❌" if choice == "deny" else "✅"
-        card = {
-            "config": {"wide_screen_mode": True},
-            "header": {
-                "title": {"content": f"{icon} {label}", "tag": "plain_text"},
-                "template": "red" if choice == "deny" else "green",
-            },
-            "elements": [
-                {
-                    "tag": "markdown",
-                    "content": f"{icon} **{label}** by {user_name}",
-                },
-            ],
-        }
-        try:
-            payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
-        except Exception as exc:
-            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
+        logger.info("[Feishu] Approval decision: %s %s by %s", icon, label, user_name)
 
     async def send_voice(
         self,
@@ -1854,6 +1841,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Schedule Feishu card actions on the adapter loop and acknowledge immediately."""
+        logger.info("[Feishu] Card action trigger received: %s", data)
         loop = self._loop
         if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
@@ -1982,6 +1970,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "deny": "Denied",
             }
             label = label_map.get(choice, "Resolved")
+            icon = "❌" if choice == "deny" else "✅"
 
             # Resolve sender name for the status card
             sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
@@ -1999,8 +1988,9 @@ class FeishuAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
-            # Update the card to show the decision
-            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
+            # Send a follow-up message since Feishu doesn't support updating interactive cards
+            chat_id = state.get("chat_id", "")
+            await self.send(chat_id, f"{icon} **{label}** by {user_name}", reply_to=state.get("message_id", ""))
             return
 
         synthetic_text = f"/card {action_tag}"

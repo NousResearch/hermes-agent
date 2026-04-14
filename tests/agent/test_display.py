@@ -53,11 +53,32 @@ class TestBuildToolPreview:
         assert result is None
 
     def test_long_value_truncated(self):
-        """Preview should truncate long values."""
+        """Preview should truncate long values and never exceed max_len."""
         long_cmd = "a" * 100
         result = build_tool_preview("terminal", {"command": long_cmd}, max_len=40)
         assert result is not None
-        assert len(result) <= 43  # max_len + "..."
+        assert len(result) <= 40
+        assert result.endswith("...")
+
+    def test_tiny_max_len_respects_bound(self):
+        """Regression for #9439: max_len in {1, 2, 3} must not overflow."""
+        long_cmd = "abcdefghijklmnopqrstuvwxyz"
+        for limit in (1, 2, 3):
+            result = build_tool_preview("terminal", {"command": long_cmd}, max_len=limit)
+            assert result is not None
+            assert len(result) <= limit, f"max_len={limit} produced {result!r}"
+
+    def test_max_len_exactly_four(self):
+        """The smallest max_len that still fits content plus ellipsis."""
+        result = build_tool_preview("terminal", {"command": "abcdefghij"}, max_len=4)
+        assert result is not None
+        assert len(result) <= 4
+        assert result.endswith("...")
+
+    def test_short_value_not_truncated(self):
+        """Values already within max_len should pass through unchanged."""
+        result = build_tool_preview("terminal", {"command": "ls"}, max_len=2)
+        assert result == "ls"
 
     def test_process_tool_with_none_args(self):
         """Process tool special case should also handle None args."""

@@ -413,12 +413,14 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._context_cache = "\n\n".join(parts)
                     self._context_cache_time = time.monotonic()
 
-                # Fire dialectic to warm the knowledge graph + cache result
-                self._manager.prefetch_dialectic(
-                    self._session_key,
-                    "Summarize what you know about this user. "
-                    "Focus on preferences, current projects, and working style."
-                )
+                # Fire dialectic to warm the knowledge graph + cache result.
+                # Skip if peer is new (no context = nothing to reason about).
+                if self._context_cache:
+                    self._manager.prefetch_dialectic(
+                        self._session_key,
+                        "Summarize what you know about this user. "
+                        "Focus on preferences, goals, and style."
+                    )
                 logger.debug("Honcho pre-warm started for session: %s", self._session_key)
             except Exception as e:
                 logger.debug("Honcho pre-warm failed: %s", e)

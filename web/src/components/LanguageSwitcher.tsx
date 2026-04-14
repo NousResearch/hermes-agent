@@ -13,7 +13,7 @@ export function LanguageSwitcher() {
     <button
       type="button"
       onClick={toggle}
-      className="group relative inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
+      className="group relative inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       title={t.language.switchTo}
       aria-label={t.language.switchTo}
     >

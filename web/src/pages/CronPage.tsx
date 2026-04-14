@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
 
 function formatTime(iso?: string | null): string {
@@ -149,7 +149,7 @@ export default function CronPage() {
               <Label htmlFor="cron-prompt">{t.cron.prompt}</Label>
               <textarea
                 id="cron-prompt"
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 placeholder={t.cron.promptPlaceholder}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -174,11 +174,11 @@ export default function CronPage() {
                   value={deliver}
                   onValueChange={(v) => setDeliver(v)}
                 >
-                  <option value="local">{t.cron.delivery.local}</option>
-                  <option value="telegram">{t.cron.delivery.telegram}</option>
-                  <option value="discord">{t.cron.delivery.discord}</option>
-                  <option value="slack">{t.cron.delivery.slack}</option>
-                  <option value="email">{t.cron.delivery.email}</option>
+                  <SelectOption value="local">{t.cron.delivery.local}</SelectOption>
+                  <SelectOption value="telegram">{t.cron.delivery.telegram}</SelectOption>
+                  <SelectOption value="discord">{t.cron.delivery.discord}</SelectOption>
+                  <SelectOption value="slack">{t.cron.delivery.slack}</SelectOption>
+                  <SelectOption value="email">{t.cron.delivery.email}</SelectOption>
                 </Select>
               </div>
 

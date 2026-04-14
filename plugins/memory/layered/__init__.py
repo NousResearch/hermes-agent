@@ -643,8 +643,15 @@ class LayeredMemoryProvider(MemoryProvider):
             LIMIT 100
             """
         ).fetchall()
+        locked_names = {
+            entry.get("skill_name", "")
+            for entry in self._safe_json_loads_list(self._candidate_index_path.read_text())
+        } if self._candidate_index_path and self._candidate_index_path.exists() else set()
         for item_id, content, metadata_json, recurrence, source, action, score, importance, confidence in rows:
             metadata = self._safe_json_loads(metadata_json)
+            skill_name = self._slugify_skill_name(content)
+            if skill_name in locked_names:
+                continue
             if metadata.get("skill_candidate") and metadata.get("review_status") in {"pending", "approved", "rejected"}:
                 continue
             effective_recurrence = max(int(recurrence), int(metadata.get("occurrences", 0)))

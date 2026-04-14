@@ -804,3 +804,45 @@ class TestLayeredMemoryProviderProductization:
         assert "@variant-" in result
         assert metadata["approval_strategy"] == "create_variant"
         assert metadata["installed_skill_path"] == result
+
+    def test_approved_candidate_is_not_repromoted_to_pending_by_later_session_end(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = load_memory_provider("layered")
+        provider.initialize(session_id="sess-product-approved-stable", hermes_home=str(tmp_path), platform="cli")
+
+        for _ in range(3):
+            provider.on_session_end([
+                {"role": "user", "content": "Please implement a bugfix with tests."},
+                {"role": "assistant", "content": "I wrote failing tests first, fixed the bug, and all tests passed."},
+            ])
+
+        provider.approve_skill_candidate("write-failing-tests-first-then-verify-tests-pass")
+        provider.on_session_end([
+            {"role": "user", "content": "Please implement a bugfix with tests again."},
+            {"role": "assistant", "content": "I wrote failing tests first, fixed the bug, and all tests passed."},
+        ])
+
+        metadata = provider.inspect_skill_candidate("write-failing-tests-first-then-verify-tests-pass")
+        assert metadata["review_status"] == "approved"
+        assert metadata["review_gate_reason"].startswith("manual_approve:")
+
+    def test_rejected_candidate_is_not_repromoted_to_pending_by_later_session_end(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        provider = load_memory_provider("layered")
+        provider.initialize(session_id="sess-product-rejected-stable", hermes_home=str(tmp_path), platform="cli")
+
+        for _ in range(3):
+            provider.on_session_end([
+                {"role": "user", "content": "Please implement a bugfix with tests."},
+                {"role": "assistant", "content": "I wrote failing tests first, fixed the bug, and all tests passed."},
+            ])
+
+        provider.reject_skill_candidate("write-failing-tests-first-then-verify-tests-pass", reason="manual_reject")
+        provider.on_session_end([
+            {"role": "user", "content": "Please implement a bugfix with tests again."},
+            {"role": "assistant", "content": "I wrote failing tests first, fixed the bug, and all tests passed."},
+        ])
+
+        metadata = provider.inspect_skill_candidate("write-failing-tests-first-then-verify-tests-pass")
+        assert metadata["review_status"] == "rejected"
+        assert metadata["review_gate_reason"] == "manual_reject"

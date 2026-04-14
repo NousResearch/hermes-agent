@@ -108,8 +108,9 @@ class TestWebServerEndpoints:
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
 
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_status(self):
         resp = self.client.get("/api/status")
@@ -239,9 +240,13 @@ class TestWebServerEndpoints:
 
     def test_reveal_env_var_no_token(self, tmp_path):
         """POST /api/env/reveal without token should return 401."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
         from hermes_cli.config import save_env_value
         save_env_value("TEST_REVEAL_NOAUTH", "secret-value")
-        resp = self.client.post(
+        # Use a fresh client WITHOUT the Authorization header
+        unauth_client = TestClient(app)
+        resp = unauth_client.post(
             "/api/env/reveal",
             json={"key": "TEST_REVEAL_NOAUTH"},
         )
@@ -258,12 +263,32 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
-    def test_session_token_endpoint(self):
-        """GET /api/auth/session-token should return a token."""
-        from hermes_cli.web_server import _SESSION_TOKEN
+    def test_session_token_endpoint_removed(self):
+        """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
         resp = self.client.get("/api/auth/session-token")
+        # The endpoint is gone — the catch-all SPA route serves index.html
+        # or the middleware returns 401 for unauthenticated /api/ paths.
+        assert resp.status_code in (200, 404)
+        # Either way, it must NOT return the token as JSON
+        try:
+            data = resp.json()
+            assert "token" not in data
+        except Exception:
+            pass  # Not JSON — that's fine (SPA HTML)
+
+    def test_unauthenticated_api_blocked(self):
+        """API requests without the session token should be rejected."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+        # Create a client WITHOUT the Authorization header
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/env")
+        assert resp.status_code == 401
+        resp = unauth_client.get("/api/config")
+        assert resp.status_code == 401
+        # Public endpoints should still work
+        resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
-        assert resp.json()["token"] == _SESSION_TOKEN
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -358,8 +383,9 @@ class TestConfigRoundTrip:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_config_no_internal_keys(self):
         """GET /api/config should not expose _config_version or _model_meta."""
@@ -490,8 +516,9 @@ class TestNewEndpoints:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from hermes_cli.web_server import app
+        from hermes_cli.web_server import app, _SESSION_TOKEN
         self.client = TestClient(app)
+        self.client.headers["Authorization"] = f"Bearer {_SESSION_TOKEN}"
 
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
@@ -668,11 +695,16 @@ class TestNewEndpoints:
         assert isinstance(data["daily"], list)
         assert "total_sessions" in data["totals"]
 
-    def test_session_token_endpoint(self):
-        from hermes_cli.web_server import _SESSION_TOKEN
+    def test_session_token_endpoint_removed(self):
+        """GET /api/auth/session-token no longer exists."""
         resp = self.client.get("/api/auth/session-token")
-        assert resp.status_code == 200
-        assert resp.json()["token"] == _SESSION_TOKEN
+        # Should not return a JSON token object
+        assert resp.status_code in (200, 404)
+        try:
+            data = resp.json()
+            assert "token" not in data
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

@@ -1108,3 +1108,51 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
 
     assert not pool.has_credentials()
     assert pool.entries() == []
+
+
+def test_load_pool_seeds_qwen_oauth_via_cli_tokens(tmp_path, monkeypatch):
+    """Qwen OAuth credentials from ~/.qwen/oauth_creds.json should be seeded into the pool."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: {
+            "provider": "qwen-oauth",
+            "base_url": "https://portal.qwen.ai/v1",
+            "api_key": "qwen_fake_token_xyz",
+            "source": "qwen-cli",
+            "expires_at_ms": 1900000000000,
+            "auth_file": str(tmp_path / ".qwen" / "oauth_creds.json"),
+        },
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("qwen-oauth")
+
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "qwen-cli"
+    assert entries[0].access_token == "qwen_fake_token_xyz"
+
+
+def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch):
+    """Qwen OAuth pool should be empty when no CLI credentials exist."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_qwen_runtime_credentials",
+        lambda **kw: (_ for _ in ()).throw(
+            AuthError("Qwen CLI credentials not found.", provider="qwen-oauth", code="qwen_auth_missing")
+        ),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("qwen-oauth")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []

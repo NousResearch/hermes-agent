@@ -1176,3 +1176,23 @@ class TestStatusRemoteGateway:
         assert data["gateway_running"] is True
         assert data["gateway_pid"] is None
         assert data["gateway_state"] == "running"
+
+
+def test_anthropic_oauth_status_env_var_fallback(monkeypatch):
+    """Regression test for #9936: _anthropic_oauth_status uses os.getenv
+    when no stored credentials are present. Without ``import os`` in
+    web_server.py this raises NameError.
+    """
+    import agent.anthropic_adapter as aa
+    from hermes_cli.web_server import _anthropic_oauth_status
+
+    monkeypatch.setattr(aa, "read_hermes_oauth_credentials", lambda: None)
+    monkeypatch.setattr(aa, "read_claude_code_credentials", lambda: None)
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-test-regression-token")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+
+    status = _anthropic_oauth_status()
+
+    assert status["logged_in"] is True
+    assert status["source"] == "env_var"
+    assert status["source_label"] == "ANTHROPIC_TOKEN environment variable"

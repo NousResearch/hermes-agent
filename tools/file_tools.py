@@ -92,7 +92,10 @@ def _is_blocked_device(filepath: str) -> bool:
 
 # Paths that file tools should refuse to write to without going through the
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
-_SENSITIVE_PATH_PREFIXES = ("/etc/", "/boot/", "/usr/lib/systemd/")
+_SENSITIVE_PATH_PREFIXES = (
+    "/etc/", "/boot/", "/usr/lib/systemd/",
+    "/private/etc/", "/private/var/",
+)
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
 
@@ -102,17 +105,16 @@ def _check_sensitive_path(filepath: str) -> str | None:
         resolved = os.path.realpath(os.path.expanduser(filepath))
     except (OSError, ValueError):
         resolved = filepath
+    normalized = os.path.normpath(os.path.expanduser(filepath))
+    _err = (
+        f"Refusing to write to sensitive system path: {filepath}\n"
+        "Use the terminal tool with sudo if you need to modify system files."
+    )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix):
-            return (
-                f"Refusing to write to sensitive system path: {filepath}\n"
-                "Use the terminal tool with sudo if you need to modify system files."
-            )
-    if resolved in _SENSITIVE_EXACT_PATHS:
-        return (
-            f"Refusing to write to sensitive system path: {filepath}\n"
-            "Use the terminal tool with sudo if you need to modify system files."
-        )
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
+    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+        return _err
     return None
 
 
@@ -447,38 +449,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         return tool_error(str(e))
 
 
-def get_read_files_summary(task_id: str = "default") -> list:
-    """Return a list of files read in this session for the given task.
-
-    Used by context compression to preserve file-read history across
-    compression boundaries.
-    """
-    with _read_tracker_lock:
-        task_data = _read_tracker.get(task_id, {})
-        read_history = task_data.get("read_history", set())
-        seen_paths: dict = {}
-        for (path, offset, limit) in read_history:
-            if path not in seen_paths:
-                seen_paths[path] = []
-            seen_paths[path].append(f"lines {offset}-{offset + limit - 1}")
-        return [
-            {"path": p, "regions": regions}
-            for p, regions in sorted(seen_paths.items())
-        ]
-
-
-def clear_read_tracker(task_id: str = None):
-    """Clear the read tracker.
-
-    Call with a task_id to clear just that task, or without to clear all.
-    Should be called when a session is destroyed to prevent memory leaks
-    in long-running gateway processes.
-    """
-    with _read_tracker_lock:
-        if task_id:
-            _read_tracker.pop(task_id, None)
-        else:
-            _read_tracker.clear()
 
 
 def reset_file_dedup(task_id: str = None):
@@ -717,12 +687,6 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
         return tool_error(str(e))
 
 
-FILE_TOOLS = [
-    {"name": "read_file", "function": read_file_tool},
-    {"name": "write_file", "function": write_file_tool},
-    {"name": "patch", "function": patch_tool},
-    {"name": "search_files", "function": search_tool}
-]
 
 
 # ---------------------------------------------------------------------------

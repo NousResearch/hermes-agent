@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -878,7 +877,8 @@ class SessionStore:
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
-        old transcript is loaded on the next message.
+        old transcript is loaded on the next message. If the target session was
+        previously ended, re-open it so gateway resume semantics match the CLI.
         """
         db_end_session_id = None
         new_entry = None
@@ -917,6 +917,12 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
 
         return new_entry
 

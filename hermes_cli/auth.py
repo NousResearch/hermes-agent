@@ -127,6 +127,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
         api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        base_url_env_var="COPILOT_API_BASE_URL",
     ),
     "copilot-acp": ProviderConfig(
         id="copilot-acp",
@@ -158,6 +159,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://api.moonshot.ai/v1",
         api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
+    ),
+    "kimi-coding-cn": ProviderConfig(
+        id="kimi-coding-cn",
+        name="Kimi / Moonshot (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.moonshot.cn/v1",
+        api_key_env_vars=("KIMI_CN_API_KEY",),
     ),
     "minimax": ProviderConfig(
         id="minimax",
@@ -306,44 +314,6 @@ def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) ->
         return KIMI_CODE_BASE_URL
     return default_url
 
-
-def _gh_cli_candidates() -> list[str]:
-    """Return candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = []
-
-    resolved = shutil.which("gh")
-    if resolved:
-        candidates.append(resolved)
-
-    for candidate in (
-        "/opt/homebrew/bin/gh",
-        "/usr/local/bin/gh",
-        str(Path.home() / ".local" / "bin" / "gh"),
-    ):
-        if candidate in candidates:
-            continue
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            candidates.append(candidate)
-
-    return candidates
-
-
-def _try_gh_cli_token() -> Optional[str]:
-    """Return a token from ``gh auth token`` when the GitHub CLI is available."""
-    for gh_path in _gh_cli_candidates():
-        try:
-            result = subprocess.run(
-                [gh_path, "auth", "token"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-            logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)
-            continue
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    return None
 
 
 _PLACEHOLDER_SECRET_VALUES = {
@@ -929,6 +899,7 @@ def resolve_provider(
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+        "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
@@ -2282,7 +2253,40 @@ def resolve_nous_runtime_credentials(
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output."""
+    """Status snapshot for `hermes status` output.
+
+    Checks the credential pool first (where the dashboard device-code flow
+    and ``hermes auth`` store credentials), then falls back to the legacy
+    auth-store provider state.
+    """
+    # Check credential pool first — the dashboard device-code flow saves
+    # here but may not have written to the auth store yet.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("nous")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                access_token = (
+                    getattr(entry, "access_token", None)
+                    or getattr(entry, "runtime_api_key", "")
+                )
+                if access_token:
+                    return {
+                        "logged_in": True,
+                        "portal_base_url": getattr(entry, "portal_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "inference_base_url": getattr(entry, "inference_base_url", None)
+                            or getattr(entry, "base_url", None),
+                        "access_token": access_token,
+                        "access_expires_at": getattr(entry, "expires_at", None),
+                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+                    }
+    except Exception:
+        pass
+
+    # Fall back to auth-store provider state
     state = get_provider_auth_state("nous")
     if not state:
         return {

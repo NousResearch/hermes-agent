@@ -27,10 +27,6 @@ Per-task overrides are configured in config.yaml under the ``auxiliary:`` sectio
 (e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
 Default "auto" follows the chains above.
 
-Legacy env var overrides (AUXILIARY_{TASK}_PROVIDER, AUXILIARY_{TASK}_MODEL,
-AUXILIARY_{TASK}_BASE_URL, etc.) are still read as a backward-compat fallback
-but config.yaml takes priority.  New configuration should always use config.yaml.
-
 Payment / credit exhaustion fallback:
   When a resolved provider returns HTTP 402 or a credit-related error,
   call_llm() automatically retries with the next available provider in the
@@ -68,6 +64,8 @@ _PROVIDER_ALIASES = {
     "zhipu": "zai",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "kimi-cn": "kimi-coding-cn",
+    "moonshot-cn": "kimi-coding-cn",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -75,13 +73,13 @@ _PROVIDER_ALIASES = {
 }
 
 
-def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
+def _normalize_aux_provider(provider: Optional[str]) -> str:
     normalized = (provider or "auto").strip().lower()
     if normalized.startswith("custom:"):
         suffix = normalized.split(":", 1)[1].strip()
         if not suffix:
             return "custom"
-        normalized = suffix if not for_vision else "custom"
+        normalized = suffix
     if normalized == "codex":
         return "openai-codex"
     if normalized == "main":
@@ -98,6 +96,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
+    "kimi-coding-cn": "kimi-k2-turbo-preview",
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
@@ -753,30 +752,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 # ── Provider resolution helpers ─────────────────────────────────────────────
 
-def _get_auxiliary_provider(task: str = "") -> str:
-    """Read the provider override for a specific auxiliary task.
-
-    Checks AUXILIARY_{TASK}_PROVIDER first (e.g. AUXILIARY_VISION_PROVIDER),
-    then CONTEXT_{TASK}_PROVIDER (for the compression section's summary_provider),
-    then falls back to "auto".  Returns one of: "auto", "openrouter", "nous", "main".
-    """
-    if task:
-        for prefix in ("AUXILIARY_", "CONTEXT_"):
-            val = os.getenv(f"{prefix}{task.upper()}_PROVIDER", "").strip().lower()
-            if val and val != "auto":
-                return val
-    return "auto"
-
-
-def _get_auxiliary_env_override(task: str, suffix: str) -> Optional[str]:
-    """Read an auxiliary env override from AUXILIARY_* or CONTEXT_* prefixes."""
-    if not task:
-        return None
-    for prefix in ("AUXILIARY_", "CONTEXT_"):
-        val = os.getenv(f"{prefix}{task.upper()}_{suffix}", "").strip()
-        if val:
-            return val
-    return None
 
 
 def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -1248,6 +1223,12 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    try:
+        from agent.copilot_acp_client import CopilotACPClient
+        if isinstance(sync_client, CopilotACPClient):
+            return sync_client, model
+    except ImportError:
+        pass
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1466,10 +1447,14 @@ def resolve_provider_client(
         custom_entry = _get_named_custom_provider(provider)
         if custom_entry:
             custom_base = custom_entry.get("base_url", "").strip()
-            custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
+            custom_key = custom_entry.get("api_key", "").strip()
+            custom_key_env = custom_entry.get("key_env", "").strip()
+            if not custom_key and custom_key_env:
+                custom_key = os.getenv(custom_key_env, "").strip()
+            custom_key = custom_key or "no-key-required"
             if custom_base:
                 final_model = _normalize_resolved_model(
-                    model or _read_main_model() or "gpt-4o-mini",
+                    model or custom_entry.get("model") or _read_main_model() or "gpt-4o-mini",
                     provider,
                 )
                 client = OpenAI(api_key=custom_key, base_url=custom_base)
@@ -1488,7 +1473,11 @@ def resolve_provider_client(
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+            resolve_external_process_provider_credentials,
+        )
     except ImportError:
         logger.debug("hermes_cli.auth not available for provider %s", provider)
         return None, None
@@ -1562,6 +1551,41 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
+    if pconfig.auth_type == "external_process":
+        creds = resolve_external_process_provider_credentials(provider)
+        final_model = _normalize_resolved_model(model or _read_main_model(), provider)
+        if provider == "copilot-acp":
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+            command = str(creds.get("command", "")).strip() or None
+            args = list(creds.get("args") or [])
+            if not final_model:
+                logger.warning(
+                    "resolve_provider_client: copilot-acp requested but no model "
+                    "was provided or configured"
+                )
+                return None, None
+            if not api_key or not base_url:
+                logger.warning(
+                    "resolve_provider_client: copilot-acp requested but external "
+                    "process credentials are incomplete"
+                )
+                return None, None
+            from agent.copilot_acp_client import CopilotACPClient
+
+            client = CopilotACPClient(
+                api_key=api_key,
+                base_url=base_url,
+                command=command,
+                args=args,
+            )
+            logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
+            return (_to_async_client(client, final_model) if async_mode
+                    else (client, final_model))
+        logger.warning("resolve_provider_client: external-process provider %s not "
+                       "directly supported", provider)
+        return None, None
+
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
         # OAuth providers — route through their specific try functions
         if provider == "nous":
@@ -1591,8 +1615,8 @@ def get_text_auxiliary_client(
         task: Optional task name ("compression", "web_extract") to check
               for a task-specific provider override.
 
-    Callers may override the returned model with a per-task env var
-    (e.g. CONTEXT_COMPRESSION_MODEL, AUXILIARY_WEB_EXTRACT_MODEL).
+    Callers may override the returned model via config.yaml
+    (e.g. auxiliary.compression.model, auxiliary.web_extract.model).
     """
     provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
     return resolve_provider_client(
@@ -1631,7 +1655,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
-    return _normalize_aux_provider(provider, for_vision=True)
+    return _normalize_aux_provider(provider)
 
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
@@ -1714,6 +1738,7 @@ def resolve_vision_provider_client(
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
             explicit_api_key=resolved_api_key,
+            api_mode=resolved_api_mode,
         )
         if client is None:
             return "custom", None, None
@@ -1738,7 +1763,8 @@ def resolve_vision_provider_client(
                 # Use provider-specific vision model if available, otherwise main model.
                 vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model)
+                    main_provider, vision_model,
+                    api_mode=resolved_api_mode)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using active provider %s (%s)",
@@ -1762,7 +1788,8 @@ def resolve_vision_provider_client(
         sync_client, default_model = _resolve_strict_vision_backend(requested)
         return _finalize(requested, sync_client, default_model)
 
-    client, final_model = _get_cached_client(requested, resolved_model, async_mode)
+    client, final_model = _get_cached_client(requested, resolved_model, async_mode,
+                                             api_mode=resolved_api_mode)
     if client is None:
         return requested, None, None
     return requested, client, final_model
@@ -2011,9 +2038,8 @@ def _resolve_task_provider_model(
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Config file (auxiliary.{task}.* or compression.*)
-      3. Env var overrides (backward-compat: AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      4. "auto" (full auto-detection chain)
+      2. Config file (auxiliary.{task}.provider/model/base_url)
+      3. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
     be None (use provider default). When base_url is set, provider is forced
@@ -2044,22 +2070,8 @@ def _resolve_task_provider_model(
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
-        # Backwards compat: compression section has its own keys.
-        # The auxiliary.compression defaults to provider="auto", so treat
-        # both None and "auto" as "not explicitly configured".
-        if task == "compression" and (not cfg_provider or cfg_provider == "auto"):
-            comp = config.get("compression", {}) if isinstance(config, dict) else {}
-            if isinstance(comp, dict):
-                cfg_provider = comp.get("summary_provider", "").strip() or None
-                cfg_model = cfg_model or comp.get("summary_model", "").strip() or None
-                _sbu = comp.get("summary_base_url") or ""
-                cfg_base_url = cfg_base_url or _sbu.strip() or None
-
-    # Env vars are backward-compat fallback only — config.yaml is primary.
-    env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
-    env_api_mode = _get_auxiliary_env_override(task, "API_MODE") if task else None
-    resolved_model = model or cfg_model or env_model
-    resolved_api_mode = cfg_api_mode or env_api_mode
+    resolved_model = model or cfg_model
+    resolved_api_mode = cfg_api_mode
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
@@ -2072,17 +2084,6 @@ def _resolve_task_provider_model(
             return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
-
-        # Env vars are backward-compat fallback for users who haven't
-        # migrated to config.yaml yet.
-        env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
-        env_api_key = _get_auxiliary_env_override(task, "API_KEY")
-        if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key, resolved_api_mode
-
-        env_provider = _get_auxiliary_provider(task)
-        if env_provider != "auto":
-            return env_provider, resolved_model, None, None, resolved_api_mode
 
         return "auto", resolved_model, None, None, resolved_api_mode
 

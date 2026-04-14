@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import logging
-import os
 import re
 import time
 from pathlib import Path
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "zai", "kimi-coding", "kimi-coding-cn", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -32,7 +31,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "qwen-portal",
@@ -211,6 +210,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.anthropic.com": "anthropic",
     "api.z.ai": "zai",
     "api.moonshot.ai": "kimi-coding",
+    "api.moonshot.cn": "kimi-coding-cn",
     "api.kimi.com": "kimi-coding",
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
@@ -775,12 +775,12 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                 resp = client.post(f"{server_url}/api/show", json={"name": model})
                 if resp.status_code == 200:
                     data = resp.json()
-                    # Check model_info for context length
-                    model_info = data.get("model_info", {})
-                    for key, value in model_info.items():
-                        if "context_length" in key and isinstance(value, (int, float)):
-                            return int(value)
-                    # Check parameters string for num_ctx
+                    # Prefer explicit num_ctx from Modelfile parameters: this is
+                    # the *runtime* context Ollama will actually allocate KV cache
+                    # for. The GGUF model_info.context_length is the training max,
+                    # which can be larger than num_ctx — using it here would let
+                    # Hermes grow conversations past the runtime limit and Ollama
+                    # would silently truncate. Matches query_ollama_num_ctx().
                     params = data.get("parameters", "")
                     if "num_ctx" in params:
                         for line in params.split("\n"):
@@ -791,6 +791,11 @@ def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
                                         return int(parts[-1])
                                     except ValueError:
                                         pass
+                    # Fall back to GGUF model_info context_length (training max)
+                    model_info = data.get("model_info", {})
+                    for key, value in model_info.items():
+                        if "context_length" in key and isinstance(value, (int, float)):
+                            return int(value)
 
             # LM Studio native API: /api/v1/models returns max_context_length.
             # This is more reliable than the OpenAI-compat /v1/models which

@@ -35,6 +35,7 @@ def make_restart_source(chat_id: str = "123456", chat_type: str = "dm") -> Sessi
         platform=Platform.TELEGRAM,
         chat_id=chat_id,
         chat_type=chat_type,
+        user_id="u1",
     )
 
 

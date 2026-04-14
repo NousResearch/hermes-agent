@@ -185,6 +185,31 @@ class TestThinkingManagerLifecycle:
         assert content["m.relates_to"]["event_id"] == "$event"
         assert content["m.relates_to"]["m.in_reply_to"]["event_id"] == "$thread-1"
 
+    @pytest.mark.asyncio
+    async def test_send_edit_snapshot_retries_transient_failures(self):
+        from gateway.platforms.matrix_thinking import ThinkingManager
+
+        adapter = _make_adapter()
+        adapter._client.send_message_event = AsyncMock(side_effect=[RuntimeError("temporary"), "$evt_retry"])
+        mgr = ThinkingManager(adapter)
+
+        snapshot = {
+            "room_id": "!room:example.org",
+            "event_id": "$event",
+            "task_id": "task-retry",
+            "field_kind": "thinking",
+            "title": "🧐 Agent Thinking: Hermes via gpt-5.4 via openai-codex",
+            "summary": "Processing request...",
+            "step_count": 1,
+            "content_html": "<pre><code>reasoning</code></pre>",
+            "started_at": time.time(),
+            "thread_id": "$thread-retry",
+        }
+
+        await mgr._send_edit_snapshot(snapshot)
+
+        assert adapter._client.send_message_event.await_count == 2
+
     def test_elapsed_str_still_formats_duration(self):
         from gateway.platforms.matrix_thinking import ThinkingManager
 

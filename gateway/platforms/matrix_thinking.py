@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 _MIN_EDIT_INTERVAL = 3.0
 _MAX_BODY_SIZE = 60_000
+_EDIT_RETRY_ATTEMPTS = 3
+_EDIT_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 @dataclass
@@ -108,6 +110,7 @@ class ThinkingManager:
         )
         async with self._lock:
             self._sessions[key] = session
+        logger.debug("Matrix thinking: started %s pane for task %s in %s", field_kind, task_id, room_id)
         return event_id
 
     async def update(
@@ -147,6 +150,13 @@ class ThinkingManager:
                 self._ensure_flush_locked(key, session, max(0.0, _MIN_EDIT_INTERVAL - elapsed))
 
         if snapshot:
+            logger.debug(
+                "Matrix thinking: sending %s update for task %s (step=%s, body_chars=%s)",
+                field_kind,
+                task_id,
+                snapshot["step_count"],
+                len(snapshot["content_html"]),
+            )
             await self._send_edit_snapshot(snapshot)
 
     async def finalize(
@@ -187,6 +197,13 @@ class ThinkingManager:
 
         if collapse is None:
             collapse = field_kind == "thinking"
+        logger.debug(
+            "Matrix thinking: finalizing %s pane for task %s (summary=%r, collapse=%s)",
+            field_kind,
+            task_id,
+            final_summary,
+            collapse,
+        )
         await self._send_edit_snapshot(snapshot, final=True, collapse=collapse)
         async with self._lock:
             self._sessions.pop(key, None)
@@ -380,7 +397,25 @@ class ThinkingManager:
             body,
             thread_id=snapshot.get("thread_id"),
         )
-        try:
-            await self._adapter._client.send_message_event(snapshot["room_id"], "m.room.message", content)
-        except Exception as exc:
-            logger.debug("Matrix thinking: edit failed for %s: %s", snapshot["event_id"], exc)
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, _EDIT_RETRY_ATTEMPTS + 1):
+            try:
+                await self._adapter._client.send_message_event(snapshot["room_id"], "m.room.message", content)
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= _EDIT_RETRY_ATTEMPTS:
+                    logger.debug("Matrix thinking: edit failed for %s after %d attempts: %s", snapshot["event_id"], attempt, exc)
+                    return
+                delay = _EDIT_RETRY_BASE_DELAY_SECONDS * attempt
+                logger.warning(
+                    "Matrix thinking: edit failed for %s on attempt %d/%d; retrying in %.1fs: %s",
+                    snapshot["event_id"],
+                    attempt,
+                    _EDIT_RETRY_ATTEMPTS,
+                    delay,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+        if last_exc is not None:
+            logger.debug("Matrix thinking: edit failed for %s: %s", snapshot["event_id"], last_exc)

@@ -16,6 +16,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { useI18n } from "@/lib/i18n";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -45,8 +46,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   ui: "UI",
 };
 
-function prettyCategory(raw: string | null | undefined): string {
-  if (!raw) return "General";
+function prettyCategory(raw: string | null | undefined, t: ReturnType<typeof useI18n>["t"]): string {
+  if (!raw) return t("skills.general");
   if (CATEGORY_LABELS[raw]) return CATEGORY_LABELS[raw];
   return raw
     .split(/[-_/]/)
@@ -61,6 +62,7 @@ function prettyCategory(raw: string | null | undefined): string {
 /* ------------------------------------------------------------------ */
 
 export default function SkillsPage() {
+  const { t } = useI18n();
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [toolsets, setToolsets] = useState<ToolsetInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,9 +75,9 @@ export default function SkillsPage() {
 
   useEffect(() => {
     Promise.all([api.getSkills(), api.getToolsets()])
-      .then(([s, t]) => {
+      .then(([s, ts]) => {
         setSkills(s);
-        setToolsets(t);
+        setToolsets(ts);
       })
       .catch(() => showToast("Failed to load skills/toolsets", "error"))
       .finally(() => setLoading(false));
@@ -92,7 +94,7 @@ export default function SkillsPage() {
         )
       );
       showToast(
-        `${skill.name} ${skill.enabled ? "disabled" : "enabled"}`,
+        t("skills.disabled", { name: skill.name }),
         "success"
       );
     } catch {
@@ -138,11 +140,11 @@ export default function SkillsPage() {
     });
     return entries.map(([key, list]) => ({
       key,
-      name: prettyCategory(key === "__none__" ? null : key),
+      name: prettyCategory(key === "__none__" ? null : key, t),
       skills: list.sort((a, b) => a.name.localeCompare(b.name)),
       enabledCount: list.filter((s) => s.enabled).length,
     }));
-  }, [filteredSkills]);
+  }, [filteredSkills, t]);
 
   const allCategories = useMemo(() => {
     const cats = new Map<string, number>();
@@ -156,18 +158,18 @@ export default function SkillsPage() {
         if (b[0] === "__none__") return 1;
         return a[0].localeCompare(b[0]);
       })
-      .map(([key, count]) => ({ key, name: prettyCategory(key === "__none__" ? null : key), count }));
-  }, [skills]);
+      .map(([key, count]) => ({ key, name: prettyCategory(key === "__none__" ? null : key, t), count }));
+  }, [skills, t]);
 
   const enabledCount = skills.filter((s) => s.enabled).length;
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
-      (t) =>
+      (ts) =>
         !search ||
-        t.name.toLowerCase().includes(lowerSearch) ||
-        t.label.toLowerCase().includes(lowerSearch) ||
-        t.description.toLowerCase().includes(lowerSearch)
+        ts.name.toLowerCase().includes(lowerSearch) ||
+        ts.label.toLowerCase().includes(lowerSearch) ||
+        ts.description.toLowerCase().includes(lowerSearch)
     );
   }, [toolsets, search, lowerSearch]);
 
@@ -204,24 +206,24 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
-      {/* ═══════════════ Header + Search ═══════════════ */}
+      {/* Header + Search */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <Package className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-base font-semibold">Skills</h1>
+          <h1 className="text-base font-semibold">{t("skills.title")}</h1>
           <span className="text-xs text-muted-foreground">
-            {enabledCount}/{skills.length} enabled
+            {t("skills.enabled", { enabled: enabledCount, total: skills.length })}
           </span>
         </div>
       </div>
 
-      {/* ═══════════════ Search + Category Filter ═══════════════ */}
+      {/* Search + Category Filter */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             className="pl-9"
-            placeholder="Search skills and toolsets..."
+            placeholder={t("skills.searchPlaceholder")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -250,7 +252,7 @@ export default function SkillsPage() {
             }`}
             onClick={() => setActiveCategory(null)}
           >
-            All ({skills.length})
+            {t("skills.all", { count: skills.length })}
           </button>
           {allCategories.map(({ key, name, count }) => (
             <button
@@ -272,15 +274,15 @@ export default function SkillsPage() {
         </div>
       )}
 
-      {/* ═══════════════ Skills by Category ═══════════════ */}
+      {/* Skills by Category */}
       <section className="flex flex-col gap-3">
 
         {filteredSkills.length === 0 ? (
           <Card>
             <CardContent className="py-12 text-center text-sm text-muted-foreground">
               {skills.length === 0
-                ? "No skills found. Skills are loaded from ~/.hermes/skills/"
-                : "No skills match your search or filter."}
+                ? t("skills.noSkills")
+                : t("skills.noMatch")}
             </CardContent>
           </Card>
         ) : (
@@ -301,7 +303,7 @@ export default function SkillsPage() {
                       )}
                       <CardTitle className="text-sm font-medium">{name}</CardTitle>
                       <Badge variant="secondary" className="text-[10px] font-normal">
-                        {catSkills.length} skill{catSkills.length !== 1 ? "s" : ""}
+                        {t(catSkills.length === 1 ? "skills.skillCount" : "skills.skillCount_plural", { count: catSkills.length })}
                       </Badge>
                     </div>
                     <Badge
@@ -318,7 +320,7 @@ export default function SkillsPage() {
                   <div className="px-4 pb-3 flex items-center min-h-[28px]">
                     <p className="text-xs text-muted-foreground/60 truncate leading-normal">
                       {catSkills.slice(0, 4).map((s) => s.name).join(", ")}
-                      {catSkills.length > 4 && `, +${catSkills.length - 4} more`}
+                      {catSkills.length > 4 && `, ${t("skills.more", { count: catSkills.length - 4 })}`}
                     </p>
                   </div>
                 ) : (
@@ -350,7 +352,7 @@ export default function SkillsPage() {
                               </span>
                             </div>
                             <p className="text-xs text-muted-foreground leading-relaxed line-clamp-2">
-                              {skill.description || "No description available."}
+                              {skill.description || t("skills.noDescription")}
                             </p>
                           </div>
                         </div>
@@ -364,17 +366,17 @@ export default function SkillsPage() {
         )}
       </section>
 
-      {/* ═══════════════ Toolsets ═══════════════ */}
+      {/* Toolsets */}
       <section className="flex flex-col gap-4">
         <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
           <Wrench className="h-4 w-4" />
-          Toolsets ({filteredToolsets.length})
+          {t("skills.toolsets", { count: filteredToolsets.length })}
         </h2>
 
         {filteredToolsets.length === 0 ? (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No toolsets match the search.
+              {t("skills.noToolsets")}
             </CardContent>
           </Card>
         ) : (
@@ -396,7 +398,7 @@ export default function SkillsPage() {
                             variant={ts.enabled ? "success" : "outline"}
                             className="text-[10px]"
                           >
-                            {ts.enabled ? "active" : "inactive"}
+                            {ts.enabled ? t("skills.active") : t("skills.inactive")}
                           </Badge>
                         </div>
                         <p className="text-xs text-muted-foreground mb-2">
@@ -404,7 +406,7 @@ export default function SkillsPage() {
                         </p>
                         {ts.enabled && !ts.configured && (
                           <p className="text-[10px] text-amber-300/80 mb-2">
-                            Setup needed
+                            {t("skills.setupNeeded")}
                           </p>
                         )}
                         {ts.tools.length > 0 && (
@@ -422,7 +424,7 @@ export default function SkillsPage() {
                         )}
                         {ts.tools.length === 0 && (
                           <span className="text-[10px] text-muted-foreground/60">
-                            {ts.enabled ? `${ts.name} toolset` : "Disabled for CLI"}
+                            {ts.enabled ? t("skills.disabled", { name: ts.name }) : t("skills.disabledCli")}
                           </span>
                         )}
                       </div>

@@ -8,16 +8,17 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import { useI18n, type Locale } from "@/lib/i18n";
 
-const NAV_ITEMS = [
-  { id: "status", label: "Status", icon: Activity },
-  { id: "sessions", label: "Sessions", icon: MessageSquare },
-  { id: "analytics", label: "Analytics", icon: BarChart3 },
-  { id: "logs", label: "Logs", icon: FileText },
-  { id: "cron", label: "Cron", icon: Clock },
-  { id: "skills", label: "Skills", icon: Package },
-  { id: "config", label: "Config", icon: Settings },
-  { id: "env", label: "Keys", icon: KeyRound },
+const NAV_KEYS = [
+  { id: "status", labelKey: "nav.status", icon: Activity },
+  { id: "sessions", labelKey: "nav.sessions", icon: MessageSquare },
+  { id: "analytics", labelKey: "nav.analytics", icon: BarChart3 },
+  { id: "logs", labelKey: "nav.logs", icon: FileText },
+  { id: "cron", labelKey: "nav.cron", icon: Clock },
+  { id: "skills", labelKey: "nav.skills", icon: Package },
+  { id: "config", labelKey: "nav.config", icon: Settings },
+  { id: "env", labelKey: "nav.keys", icon: KeyRound },
 ] as const;
 
 type PageId = (typeof NAV_ITEMS)[number]["id"];
@@ -37,6 +38,7 @@ export default function App() {
   const [page, setPage] = useState<PageId>("status");
   const [animKey, setAnimKey] = useState(0);
   const initialRef = useRef(true);
+  const { t, locale, setLocale } = useI18n();
 
   useEffect(() => {
     // Skip the animation key bump on initial mount to avoid re-mounting
@@ -68,7 +70,7 @@ export default function App() {
 
           {/* Nav — icons only on mobile, icon+label on sm+ */}
           <nav className="flex items-stretch overflow-x-auto scrollbar-none">
-            {NAV_ITEMS.map(({ id, label, icon: Icon }) => (
+            {NAV_KEYS.map(({ id, labelKey, icon: Icon }) => (
               <button
                 key={id}
                 type="button"
@@ -80,7 +82,7 @@ export default function App() {
                 }`}
               >
                 <Icon className="h-4 w-4 sm:h-3.5 sm:w-3.5 shrink-0" />
-                <span className="hidden sm:inline">{label}</span>
+                <span className="hidden sm:inline">{t(labelKey)}</span>
                 {/* Hover highlight */}
                 <span className="absolute inset-0 bg-foreground pointer-events-none transition-opacity duration-150 group-hover:opacity-5 opacity-0" />
                 {/* Active indicator */}
@@ -91,11 +93,18 @@ export default function App() {
             ))}
           </nav>
 
-          {/* Version badge — hidden on mobile */}
-          <div className="ml-auto hidden sm:flex items-center px-4 text-muted-foreground">
-            <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
-              Web UI
+          {/* Version badge + language switcher */}
+          <div className="ml-auto flex items-center gap-2 px-3 sm:px-4 text-muted-foreground">
+            <span className="font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50 hidden sm:inline">
+              {t("app.webUI")}
             </span>
+            <button
+              type="button"
+              onClick={() => setLocale(locale === "en" ? "zh" : "en")}
+              className="font-display text-[0.65rem] sm:text-[0.7rem] tracking-[0.1em] uppercase border border-border px-2 py-0.5 hover:bg-foreground/5 transition-colors cursor-pointer"
+            >
+              {locale === "en" ? "中" : "EN"}
+            </button>
           </div>
         </div>
       </header>
@@ -112,10 +121,10 @@ export default function App() {
       <footer className="relative z-2 border-t border-border">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-3 sm:px-6 py-3">
           <span className="font-display text-[0.7rem] sm:text-[0.8rem] tracking-[0.12em] uppercase opacity-50">
-            Hermes Agent
+            {t("app.title")}
           </span>
           <span className="font-display text-[0.6rem] sm:text-[0.7rem] tracking-[0.15em] uppercase text-foreground/40">
-            Nous Research
+            {t("app.footer")}
           </span>
         </div>
       </footer>

@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { useI18n } from "@/lib/i18n";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -58,7 +59,7 @@ function SummaryCard({
   );
 }
 
-function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
+function TokenBarChart({ daily, t }: { daily: AnalyticsDailyEntry[]; t: ReturnType<typeof useI18n>["t"] }) {
   if (daily.length === 0) return null;
 
   const maxTokens = Math.max(...daily.map((d) => d.input_tokens + d.output_tokens), 1);
@@ -68,16 +69,16 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <BarChart3 className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Daily Token Usage</CardTitle>
+          <CardTitle className="text-base">{t("analytics.dailyTokenUsage")}</CardTitle>
         </div>
           <div className="flex items-center gap-4 text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 rounded-sm bg-[#ffe6cb]" />
-            Input
+            {t("analytics.input")}
           </div>
           <div className="flex items-center gap-1.5">
             <div className="h-2.5 w-2.5 rounded-sm bg-emerald-500" />
-            Output
+            {t("analytics.output")}
           </div>
         </div>
       </CardHeader>
@@ -97,9 +98,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block z-10 pointer-events-none">
                   <div className="rounded-md bg-card border border-border px-2.5 py-1.5 text-[10px] text-foreground shadow-lg whitespace-nowrap">
                     <div className="font-medium">{formatDate(d.day)}</div>
-                    <div>Input: {formatTokens(d.input_tokens)}</div>
-                    <div>Output: {formatTokens(d.output_tokens)}</div>
-                    <div>Total: {formatTokens(total)}</div>
+                    <div>{t("analytics.input")}: {formatTokens(d.input_tokens)}</div>
+                    <div>{t("analytics.output")}: {formatTokens(d.output_tokens)}</div>
+                    <div>{t("analytics.total")}: {formatTokens(total)}</div>
                   </div>
                 </div>
                 {/* Input bar */}
@@ -129,7 +130,7 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   );
 }
 
-function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
+function DailyTable({ daily, t }: { daily: AnalyticsDailyEntry[]; t: ReturnType<typeof useI18n>["t"] }) {
   if (daily.length === 0) return null;
 
   const sorted = [...daily].reverse();
@@ -139,7 +140,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <TrendingUp className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Daily Breakdown</CardTitle>
+          <CardTitle className="text-base">{t("analytics.dailyBreakdown")}</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -147,10 +148,10 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <th className="text-left py-2 pr-4 font-medium">Date</th>
-                <th className="text-right py-2 px-4 font-medium">Sessions</th>
-                <th className="text-right py-2 px-4 font-medium">Input</th>
-                <th className="text-right py-2 pl-4 font-medium">Output</th>
+                <th className="text-left py-2 pr-4 font-medium">{t("analytics.date")}</th>
+                <th className="text-right py-2 px-4 font-medium">{t("analytics.sessions")}</th>
+                <th className="text-right py-2 px-4 font-medium">{t("analytics.inputLabel")}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t("analytics.outputLabel")}</th>
               </tr>
             </thead>
             <tbody>
@@ -176,7 +177,7 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
   );
 }
 
-function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
+function ModelTable({ models, t }: { models: AnalyticsModelEntry[]; t: ReturnType<typeof useI18n>["t"] }) {
   if (models.length === 0) return null;
 
   const sorted = [...models].sort(
@@ -188,7 +189,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
       <CardHeader>
         <div className="flex items-center gap-2">
           <Cpu className="h-5 w-5 text-muted-foreground" />
-          <CardTitle className="text-base">Per-Model Breakdown</CardTitle>
+          <CardTitle className="text-base">{t("analytics.perModelBreakdown")}</CardTitle>
         </div>
       </CardHeader>
       <CardContent>
@@ -196,9 +197,9 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <th className="text-left py-2 pr-4 font-medium">Model</th>
-                <th className="text-right py-2 px-4 font-medium">Sessions</th>
-                <th className="text-right py-2 pl-4 font-medium">Tokens</th>
+                <th className="text-left py-2 pr-4 font-medium">{t("analytics.model")}</th>
+                <th className="text-right py-2 px-4 font-medium">{t("analytics.sessions")}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t("analytics.tokens")}</th>
               </tr>
             </thead>
             <tbody>
@@ -224,6 +225,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 }
 
 export default function AnalyticsPage() {
+  const { t } = useI18n();
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -247,7 +249,7 @@ export default function AnalyticsPage() {
     <div className="flex flex-col gap-6">
       {/* Period selector */}
       <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground font-medium">Period:</span>
+        <span className="text-sm text-muted-foreground font-medium">{t("analytics.period")}:</span>
         {PERIODS.map((p) => (
           <Button
             key={p.label}
@@ -281,30 +283,30 @@ export default function AnalyticsPage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <SummaryCard
               icon={Hash}
-              label="Total Tokens"
+              label={t("analytics.totalTokens")}
               value={formatTokens(data.totals.total_input + data.totals.total_output)}
-              sub={`${formatTokens(data.totals.total_input)} in / ${formatTokens(data.totals.total_output)} out`}
+              sub={t("analytics.inOut", { input: formatTokens(data.totals.total_input), output: formatTokens(data.totals.total_output) })}
             />
             <SummaryCard
               icon={BarChart3}
-              label="Total Sessions"
+              label={t("analytics.totalSessions")}
               value={String(data.totals.total_sessions)}
-              sub={`~${(data.totals.total_sessions / days).toFixed(1)}/day avg`}
+              sub={t("analytics.perDayAvg", { avg: (data.totals.total_sessions / days).toFixed(1) })}
             />
             <SummaryCard
               icon={TrendingUp}
-              label="API Calls"
+              label={t("analytics.apiCalls")}
               value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
-              sub={`across ${data.by_model.length} models`}
+              sub={t("analytics.acrossModels", { count: data.by_model.length })}
             />
           </div>
 
           {/* Bar chart */}
-          <TokenBarChart daily={data.daily} />
+          <TokenBarChart daily={data.daily} t={t} />
 
           {/* Tables */}
-          <DailyTable daily={data.daily} />
-          <ModelTable models={data.by_model} />
+          <DailyTable daily={data.daily} t={t} />
+          <ModelTable models={data.by_model} t={t} />
         </>
       )}
 
@@ -313,8 +315,8 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="flex flex-col items-center text-muted-foreground">
               <BarChart3 className="h-8 w-8 mb-3 opacity-40" />
-              <p className="text-sm font-medium">No usage data for this period</p>
-              <p className="text-xs mt-1 text-muted-foreground/60">Start a session to see analytics here</p>
+              <p className="text-sm font-medium">{t("analytics.noData")}</p>
+              <p className="text-xs mt-1 text-muted-foreground/60">{t("analytics.startSession")}</p>
             </div>
           </CardContent>
         </Card>

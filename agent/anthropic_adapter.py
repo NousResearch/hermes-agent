@@ -266,6 +266,14 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
+    """Return True for Kimi's /coding endpoint that requires claude-code UA."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -323,9 +331,18 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(normalized_base_url)
 
-    if _requires_bearer_auth(normalized_base_url):
+    if _is_kimi_coding_endpoint(base_url):
+        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
+        # to be recognized as a valid Coding Agent. Without it, returns 403.
+        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        kwargs["api_key"] = api_key
+        kwargs["default_headers"] = {
+            "User-Agent": "claude-code/0.1.0",
+            **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
+        }
+    elif _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
-        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # Authorization: Bearer *** for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
         # Check this before OAuth token shape detection because MiniMax secrets do
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as

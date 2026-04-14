@@ -1042,28 +1042,55 @@ def _check_send_message():
 
 
 async def _send_qqbot(pconfig, chat_id, message):
-    """Send via QQ Bot API using the adapter's REST API."""
+    """Send via QQBot using the REST API directly (no WebSocket needed).
+
+    Uses the QQ Bot Open Platform REST endpoints to get an access token
+    and post a message. Works for guild channels without requiring
+    a running gateway adapter.
+    """
     try:
-        from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
-        if not check_qq_requirements():
-            return {"error": "QQBot requirements not met (need aiohttp + httpx)."}
+        import httpx
     except ImportError:
-        return {"error": "QQBot adapter not available."}
+        return _error("QQBot direct send requires httpx. Run: pip install httpx")
+
+    extra = pconfig.extra or {}
+    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    secret = (pconfig.token or extra.get("client_secret")
+              or os.getenv("QQ_CLIENT_SECRET", ""))
+    if not appid or not secret:
+        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 
     try:
-        adapter = QQAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("QQBot: failed to connect to server")
-        try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"QQ send failed: {result.error}")
-            return {"success": True, "platform": "qqbot", "chat_id": chat_id, "message_id": result.message_id}
-        finally:
-            await adapter.disconnect()
+        async with httpx.AsyncClient(timeout=15) as client:
+            # Step 1: Get access token
+            token_resp = await client.post(
+                "https://bots.qq.com/app/getAppAccessToken",
+                json={"appId": str(appid), "clientSecret": str(secret)},
+            )
+            if token_resp.status_code != 200:
+                return _error(f"QQBot token request failed: {token_resp.status_code}")
+            token_data = token_resp.json()
+            access_token = token_data.get("access_token")
+            if not access_token:
+                return _error(f"QQBot: no access_token in response")
+
+            # Step 2: Send message via REST
+            headers = {
+                "Authorization": f"QQBotAccessToken {access_token}",
+                "Content-Type": "application/json",
+            }
+            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+            payload = {"content": message[:4000], "msg_type": 0}
+
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                        "message_id": data.get("id")}
+            else:
+                return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
-        return _error(f"QQ send failed: {e}")
+        return _error(f"QQBot send failed: {e}")
 
 
 # --- Registry ---

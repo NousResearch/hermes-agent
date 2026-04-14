@@ -6,7 +6,7 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 9,200 lines that handle everything from prompt assembly to tool dispatch to provider failover.
+The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 10,700 lines that handle everything from prompt assembly to tool dispatch to provider failover.
 
 ## Core Responsibilities
 
@@ -181,10 +181,7 @@ These tools modify agent state directly and return synthetic tool results withou
 The agent tracks iterations via `IterationBudget`:
 
 - Default: 90 iterations (configurable via `agent.max_turns`)
-- Shared across parent and child agents — a subagent consumes from the parent's budget
-- Two-tier budget pressure via `_get_budget_warning()`:
-  - At 70%+ usage (caution tier): appends `[BUDGET: Iteration X/Y. N iterations left. Start consolidating your work.]` to the last tool result
-  - At 90%+ usage (warning tier): appends `[BUDGET WARNING: Iteration X/Y. Only N iteration(s) left. Provide your final response NOW.]`
+- Each agent gets its own budget. Subagents get independent budgets capped at `delegation.max_iterations` (default 50) — total iterations across parent + subagents can exceed the parent's cap
 - At 100%, the agent stops and returns a summary of work done
 
 ### Fallback Model
@@ -224,7 +221,7 @@ After each turn:
 
 | File | Purpose |
 |------|---------|
-| `run_agent.py` | AIAgent class — the complete agent loop (~9,200 lines) |
+| `run_agent.py` | AIAgent class — the complete agent loop (~10,700 lines) |
 | `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
 | `agent/context_engine.py` | ContextEngine ABC — pluggable context management |
 | `agent/context_compressor.py` | Default engine — lossy summarization algorithm |

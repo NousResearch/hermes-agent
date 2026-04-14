@@ -382,42 +382,6 @@ def cronjob(
         return tool_error(str(e), success=False)
 
 
-# ---------------------------------------------------------------------------
-# Compatibility wrappers
-# ---------------------------------------------------------------------------
-
-def schedule_cronjob(
-    prompt: str,
-    schedule: str,
-    name: Optional[str] = None,
-    repeat: Optional[int] = None,
-    deliver: Optional[str] = None,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    task_id: str = None,
-) -> str:
-    return cronjob(
-        action="create",
-        prompt=prompt,
-        schedule=schedule,
-        name=name,
-        repeat=repeat,
-        deliver=deliver,
-        model=model,
-        provider=provider,
-        base_url=base_url,
-        task_id=task_id,
-    )
-
-
-def list_cronjobs(include_disabled: bool = False, task_id: str = None) -> str:
-    return cronjob(action="list", include_disabled=include_disabled, task_id=task_id)
-
-
-def remove_cronjob(job_id: str, task_id: str = None) -> str:
-    return cronjob(action="remove", job_id=job_id, task_id=task_id)
-
 
 CRONJOB_SCHEMA = {
     "name": "cronjob",
@@ -465,7 +429,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), or platform:chat_id:thread_id for a specific destination. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting."
+                "description": "Omit this parameter to auto-deliver back to the current chat and topic (recommended). Auto-detection preserves thread/topic context. Only set explicitly when the user asks to deliver somewhere OTHER than the current conversation. Values: 'origin' (same as omitting), 'local' (no delivery, save only), or platform:chat_id:thread_id for a specific destination. Examples: 'telegram:-1001234567890:17585', 'discord:#engineering', 'sms:+15551234567'. WARNING: 'platform:chat_id' without :thread_id loses topic targeting."
             },
             "skills": {
                 "type": "array",

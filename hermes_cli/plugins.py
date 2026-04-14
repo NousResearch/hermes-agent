@@ -31,7 +31,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
-import os
 import sys
 import types
 from dataclasses import dataclass, field

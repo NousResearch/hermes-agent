@@ -63,11 +63,6 @@ def _termux_microphone_command() -> Optional[str]:
     return shutil.which("termux-microphone-record")
 
 
-def _termux_media_player_command() -> Optional[str]:
-    if not _is_termux_environment():
-        return None
-    return shutil.which("termux-media-player")
-
 
 def _termux_api_app_installed() -> bool:
     if not _is_termux_environment():
@@ -428,6 +423,11 @@ class AudioRecorder:
     def current_rms(self) -> int:
         """Current audio input RMS level (0-32767). Updated each audio chunk."""
         return self._current_rms
+
+    @property
+    def is_recording(self) -> bool:
+        """Whether audio recording is currently active."""
+        return self._recording
 
     # -- public methods ------------------------------------------------------
 

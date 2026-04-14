@@ -709,9 +709,17 @@ class AIAgent:
         # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
         # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
         # newer tool-calling models prefer Responses there.
-        if self.api_mode == "chat_completions" and (
-            self._is_direct_openai_url()
-            or self._model_requires_responses_api(self.model)
+        # ACP runtimes are excluded: CopilotACPClient handles its own
+        # routing and does not implement the Responses API surface.
+        if (
+            self.api_mode == "chat_completions"
+            and self.provider != "copilot-acp"
+            and not str(self.base_url or "").lower().startswith("acp://copilot")
+            and not str(self.base_url or "").lower().startswith("acp+tcp://")
+            and (
+                self._is_direct_openai_url()
+                or self._model_requires_responses_api(self.model)
+            )
         ):
             self.api_mode = "codex_responses"
 
@@ -1267,24 +1275,29 @@ class AIAgent:
 
         # Check custom_providers per-model context_length
         if _config_context_length is None:
-            _custom_providers = _agent_cfg.get("custom_providers")
-            if isinstance(_custom_providers, list):
-                for _cp_entry in _custom_providers:
-                    if not isinstance(_cp_entry, dict):
-                        continue
-                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
-                    if _cp_url and _cp_url == self.base_url.rstrip("/"):
-                        _cp_models = _cp_entry.get("models", {})
-                        if isinstance(_cp_models, dict):
-                            _cp_model_cfg = _cp_models.get(self.model, {})
-                            if isinstance(_cp_model_cfg, dict):
-                                _cp_ctx = _cp_model_cfg.get("context_length")
-                                if _cp_ctx is not None:
-                                    try:
-                                        _config_context_length = int(_cp_ctx)
-                                    except (TypeError, ValueError):
-                                        pass
-                        break
+            try:
+                from hermes_cli.config import get_compatible_custom_providers
+                _custom_providers = get_compatible_custom_providers(_agent_cfg)
+            except Exception:
+                _custom_providers = _agent_cfg.get("custom_providers")
+                if not isinstance(_custom_providers, list):
+                    _custom_providers = []
+            for _cp_entry in _custom_providers:
+                if not isinstance(_cp_entry, dict):
+                    continue
+                _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                if _cp_url and _cp_url == self.base_url.rstrip("/"):
+                    _cp_models = _cp_entry.get("models", {})
+                    if isinstance(_cp_models, dict):
+                        _cp_model_cfg = _cp_models.get(self.model, {})
+                        if isinstance(_cp_model_cfg, dict):
+                            _cp_ctx = _cp_model_cfg.get("context_length")
+                            if _cp_ctx is not None:
+                                try:
+                                    _config_context_length = int(_cp_ctx)
+                                except (TypeError, ValueError):
+                                    pass
+                    break
         
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
@@ -1326,6 +1339,22 @@ class AIAgent:
 
         if _selected_engine is not None:
             self.context_compressor = _selected_engine
+            # Resolve context_length for plugin engines — mirrors switch_model() path
+            from agent.model_metadata import get_model_context_length
+            _plugin_ctx_len = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                config_context_length=_config_context_length,
+                provider=self.provider,
+            )
+            self.context_compressor.update_model(
+                model=self.model,
+                context_length=_plugin_ctx_len,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
+            )
             if not self.quiet_mode:
                 logger.info("Using context engine: %s", _selected_engine.name)
         else:
@@ -4313,6 +4342,7 @@ class AIAgent:
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
+                        self._touch_activity("receiving stream response")
                         if self._interrupt_requested:
                             break
                         event_type = getattr(event, "type", "")
@@ -4437,6 +4467,7 @@ class AIAgent:
         collected_text_deltas: list = []
         try:
             for event in stream_or_response:
+                self._touch_activity("receiving stream response")
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
@@ -5069,12 +5100,9 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
-            _first_chunk_seen = False
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
-                if not _first_chunk_seen:
-                    _first_chunk_seen = True
-                    self._touch_activity("receiving stream response")
+                self._touch_activity("receiving stream response")
 
                 if self._interrupt_requested:
                     break
@@ -5250,6 +5278,7 @@ class AIAgent:
                     # actively arriving (the chat_completions path
                     # already does this at the top of its chunk loop).
                     last_chunk_time["t"] = time.time()
+                    self._touch_activity("receiving stream response")
 
                     if self._interrupt_requested:
                         break

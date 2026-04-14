@@ -190,52 +190,6 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
-def rebuild_lookups() -> None:
-    """Rebuild all derived lookup dicts from the current COMMAND_REGISTRY.
-
-    Called after plugin commands are registered so they appear in help,
-    autocomplete, gateway dispatch, Telegram menu, and Slack mapping.
-    """
-    global GATEWAY_KNOWN_COMMANDS
-
-    _COMMAND_LOOKUP.clear()
-    _COMMAND_LOOKUP.update(_build_command_lookup())
-
-    COMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            COMMANDS[f"/{cmd.name}"] = _build_description(cmd)
-            for alias in cmd.aliases:
-                COMMANDS[f"/{alias}"] = f"{cmd.description} (alias for /{cmd.name})"
-
-    COMMANDS_BY_CATEGORY.clear()
-    for cmd in COMMAND_REGISTRY:
-        if not cmd.gateway_only:
-            cat = COMMANDS_BY_CATEGORY.setdefault(cmd.category, {})
-            cat[f"/{cmd.name}"] = COMMANDS[f"/{cmd.name}"]
-            for alias in cmd.aliases:
-                cat[f"/{alias}"] = COMMANDS[f"/{alias}"]
-
-    SUBCOMMANDS.clear()
-    for cmd in COMMAND_REGISTRY:
-        if cmd.subcommands:
-            SUBCOMMANDS[f"/{cmd.name}"] = list(cmd.subcommands)
-    for cmd in COMMAND_REGISTRY:
-        key = f"/{cmd.name}"
-        if key in SUBCOMMANDS or not cmd.args_hint:
-            continue
-        m = _PIPE_SUBS_RE.search(cmd.args_hint)
-        if m:
-            SUBCOMMANDS[key] = m.group(0).split("|")
-
-    GATEWAY_KNOWN_COMMANDS = frozenset(
-        name
-        for cmd in COMMAND_REGISTRY
-        if not cmd.cli_only or cmd.gateway_config_gate
-        for name in (cmd.name, *cmd.aliases)
-    )
-
-
 def _build_description(cmd: CommandDef) -> str:
     """Build a CLI-facing description string including usage hint."""
     if cmd.args_hint:

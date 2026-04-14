@@ -74,6 +74,7 @@ body {
   scrollbar-color: color-mix(in srgb, var(--color-foreground) 15%, transparent) transparent;
 }
 html, body {
+  overflow-x: hidden;
   scrollbar-color: color-mix(in srgb, var(--color-foreground) 25%, transparent) transparent;
 }
 ::-webkit-scrollbar { width: 4px; height: 4px; }

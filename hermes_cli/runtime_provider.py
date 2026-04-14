@@ -664,6 +664,24 @@ def resolve_runtime_provider(
         custom_runtime["requested_provider"] = requested_provider
         return custom_runtime
 
+    # ── Provider plugins (plugins/providers/<name>/) ──────────────────────
+    # Check before resolve_provider() which raises AuthError for unknown names.
+    try:
+        from plugins.providers import get_provider_plugin
+        _plugin_resolver = get_provider_plugin(requested_provider)
+        if _plugin_resolver is not None:
+            model_cfg = _get_model_config()
+            plugin_runtime = _plugin_resolver(
+                explicit_api_key=explicit_api_key,
+                explicit_base_url=explicit_base_url,
+                model_cfg=model_cfg,
+            )
+            if plugin_runtime:
+                plugin_runtime.setdefault("requested_provider", requested_provider)
+                return plugin_runtime
+    except Exception as exc:
+        logger.debug("Provider plugin check failed for '%s': %s", requested_provider, exc)
+
     provider = resolve_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,

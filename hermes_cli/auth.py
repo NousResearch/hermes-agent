@@ -274,6 +274,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XIAOMI_API_KEY",),
         base_url_env_var="XIAOMI_BASE_URL",
     ),
+    "blockrun": ProviderConfig(
+        id="blockrun",
+        name="BlockRun / ClawRouter",
+        auth_type="api_key",
+        inference_base_url="https://blockrun.ai/api/v1",
+        api_key_env_vars=("BLOCKRUN_WALLET_KEY", "BASE_CHAIN_WALLET_KEY", "SOLANA_WALLET_KEY"),
+        base_url_env_var="BLOCKRUN_BASE_URL",
+    ),
 }
 
 
@@ -921,6 +929,8 @@ def resolve_provider(
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "clawrouter": "blockrun", "claw-router": "blockrun", "claw": "blockrun",
+        "x402": "blockrun", "blockrun-ai": "blockrun",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",

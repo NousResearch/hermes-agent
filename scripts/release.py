@@ -191,6 +191,7 @@ AUTHOR_MAP = {
     "zhouboli@gmail.com": "zhouboli",
     "zqiao@microsoft.com": "tomqiaozc",
     "zzn+pa@zzn.im": "xinbenlv",
+    "lijiawen@umich.edu": "Jiawen-lee",
 }
 
 

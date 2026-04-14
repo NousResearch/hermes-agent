@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from hermes_constants import get_hermes_home
 
@@ -210,6 +210,51 @@ class KnowledgeLaneStore:
         state["promoted_items"] = promoted_items
         self.write_state(state)
         return match
+
+    def _items_for_lane(self, state: dict[str, Any], lane: str) -> Iterable[dict[str, Any]]:
+        normalized = (lane or "promoted").strip().lower()
+        if normalized == "draft":
+            return list(state.get("draft_items", []))
+        if normalized == "promoted":
+            return list(state.get("promoted_items", []))
+        if normalized == "all":
+            return [*state.get("draft_items", []), *state.get("promoted_items", [])]
+        raise ValueError("lane must be one of: draft, promoted, all")
+
+    def find_relevant_items(
+        self,
+        query: str,
+        *,
+        lane: str = "promoted",
+        tags: list[str] | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        state = self.read_state()
+        terms = [term for term in query.lower().split() if term]
+        required_tags = {tag.strip().lower() for tag in (tags or []) if isinstance(tag, str) and tag.strip()}
+        results: list[dict[str, Any]] = []
+
+        for item in self._items_for_lane(state, lane):
+            item_tags = {str(tag).strip().lower() for tag in item.get("tags", []) if str(tag).strip()}
+            if required_tags and not required_tags.issubset(item_tags):
+                continue
+            haystack = " ".join(
+                [
+                    str(item.get("title", "")),
+                    str(item.get("body", "")),
+                    str(item.get("source", "")),
+                    " ".join(sorted(item_tags)),
+                ]
+            ).lower()
+            if terms and not all(term in haystack for term in terms):
+                continue
+            results.append(dict(item))
+            if len(results) >= limit:
+                break
+
+        return results
 
     def validation_report(self) -> dict[str, Any]:
         payload = self.read_state()

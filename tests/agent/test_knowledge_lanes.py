@@ -113,3 +113,82 @@ def test_state_persists_as_json_file(tmp_path, monkeypatch):
     payload = json.loads(path.read_text())
     assert payload["schema_version"] == 1
     assert len(payload["draft_items"]) == 1
+
+
+def test_find_relevant_items_defaults_to_promoted_lane(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = KnowledgeLaneStore()
+    store.add_draft(
+        title="Draft routing note",
+        body="Drafts should not be retrieved by default.",
+        source="chat:user",
+        provenance={"message_id": "1"},
+        tags=["routing"],
+    )
+    promoted_seed = store.add_draft(
+        title="Promoted routing rule",
+        body="Only promoted routing knowledge should be reused by default.",
+        source="repo:inspection",
+        provenance={"file": "gateway/run.py"},
+        tags=["routing", "verified"],
+    )
+    store.promote_draft(
+        promoted_seed["id"],
+        promotion_reason="validated in tests",
+        evidence=["tests/agent/test_knowledge_lanes.py"],
+    )
+
+    results = store.find_relevant_items("routing")
+
+    assert [item["title"] for item in results] == ["Promoted routing rule"]
+    assert all(item["lane"] == "promoted" for item in results)
+
+
+def test_find_relevant_items_supports_lane_override_and_tag_filter(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = KnowledgeLaneStore()
+    draft = store.add_draft(
+        title="Draft archery note",
+        body="A draft note about deliberate practice.",
+        source="chat:user",
+        provenance={"message_id": "2"},
+        tags=["practice", "draft"],
+    )
+    promoted_seed = store.add_draft(
+        title="Promoted archery note",
+        body="A promoted note about deliberate practice and calm repetition.",
+        source="repo:deep-dive",
+        provenance={"report": "archery.md"},
+        tags=["practice", "verified"],
+    )
+    store.promote_draft(
+        promoted_seed["id"],
+        promotion_reason="cross-checked",
+        evidence=["report:archery"],
+    )
+
+    all_results = store.find_relevant_items("practice", lane="all", tags=["practice"])
+    draft_results = store.find_relevant_items("practice", lane="draft", tags=["draft"])
+
+    assert [item["title"] for item in all_results] == ["Draft archery note", "Promoted archery note"]
+    assert [item["id"] for item in draft_results] == [draft["id"]]
+
+
+def test_find_relevant_items_returns_empty_for_non_positive_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = KnowledgeLaneStore()
+    promoted_seed = store.add_draft(
+        title="Promoted note",
+        body="Useful verified knowledge.",
+        source="repo:deep-dive",
+        provenance={"report": "note.md"},
+        tags=["verified"],
+    )
+    store.promote_draft(
+        promoted_seed["id"],
+        promotion_reason="cross-checked",
+        evidence=["report:note"],
+    )
+
+    assert store.find_relevant_items("knowledge", limit=0) == []
+    assert store.find_relevant_items("knowledge", limit=-1) == []

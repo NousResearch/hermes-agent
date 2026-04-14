@@ -23,6 +23,12 @@ def main() -> int:
     add.add_argument("--confidence", choices=["low", "medium", "high"], default="medium")
     add.add_argument("--provenance", default="{}", help="JSON object")
 
+    find = sub.add_parser("find", help="Find relevant knowledge records")
+    find.add_argument("--query", default="")
+    find.add_argument("--lane", choices=["draft", "promoted", "all"], default="promoted")
+    find.add_argument("--tag", action="append", default=[])
+    find.add_argument("--limit", type=int, default=5)
+
     promote = sub.add_parser("promote", help="Promote a draft record")
     promote.add_argument("--id", required=True)
     promote.add_argument("--reason", required=True)
@@ -42,6 +48,19 @@ def main() -> int:
             tags=args.tag,
             confidence=args.confidence,
         )
+    elif args.command == "find":
+        payload = {
+            "items": store.find_relevant_items(
+                args.query,
+                lane=args.lane,
+                tags=args.tag,
+                limit=args.limit,
+            ),
+            "lane": args.lane,
+            "query": args.query,
+            "tags": args.tag,
+            "limit": args.limit,
+        }
     else:
         payload = store.promote_draft(args.id, promotion_reason=args.reason, evidence=args.evidence)
 

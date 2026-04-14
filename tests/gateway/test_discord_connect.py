@@ -99,8 +99,8 @@ class SlowSyncBot(FakeBot):
     ("allowed_users", "expected_members_intent"),
     [
         ("769524422783664158", False),
-        ("abhey-gupta", True),
-        ("769524422783664158,abhey-gupta", True),
+        ("username-entry", True),
+        ("769524422783664158,username-entry", True),
     ],
 )
 async def test_connect_only_requests_members_intent_when_needed(monkeypatch, allowed_users, expected_members_intent):
@@ -126,6 +126,34 @@ async def test_connect_only_requests_members_intent_when_needed(monkeypatch, all
 
     assert ok is True
     assert created["bot"].intents.members is expected_members_intent
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_connect_can_disable_message_content_intent(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setenv("DISCORD_MESSAGE_CONTENT_INTENT", "false")
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None):
+        created["bot"] = FakeBot(intents=intents)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert created["bot"].intents.message_content is False
 
     await adapter.disconnect()
 
@@ -158,6 +186,9 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._platform_lock_identity is None
+    assert adapter._client is None
+    assert adapter._bot_task is None
+    assert adapter._ready_event.is_set() is False
 
 
 @pytest.mark.asyncio

@@ -455,6 +455,88 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _source_override_field_matches(actual: Any, expected: Any) -> bool:
+    """Return True when a source field matches a configured override value."""
+    if isinstance(expected, (list, tuple, set)):
+        return any(_source_override_field_matches(actual, item) for item in expected)
+    if actual is None:
+        return False
+    return str(actual) == str(expected)
+
+
+def _source_matches_model_override(source: SessionSource, match_cfg: Any) -> bool:
+    """Return True when ``source`` satisfies a ``source_model_overrides`` matcher."""
+    if not isinstance(match_cfg, dict):
+        return False
+
+    for field in (
+        "platform",
+        "chat_id",
+        "chat_type",
+        "user_id",
+        "user_name",
+        "thread_id",
+        "chat_topic",
+        "user_id_alt",
+        "chat_id_alt",
+    ):
+        expected = match_cfg.get(field)
+        if expected in (None, "", [], (), set()):
+            continue
+        actual = getattr(source, field, None)
+        if field == "platform" and actual is not None and hasattr(actual, "value"):
+            actual = actual.value
+        if not _source_override_field_matches(actual, expected):
+            return False
+    return True
+
+
+def _resolve_source_model_override(
+    source: Optional[SessionSource],
+    config: dict | None = None,
+) -> dict:
+    """Resolve the first matching persistent source-aware model override."""
+    if source is None:
+        return {}
+
+    cfg = config if config is not None else _load_gateway_config()
+    rules = cfg.get("source_model_overrides") or []
+    if not isinstance(rules, list):
+        return {}
+
+    for rule in rules:
+        if not isinstance(rule, dict):
+            continue
+        if not _source_matches_model_override(source, rule.get("match") or {}):
+            continue
+
+        override: dict[str, Any] = {}
+        model = rule.get("model")
+        if model:
+            override["model"] = str(model)
+        for key in ("provider", "api_key", "base_url", "api_mode", "command"):
+            val = rule.get(key)
+            if val not in (None, ""):
+                override[key] = val
+        args = rule.get("args")
+        if isinstance(args, list):
+            override["args"] = list(args)
+        return override
+    return {}
+
+
+def _apply_runtime_override(model: str, runtime_kwargs: dict, override: dict) -> tuple[str, dict]:
+    """Apply a generic model/runtime override dict to the resolved runtime bundle."""
+    effective_model = override.get("model", model) or model
+    merged = dict(runtime_kwargs)
+    for key in ("provider", "api_key", "base_url", "api_mode", "command"):
+        if key in override and override.get(key) is not None:
+            merged[key] = override.get(key)
+    if "args" in override and override.get("args") is not None:
+        merged["args"] = list(override.get("args") or [])
+    return effective_model, merged
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -868,6 +950,7 @@ class GatewayRunner:
                 resolved_session_key = None
 
         model = _resolve_gateway_model(user_config)
+        source_override = _resolve_source_model_override(source, user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -898,6 +981,8 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if source_override:
+            model, runtime_kwargs = _apply_runtime_override(model, runtime_kwargs, source_override)
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -5705,19 +5790,54 @@ class GatewayRunner:
         else:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
 
+    def _resolve_effective_model_for_source(self, source: SessionSource | None, user_config: dict | None = None) -> str:
+        """Resolve the effective model for a session, honoring source_model_overrides and per-session /model overrides.
+
+        This is the same model-resolution logic used by _resolve_turn_agent_config,
+        extracted here so slash commands that depend on the effective model (e.g. /fast)
+        can use the same override chain.
+        """
+        if user_config is None:
+            user_config = _load_gateway_config()
+
+        model = _resolve_gateway_model(user_config)
+
+        # Apply source_model_overrides from config (e.g. per-user or per-channel model routing)
+        source_override = _resolve_source_model_override(source, user_config)
+        if source_override:
+            override_model = source_override.get("model")
+            if override_model:
+                model = override_model
+
+        # Apply per-session /model overrides (highest priority)
+        if source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+            if resolved_session_key:
+                session_override = self._session_model_overrides.get(resolved_session_key)
+                if session_override:
+                    override_model = session_override.get("model")
+                    if override_model:
+                        model = override_model
+
+        return model or ""
+
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         import yaml
-        from hermes_cli.models import model_supports_fast_mode
+        from hermes_cli.models import model_supports_fast_mode, _is_anthropic_fast_model
 
         args = event.get_command_args().strip().lower()
         config_path = _hermes_home / "config.yaml"
         self._service_tier = self._load_service_tier()
 
         user_config = _load_gateway_config()
-        model = _resolve_gateway_model(user_config)
+        model = self._resolve_effective_model_for_source(event.source, user_config)
         if not model_supports_fast_mode(model):
-            return "⚡ /fast is only available for OpenAI models that support Priority Processing."
+            feature = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+            return f"⚡ /fast is only available for {feature}."
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""

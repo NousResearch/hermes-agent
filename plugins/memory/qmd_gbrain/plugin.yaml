@@ -1,0 +1,2 @@
+name: qmd_gbrain
+description: Profile-scoped QMD + GBrain retrieval memory provider with automatic pre-turn recall.

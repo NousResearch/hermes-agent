@@ -519,8 +519,12 @@ class DiscordAdapter(BasePlatformAdapter):
             # that aren't enabled in the Discord Developer Portal can prevent the
             # bot from coming online at all, so avoid requesting members intent
             # unless it is actually necessary.
+            message_content_intent = os.getenv(
+                "DISCORD_MESSAGE_CONTENT_INTENT", "true"
+            ).strip().lower() not in ("0", "false", "no", "off")
+
             intents = Intents.default()
-            intents.message_content = True
+            intents.message_content = message_content_intent
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
@@ -665,12 +669,37 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            await self._cleanup_failed_connect()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            await self._cleanup_failed_connect()
             self._release_platform_lock()
             return False
+
+    async def _cleanup_failed_connect(self) -> None:
+        """Clean up partial state after a failed Discord connect attempt."""
+        if self._post_connect_task and not self._post_connect_task.done():
+            self._post_connect_task.cancel()
+            await asyncio.gather(self._post_connect_task, return_exceptions=True)
+        self._post_connect_task = None
+
+        if self._bot_task:
+            if not self._bot_task.done():
+                self._bot_task.cancel()
+            await asyncio.gather(self._bot_task, return_exceptions=True)
+        self._bot_task = None
+
+        if self._client:
+            try:
+                await self._client.close()
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error during failed-connect cleanup: %s", self.name, e)
+
+        self._running = False
+        self._client = None
+        self._ready_event.clear()
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
@@ -687,6 +716,11 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
 
+        if self._bot_task:
+            if not self._bot_task.done():
+                self._bot_task.cancel()
+            await asyncio.gather(self._bot_task, return_exceptions=True)
+
         if self._post_connect_task and not self._post_connect_task.done():
             self._post_connect_task.cancel()
             try:
@@ -696,6 +730,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         self._running = False
         self._client = None
+        self._bot_task = None
         self._ready_event.clear()
         self._post_connect_task = None
 

@@ -380,6 +380,16 @@ def load_cli_config() -> Dict[str, Any]:
                 and agent_file_config.get("max_turns") is not None
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
+
+            # Handle legacy root-level prefill_messages_file (backwards compat).
+            # Canonical config schema exposes it at root level, but CLI reads
+            # agent.prefill_messages_file.  Mirror root-level value to agent
+            # when the nested key is not set — same pattern as max_turns above.
+            if "prefill_messages_file" in file_config and not (
+                isinstance(agent_file_config, dict)
+                and agent_file_config.get("prefill_messages_file")
+            ):
+                defaults["agent"]["prefill_messages_file"] = file_config["prefill_messages_file"]
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 

@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    summary TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 

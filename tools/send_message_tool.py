@@ -387,11 +387,28 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if platform == Platform.WEIXIN:
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
-    # --- Non-Telegram platforms ---
+    # --- Discord: special handling for media attachments ---
+    if platform == Platform.DISCORD:
+        last_result = None
+        for i, chunk in enumerate(chunks):
+            is_last = (i == len(chunks) - 1)
+            result = await _send_discord(
+                pconfig.token,
+                chat_id,
+                chunk,
+                media_files=media_files if is_last else [],
+                thread_id=thread_id,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # --- Non-Telegram/Discord platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram; "
+                f"send_message MEDIA delivery is currently only supported for telegram and discord; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -399,14 +416,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram"
+            "native send_message media delivery is currently only supported for telegram and discord"
         )
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.DISCORD:
-            result = await _send_discord(pconfig.token, chat_id, chunk, thread_id=thread_id)
-        elif platform == Platform.SLACK:
+        if platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
@@ -571,13 +586,16 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         return _error(f"Telegram send failed: {e}")
 
 
-async def _send_discord(token, chat_id, message, thread_id=None):
+async def _send_discord(token, chat_id, message, thread_id=None, media_files=None):
     """Send a single message via Discord REST API (no websocket client needed).
 
     Chunking is handled by _send_to_platform() before this is called.
 
     When thread_id is provided, the message is sent directly to that thread
     via the /channels/{thread_id}/messages endpoint.
+
+    Media files are uploaded one-by-one via multipart/form-data after the
+    text message is sent (same pattern as Telegram).
     """
     try:
         import aiohttp
@@ -592,14 +610,56 @@ async def _send_discord(token, chat_id, message, thread_id=None):
             url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
         else:
             url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
-        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        auth_headers = {"Authorization": f"Bot {token}"}
+        media_files = media_files or []
+        last_data = None
+        warnings = []
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
-            async with session.post(url, headers=headers, json={"content": message}, **_req_kw) as resp:
-                if resp.status not in (200, 201):
-                    body = await resp.text()
-                    return _error(f"Discord API error ({resp.status}): {body}")
-                data = await resp.json()
-        return {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": data.get("id")}
+            # Send text message (skip if empty and media is present)
+            if message.strip() or not media_files:
+                headers = {**auth_headers, "Content-Type": "application/json"}
+                async with session.post(url, headers=headers, json={"content": message}, **_req_kw) as resp:
+                    if resp.status not in (200, 201):
+                        body = await resp.text()
+                        return _error(f"Discord API error ({resp.status}): {body}")
+                    last_data = await resp.json()
+
+            # Send each media file as a separate multipart upload
+            for media_path, _is_voice in media_files:
+                if not os.path.exists(media_path):
+                    warning = f"Media file not found, skipping: {media_path}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+                    continue
+                try:
+                    form = aiohttp.FormData()
+                    filename = os.path.basename(media_path)
+                    with open(media_path, "rb") as f:
+                        form.add_field("files[0]", f, filename=filename)
+                    async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
+                        if resp.status not in (200, 201):
+                            body = await resp.text()
+                            warning = _sanitize_error_text(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
+                            logger.error(warning)
+                            warnings.append(warning)
+                            continue
+                        last_data = await resp.json()
+                except Exception as e:
+                    warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
+                    logger.error(warning)
+                    warnings.append(warning)
+
+        if last_data is None:
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
+        if warnings:
+            result["warnings"] = warnings
+        return result
     except Exception as e:
         return _error(f"Discord send failed: {e}")
 

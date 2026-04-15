@@ -112,7 +112,7 @@ def remove_wrapper_script():
                     wrapper.unlink()
                     removed.append(wrapper)
             except Exception as e:
-                log_warn(f"Could not remove {wrapper}: {e}")
+                log_warn(f"{wrapper} 를 제거하지 못했어요: {e}")
     
     return removed
 
@@ -167,7 +167,7 @@ def uninstall_gateway_service():
         return True
         
     except Exception as e:
-        log_warn(f"Could not fully remove gateway service: {e}")
+        log_warn(f"게이트웨이 서비스를 완전히 제거하지 못했어요: {e}")
         return False
 
 

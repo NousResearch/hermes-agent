@@ -166,9 +166,9 @@ TOOL_CATEGORIES = {
         ],
     },
     "web": {
-        "name": "Web Search & Extract",
-        "setup_title": "Select Search Provider",
-        "setup_note": "A free DuckDuckGo search skill is also included — skip this if you don't need a premium provider.",
+        "name": "웹 검색 및 추출",
+        "setup_title": "검색 provider 선택",
+        "setup_note": "무료 DuckDuckGo 검색 skill도 포함되어 있어요 — 프리미엄 provider가 필요 없다면 건너뛰어도 괜찮아요.",
         "icon": "🔍",
         "providers": [
             {
@@ -1019,11 +1019,11 @@ def _configure_simple_requirements(ts_key: str):
         choices = [
             "OpenRouter — uses Gemini",
             "OpenAI-compatible endpoint — base URL, API key, and vision model",
-            "Skip",
+            "건너뛰기",
         ]
-        idx = _prompt_choice("  Configure vision backend", choices, 2)
+        idx = _prompt_choice("  vision 백엔드 설정", choices, 2)
         if idx == 0:
-            _print_info("  Get key at: https://openrouter.ai/keys")
+            _print_info("  키 발급 링크: https://openrouter.ai/keys")
             value = _prompt("    OPENROUTER_API_KEY", password=True)
             if value and value.strip():
                 save_env_value("OPENROUTER_API_KEY", value.strip())
@@ -1658,7 +1658,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
 
     if mcp_servers:
         print()
-        print("MCP servers:")
+        print("MCP 서버:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
             exclude = tools_cfg.get("exclude") or []

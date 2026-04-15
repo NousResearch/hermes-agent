@@ -160,3 +160,42 @@ async def test_reconnect_triggers_fatal_after_max_retries():
     assert adapter.has_fatal_error
     assert adapter.fatal_error_code == "telegram_network_error"
     fatal_handler.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reconnect_switches_to_fallback_transport_in_auto_mode(monkeypatch):
+    adapter = _make_adapter()
+    adapter._polling_network_error_count = 1
+
+    old_updater = MagicMock()
+    old_updater.running = True
+    old_updater.stop = AsyncMock()
+    old_updater.start_polling = AsyncMock()
+
+    new_updater = MagicMock()
+    new_updater.running = False
+    new_updater.stop = AsyncMock()
+    new_updater.start_polling = AsyncMock()
+
+    adapter._app = MagicMock(updater=old_updater)
+    adapter._polling_error_callback_ref = object()
+
+    monkeypatch.setattr(adapter, "_telegram_fallback_mode", lambda _proxy: "auto")
+    monkeypatch.setattr("gateway.platforms.telegram.resolve_proxy_url", lambda: None)
+    monkeypatch.setattr(adapter, "_resolve_fallback_ips", AsyncMock(return_value=["149.154.167.220"]))
+    monkeypatch.setattr(adapter, "_telegram_request_kwargs", lambda: {"connect_timeout": 10.0})
+    monkeypatch.setattr(adapter, "_shutdown_partial_telegram_app", AsyncMock())
+    monkeypatch.setattr(adapter, "_initialize_telegram_app", AsyncMock())
+
+    def _build(**kwargs):
+        adapter._telegram_fallback_active = True
+        adapter._app = MagicMock(updater=new_updater, start=AsyncMock())
+
+    monkeypatch.setattr(adapter, "_build_telegram_application", _build)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    await adapter._handle_polling_network_error(Exception("Timed out"))
+
+    old_updater.stop.assert_awaited_once()
+    new_updater.start_polling.assert_awaited_once()
+    assert adapter._telegram_fallback_active is True

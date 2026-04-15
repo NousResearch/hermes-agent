@@ -47,6 +47,17 @@ def _no_auto_discovery(monkeypatch):
     monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", lambda **kwargs: MagicMock())
 
 
+def _builder_for_app(app):
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.base_url.return_value = builder
+    builder.base_file_url.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    return builder
+
+
 @pytest.mark.asyncio
 async def test_connect_rejects_same_host_token_lock(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
@@ -62,6 +73,159 @@ async def test_connect_rejects_same_host_token_lock(monkeypatch):
     assert adapter.fatal_error_code == "telegram-bot-token_lock"
     assert adapter.has_fatal_error is True
     assert "already in use" in adapter.fatal_error_message
+
+
+@pytest.mark.asyncio
+async def test_connect_primary_first_only_activates_fallback_after_retryable_failure(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    request_kwargs_seen = []
+
+    def fake_httpx_request(**kwargs):
+        request_kwargs_seen.append(kwargs)
+        return SimpleNamespace(kwargs=kwargs)
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+    discover = AsyncMock(return_value=["149.154.167.220"])
+    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", discover)
+
+    network_error = sys.modules["telegram.error"].NetworkError("primary path timed out")
+    first_app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(side_effect=network_error),
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    second_app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+
+    builders = [_builder_for_app(first_app), _builder_for_app(second_app)]
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(side_effect=builders)),
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert discover.await_count == 1
+    assert len(request_kwargs_seen) == 4
+    assert "httpx_kwargs" not in request_kwargs_seen[0]
+    assert "httpx_kwargs" not in request_kwargs_seen[1]
+    assert "transport" in request_kwargs_seen[2]["httpx_kwargs"]
+    assert "transport" in request_kwargs_seen[3]["httpx_kwargs"]
+    first_app.shutdown.assert_awaited_once()
+    assert adapter._telegram_fallback_active is True
+
+
+@pytest.mark.asyncio
+async def test_connect_does_not_discover_or_activate_fallback_when_primary_succeeds(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    request_kwargs_seen = []
+
+    def fake_httpx_request(**kwargs):
+        request_kwargs_seen.append(kwargs)
+        return SimpleNamespace(kwargs=kwargs)
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+    discover = AsyncMock(return_value=["149.154.167.220"])
+    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", discover)
+
+    app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=_builder_for_app(app))),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert discover.await_count == 0
+    assert len(request_kwargs_seen) == 2
+    assert all("httpx_kwargs" not in kwargs for kwargs in request_kwargs_seen)
+    assert adapter._telegram_fallback_active is False
+
+
+@pytest.mark.asyncio
+async def test_connect_always_mode_enables_fallback_immediately(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+    monkeypatch.setenv("HERMES_TELEGRAM_FALLBACK_MODE", "always")
+
+    request_kwargs_seen = []
+
+    def fake_httpx_request(**kwargs):
+        request_kwargs_seen.append(kwargs)
+        return SimpleNamespace(kwargs=kwargs)
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", fake_httpx_request)
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.discover_fallback_ips",
+        AsyncMock(return_value=["149.154.167.220"]),
+    )
+
+    app = SimpleNamespace(
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
+        updater=SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True),
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+        shutdown=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=_builder_for_app(app))),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(request_kwargs_seen) == 2
+    assert all("transport" in kwargs["httpx_kwargs"] for kwargs in request_kwargs_seen)
+    assert adapter._telegram_fallback_active is True
 
 
 @pytest.mark.asyncio

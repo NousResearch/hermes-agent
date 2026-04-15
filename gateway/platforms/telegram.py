@@ -206,6 +206,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._telegram_fallback_active: bool = False
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
@@ -253,6 +254,220 @@ class TelegramAdapter(BasePlatformAdapter):
         except ImportError:
             pass
         return isinstance(error, OSError)
+
+    @staticmethod
+    def _telegram_fallback_mode(proxy_url: str | None) -> str:
+        """Resolve Telegram fallback strategy from env and proxy state."""
+        if os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            return "off"
+
+        mode = os.getenv("HERMES_TELEGRAM_FALLBACK_MODE", "auto").strip().lower() or "auto"
+        if mode not in {"auto", "always", "off"}:
+            logger.warning(
+                "Ignoring invalid HERMES_TELEGRAM_FALLBACK_MODE=%r; using 'auto'",
+                mode,
+            )
+            mode = "auto"
+
+        if proxy_url and mode == "always":
+            logger.info(
+                "[%s] Telegram proxy is configured; ignoring fallback mode 'always'",
+                "Telegram",
+            )
+            return "off"
+
+        return "off" if proxy_url else mode
+
+    def _build_telegram_application(
+        self,
+        *,
+        request_kwargs: dict,
+        custom_base_url: str | None,
+        proxy_url: str | None,
+        use_fallback: bool,
+        fallback_ips: list[str],
+    ) -> None:
+        """Build the PTB Application with the requested transport strategy."""
+        builder = Application.builder().token(self.config.token)
+        if custom_base_url:
+            builder = builder.base_url(custom_base_url)
+            builder = builder.base_file_url(
+                self.config.extra.get("base_file_url", custom_base_url)
+            )
+            logger.info(
+                "[%s] Using custom Telegram base_url: %s",
+                self.name,
+                custom_base_url,
+            )
+
+        if use_fallback and fallback_ips:
+            logger.info(
+                "[%s] Telegram fallback IP transport active: %s",
+                self.name,
+                ", ".join(fallback_ips),
+            )
+            request = HTTPXRequest(
+                **request_kwargs,
+                httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+            )
+            get_updates_request = HTTPXRequest(
+                **request_kwargs,
+                httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+            )
+        elif proxy_url:
+            logger.info(
+                "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
+                self.name,
+                proxy_url,
+            )
+            request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+            get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+        else:
+            request = HTTPXRequest(**request_kwargs)
+            get_updates_request = HTTPXRequest(**request_kwargs)
+
+        self._telegram_fallback_active = bool(use_fallback and fallback_ips)
+        builder = builder.request(request).get_updates_request(get_updates_request)
+        self._app = builder.build()
+        self._bot = self._app.bot
+
+        self._app.add_handler(
+            TelegramMessageHandler(
+                filters.TEXT & ~filters.COMMAND, self._handle_text_message
+            )
+        )
+        self._app.add_handler(
+            TelegramMessageHandler(filters.COMMAND, self._handle_command)
+        )
+        self._app.add_handler(
+            TelegramMessageHandler(
+                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                self._handle_location_message,
+            )
+        )
+        self._app.add_handler(
+            TelegramMessageHandler(
+                filters.PHOTO
+                | filters.VIDEO
+                | filters.AUDIO
+                | filters.VOICE
+                | filters.Document.ALL
+                | filters.Sticker.ALL,
+                self._handle_media_message,
+            )
+        )
+        self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
+    @staticmethod
+    def _telegram_request_kwargs() -> dict:
+        """Build HTTPXRequest kwargs for Telegram API traffic."""
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return int(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        def _env_float(name: str, default: float) -> float:
+            try:
+                return float(os.getenv(name, str(default)))
+            except (TypeError, ValueError):
+                return default
+
+        return {
+            "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+            "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+            "connect_timeout": _env_float(
+                "HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0
+            ),
+            "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+            "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+        }
+
+    async def _shutdown_partial_telegram_app(self) -> None:
+        """Best-effort cleanup for an app that failed during startup."""
+        app = self._app
+        self._app = None
+        self._bot = None
+        self._telegram_fallback_active = False
+        if not app:
+            return
+        shutdown = getattr(app, "shutdown", None)
+        if callable(shutdown):
+            try:
+                await shutdown()
+            except Exception:
+                pass
+
+    async def _initialize_telegram_app(self) -> None:
+        """Initialize the PTB app with retryable network backoff."""
+        try:
+            from telegram.error import NetworkError, TimedOut
+        except ImportError:
+            NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
+
+        max_connect_attempts = 3
+        for attempt in range(max_connect_attempts):
+            try:
+                await self._app.initialize()
+                return
+            except (NetworkError, TimedOut, OSError) as init_err:
+                if attempt >= max_connect_attempts - 1:
+                    raise
+                wait = 2**attempt
+                logger.warning(
+                    "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                    self.name,
+                    attempt + 1,
+                    max_connect_attempts,
+                    init_err,
+                    wait,
+                )
+                await asyncio.sleep(wait)
+
+    async def _resolve_fallback_ips(self) -> list[str]:
+        """Return configured fallback IPs, or auto-discover them on demand."""
+        fallback_ips = self._fallback_ips()
+        if fallback_ips:
+            return fallback_ips
+
+        discovered = await discover_fallback_ips()
+        logger.info(
+            "[%s] Auto-discovered Telegram fallback IPs: %s",
+            self.name,
+            ", ".join(discovered),
+        )
+        return discovered
+
+    async def _switch_to_fallback_transport(self) -> bool:
+        """Rebuild the Telegram app in fallback-IP mode when auto strategy allows it."""
+        proxy_url = resolve_proxy_url()
+        if self._telegram_fallback_active or self._telegram_fallback_mode(proxy_url) != "auto":
+            return False
+
+        fallback_ips = await self._resolve_fallback_ips()
+        if not fallback_ips:
+            return False
+
+        logger.info(
+            "[%s] Switching Telegram transport to fallback IP mode after network failure",
+            self.name,
+        )
+        await self._shutdown_partial_telegram_app()
+        self._build_telegram_application(
+            request_kwargs=self._telegram_request_kwargs(),
+            custom_base_url=self.config.extra.get("base_url"),
+            proxy_url=proxy_url,
+            use_fallback=True,
+            fallback_ips=fallback_ips,
+        )
+        await self._initialize_telegram_app()
+        await self._app.start()
+        return True
 
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
@@ -302,6 +517,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.stop()
         except Exception:
             pass
+
+        try:
+            await self._switch_to_fallback_transport()
+        except Exception as switch_err:
+            logger.warning(
+                "[%s] Telegram fallback transport activation failed: %s",
+                self.name,
+                switch_err,
+            )
 
         try:
             await self._app.updater.start_polling(
@@ -621,148 +845,49 @@ class TelegramAdapter(BasePlatformAdapter):
             ):
                 return False
 
-            # Build the application
-            builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")
-            if custom_base_url:
-                builder = builder.base_url(custom_base_url)
-                builder = builder.base_file_url(
-                    self.config.extra.get("base_file_url", custom_base_url)
-                )
-                logger.info(
-                    "[%s] Using custom Telegram base_url: %s",
-                    self.name,
-                    custom_base_url,
-                )
-
-            # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
-            # can trigger "Pool timeout: All connections in the connection pool are occupied"
-            # during reconnect/bootstrap. Use safer defaults and allow env overrides.
-            def _env_int(name: str, default: int) -> int:
-                try:
-                    return int(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            def _env_float(name: str, default: float) -> float:
-                try:
-                    return float(os.getenv(name, str(default)))
-                except (TypeError, ValueError):
-                    return default
-
-            request_kwargs = {
-                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
-                "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
-                "connect_timeout": _env_float(
-                    "HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0
-                ),
-                "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
-                "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
-            }
-
+            request_kwargs = self._telegram_request_kwargs()
             proxy_url = resolve_proxy_url()
-            disable_fallback = os.getenv(
-                "HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", ""
-            ).strip().lower() in ("1", "true", "yes", "on")
-            fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
-
-            if fallback_ips and not proxy_url and not disable_fallback:
-                logger.info(
-                    "[%s] Telegram fallback IPs active: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
-                )
-                # Keep request/update pools separate to reduce contention during
-                # polling reconnect + bot API bootstrap/delete_webhook calls.
-                request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-                get_updates_request = HTTPXRequest(
-                    **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
-                )
-            elif proxy_url:
-                logger.info(
-                    "[%s] Proxy detected; passing explicitly to HTTPXRequest: %s",
-                    self.name,
-                    proxy_url,
-                )
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-            else:
-                if disable_fallback:
-                    logger.info(
-                        "[%s] Telegram fallback-IP transport disabled via env",
-                        self.name,
-                    )
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
-
-            builder = builder.request(request).get_updates_request(get_updates_request)
-            self._app = builder.build()
-            self._bot = self._app.bot
-
-            # Register handlers
-            self._app.add_handler(
-                TelegramMessageHandler(
-                    filters.TEXT & ~filters.COMMAND, self._handle_text_message
-                )
+            fallback_mode = self._telegram_fallback_mode(proxy_url)
+            fallback_ips: list[str] = []
+            connect_modes = (
+                [True]
+                if fallback_mode == "always"
+                else [False, True]
+                if fallback_mode == "auto"
+                else [False]
             )
-            self._app.add_handler(
-                TelegramMessageHandler(filters.COMMAND, self._handle_command)
-            )
-            self._app.add_handler(
-                TelegramMessageHandler(
-                    filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                    self._handle_location_message,
-                )
-            )
-            self._app.add_handler(
-                TelegramMessageHandler(
-                    filters.PHOTO
-                    | filters.VIDEO
-                    | filters.AUDIO
-                    | filters.VOICE
-                    | filters.Document.ALL
-                    | filters.Sticker.ALL,
-                    self._handle_media_message,
-                )
-            )
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-
-            # Start polling — retry initialize() for transient TLS resets
-            try:
-                from telegram.error import NetworkError, TimedOut
-            except ImportError:
-                NetworkError = TimedOut = OSError  # type: ignore[misc,assignment]
-            _max_connect = 3
-            for _attempt in range(_max_connect):
-                try:
-                    await self._app.initialize()
-                    break
-                except (NetworkError, TimedOut, OSError) as init_err:
-                    if _attempt < _max_connect - 1:
-                        wait = 2**_attempt
+            for use_fallback in connect_modes:
+                if use_fallback:
+                    fallback_ips = await self._resolve_fallback_ips()
+                    if not fallback_ips:
                         logger.warning(
-                            "[%s] Connect attempt %d/%d failed: %s — retrying in %ds",
+                            "[%s] Telegram fallback requested but no fallback IPs are available",
                             self.name,
-                            _attempt + 1,
-                            _max_connect,
-                            init_err,
-                            wait,
                         )
-                        await asyncio.sleep(wait)
-                    else:
+                        continue
+                self._build_telegram_application(
+                    request_kwargs=request_kwargs,
+                    custom_base_url=custom_base_url,
+                    proxy_url=proxy_url,
+                    use_fallback=use_fallback,
+                    fallback_ips=fallback_ips,
+                )
+                try:
+                    await self._initialize_telegram_app()
+                    break
+                except Exception as init_err:
+                    retryable = self._looks_like_network_error(init_err)
+                    if use_fallback or fallback_mode != "auto" or not retryable:
                         raise
+                    logger.warning(
+                        "[%s] Primary Telegram bootstrap failed (%s). Retrying with fallback IP transport.",
+                        self.name,
+                        init_err,
+                    )
+                    await self._shutdown_partial_telegram_app()
+            else:
+                raise RuntimeError("Telegram bootstrap did not produce a usable transport")
             await self._app.start()
 
             # Decide between webhook and polling mode
@@ -871,6 +996,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
             self._mark_connected()
             mode = "webhook" if self._webhook_mode else "polling"
+            if self._telegram_fallback_active:
+                mode = f"{mode} via fallback IPs"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
             # Set up DM topics (Bot API 9.4 — Private Chat Topics)
@@ -899,6 +1026,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        self._telegram_fallback_active = False
         pending_media_group_tasks = list(self._media_group_tasks.values())
         for task in pending_media_group_tasks:
             task.cancel()

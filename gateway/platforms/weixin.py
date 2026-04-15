@@ -1542,24 +1542,35 @@ class WeixinAdapter(BasePlatformAdapter):
     async def send_image_file(
         self,
         chat_id: str,
-        path: str,
-        caption: str = "",
+        image_path: str,
+        caption: Optional[str] = None,
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
-        return await self.send_document(chat_id, file_path=path, caption=caption, metadata=metadata)
+        del reply_to, kwargs
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=image_path,
+            caption=caption,
+            metadata=metadata,
+        )
 
     async def send_document(
         self,
         chat_id: str,
         file_path: str,
-        caption: str = "",
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
     ) -> SendResult:
+        del file_name, reply_to, metadata, kwargs
         if not self._session or not self._token:
             return SendResult(success=False, error="Not connected")
         try:
-            message_id = await self._send_file(chat_id, file_path, caption)
+            message_id = await self._send_file(chat_id, file_path, caption or "")
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
             logger.error("[%s] send_document failed to=%s: %s", self.name, _safe_id(chat_id), exc)
@@ -1646,7 +1657,6 @@ class WeixinAdapter(BasePlatformAdapter):
             ciphertext=ciphertext,
             upload_url=upload_url,
         )
-
         context_token = self._token_store.get(self._account_id, chat_id)
         # The iLink API expects aes_key as base64(hex_string), not base64(raw_bytes).
         # Sending base64(raw_bytes) causes images to show as grey boxes on the

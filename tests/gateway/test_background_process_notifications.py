@@ -33,20 +33,21 @@ class _FakeRegistry:
         return None
 
 
-def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
+def _build_runner(monkeypatch, tmp_path, mode: str, *, extra_display: str = "") -> GatewayRunner:
     """Create a GatewayRunner with a fake config for the given mode."""
-    (tmp_path / "config.yaml").write_text(
-        f"display:\n  background_process_notifications: {mode}\n",
-        encoding="utf-8",
-    )
+    display_yaml = f"display:\n  background_process_notifications: {mode}\n"
+    if extra_display:
+        display_yaml += extra_display
+    (tmp_path / "config.yaml").write_text(display_yaml, encoding="utf-8")
 
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
+    runner.adapters[Platform.DISCORD] = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     return runner
 
 
@@ -111,9 +112,114 @@ class TestLoadBackgroundNotificationsMode:
         assert GatewayRunner._load_background_notifications_mode() == "all"
 
 
+class TestLoadBackgroundFailureTarget:
+
+    def test_defaults_to_none(self, monkeypatch, tmp_path):
+        import gateway.run as gw
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.delenv("HERMES_BACKGROUND_FAILURE_TARGET", raising=False)
+        assert GatewayRunner._load_background_failure_target() is None
+
+    def test_reads_config_yaml(self, monkeypatch, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  background_process_failure_target: discord:999:321\n",
+            encoding="utf-8",
+        )
+        import gateway.run as gw
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.delenv("HERMES_BACKGROUND_FAILURE_TARGET", raising=False)
+
+        target = GatewayRunner._load_background_failure_target()
+
+        assert target == {
+            "platform": Platform.DISCORD,
+            "chat_id": "999",
+            "thread_id": "321",
+            "raw": "discord:999:321",
+        }
+
+    def test_env_var_overrides_config(self, monkeypatch, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  background_process_failure_target: discord:999\n",
+            encoding="utf-8",
+        )
+        import gateway.run as gw
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.setenv("HERMES_BACKGROUND_FAILURE_TARGET", "discord:555:42")
+
+        target = GatewayRunner._load_background_failure_target()
+
+        assert target == {
+            "platform": Platform.DISCORD,
+            "chat_id": "555",
+            "thread_id": "42",
+            "raw": "discord:555:42",
+        }
+
+
 # ---------------------------------------------------------------------------
 # _run_process_watcher integration tests
 # ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dispatch_watch_notification_prefers_dedicated_target(monkeypatch, tmp_path):
+    runner = _build_runner(
+        monkeypatch,
+        tmp_path,
+        "all",
+        extra_display="  background_process_failure_target: discord:999:321\n",
+    )
+    failure_adapter = runner.adapters[Platform.DISCORD]
+    monkeypatch.setattr(runner, "_inject_watch_notification", AsyncMock())
+
+    routed = await runner._dispatch_watch_notification("[SYSTEM: watch matched]", SimpleNamespace())
+
+    assert routed is True
+    assert failure_adapter.send.await_count == 1
+    assert failure_adapter.send.await_args.args[0] == "999"
+    assert failure_adapter.send.await_args.kwargs["metadata"] == {"thread_id": "321"}
+    runner._inject_watch_notification.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_watch_notification_falls_back_to_origin_when_unconfigured(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    monkeypatch.setattr(runner, "_inject_watch_notification", AsyncMock())
+
+    routed = await runner._dispatch_watch_notification("[SYSTEM: watch matched]", SimpleNamespace())
+
+    assert routed is False
+    runner._inject_watch_notification.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_process_watcher_routes_failures_to_dedicated_target(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(output_buffer="traceback\n", exited=True, exit_code=1, command="make deploy")]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(
+        monkeypatch,
+        tmp_path,
+        "all",
+        extra_display="  background_process_failure_target: discord:999:321\n",
+    )
+    origin_adapter = runner.adapters[Platform.TELEGRAM]
+    failure_adapter = runner.adapters[Platform.DISCORD]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    assert failure_adapter.send.await_count == 1
+    assert failure_adapter.send.await_args.args[0] == "999"
+    assert "exit code 1" in failure_adapter.send.await_args.args[1]
+    assert failure_adapter.send.await_args.kwargs["metadata"] == {"thread_id": "321"}
+    assert origin_adapter.send.await_count == 0
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(

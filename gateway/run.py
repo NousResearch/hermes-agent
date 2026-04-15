@@ -495,12 +495,33 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
+        text = None
+        try:
+            from tools.ansi_strip import strip_ansi
+            from tools.process_registry import process_registry
+
+            _session = process_registry.get(_sid)
+            if _session and getattr(_session, "exited", False) and getattr(_session, "exit_code", None) not in (None, 0):
+                _final = strip_ansi(getattr(_session, "output_buffer", "")[-2000:])
+                text = (
+                    f"[SYSTEM: Background process {_sid} matched "
+                    f"watch pattern \"{_pat}\", but the process exited with code "
+                    f"{_session.exit_code}.\n"
+                    f"Command: {_cmd}\n"
+                    f"Matched output:\n{_out}"
+                )
+                if _final and _final.strip() and _final.strip() != _out.strip():
+                    text += f"\nFinal output:\n{_final}"
+        except Exception:
+            text = None
+
+        if text is None:
+            text = (
+                f"[SYSTEM: Background process {_sid} matched "
+                f"watch pattern \"{_pat}\".\n"
+                f"Command: {_cmd}\n"
+                f"Matched output:\n{_out}"
+            )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
@@ -1266,6 +1287,109 @@ class GatewayRunner:
             )
             return "all"
         return mode
+
+    @staticmethod
+    def _load_background_failure_target() -> dict | None:
+        """Load an optional target for background-process failure notifications.
+
+        The target uses the same string format as send_message targets, e.g.
+        ``discord:1493886407981269062`` or ``discord:1493886407981269062:123``.
+        When unset, failures continue going back to the originating chat.
+        """
+        target = os.getenv("HERMES_BACKGROUND_FAILURE_TARGET", "")
+        if not target:
+            try:
+                import yaml as _y
+                cfg_path = _hermes_home / "config.yaml"
+                if cfg_path.exists():
+                    with open(cfg_path, encoding="utf-8") as _f:
+                        cfg = _y.safe_load(_f) or {}
+                    raw = cfg.get("display", {}).get("background_process_failure_target")
+                    if raw not in (None, "", False):
+                        target = str(raw)
+            except Exception:
+                pass
+        target = (target or "").strip()
+        if not target:
+            return None
+
+        try:
+            from gateway.channel_directory import resolve_channel_name
+            from tools.send_message_tool import _parse_target_ref
+        except Exception as exc:
+            logger.warning("Could not load background failure target helpers: %s", exc)
+            return None
+
+        parts = target.split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        try:
+            platform = Platform(platform_name)
+        except ValueError:
+            logger.warning("Unknown background_process_failure_target platform '%s'", platform_name)
+            return None
+
+        config = load_gateway_config()
+        chat_id = None
+        thread_id = None
+        is_explicit = False
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+            if target_ref and not is_explicit:
+                resolved = resolve_channel_name(platform_name, target_ref)
+                if not resolved:
+                    logger.warning(
+                        "Could not resolve background_process_failure_target '%s' on %s",
+                        target_ref,
+                        platform_name,
+                    )
+                    return None
+                chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
+        else:
+            home = config.get_home_channel(platform)
+            if home:
+                chat_id = home.chat_id
+
+        if not chat_id:
+            logger.warning("background_process_failure_target '%s' did not resolve to a chat_id", target)
+            return None
+
+        return {
+            "platform": platform,
+            "chat_id": str(chat_id),
+            "thread_id": str(thread_id) if thread_id not in (None, "") else None,
+            "raw": target,
+        }
+
+    async def _send_background_failure_notification(self, message_text: str) -> bool:
+        """Send a failure/watch alert to the dedicated target if configured."""
+        target = self._load_background_failure_target()
+        if not target:
+            return False
+
+        adapter = self.adapters.get(target["platform"])
+        if not adapter:
+            logger.warning(
+                "Background failure target adapter for %s is not connected",
+                target["platform"].value,
+            )
+            return False
+
+        metadata = {"thread_id": target["thread_id"]} if target.get("thread_id") else None
+        try:
+            await adapter.send(target["chat_id"], message_text, metadata=metadata)
+            return True
+        except Exception as exc:
+            logger.warning("Background failure target delivery failed: %s", exc)
+            return False
+
+    async def _dispatch_watch_notification(self, message_text: str, event) -> bool:
+        """Deliver a watch notification to the failure target or fall back to origin."""
+        routed = await self._send_background_failure_notification(message_text)
+        if routed:
+            return True
+        await self._inject_watch_notification(message_text, event)
+        return False
 
     @staticmethod
     def _load_provider_routing() -> dict:
@@ -3958,7 +4082,7 @@ class GatewayRunner:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
                         try:
-                            await self._inject_watch_notification(synth_text, event)
+                            await self._dispatch_watch_notification(synth_text, event)
                         except Exception as e2:
                             logger.error("Watch notification injection error: %s", e2)
             except Exception as e:
@@ -7547,6 +7671,10 @@ class GatewayRunner:
                         f"Command: {session.command}\n"
                         f"Output:\n{_out}]"
                     )
+                    if session.exit_code not in (0, None):
+                        routed = await self._send_background_failure_notification(synth_text)
+                        if routed:
+                            break
                     adapter = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:
@@ -7592,6 +7720,10 @@ class GatewayRunner:
                         f"[Background process {session_id} finished with exit code {session.exit_code}~ "
                         f"Here's the final output:\n{new_output}]"
                     )
+                    if session.exit_code not in (0, None):
+                        routed = await self._send_background_failure_notification(message_text)
+                        if routed:
+                            break
                     adapter = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:

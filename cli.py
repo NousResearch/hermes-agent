@@ -1191,12 +1191,33 @@ def _format_process_notification(evt: dict) -> "str | None":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
-        text = (
-            f"[SYSTEM: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
-            f"Command: {_cmd}\n"
-            f"Matched output:\n{_out}"
-        )
+        text = None
+        try:
+            from tools.ansi_strip import strip_ansi
+            from tools.process_registry import process_registry
+
+            _session = process_registry.get(_sid)
+            if _session and getattr(_session, "exited", False) and getattr(_session, "exit_code", None) not in (None, 0):
+                _final = strip_ansi(getattr(_session, "output_buffer", "")[-2000:])
+                text = (
+                    f"[SYSTEM: Background process {_sid} matched "
+                    f"watch pattern \"{_pat}\", but the process exited with code "
+                    f"{_session.exit_code}.\n"
+                    f"Command: {_cmd}\n"
+                    f"Matched output:\n{_out}"
+                )
+                if _final and _final.strip() and _final.strip() != _out.strip():
+                    text += f"\nFinal output:\n{_final}"
+        except Exception:
+            text = None
+
+        if text is None:
+            text = (
+                f"[SYSTEM: Background process {_sid} matched "
+                f"watch pattern \"{_pat}\".\n"
+                f"Command: {_cmd}\n"
+                f"Matched output:\n{_out}"
+            )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"

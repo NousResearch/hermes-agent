@@ -3241,7 +3241,7 @@ class TestRegisterMcpServers:
     def test_skips_already_connected_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers
 
-        mock_server = _make_mock_server("existing")
+        mock_server = _make_mock_server("existing", session=MagicMock())
         _servers["existing"] = mock_server
 
         try:
@@ -3251,6 +3251,86 @@ class TestRegisterMcpServers:
             assert result == ["mcp_existing_tool"]
         finally:
             _servers.pop("existing", None)
+
+    def test_reclaims_dead_server_entry(self):
+        """A server with session=None must be re-registered instead of
+        being treated as 'already connected'.
+
+        Regression: before this fix, once run() retired a server (e.g.
+        after _MAX_RECONNECT_RETRIES or a killed subprocess), the entry
+        stayed in _servers with session=None and register_mcp_servers
+        would permanently skip it, leaving the agent with a dead tool.
+        """
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _ensure_mcp_loop,
+        )
+
+        # Seed a dead server entry (session already None)
+        dead_server = _make_mock_server("zombie", session=None)
+        dead_server._task = MagicMock()
+        dead_server._task.done.return_value = True
+        _servers["zombie"] = dead_server
+
+        fresh_calls: list[str] = []
+
+        async def fake_register(name, cfg):
+            fresh_calls.append(name)
+            server = _make_mock_server(name, session=MagicMock())
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server",
+                       side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names",
+                       return_value=["mcp_zombie_tool"]):
+                _ensure_mcp_loop()
+                register_mcp_servers({"zombie": {"command": "test"}})
+
+            # fake_register should have been called for the dead server
+            assert fresh_calls == ["zombie"], (
+                f"dead server must be re-registered, got: {fresh_calls}"
+            )
+            # The entry in _servers should be the fresh one with session
+            assert _servers["zombie"].session is not None
+        finally:
+            _servers.pop("zombie", None)
+
+    def test_reclaims_dead_server_with_live_task_but_no_session(self):
+        """A server with session=None but a still-running task is also
+        considered stale and reclaimed."""
+        from tools.mcp_tool import (
+            register_mcp_servers, _servers, _ensure_mcp_loop,
+        )
+
+        dead_server = _make_mock_server("zombie2", session=None)
+        dead_server._task = MagicMock()
+        dead_server._task.done.return_value = False  # task still running
+        _servers["zombie2"] = dead_server
+
+        fresh_calls: list[str] = []
+
+        async def fake_register(name, cfg):
+            fresh_calls.append(name)
+            server = _make_mock_server(name, session=MagicMock())
+            server._registered_tool_names = [f"mcp_{name}_tool"]
+            _servers[name] = server
+            return [f"mcp_{name}_tool"]
+
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._discover_and_register_server",
+                       side_effect=fake_register), \
+                 patch("tools.mcp_tool._existing_tool_names",
+                       return_value=["mcp_zombie2_tool"]):
+                _ensure_mcp_loop()
+                register_mcp_servers({"zombie2": {"command": "test"}})
+
+            assert fresh_calls == ["zombie2"]
+        finally:
+            _servers.pop("zombie2", None)
 
     def test_skips_disabled_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers

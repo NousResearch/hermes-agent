@@ -170,6 +170,11 @@ _MAX_BACKOFF_SECONDS = 60
 # healthy disconnect so that long-lived servers aren't permanently retired
 # after _MAX_RECONNECT_RETRIES lifetime disconnects.
 _HEALTHY_CONNECTION_SECONDS = 30.0
+# Interval at which _run_stdio polls the spawned subprocess PIDs while
+# waiting for shutdown. If any tracked PID has died without the stream
+# reader propagating the error, this poll raises ConnectionError to
+# force the run() loop into its reconnect path.
+_SUBPROCESS_LIVENESS_POLL_SECONDS = 5.0
 # Exception class names that indicate the MCP stdio/HTTP transport has gone
 # away mid-call. Matched by type().__name__ so we don't need to import anyio.
 _STALE_TRANSPORT_EXC_NAMES = frozenset({
@@ -319,16 +324,85 @@ def _is_stale_transport_error(exc: BaseException) -> bool:
 
 
 def _mark_session_stale(server_name: str) -> None:
-    """Clear the session reference for *server_name* so the handler fast-
-    fails subsequent calls while the background run() loop reconnects.
+    """Clear the session reference for *server_name* and schedule a
+    fire-and-forget reclaim so the next tool call finds a live session.
+
+    Why the reclaim: the legacy recovery path is ``discover_mcp_tools()``
+    which is only called at module import. Once we are past startup, a
+    server whose subprocess died stays permanently broken unless someone
+    triggers ``/reload-mcp``. Handler-detected staleness is the natural
+    signal — we drop the dead entry here and let the existing reclaim
+    logic inside ``register_mcp_servers`` recreate it on the next
+    opportunity.
 
     Safe to call from the MCP event loop thread or any caller thread —
-    the mutation is guarded by the module lock.
+    all mutations happen under the module lock and the re-registration
+    is scheduled via ``_run_on_mcp_loop`` which is thread-safe.
     """
     with _lock:
         server = _servers.get(server_name)
-    if server is not None:
+        if server is None:
+            return
         server.session = None
+    # Best-effort reclaim: drop the stale entry and fire off a fresh
+    # register pass. Any failure is swallowed so the handler's error
+    # reporting stays the primary signal to the agent.
+    try:
+        config = _load_mcp_config()
+    except Exception as exc:
+        logger.debug(
+            "Reclaim for '%s' skipped — config reload failed: %s",
+            server_name, exc,
+        )
+        return
+    if server_name not in config:
+        return
+    server_cfg = config[server_name]
+    reclaim_started = False
+    try:
+        loop = None
+        with _lock:
+            loop = _mcp_loop
+        if loop is None or not loop.is_running():
+            return
+
+        async def _reclaim_one():
+            try:
+                with _lock:
+                    existing = _servers.get(server_name)
+                    if existing is not None:
+                        # Best-effort shutdown of the old task so stdio
+                        # cleanup runs and we don't double-spawn.
+                        try:
+                            existing._shutdown_event.set()
+                        except Exception:
+                            pass
+                        _servers.pop(server_name, None)
+                await _discover_and_register_server(
+                    server_name, server_cfg
+                )
+                _sync_mcp_toolsets(list(config.keys()))
+                logger.info(
+                    "MCP server '%s' reclaimed after stale transport",
+                    server_name,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "MCP server '%s' reclaim failed: %s",
+                    server_name, exc,
+                )
+
+        asyncio.run_coroutine_threadsafe(_reclaim_one(), loop)
+        reclaim_started = True
+    except Exception as exc:
+        logger.debug(
+            "Reclaim scheduling for '%s' failed: %s", server_name, exc,
+        )
+    if reclaim_started:
+        logger.info(
+            "MCP server '%s' flagged for reclaim (stale session)",
+            server_name,
+        )
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -998,11 +1072,32 @@ class MCPServerTask:
                 await self._discover_tools()
                 self._ready.set()
                 self._connected_at = time.monotonic()
-                await self._shutdown_event.wait()
-        # Context exited cleanly — subprocess was terminated by the SDK.
-        if new_pids:
-            with _lock:
-                _stdio_pids.difference_update(new_pids)
+                # Poll subprocess liveness while waiting for shutdown so a
+                # silently-killed child doesn't leave run() blocked when the
+                # stream reader fails to surface the disconnect. Without
+                # this, SIGKILL'ing an MCP subprocess can leave the
+                # ClientSession in a zombie state where handler calls see
+                # a stale session and reconnect never fires.
+                try:
+                    while not self._shutdown_event.is_set():
+                        try:
+                            await asyncio.wait_for(
+                                self._shutdown_event.wait(),
+                                timeout=_SUBPROCESS_LIVENESS_POLL_SECONDS,
+                            )
+                            break  # shutdown_event set — exit cleanly
+                        except asyncio.TimeoutError:
+                            pass
+                        if new_pids and not _any_pid_alive(new_pids):
+                            raise ConnectionError(
+                                f"MCP server '{self.name}' stdio subprocess "
+                                f"PID(s) {sorted(new_pids)} died without "
+                                "stream-level propagation"
+                            )
+                finally:
+                    if new_pids:
+                        with _lock:
+                            _stdio_pids.difference_update(new_pids)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -1304,6 +1399,34 @@ def _snapshot_child_pids() -> set:
         pass
 
     return set()
+
+
+def _any_pid_alive(pids: set) -> bool:
+    """Return True if at least one of *pids* still exists.
+
+    Sending signal 0 doesn't deliver a signal; it just verifies the target
+    exists and is reachable. A dead or reaped child raises
+    ProcessLookupError. Used by _run_stdio's liveness poll to detect
+    silently-killed subprocesses that the SDK's stream reader failed to
+    surface as an exception.
+    """
+    if not pids:
+        # No PIDs tracked -> treat as alive (best-effort; we can't tell).
+        return True
+    for pid in pids:
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            # Process exists but is owned by another user — still alive.
+            return True
+        except OSError:
+            # Unexpected errno (e.g. ESRCH on some platforms) — treat as
+            # dead for this pid and keep checking the rest.
+            continue
+    return False
 
 
 def _mcp_loop_exception_handler(loop, context):
@@ -2140,12 +2263,41 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Only attempt servers that aren't already connected and are enabled
     # (enabled: false skips the server entirely without removing its config)
+    #
+    # A server "counts" as already-connected only when its run() coroutine
+    # is still alive and holds an active session. If the previous task
+    # gave up (run() returned) or the session went stale (subprocess
+    # killed, stream closed), we drop the dead entry here so the fresh
+    # _discover_and_register_server pass can recreate it. Without this,
+    # a stale _servers entry blocks recovery forever.
+    dead_server_names: list[str] = []
     with _lock:
-        new_servers = {
-            k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
-        }
+        new_servers: Dict[str, dict] = {}
+        for k, v in servers.items():
+            if not _parse_boolish(v.get("enabled", True), default=True):
+                continue
+            existing = _servers.get(k)
+            if existing is None:
+                new_servers[k] = v
+                continue
+            task = getattr(existing, "_task", None)
+            is_dead = (
+                existing.session is None
+                or (task is not None and task.done())
+            )
+            if is_dead:
+                dead_server_names.append(k)
+                # Drop the dead entry so _discover_and_register_server
+                # can overwrite it with a fresh MCPServerTask below.
+                _servers.pop(k, None)
+                new_servers[k] = v
+
+    if dead_server_names:
+        logger.info(
+            "MCP: reclaiming %d stale server entry/entries for "
+            "re-registration: %s",
+            len(dead_server_names), ", ".join(sorted(dead_server_names)),
+        )
 
     if not new_servers:
         return _existing_tool_names()
@@ -2216,12 +2368,21 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
+    # Same liveness check as register_mcp_servers: a stale server with
+    # session=None or a completed _task is treated as "new" so
+    # register_mcp_servers can reclaim and retry it.
     with _lock:
-        new_server_names = [
-            name
-            for name, cfg in servers.items()
-            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
-        ]
+        new_server_names: list[str] = []
+        for name, cfg in servers.items():
+            if not _parse_boolish(cfg.get("enabled", True), default=True):
+                continue
+            existing = _servers.get(name)
+            if existing is None:
+                new_server_names.append(name)
+                continue
+            task = getattr(existing, "_task", None)
+            if existing.session is None or (task is not None and task.done()):
+                new_server_names.append(name)
 
     tool_names = register_mcp_servers(servers)
     if not new_server_names:

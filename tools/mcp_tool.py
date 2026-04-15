@@ -2922,7 +2922,19 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
+    #
+    # Temporarily clear the interrupt flag on the current thread so that MCP
+    # discovery is never cancelled by a stale interrupt from a prior agent
+    # session (executor threads get reused and may carry old interrupt state).
+    from tools.interrupt import is_interrupted as _is_interrupted, set_interrupt as _set_interrupt
+    _was_interrupted = _is_interrupted()
+    if _was_interrupted:
+        _set_interrupt(False)
+    try:
+        _run_on_mcp_loop(_discover_all(), timeout=120)
+    finally:
+        if _was_interrupted:
+            _set_interrupt(True)
 
     # Log a summary so ACP callers get visibility into what was registered.
     with _lock:

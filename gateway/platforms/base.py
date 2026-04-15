@@ -578,6 +578,32 @@ def get_document_cache_dir() -> Path:
     return DOCUMENT_CACHE_DIR
 
 
+def _is_allowed_media_path(file_path: str) -> bool:
+    """Validate that a MEDIA file path is within an allowed cache directory.
+
+    Resolves symlinks via os.path.realpath() to prevent escape-by-symlink.
+    Returns True only when the resolved path sits under a known cache root.
+    """
+    allowed_roots = [
+        IMAGE_CACHE_DIR,
+        AUDIO_CACHE_DIR,
+        DOCUMENT_CACHE_DIR,
+        get_hermes_dir("cache/screenshots", "browser_screenshots"),
+    ]
+    try:
+        real = os.path.realpath(os.path.expanduser(file_path))
+    except (OSError, ValueError):
+        return False
+    for root in allowed_roots:
+        try:
+            root_str = str(os.path.realpath(root))
+            if real.startswith(root_str + os.sep) or real == root_str:
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def cache_document_from_bytes(data: bytes, filename: str) -> str:
     """
     Save raw document bytes to the cache and return the absolute file path.
@@ -1227,7 +1253,7 @@ class BasePlatformAdapter(ABC):
         if media:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
-        
+
         return media, cleaned
 
     @staticmethod
@@ -1733,6 +1759,9 @@ class BasePlatformAdapter(ABC):
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 for media_path, is_voice in media_files:
+                    if not _is_allowed_media_path(media_path):
+                        logger.warning("Blocked MEDIA path outside allowed cache directories: %s", media_path)
+                        continue
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -1769,6 +1798,9 @@ class BasePlatformAdapter(ABC):
 
                 # Send auto-detected local files as native attachments
                 for file_path in local_files:
+                    if not _is_allowed_media_path(file_path):
+                        logger.warning("Blocked local file path outside allowed cache directories: %s", file_path)
+                        continue
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:

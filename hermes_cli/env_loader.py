@@ -7,8 +7,8 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace, fast_safe_load
 
+from utils import atomic_replace, fast_safe_load
 
 # Env var name suffixes that indicate credential values.  These are the
 # only env vars whose values we sanitize on load — we must not silently
@@ -144,7 +144,7 @@ def _sanitize_loaded_credentials() -> None:
             "  This usually means the key was copy-pasted from a PDF, "
             "rich-text editor, or web page that substituted lookalike\n"
             "  Unicode glyphs for ASCII letters. If authentication fails "
-            "(e.g. \"API key not valid\"), re-copy the key from the\n"
+            '(e.g. "API key not valid"), re-copy the key from the\n'
             "  provider's dashboard and run `hermes setup` (or edit the "
             ".env file in a plain-text editor).",
             file=sys.stderr,
@@ -198,6 +198,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
             import tempfile
+
             fd, tmp = tempfile.mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
@@ -259,6 +260,14 @@ def load_hermes_dotenv(
     op_env = home_path / ".op.env"
     if op_env.exists() and not os.environ.get("OP_SERVICE_ACCOUNT_TOKEN"):
         _load_dotenv_with_fallback(op_env, override=False)
+
+    # Drop-in directory: $HERMES_HOME/env.d/*.env (sorted, override=True)
+    env_d = home_path / "env.d"
+    if env_d.is_dir():
+        for f in sorted(env_d.glob("*.env")):
+            if f.is_file():
+                _load_dotenv_with_fallback(f, override=True)
+                loaded.append(f)
 
     if project_env_path and project_env_path.exists():
         _load_dotenv_with_fallback(project_env_path, override=not loaded)

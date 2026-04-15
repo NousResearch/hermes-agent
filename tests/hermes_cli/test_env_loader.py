@@ -103,3 +103,67 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_env_d_files_loaded_and_override(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / ".env").write_text("API_KEY=base\nMODEL=gpt-4\n", encoding="utf-8")
+    env_d = home / "env.d"
+    env_d.mkdir()
+    (env_d / "secrets.env").write_text("API_KEY=secret\n", encoding="utf-8")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert (home / ".env") in loaded
+    assert (env_d / "secrets.env") in loaded
+    assert os.getenv("API_KEY") == "secret"
+    assert os.getenv("MODEL") == "gpt-4"
+
+
+def test_env_d_multiple_files_alphabetical_order(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_d = home / "env.d"
+    env_d.mkdir()
+    (env_d / "a.env").write_text("KEY=first\n", encoding="utf-8")
+    (env_d / "b.env").write_text("KEY=second\n", encoding="utf-8")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_d / "a.env", env_d / "b.env"]
+    assert os.getenv("KEY") == "second"
+
+
+def test_env_d_missing_dir_no_error(tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == []
+
+
+def test_env_d_empty_dir_no_error(tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "env.d").mkdir()
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == []
+
+
+def test_env_d_user_tier_still_overrides_project(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_d = home / "env.d"
+    env_d.mkdir()
+    (env_d / "secrets.env").write_text("API_KEY=from-secrets\n", encoding="utf-8")
+    project_env = tmp_path / ".env"
+    project_env.write_text("API_KEY=from-project\nOTHER=project-val\n", encoding="utf-8")
+
+    loaded = load_hermes_dotenv(hermes_home=home, project_env=project_env)
+
+    assert os.getenv("API_KEY") == "from-secrets"
+    assert os.getenv("OTHER") == "project-val"

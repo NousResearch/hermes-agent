@@ -8,6 +8,14 @@ description: "Complete reference of all environment variables used by Hermes Age
 
 Hermes reads environment variables from the process environment and, for user-managed secrets, from `~/.hermes/.env`. Keep API keys, bot tokens, OAuth secrets, and other credentials in `.env`; prefer `config.yaml` for non-secret behaviour settings when a config key exists. Some variables below are process-only overrides or internal bridge variables and should not be committed to `.env` just because they are documented here.
 
+## Env File Loading
+
+Hermes loads environment files in this order (each later source overrides earlier):
+
+1. **`~/.hermes/.env`** — main env file
+2. **`~/.hermes/env.d/*.env`** — drop-in directory, loaded alphabetically (useful for secret manager symlinks)
+3. **Project `.env`** — only fills values not already set by the above
+
 ## LLM Providers
 
 | Variable | Description |

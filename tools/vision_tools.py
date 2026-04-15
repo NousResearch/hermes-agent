@@ -466,6 +466,34 @@ async def vision_analyze_tool(
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
         
+        # Provider-native dispatch: when the active chat provider serves
+        # vision natively (via its registry entry in
+        # `hermes_cli.provider_native_tools`) and the user hasn't pinned
+        # `auxiliary.vision.provider` to a different backend, route there
+        # first.  Returns `None` when no native backend applies, in which
+        # case the auxiliary-client flow below runs unchanged.
+        try:
+            from hermes_cli.provider_native_tools import (
+                analyze_image as _native_analyze_image,
+                provider_has_native_tool as _native_has,
+            )
+            from hermes_cli.config import load_config as _load_config_for_vision
+            _vision_cfg = _load_config_for_vision()
+            _aux_vision = _vision_cfg.get("auxiliary", {}).get("vision", {}) \
+                if isinstance(_vision_cfg.get("auxiliary"), dict) else {}
+            _explicit_vision = str(_aux_vision.get("provider") or "").strip().lower()
+            if (
+                _native_has("vision", _vision_cfg)
+                and _explicit_vision in ("", "auto", "main")
+            ):
+                _native_result = _native_analyze_image(
+                    image_url, user_prompt, config=_vision_cfg,
+                )
+                if _native_result is not None:
+                    return _native_result
+        except Exception as _exc:
+            logger.debug("provider-native vision dispatch skipped: %s", _exc)
+
         # Determine if this is a local file path or a remote URL
         # Strip file:// scheme so file URIs resolve as local paths.
         resolved_url = image_url

@@ -24,6 +24,11 @@ from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
     get_nous_subscription_features,
 )
+from hermes_cli.provider_native_tools import (
+    apply_provider_native_tool_defaults,
+    describe_changes as describe_native_tool_changes,
+    get_native_tools as _provider_native_tools,
+)
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
 
@@ -843,9 +848,28 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         else:
             print_info(f"Keeping your existing TTS provider: {current_tts}")
 
+    # Wire tool defaults for chat providers that serve TTS / image / vision
+    # natively on the same credential.  Self-gates on the active provider;
+    # a no-op for providers not registered in
+    # `hermes_cli.provider_native_tools.NATIVE_TOOLS_BY_PROVIDER`.
+    native_changes = apply_provider_native_tool_defaults(config)
+    if native_changes:
+        print()
+        print_success(
+            "The same credential also unlocks the following — wired automatically:"
+        )
+        print(describe_native_tool_changes(native_changes, config))
+
     save_config(config)
 
-    if not quick and selected_provider != "nous":
+    # Skip the interactive TTS selector when the active provider already
+    # owns it (nous via subscription defaults, or any provider that
+    # declares `tts` in its native-tools registry).
+    if (
+        not quick
+        and selected_provider != "nous"
+        and "tts" not in _provider_native_tools(config)
+    ):
         _setup_tts_provider(config)
 
 

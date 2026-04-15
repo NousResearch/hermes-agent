@@ -381,6 +381,22 @@ def image_generate_tool(
                  "image": str or None  # URL of the upscaled image, or None if failed
              }
     """
+    # Provider-native dispatch: when the active chat provider serves image
+    # generation natively (via its registry entry in
+    # `hermes_cli.provider_native_tools`), route there first.  Returns
+    # `None` when no native backend applies, in which case the FAL flow
+    # below runs unchanged.
+    try:
+        from hermes_cli.provider_native_tools import generate_image as _native_generate_image
+        _native_result = _native_generate_image(
+            prompt=prompt, aspect_ratio=aspect_ratio,
+            num_images=num_images, output_format=output_format,
+        )
+        if _native_result is not None:
+            return _native_result
+    except Exception as _exc:
+        logger.debug("provider-native image dispatch skipped: %s", _exc)
+
     # Validate and map aspect_ratio to actual image_size
     aspect_ratio_lower = aspect_ratio.lower().strip() if aspect_ratio else DEFAULT_ASPECT_RATIO
     if aspect_ratio_lower not in ASPECT_RATIO_MAP:
@@ -550,6 +566,14 @@ def check_image_generation_requirements() -> bool:
     Returns:
         bool: True if requirements are met, False otherwise
     """
+    # Active chat provider's native image backend counts as "requirements
+    # met" without needing FAL_KEY.  See `hermes_cli.provider_native_tools`.
+    try:
+        from hermes_cli.provider_native_tools import native_credential_present
+        if native_credential_present("image_gen"):
+            return True
+    except Exception:
+        pass
     try:
         # Check API key
         if not check_fal_api_key():

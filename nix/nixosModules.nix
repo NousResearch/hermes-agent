@@ -28,7 +28,7 @@
 
   let
     cfg = config.services.hermes-agent;
-    hermes-agent = inputs.self.packages.${pkgs.system}.default;
+    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
     deepConfigType = lib.types.mkOptionType {

@@ -1118,10 +1118,23 @@ class MCPServerTask:
             # matching the SDK's own create_mcp_http_client defaults.
             import httpx
 
+            _original_url = httpx.URL(url)
+
+            async def _strip_auth_on_cross_origin_redirect(response):
+                """Strip Authorization headers when redirected to a different origin."""
+                if response.is_redirect and response.next_request:
+                    target = response.next_request.url
+                    if (target.scheme, target.host, target.port) != (
+                        _original_url.scheme, _original_url.host, _original_url.port,
+                    ):
+                        response.next_request.headers.pop("authorization", None)
+                        response.next_request.headers.pop("Authorization", None)
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
+                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
             }
             if headers:
                 client_kwargs["headers"] = headers

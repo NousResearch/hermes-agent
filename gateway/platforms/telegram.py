@@ -163,6 +163,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
 
+    @staticmethod
+    def _is_callback_user_authorized(user_id: str) -> bool:
+        """Return whether a Telegram inline-button caller may perform gated actions."""
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or user_id in allowed_ids
+
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
         configured = self.config.extra.get("fallback_ips", []) if getattr(self.config, "extra", None) else []
@@ -1440,12 +1449,9 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Only authorized users may click approval buttons.
                 caller_id = str(getattr(query.from_user, "id", ""))
-                allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-                if allowed_csv:
-                    allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-                    if "*" not in allowed_ids and caller_id not in allowed_ids:
-                        await query.answer(text="⛔ You are not authorized to approve commands.")
-                        return
+                if not self._is_callback_user_authorized(caller_id):
+                    await query.answer(text="⛔ You are not authorized to approve commands.")
+                    return
 
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
@@ -1490,6 +1496,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not data.startswith("update_prompt:"):
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(caller_id):
+            await query.answer(text="⛔ You are not authorized to answer update prompts.")
+            return
         await query.answer(text=f"Sent '{answer}' to the update process.")
         # Edit the message to show the choice and remove buttons
         label = "Yes" if answer == "y" else "No"

@@ -1433,52 +1433,52 @@ def setup_agent_settings(config: dict):
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
         config.get("agent", {}).get("max_turns", 90)
     )
-    print_info("Maximum tool-calling iterations per conversation.")
-    print_info("Higher = more complex tasks, but costs more tokens.")
-    print_info("Default is 90, which works for most tasks. Use 150+ for open exploration.")
+    print_info("대화 한 번에 도구를 호출할 수 있는 최대 반복 횟수입니다.")
+    print_info("값이 높을수록 더 복잡한 작업을 처리할 수 있지만 토큰 비용도 늘어납니다.")
+    print_info("기본값 90이면 대부분 충분하고, 열린 탐색 작업은 150+도 고려할 수 있습니다.")
 
-    max_iter_str = prompt("Max iterations", current_max)
+    max_iter_str = prompt("최대 반복 수", current_max)
     try:
         max_iter = int(max_iter_str)
         if max_iter > 0:
             save_env_value("HERMES_MAX_ITERATIONS", str(max_iter))
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
-            print_success(f"Max iterations set to {max_iter}")
+            print_success(f"최대 반복 수를 {max_iter}(으)로 설정했습니다")
     except ValueError:
-        print_warning("Invalid number, keeping current value")
+        print_warning("잘못된 숫자입니다. 현재 값을 유지합니다")
 
     # ── Tool Progress Display ──
     print_info("")
-    print_info("Tool Progress Display")
-    print_info("Controls how much tool activity is shown (CLI and messaging).")
-    print_info("  off     — Silent, just the final response")
-    print_info("  new     — Show tool name only when it changes (less noise)")
-    print_info("  all     — Show every tool call with a short preview")
-    print_info("  verbose — Full args, results, and debug logs")
+    print_info("도구 진행 표시")
+    print_info("도구 활동을 어느 정도까지 보여줄지 결정합니다. (CLI와 메시징 공통)")
+    print_info("  off     — 조용히, 최종 응답만 표시")
+    print_info("  new     — 도구 이름이 바뀔 때만 표시 (덜 시끄러움)")
+    print_info("  all     — 모든 도구 호출을 짧은 미리보기와 함께 표시")
+    print_info("  verbose — 전체 인자, 결과, 디버그 로그 표시")
 
     current_mode = config.get("display", {}).get("tool_progress", "all")
-    mode = prompt("Tool progress mode", current_mode)
+    mode = prompt("도구 진행 표시 모드", current_mode)
     if mode.lower() in ("off", "new", "all", "verbose"):
         if "display" not in config:
             config["display"] = {}
         config["display"]["tool_progress"] = mode.lower()
         save_config(config)
-        print_success(f"Tool progress set to: {mode.lower()}")
+        print_success(f"도구 진행 표시를 다음으로 설정했습니다: {mode.lower()}")
     else:
-        print_warning(f"Unknown mode '{mode}', keeping '{current_mode}'")
+        print_warning(f"알 수 없는 모드 '{mode}' 입니다. '{current_mode}'을(를) 유지합니다")
 
     # ── Context Compression ──
-    print_header("Context Compression")
-    print_info("Automatically summarizes old messages when context gets too long.")
+    print_header("컨텍스트 압축")
+    print_info("컨텍스트가 너무 길어지면 오래된 메시지를 자동으로 요약합니다.")
     print_info(
-        "Higher threshold = compress later (use more context). Lower = compress sooner."
+        "임계값이 높을수록 늦게 압축하고(더 많은 컨텍스트 사용), 낮을수록 빨리 압축합니다."
     )
 
     config.setdefault("compression", {})["enabled"] = True
 
     current_threshold = config.get("compression", {}).get("threshold", 0.50)
-    threshold_str = prompt("Compression threshold (0.5-0.95)", str(current_threshold))
+    threshold_str = prompt("압축 임계값 (0.5-0.95)", str(current_threshold))
     try:
         threshold = float(threshold_str)
         if 0.5 <= threshold <= 0.95:
@@ -1487,29 +1487,29 @@ def setup_agent_settings(config: dict):
         pass
 
     print_success(
-        f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
+        f"컨텍스트 압축 임계값을 {config['compression'].get('threshold', 0.50)}(으)로 설정했습니다"
     )
 
     # ── Session Reset Policy ──
-    print_header("Session Reset Policy")
+    print_header("세션 리셋 정책")
     print_info(
-        "Messaging sessions (Telegram, Discord, etc.) accumulate context over time."
+        "메시징 세션(Telegram, Discord 등)은 시간이 지날수록 컨텍스트가 누적됩니다."
     )
     print_info(
-        "Each message adds to the conversation history, which means growing API costs."
-    )
-    print_info("")
-    print_info(
-        "To manage this, sessions can automatically reset after a period of inactivity"
-    )
-    print_info(
-        "or at a fixed time each day. When a reset happens, the agent saves important"
-    )
-    print_info(
-        "things to its persistent memory first — but the conversation context is cleared."
+        "메시지를 보낼수록 대화 기록이 길어지고, 그만큼 API 비용도 커질 수 있습니다."
     )
     print_info("")
-    print_info("You can also manually reset anytime by typing /reset in chat.")
+    print_info(
+        "이를 관리하기 위해, 일정 시간 비활성 상태가 지속되거나 매일 정해진 시각에"
+    )
+    print_info(
+        "세션을 자동 리셋하도록 설정할 수 있습니다. 리셋 시 중요한 정보는 먼저"
+    )
+    print_info(
+        "지속 메모리에 저장되지만, 대화 컨텍스트 자체는 비워집니다."
+    )
+    print_info("")
+    print_info("채팅에서 /reset을 입력해 언제든 수동으로 리셋할 수도 있습니다.")
     print_info("")
 
     reset_choices = [
@@ -1527,20 +1527,20 @@ def setup_agent_settings(config: dict):
 
     default_reset = {"both": 0, "idle": 1, "daily": 2, "none": 3}.get(current_mode, 0)
 
-    reset_idx = prompt_choice("Session reset mode:", reset_choices, default_reset)
+    reset_idx = prompt_choice("세션 리셋 모드:", reset_choices, default_reset)
 
     config.setdefault("session_reset", {})
 
     if reset_idx == 0:  # Both
         config["session_reset"]["mode"] = "both"
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        idle_str = prompt("  비활성 타임아웃 (분)", str(current_idle))
         try:
             idle_val = int(idle_str)
             if idle_val > 0:
                 config["session_reset"]["idle_minutes"] = idle_val
         except ValueError:
             pass
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        hour_str = prompt("  일일 리셋 시각 (0-23, 로컬 시간)", str(current_hour))
         try:
             hour_val = int(hour_str)
             if 0 <= hour_val <= 23:
@@ -1548,11 +1548,11 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min idle or daily at {config['session_reset'].get('at_hour', 4)}:00"
+            f"세션은 {config['session_reset'].get('idle_minutes', 1440)}분 비활성 후 또는 매일 {config['session_reset'].get('at_hour', 4)}:00에 리셋됩니다"
         )
     elif reset_idx == 1:  # Idle only
         config["session_reset"]["mode"] = "idle"
-        idle_str = prompt("  Inactivity timeout (minutes)", str(current_idle))
+        idle_str = prompt("  비활성 타임아웃 (분)", str(current_idle))
         try:
             idle_val = int(idle_str)
             if idle_val > 0:
@@ -1560,11 +1560,11 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset after {config['session_reset'].get('idle_minutes', 1440)} min of inactivity"
+            f"세션은 {config['session_reset'].get('idle_minutes', 1440)}분 비활성 상태가 되면 리셋됩니다"
         )
     elif reset_idx == 2:  # Daily only
         config["session_reset"]["mode"] = "daily"
-        hour_str = prompt("  Daily reset hour (0-23, local time)", str(current_hour))
+        hour_str = prompt("  일일 리셋 시각 (0-23, 로컬 시간)", str(current_hour))
         try:
             hour_val = int(hour_str)
             if 0 <= hour_val <= 23:
@@ -1572,15 +1572,15 @@ def setup_agent_settings(config: dict):
         except ValueError:
             pass
         print_success(
-            f"Sessions reset daily at {config['session_reset'].get('at_hour', 4)}:00"
+            f"세션은 매일 {config['session_reset'].get('at_hour', 4)}:00에 리셋됩니다"
         )
     elif reset_idx == 3:  # None
         config["session_reset"]["mode"] = "none"
         print_info(
-            "Sessions will never auto-reset. Context is managed only by compression."
+            "세션은 자동으로 리셋되지 않습니다. 컨텍스트 관리는 압축만으로 처리됩니다."
         )
         print_warning(
-            "Long conversations will grow in cost. Use /reset manually when needed."
+            "긴 대화는 비용이 계속 늘어날 수 있습니다. 필요할 때 /reset을 수동으로 사용하세요."
         )
     # else: keep current (idx == 4)
 

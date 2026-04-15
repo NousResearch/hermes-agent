@@ -346,6 +346,10 @@ class BaseEnvironment(ABC):
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")
+        # If the command ends with & (background), disown all jobs so the shell
+        # exits immediately instead of waiting for them — prevents stdin hang.
+        if command.strip().endswith("&"):
+            parts.append("jobs -p | xargs -r disown 2>/dev/null; disown -a 2>/dev/null || true")
         parts.append("__hermes_ec=$?")
 
         # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)

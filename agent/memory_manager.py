@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -74,6 +75,16 @@ class MemoryManager:
     The builtin provider is always first. Only one non-builtin (external)
     provider is allowed.  Failures in one provider never block the other.
     """
+
+    # Class-level prefetch cache shared across all MemoryManager instances
+    # within the same process.  This survives AIAgent recreation in the
+    # gateway (where the agent cache signature may not match between turns,
+    # causing a new AIAgent + new MemoryManager to be created each turn).
+    #
+    # Key: session_id, Value: str (formatted prefetch context)
+    # Entries are consumed (popped) by prefetch_all() to prevent stale reuse.
+    _prefetch_cache: Dict[str, str] = {}
+    _prefetch_cache_lock: threading.Lock = threading.Lock()
 
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
@@ -168,7 +179,25 @@ class MemoryManager:
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
+
+        Before consulting per-provider caches, this checks the class-level
+        ``_prefetch_cache`` which survives AIAgent recreation in the gateway.
         """
+        # 1) Check class-level cross-instance cache first (gateway-safe).
+        #    Pop the entry so it is consumed exactly once.
+        if session_id:
+            with self._prefetch_cache_lock:
+                cached = self._prefetch_cache.pop(session_id, None)
+            if cached:
+                logger.debug(
+                    "MemoryManager: using cross-instance prefetch cache "
+                    "for session %s (%d chars)",
+                    session_id[:16],
+                    len(cached),
+                )
+                return cached
+
+        # 2) Fall back to per-provider prefetch (works in CLI / single-agent).
         parts = []
         for provider in self._providers:
             try:
@@ -183,7 +212,21 @@ class MemoryManager:
         return "\n\n".join(parts)
 
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
-        """Queue background prefetch on all providers for the next turn."""
+        """Queue background prefetch on all providers for the next turn.
+
+        For providers that use background threads (e.g. OpenViking), the
+        result is collected after the thread completes and stored in the
+        class-level ``_prefetch_cache`` keyed by *session_id*.  This
+        ensures the result survives AIAgent recreation between gateway
+        turns, where ``_agent_config_signature`` mismatches cause a new
+        agent and new MemoryManager to be created each message.
+        """
+        external_providers = [
+            p for p in self._providers
+            if p.name != "builtin"
+        ]
+
+        # Fire each provider's own queue_prefetch (starts background thread).
         for provider in self._providers:
             try:
                 provider.queue_prefetch(query, session_id=session_id)
@@ -192,6 +235,50 @@ class MemoryManager:
                     "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
                     provider.name, e,
                 )
+
+        # If we have external providers and a session_id, schedule a
+        # post-completion callback that transfers the provider's instance-
+        # level prefetch result into the class-level cross-instance cache.
+        if not external_providers or not session_id:
+            return
+
+        def _drain_to_class_cache():
+            """Wait for background threads, then cache results at class level."""
+            parts = []
+            for provider in external_providers:
+                try:
+                    # Access provider's internal prefetch state (standard
+                    # pattern used by OpenViking and similar providers).
+                    thread = getattr(provider, "_prefetch_thread", None)
+                    lock = getattr(provider, "_prefetch_lock", None)
+                    if thread and lock:
+                        thread.join(timeout=5.0)
+                        with lock:
+                            result = getattr(provider, "_prefetch_result", "")
+                            if hasattr(provider, "_prefetch_result"):
+                                provider._prefetch_result = ""
+                        if result and result.strip():
+                            parts.append(result)
+                except Exception as e:
+                    logger.debug(
+                        "Memory provider '%s' prefetch drain failed (non-fatal): %s",
+                        provider.name, e,
+                    )
+            if parts:
+                merged = "\n\n".join(parts)
+                with self._prefetch_cache_lock:
+                    self._prefetch_cache[session_id] = merged
+                logger.debug(
+                    "MemoryManager: cached prefetch result for session %s (%d chars)",
+                    session_id[:16],
+                    len(merged),
+                )
+
+        threading.Thread(
+            target=_drain_to_class_cache,
+            daemon=True,
+            name="memory-prefetch-cache",
+        ).start()
 
     # -- Sync ----------------------------------------------------------------
 

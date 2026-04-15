@@ -97,6 +97,29 @@ _DB_CONNSTR_RE = re.compile(
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 
+# SSH config sensitive-metadata fields.
+#
+# These directives reveal where private keys live on disk (IdentityFile,
+# IdentityAgent, CertificateFile) or which bastion hosts/commands are used
+# to reach internal networks (ProxyJump, ProxyCommand). An attacker who
+# reads ~/.ssh/config can use these to:
+#   - learn exact paths to steal for credential theft
+#   - enumerate internal infrastructure (bastions, jump hosts)
+#   - replay ProxyCommand scripts to reach protected networks
+#
+# We intentionally leave Host / HostName / User / Port visible because
+# they are frequently needed for legitimate debugging and logging, and
+# leaking them alone does not materially help an attacker who already
+# has read access to the file.
+#
+# Matching is case-insensitive (SSH config keywords are case-insensitive
+# per sshd_config(5)) and multiline-aware (each config line evaluated
+# independently). The value is replaced with "***" so the structure of
+# the config -- which keywords are set, and where -- remains visible.
+_SSH_CONFIG_SENSITIVE_RE = re.compile(
+    r"(?mi)^(\s*)(IdentityFile|IdentityAgent|CertificateFile|ProxyCommand|ProxyJump)(\s+)(.+)$"
+)
+
 # Compile known prefix patterns into one alternation
 _PREFIX_RE = re.compile(
     r"(?<![A-Za-z0-9_-])(" + "|".join(_PREFIX_PATTERNS) + r")(?![A-Za-z0-9_-])"
@@ -166,6 +189,12 @@ def redact_sensitive_text(text: str) -> str:
             return phone[:2] + "****" + phone[-2:]
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
+
+    # SSH config sensitive metadata (IdentityFile, ProxyJump, ...)
+    text = _SSH_CONFIG_SENSITIVE_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}***",
+        text,
+    )
 
     return text
 

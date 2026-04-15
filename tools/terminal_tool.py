@@ -111,6 +111,35 @@ def _check_disk_usage_warning():
 # Session-cached sudo password (persists until CLI exits)
 _cached_sudo_password: str = ""
 
+# Default timeout (seconds) for the interactive sudo password prompt.
+# Override via HERMES_SUDO_TIMEOUT env var. Set to 0 to skip the prompt
+# entirely -- useful for non-interactive automation (cron, gateway) where
+# a blocking prompt would waste time on every accidental sudo invocation.
+_DEFAULT_SUDO_TIMEOUT: int = 45
+
+
+def _get_sudo_timeout() -> int:
+    """Return the sudo password prompt timeout in seconds.
+
+    Reads ``HERMES_SUDO_TIMEOUT`` from the environment. Values <= 0 cause
+    the prompt to be skipped immediately (graceful-fail path). Invalid
+    values fall back to ``_DEFAULT_SUDO_TIMEOUT`` with a warning so a
+    typo in config cannot silently disable the prompt.
+    """
+    raw = os.getenv("HERMES_SUDO_TIMEOUT", "").strip()
+    if not raw:
+        return _DEFAULT_SUDO_TIMEOUT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid HERMES_SUDO_TIMEOUT=%r (expected integer seconds), "
+            "falling back to %ds",
+            raw, _DEFAULT_SUDO_TIMEOUT,
+        )
+        return _DEFAULT_SUDO_TIMEOUT
+    return max(0, value)
+
 # Optional UI callbacks for interactive prompts. When set, these are called
 # instead of the default /dev/tty or input() readers. The CLI registers these
 # so prompts route through prompt_toolkit's event loop.
@@ -201,23 +230,39 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     return output
 
 
-def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
+def _prompt_for_sudo_password(timeout_seconds: int | None = None) -> str:
     """
     Prompt user for sudo password with timeout.
-    
+
     Returns the password if entered, or empty string if:
     - User presses Enter without input (skip)
-    - Timeout expires (45s default)
+    - Timeout expires (see HERMES_SUDO_TIMEOUT, default 45s)
+    - HERMES_SUDO_TIMEOUT=0 — skipped immediately without prompting
     - Any error occurs
-    
+
     Only works in interactive mode (HERMES_INTERACTIVE=1).
     If a _sudo_password_callback is registered (by the CLI), delegates to it
     so the prompt integrates with prompt_toolkit's UI.  Otherwise reads
     directly from /dev/tty with echo disabled.
+
+    When ``timeout_seconds`` is None (the default), the timeout is read from
+    ``HERMES_SUDO_TIMEOUT`` on each call via :func:`_get_sudo_timeout`, so
+    the env var takes effect without restarting the process. Callers that
+    want to force a specific timeout may pass it explicitly.
     """
     import sys
     import time as time_module
-    
+
+    if timeout_seconds is None:
+        timeout_seconds = _get_sudo_timeout()
+
+    # Timeout of 0 (or negative) means "skip immediately without prompting".
+    # This is the fast-fail path for cron, gateway, and other non-interactive
+    # automation where a blocking prompt would just waste 45s on every
+    # accidental sudo invocation before failing anyway.
+    if timeout_seconds <= 0:
+        return ""
+
     # Use the registered callback when available (prompt_toolkit-compatible)
     if _sudo_password_callback is not None:
         try:
@@ -470,7 +515,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     how they handle the non-None sudo_stdin case.
 
     If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
-      Prompts user for password with 45s timeout, caches for session.
+      Prompts user for password with a timeout (default 45s, configurable
+      via ``HERMES_SUDO_TIMEOUT``; set to 0 to skip the prompt entirely).
 
     If SUDO_PASSWORD is not set and NOT interactive:
       Command runs as-is (fails gracefully with "sudo: a password is required").
@@ -487,7 +533,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
 
     if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
-        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        # timeout_seconds=None → honor HERMES_SUDO_TIMEOUT (default 45s)
+        sudo_password = _prompt_for_sudo_password()
         if sudo_password:
             _cached_sudo_password = sudo_password
 

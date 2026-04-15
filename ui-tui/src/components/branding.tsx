@@ -52,15 +52,17 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
 
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''
+    let shown = 0
 
-    for (const item of items.sort()) {
+    for (const item of [...items].sort()) {
       const next = line ? `${line}, ${item}` : item
 
       if (pfx.length + next.length > lineBudget) {
-        return line ? `${line}, …+${items.length - line.split(', ').length}` : `${item}, …`
+        return line ? `${line}, …+${items.length - shown}` : `${item}, …`
       }
 
       line = next
+      shown++
     }
 
     return line

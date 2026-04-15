@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { isTransientTrailLine, sameToolTrailGroup } from '../lib/text.js'
 import type { ActiveTool, ActivityItem } from '../types.js'
@@ -191,8 +191,8 @@ export function useTurnState(): UseTurnStateResult {
     [clearReasoning, idle, streaming]
   )
 
-  return {
-    actions: {
+  const actions = useMemo(
+    () => ({
       clearReasoning,
       endReasoningPhase,
       idle,
@@ -212,8 +212,23 @@ export function useTurnState(): UseTurnStateResult {
       setStreaming,
       setTools,
       setTurnTrail
-    },
-    refs: {
+    }),
+    [
+      clearReasoning,
+      endReasoningPhase,
+      idle,
+      interruptTurn,
+      pruneTransient,
+      pulseReasoningStreaming,
+      pushActivity,
+      pushTrail,
+      scheduleReasoning,
+      scheduleStreaming
+    ]
+  )
+
+  const refs = useMemo(
+    () => ({
       activeToolsRef,
       bufRef,
       interruptedRef,
@@ -228,8 +243,12 @@ export function useTurnState(): UseTurnStateResult {
       toolTokenAccRef,
       toolCompleteRibbonRef,
       turnToolsRef
-    },
-    state: {
+    }),
+    []
+  )
+
+  const state = useMemo(
+    () => ({
       activity,
       reasoning,
       reasoningTokens,
@@ -239,6 +258,13 @@ export function useTurnState(): UseTurnStateResult {
       streaming,
       tools,
       turnTrail
-    }
+    }),
+    [activity, reasoning, reasoningTokens, reasoningActive, toolTokens, reasoningStreaming, streaming, tools, turnTrail]
+  )
+
+  return {
+    actions,
+    refs,
+    state
   }
 }

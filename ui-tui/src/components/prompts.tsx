@@ -93,7 +93,7 @@ export function ClarifyPrompt({
       return
     }
 
-    if (typing) {
+    if (typing || !choices.length) {
       return
     }
 
@@ -117,6 +117,8 @@ export function ClarifyPrompt({
   })
 
   if (typing || !choices.length) {
+    const hint = choices.length ? 'Enter send · Esc back · Ctrl+C cancel' : 'Enter send · Esc cancel · Ctrl+C cancel'
+
     return (
       <Box flexDirection="column">
         {heading}
@@ -126,7 +128,7 @@ export function ClarifyPrompt({
           <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
 
-        <Text color={t.color.dim}>Enter send · Esc back · Ctrl+C cancel</Text>
+        <Text color={t.color.dim}>{hint}</Text>
       </Box>
     )
   }

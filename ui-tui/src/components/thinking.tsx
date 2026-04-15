@@ -74,10 +74,16 @@ function StreamCursor({
   const [on, setOn] = useState(true)
 
   useEffect(() => {
+    if (!visible || !streaming) {
+      setOn(true)
+
+      return
+    }
+
     const id = setInterval(() => setOn(v => !v), 420)
 
     return () => clearInterval(id)
-  }, [])
+  }, [streaming, visible])
 
   return visible ? (
     <Text color={color} dimColor={dimColor}>

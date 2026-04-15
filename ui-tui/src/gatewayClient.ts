@@ -93,6 +93,7 @@ export class GatewayClient extends EventEmitter {
     const pyPath = (env.PYTHONPATH ?? '').trim()
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.ready = false
+    this.bufferedEvents = []
     this.pendingExit = undefined
     this.stdoutRl?.close()
     this.stderrRl?.close()

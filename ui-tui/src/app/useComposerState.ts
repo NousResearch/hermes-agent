@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { useStore } from '@nanostores/react'
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
 import { useCompletion } from '../hooks/useCompletion.js'
@@ -104,8 +104,8 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
     }
   }, [input, inputBuf, submitRef])
 
-  return {
-    actions: {
+  const actions = useMemo(
+    () => ({
       clearIn,
       dequeue,
       enqueue,
@@ -120,15 +120,35 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
       setPasteSnips,
       setQueueEdit,
       syncQueue
-    },
-    refs: {
+    }),
+    [
+      clearIn,
+      dequeue,
+      enqueue,
+      handleTextPaste,
+      openEditor,
+      pushHistory,
+      replaceQ,
+      setCompIdx,
+      setHistoryIdx,
+      setQueueEdit,
+      syncQueue
+    ]
+  )
+
+  const refs = useMemo(
+    () => ({
       historyDraftRef,
       historyRef,
       queueEditRef,
       queueRef,
       submitRef
-    },
-    state: {
+    }),
+    [historyDraftRef, historyRef, queueEditRef, queueRef, submitRef]
+  )
+
+  const state = useMemo(
+    () => ({
       compIdx,
       compReplace,
       completions,
@@ -138,6 +158,13 @@ export function useComposerState({ gw, onClipboardPaste, submitRef }: UseCompose
       pasteSnips,
       queueEditIdx,
       queuedDisplay
-    }
+    }),
+    [compIdx, compReplace, completions, historyIdx, input, inputBuf, pasteSnips, queueEditIdx, queuedDisplay]
+  )
+
+  return {
+    actions,
+    refs,
+    state
   }
 }

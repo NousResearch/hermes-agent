@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 export function useQueue() {
   const queueRef = useRef<string[]>([])
@@ -6,30 +6,47 @@ export function useQueue() {
   const queueEditRef = useRef<number | null>(null)
   const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
 
-  const syncQueue = () => setQueuedDisplay([...queueRef.current])
+  const syncQueue = useCallback(() => {
+    setQueuedDisplay([...queueRef.current])
+  }, [])
 
-  const setQueueEdit = (idx: number | null) => {
+  const setQueueEdit = useCallback((idx: number | null) => {
     queueEditRef.current = idx
     setQueueEditIdx(idx)
-  }
+  }, [])
 
-  const enqueue = (text: string) => {
-    queueRef.current.push(text)
-    syncQueue()
-  }
+  const enqueue = useCallback(
+    (text: string) => {
+      queueRef.current.push(text)
+      syncQueue()
+    },
+    [syncQueue]
+  )
 
-  const dequeue = () => {
-    const [head, ...rest] = queueRef.current
-    queueRef.current = rest
+  const dequeue = useCallback(() => {
+    const head = queueRef.current.shift()
     syncQueue()
 
     return head
-  }
+  }, [syncQueue])
 
-  const replaceQ = (i: number, text: string) => {
-    queueRef.current[i] = text
-    syncQueue()
-  }
+  const replaceQ = useCallback(
+    (i: number, text: string) => {
+      queueRef.current[i] = text
+      syncQueue()
+    },
+    [syncQueue]
+  )
 
-  return { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue }
+  return {
+    queueRef,
+    queueEditRef,
+    queuedDisplay,
+    queueEditIdx,
+    enqueue,
+    dequeue,
+    replaceQ,
+    setQueueEdit,
+    syncQueue
+  }
 }

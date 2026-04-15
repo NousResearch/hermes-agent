@@ -143,7 +143,7 @@ export function AppOverlays({
                 <Box
                   backgroundColor={active ? (ui.theme.color.completionCurrentBg as any) : undefined}
                   flexDirection="row"
-                  key={item.text}
+                  key={`${start + i}:${item.text}:${item.display}:${item.meta ?? ''}`}
                   width="100%"
                 >
                   <Text bold={active} color={ui.theme.color.bronze as any}>

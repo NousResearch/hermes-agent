@@ -310,3 +310,31 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"
+
+
+def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
+    from gateway.config import load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "slack:\n"
+        "  reply_in_thread: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+
+    config = load_gateway_config()
+
+    assert config is not None
+    slack_config = config.platforms[Platform.SLACK]
+    assert slack_config.extra.get("reply_in_thread") is False
+
+    adapter = SlackAdapter(slack_config)
+    assert adapter._resolve_thread_ts(reply_to="171.000", metadata={}) is None
+    assert adapter._resolve_thread_ts(
+        reply_to="171.000",
+        metadata={"thread_id": "171.000"},
+    ) == "171.000"

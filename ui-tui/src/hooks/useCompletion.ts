@@ -1,30 +1,36 @@
 import { useEffect, useRef, useState } from 'react'
 
+import type { CompletionItem } from '../app/interfaces.js'
 import type { GatewayClient } from '../gatewayClient.js'
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
 
+interface CompletionResult {
+  items?: CompletionItem[]
+  replace_from?: number
+}
+
 export function useCompletion(input: string, blocked: boolean, gw: GatewayClient) {
-  const [completions, setCompletions] = useState<{ text: string; display: string; meta: string }[]>([])
+  const [completions, setCompletions] = useState<CompletionItem[]>([])
   const [compIdx, setCompIdx] = useState(0)
   const [compReplace, setCompReplace] = useState(0)
   const ref = useRef('')
 
   useEffect(() => {
     const clear = () => {
-      if (!completions.length) {
-        return
-      }
-
-      setCompletions([])
-      setCompIdx(0)
+      setCompletions(prev => (prev.length ? [] : prev))
+      setCompIdx(prev => (prev ? 0 : prev))
+      setCompReplace(prev => (prev ? 0 : prev))
     }
 
-    if (blocked || input === ref.current) {
-      if (blocked) {
-        clear()
-      }
+    if (blocked) {
+      ref.current = ''
+      clear()
 
+      return
+    }
+
+    if (input === ref.current) {
       return
     }
 
@@ -49,7 +55,9 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
         : gw.request('complete.path', { word: pathWord })
 
       req
-        .then((r: any) => {
+        .then(raw => {
+          const r = raw as CompletionResult | null | undefined
+
           if (ref.current !== input) {
             return
           }
@@ -76,7 +84,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
     }, 60)
 
     return () => clearTimeout(t)
-  }, [input, blocked, gw]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [blocked, gw, input])
 
   return { completions, compIdx, setCompIdx, compReplace }
 }

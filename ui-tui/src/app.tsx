@@ -173,21 +173,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     [selection]
   )
 
-  // ── Resize RPC ───────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!ui.sid || !stdout) {
-      return
-    }
-
-    const onResize = () => rpc('terminal.resize', { session_id: ui.sid, cols: stdout.columns ?? 80 })
-    stdout.on('resize', onResize)
-
-    return () => {
-      stdout.off('resize', onResize)
-    }
-  }, [stdout, ui.sid]) // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     const id = setInterval(() => setClockNow(Date.now()), 1000)
 
@@ -255,6 +240,21 @@ export function App({ gw }: { gw: GatewayClient }) {
   )
 
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
+
+  // ── Resize RPC ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!ui.sid || !stdout) {
+      return
+    }
+
+    const onResize = () => rpc('terminal.resize', { session_id: ui.sid, cols: stdout.columns ?? 80 })
+    stdout.on('resize', onResize)
+
+    return () => {
+      stdout.off('resize', onResize)
+    }
+  }, [rpc, stdout, ui.sid])
 
   const answerClarify = useCallback(
     (answer: string) => {
@@ -729,8 +729,8 @@ export function App({ gw }: { gw: GatewayClient }) {
         return
       }
 
-      composerActions.clearIn()
       const editIdx = composerRefs.queueEditRef.current
+      composerActions.clearIn()
 
       if (editIdx !== null) {
         composerActions.replaceQueue(editIdx, full)
@@ -769,8 +769,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       send(full)
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [appendMessage, composerActions, composerRefs]
+    [appendMessage, composerActions, composerRefs, interpolate, send, sendQueued, shellExec, sys]
   )
 
   // ── Input handling ───────────────────────────────────────────────

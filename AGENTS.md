@@ -60,9 +60,10 @@ hermes-agent/
 │   ├── src/entry.tsx        # TTY gate + render()
 │   ├── src/app.tsx          # Main state machine and UI
 │   ├── src/gatewayClient.ts # Child process + JSON-RPC bridge
-│   ├── src/components/      # Ink components (branding, markdown, prompts, etc.)
-│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue
-│   └── src/lib/             # Pure helpers (history, osc52, text)
+│   ├── src/app/             # Decomposed app logic (event handler, slash handler, stores, hooks)
+│   ├── src/components/      # Ink components (branding, markdown, prompts, pickers, etc.)
+│   ├── src/hooks/           # useCompletion, useInputHistory, useQueue, useVirtualHistory
+│   └── src/lib/             # Pure helpers (history, osc52, text, rpc, messages)
 ├── tui_gateway/          # Python JSON-RPC backend for Ink TUI
 │   ├── entry.py             # stdio entrypoint
 │   ├── server.py            # RPC handlers and session logic
@@ -215,7 +216,7 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 | Surface | Ink component | Gateway method |
 |---------|---------------|----------------|
 | Chat streaming | `app.tsx` + `messageLine.tsx` | `prompt.submit` → `message.delta/complete` |
-| Tool activity | `activityLane.tsx` | `tool.start/progress/complete` |
+| Tool activity | `thinking.tsx` | `tool.start/progress/complete` |
 | Approvals | `prompts.tsx` | `approval.respond` ← `approval.request` |
 | Clarify/sudo/secret | `prompts.tsx`, `maskedPrompt.tsx` | `clarify/sudo/secret.respond` |
 | Session picker | `sessionPicker.tsx` | `session.list/resume` |
@@ -232,13 +233,14 @@ Newline-delimited JSON-RPC over stdio. Requests from Ink, events from Python. Se
 
 ```bash
 cd ui-tui
-npm install    # first time
-npm run dev    # watch mode
-npm start      # production
-npm run build  # typecheck
-npm run lint   # eslint
-npm run fmt    # prettier
-npm test       # vitest
+npm install       # first time
+npm run dev       # watch mode (rebuilds hermes-ink + tsx --watch)
+npm start         # production
+npm run build     # full build (hermes-ink + tsc)
+npm run type-check # typecheck only (tsc --noEmit)
+npm run lint      # eslint
+npm run fmt       # prettier
+npm test          # vitest
 ```
 
 ---

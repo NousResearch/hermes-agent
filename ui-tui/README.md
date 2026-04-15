@@ -59,11 +59,29 @@ npm run fmt
 npm run fix
 ```
 
-There is no package-local test script today.
+Tests use vitest:
+
+```bash
+npm test         # single run
+npm run test:watch
+```
 
 ## App model
 
-`src/app.tsx` is the center of the UI. It holds:
+`src/app.tsx` is the center of the UI. Heavy logic is split into `src/app/`:
+
+- `createGatewayEventHandler.ts` — maps gateway events to state updates
+- `createSlashHandler.ts` — local slash command dispatch
+- `useComposerState.ts` — draft, multiline buffer, queue editing
+- `useInputHandlers.ts` — keypress routing
+- `useTurnState.ts` — agent turn lifecycle
+- `overlayStore.ts` / `uiStore.ts` — nanostores for overlay and UI state
+- `gatewayContext.tsx` — React context for the gateway client
+- `constants.ts`, `helpers.ts`, `interfaces.ts`
+
+The top-level `app.tsx` composes these into the Ink tree with `Static` transcript output, a live streaming assistant row, prompt overlays, queue preview, status rule, input line, and completion list.
+
+State managed at the top level includes:
 
 - transcript and streaming state
 - queued messages and input history
@@ -260,30 +278,62 @@ Current color overrides:
 ## File map
 
 ```text
-ui-tui/src/
-  entry.tsx              TTY gate + render()
-  app.tsx                main state machine and UI
-  gatewayClient.ts       child process + JSON-RPC bridge
-  theme.ts               default palette + skin merge
-  constants.ts           display constants, hotkeys, tool labels
-  types.ts               shared client-side types
-  banner.ts              ASCII art data
+ui-tui/
+  packages/hermes-ink/   forked Ink renderer (local dep)
+  src/
+    entry.tsx            TTY gate + render()
+    app.tsx              top-level Ink tree, composes src/app/*
+    gatewayClient.ts     child process + JSON-RPC bridge
+    theme.ts             default palette + skin merge
+    constants.ts         display constants, hotkeys, tool labels
+    types.ts             shared client-side types
+    banner.ts            ASCII art data
 
-  components/
-    branding.tsx         banner + session summary
-    markdown.tsx         Markdown-to-Ink renderer
-    maskedPrompt.tsx     masked input for sudo / secrets
-    messageLine.tsx      transcript rows
-    prompts.tsx          approval + clarify flows
-    queuedMessages.tsx   queued input preview
-    sessionPicker.tsx    session resume picker
-    textInput.tsx        custom line editor
-    thinking.tsx         spinner, reasoning, tool activity
+    app/
+      createGatewayEventHandler.ts  event → state mapping
+      createSlashHandler.ts         local slash dispatch
+      useComposerState.ts           draft + multiline + queue editing
+      useInputHandlers.ts           keypress routing
+      useTurnState.ts               agent turn lifecycle
+      overlayStore.ts               nanostores for overlays
+      uiStore.ts                    nanostores for UI flags
+      gatewayContext.tsx             React context for gateway client
+      constants.ts                  app-level constants
+      helpers.ts                    pure helpers
+      interfaces.ts                 internal interfaces
 
-  lib/
-    history.ts           persistent input history
-    osc52.ts             OSC 52 clipboard copy
-    text.ts              text helpers, ANSI detection, previews
+    components/
+      appChrome.tsx      status bar, input row, completions
+      appLayout.tsx      top-level layout composition
+      appOverlays.tsx    overlay routing (pickers, prompts)
+      branding.tsx       banner + session summary
+      markdown.tsx       Markdown-to-Ink renderer
+      maskedPrompt.tsx   masked input for sudo / secrets
+      messageLine.tsx    transcript rows
+      modelPicker.tsx    model switch picker
+      prompts.tsx        approval + clarify flows
+      queuedMessages.tsx queued input preview
+      sessionPicker.tsx  session resume picker
+      textInput.tsx      custom line editor
+      thinking.tsx       spinner, reasoning, tool activity
+
+    hooks/
+      useCompletion.ts   tab completion (slash + path)
+      useInputHistory.ts persistent history navigation
+      useQueue.ts        queued message management
+      useVirtualHistory.ts in-memory history for pickers
+
+    lib/
+      history.ts         persistent input history
+      messages.ts        message formatting helpers
+      osc52.ts           OSC 52 clipboard copy
+      rpc.ts             JSON-RPC type helpers
+      text.ts            text helpers, ANSI detection, previews
+
+    types/
+      hermes-ink.d.ts    type declarations for @hermes/ink
+
+    __tests__/           vitest suite
 ```
 
 Related Python side:
@@ -293,8 +343,5 @@ tui_gateway/
   entry.py               stdio entrypoint
   server.py              RPC handlers and session logic
   render.py              optional rich/ANSI bridge
+  slash_worker.py        persistent HermesCLI subprocess for slash commands
 ```
-
-## Notes
-
-- No dead code: `main.tsx`, `altScreen.tsx`, `commandPalette.tsx`, and `lib/slash.ts` have been removed.

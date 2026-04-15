@@ -108,6 +108,41 @@ class TestSanitizeApiMessages:
         assert len(out) == 2
         assert out[1]["tool_call_id"] == "c6"
 
+    def test_whitespace_tool_call_id_matched(self):
+        """Whitespace around tool_call_id should not cause orphan misclassification (#9999)."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("call_123")]},
+            tool_result("  call_123  "),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        # Should match: 1 assistant + 1 tool result (no stub, no drop)
+        assert len(out) == 2
+        assert out[0]["role"] == "assistant"
+        assert out[1]["role"] == "tool"
+        assert out[1]["tool_call_id"] == "  call_123  "  # original preserved, just matched correctly
+
+    def test_whitespace_in_assistant_tool_call_id_matched(self):
+        """Whitespace in assistant-side tool_call id should also match."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("  c7  ")]},
+            tool_result("c7"),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 2
+        assert out[0]["role"] == "assistant"
+        assert out[1]["role"] == "tool"
+
+    def test_both_sides_whitespace_matched(self):
+        """Whitespace on both assistant and result side should still match."""
+        msgs = [
+            {"role": "assistant", "tool_calls": [assistant_dict_call("  x  ")]},
+            tool_result("  x  "),
+        ]
+        out = AIAgent._sanitize_api_messages(msgs)
+        assert len(out) == 2
+        assert out[0]["role"] == "assistant"
+        assert out[1]["role"] == "tool"
+
 
 # ---------------------------------------------------------------------------
 # Phase 2a — _cap_delegate_task_calls

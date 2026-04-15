@@ -3351,21 +3351,21 @@ class AIAgent:
                 for tc in msg.get("tool_calls") or []:
                     cid = AIAgent._get_tool_call_id_static(tc)
                     if cid:
-                        surviving_call_ids.add(cid)
+                        surviving_call_ids.add(cid.strip())
 
         result_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "tool":
                 cid = msg.get("tool_call_id")
                 if cid:
-                    result_call_ids.add(cid)
+                    result_call_ids.add(cid.strip() if isinstance(cid, str) else cid)
 
         # 1. Drop tool results with no matching assistant call
         orphaned_results = result_call_ids - surviving_call_ids
         if orphaned_results:
             messages = [
                 m for m in messages
-                if not (m.get("role") == "tool" and m.get("tool_call_id") in orphaned_results)
+                if not (m.get("role") == "tool" and (m.get("tool_call_id", "").strip() if isinstance(m.get("tool_call_id"), str) else m.get("tool_call_id")) in orphaned_results)
             ]
             logger.debug(
                 "Pre-call sanitizer: removed %d orphaned tool result(s)",
@@ -3381,7 +3381,7 @@ class AIAgent:
                 if msg.get("role") == "assistant":
                     for tc in msg.get("tool_calls") or []:
                         cid = AIAgent._get_tool_call_id_static(tc)
-                        if cid in missing_results:
+                        if cid and cid.strip() in missing_results:
                             patched.append({
                                 "role": "tool",
                                 "content": "[Result unavailable — see context summary above]",

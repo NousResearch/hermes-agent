@@ -2719,18 +2719,7 @@ class GatewayRunner:
             return await self._handle_model_command(event)
 
         if canonical == "hmm":
-            # Load hmm skill (Model Manager)
-            from agent.skill_commands import build_skill_invocation_message
-            user_instruction = event.get_command_args().strip()
-            event.text = build_skill_invocation_message(
-                "/hmm",
-                user_instruction,
-                task_id=_quick_key,
-                runtime_note="Load the hmm (Model Manager) skill to switch models interactively.",
-            )
-            if not event.text:
-                return "Failed to load the hmm skill."
-            canonical = None
+            return await self._handle_hmm_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -4608,6 +4597,178 @@ class GatewayRunner:
             lines.append("_(session only -- add `--global` to persist)_")
 
         return "\n".join(lines)
+
+    async def _handle_hmm_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /hmm natively for gateway-backed platforms."""
+        from hermes_cli.config import load_config, save_config
+        import subprocess
+
+        hmm_models = [
+            ("fire", "accounts/fireworks/routers/kimi-k2p5-turbo", "fireworks", "Fireworks Kimi K2.5 Turbo"),
+            ("deepseek", "deepseek-chat", "deepseek", "DeepSeek Chat"),
+            ("deepseek-r1", "deepseek-reasoner", "deepseek", "DeepSeek Reasoner R1"),
+            ("zai-glm", "glm-5.1", "zai", "Z.ai GLM-5.1"),
+            ("zai-turbo", "glm-5-turbo", "zai", "Z.ai GLM-5 Turbo"),
+            ("zai-glm45v", "glm-4.5v", "zai", "Z.ai GLM-4.5V Vision"),
+            ("zai-glm46v", "glm-4.6v", "zai", "Z.ai GLM-4.6V Vision"),
+            ("or-trinity", "arcee-ai/trinity-large-preview:free", "openrouter", "OpenRouter Trinity Large (Free)"),
+            ("or-gemma4", "google/gemma-4-26b-a4b-it:free", "openrouter", "OpenRouter Gemma 4 26B (Free)"),
+            ("or-minimax", "minimax/minimax-m2.5:free", "openrouter", "OpenRouter MiniMax M2.5 (Free)"),
+            ("or-qwen35", "qwen/qwen3.5-flash-02-23", "openrouter", "OpenRouter Qwen3.5 Flash"),
+            ("or-grok", "x-ai/grok-4.1-fast", "openrouter", "OpenRouter Grok 4.1 Fast"),
+            ("or-minimax27", "minimax/minimax-m2.7", "openrouter", "OpenRouter MiniMax M2.7"),
+            ("or-step", "stepfun/step-3.5-flash", "openrouter", "OpenRouter Step 3.5 Flash"),
+            ("or-gptoss120", "openai/gpt-oss-120b:free", "openrouter", "OpenAI GPT-OSS 120B (Free)"),
+            ("or-qwencoder", "qwen/qwen3-coder:free", "openrouter", "OpenRouter Qwen3 Coder 480B (Free)"),
+        ]
+        compression_presets = [
+            ("gemini-flash", "google/gemini-3-flash-preview", "gemini", "Gemini 3 Flash (default)"),
+            ("or-qwen35", "qwen/qwen3.5-flash-02-23", "openrouter", "OpenRouter Qwen3.5 Flash"),
+            ("or-trinity", "arcee-ai/trinity-large-preview:free", "openrouter", "OpenRouter Trinity Large (Free)"),
+            ("or-gemma4", "google/gemma-4-26b-a4b-it:free", "openrouter", "OpenRouter Gemma 4 26B (Free)"),
+            ("zai-flash", "glm-4.5-flash", "zai", "Z.ai GLM-4.5 Flash"),
+            ("claude-haiku", "claude-3-haiku-4.5-20251001", "anthropic", "Claude Haiku"),
+        ]
+        alias_map = {alias: (model_id, provider, label) for alias, model_id, provider, label in hmm_models}
+        number_map = {
+            str(idx): (model_id, provider, label)
+            for idx, (_, model_id, provider, label) in enumerate(hmm_models, start=1)
+        }
+        compression_map = {
+            name: (model_id, provider, label)
+            for name, model_id, provider, label in compression_presets
+        }
+        legacy_commands = {
+            "version": "version",
+            "--version": "version",
+            "-v": "version",
+            "test": "test",
+            "t": "test",
+            "test-all": "test-all",
+            "ta": "test-all",
+            "scan-free": "scan-free",
+            "sf": "scan-free",
+            "add-or-model": "add-or-model",
+            "add": "add-or-model",
+        }
+
+        parts = event.get_command_args().strip().split()
+        if not parts or parts[0].lower() in {"list", "help"}:
+            lines = ["HMM presets (wraps `/model`):"]
+            for idx2, (alias, _model_id, provider, label) in enumerate(hmm_models, start=1):
+                lines.append(f"{idx2:2d}. {label} [{alias}] via {provider}")
+            lines.extend([
+                "",
+                "Usage:",
+                "/hmm <number|alias> - switch this session",
+                "/hmm <number|alias> --global - switch + persist as default",
+                "/hmm status - show current session model",
+                "/hmm compress-list - show compression presets",
+                "/hmm compress-switch <name> - switch compression model",
+                "/hmm test - run legacy model test helper",
+            ])
+            return "\n".join(lines)
+
+        subcommand = parts[0].lower()
+        if subcommand == "status":
+            config = load_config()
+            model_cfg = config.get("model", {}) if isinstance(config.get("model", {}), dict) else {}
+            source = event.source
+            session_key = self._session_key_for_source(source)
+            override = self._session_model_overrides.get(session_key, {})
+            current_model = override.get("model") or model_cfg.get("default") or "unknown"
+            current_provider = override.get("provider") or model_cfg.get("provider") or "unknown"
+            return f"Current session model: `{current_model}`\nProvider: {current_provider}"
+
+        if subcommand in {"compress-list", "cl"}:
+            lines = ["Compression presets:"]
+            for idx2, (name, model_id, provider, label) in enumerate(compression_presets, start=1):
+                lines.append(f"{idx2:2d}. {label} [{name}] -> {provider}:{model_id}")
+            cfg = load_config()
+            comp = cfg.get("compression", {}) or {}
+            lines.extend([
+                "",
+                f"Current model: `{comp.get('summary_model') or '(main model)'}`",
+                f"Current provider: {comp.get('summary_provider', 'auto') or 'auto'}",
+            ])
+            return "\n".join(lines)
+
+        if subcommand in {"compress-status", "cst"}:
+            cfg = load_config()
+            comp = cfg.get("compression", {}) or {}
+            return "\n".join([
+                "Context compression:",
+                f"Enabled: {comp.get('enabled', True)}",
+                f"Threshold: {comp.get('threshold', 0.50)}",
+                f"Target ratio: {comp.get('target_ratio', 0.20)}",
+                f"Protect last: {comp.get('protect_last_n', 20)}",
+                f"Model: `{comp.get('summary_model') or '(main model)'}`",
+                f"Provider: {comp.get('summary_provider', 'auto') or 'auto'}",
+            ])
+
+        if subcommand in {"compress-switch", "cs"}:
+            if len(parts) < 2:
+                return "Usage: `/hmm compress-switch <preset>`"
+            resolved = compression_map.get(parts[1].lower())
+            if resolved is None:
+                return f"Unknown compression preset: `{parts[1]}`"
+            model_id, provider, label = resolved
+            try:
+                cfg = load_config()
+                compression = cfg.setdefault("compression", {})
+                compression["summary_model"] = model_id
+                compression["summary_provider"] = provider
+                compression["summary_base_url"] = None
+                save_config(cfg)
+            except Exception as exc:
+                return f"Failed to update compression config: {exc}"
+            return "\n".join([
+                f"Compression model switched: {label}",
+                f"Model: `{model_id}`",
+                f"Provider: {provider}",
+                "Saved to config.yaml",
+                "Takes effect on the next compression run",
+            ])
+
+        if subcommand in legacy_commands:
+            script_path = _hermes_home / "skills" / "productivity" / "hmm" / "scripts" / "switch-model.sh"
+            if not script_path.exists():
+                return f"HMM helper not found: `{script_path}`"
+            try:
+                result = subprocess.run(
+                    ["bash", str(script_path), legacy_commands[subcommand], *parts[1:]],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+            except subprocess.TimeoutExpired:
+                return f"HMM subcommand timed out: `{legacy_commands[subcommand]}`"
+            except Exception as exc:
+                return f"HMM subcommand failed to start: {exc}"
+            combined = (result.stdout or "").strip() or (result.stderr or "").strip()
+            return combined or f"HMM subcommand completed: `{legacy_commands[subcommand]}`"
+
+        persist_global = False
+        filtered_parts = []
+        for part in parts:
+            if part == "--global":
+                persist_global = True
+            else:
+                filtered_parts.append(part)
+        if not filtered_parts:
+            return "Usage: `/hmm <number|alias> [--global]`"
+        selector = filtered_parts[0].lower()
+        resolved = number_map.get(selector) or alias_map.get(selector)
+        if resolved is None:
+            return f"Unknown HMM preset: `{selector}`"
+
+        model_id, provider, _label = resolved
+        original_text = event.text
+        event.text = f"/model {model_id} --provider {provider}" + (" --global" if persist_global else "")
+        try:
+            return await self._handle_model_command(event)
+        finally:
+            event.text = original_text
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""

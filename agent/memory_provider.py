@@ -160,6 +160,15 @@ class MemoryProvider(ABC):
         (CLI exit, /reset, gateway session expiry).
         """
 
+    def on_session_reset(self, new_session_id: str) -> None:
+        """Transition to a new session without full teardown.
+
+        Called after on_session_end() has committed the previous session
+        (e.g. /new, context compression). Providers with per-session state
+        override to rebind counters/IDs while keeping HTTP clients alive.
+        Default: no-op.
+        """
+
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Called before context compression discards old messages.
 

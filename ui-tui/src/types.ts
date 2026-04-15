@@ -29,6 +29,8 @@ export interface Msg {
   info?: SessionInfo
   panelData?: PanelData
   thinking?: string
+  thinkingTokens?: number
+  toolTokens?: number
   tools?: string[]
 }
 

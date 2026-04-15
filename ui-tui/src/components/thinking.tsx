@@ -1,9 +1,10 @@
 import { Box, Text } from '@hermes/ink'
-import { memo, type ReactNode, useEffect, useState } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
-import { FACES, VERBS } from '../constants.js'
 import {
+  estimateTokensRough,
+  fmtK,
   formatToolCall,
   parseToolTrailResultLine,
   pick,
@@ -89,6 +90,7 @@ function Chevron({
   count,
   onClick,
   open,
+  suffix,
   t,
   title,
   tone = 'dim'
@@ -96,6 +98,7 @@ function Chevron({
   count?: number
   onClick: () => void
   open: boolean
+  suffix?: string
   t: Theme
   title: string
   tone?: 'dim' | 'error' | 'warn'
@@ -108,6 +111,12 @@ function Chevron({
         <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
+        {suffix ? (
+          <Text color={t.color.statusFg} dimColor>
+            {'  '}
+            {suffix}
+          </Text>
+        ) : null}
       </Text>
     </Box>
   )
@@ -128,29 +137,35 @@ export const Thinking = memo(function Thinking({
   streaming?: boolean
   t: Theme
 }) {
-  const [tick, setTick] = useState(0)
-
-  useEffect(() => {
-    const id = setInterval(() => setTick(v => v + 1), 1100)
-
-    return () => clearInterval(id)
-  }, [])
-
   const preview = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
+  const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
   return (
     <Box flexDirection="column">
-      <Text color={t.color.dim}>
-        <Spinner color={t.color.dim} /> {FACES[tick % FACES.length] ?? '(•_•)'}{' '}
-        {VERBS[tick % VERBS.length] ?? 'thinking'}…
-      </Text>
-
       {preview ? (
-        <Text color={t.color.dim} dimColor wrap={mode === 'full' ? 'wrap-trim' : 'truncate-end'}>
-          <Text dimColor>└ </Text>
-          {preview}
-          <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
-        </Text>
+        mode === 'full' ? (
+          <Box flexDirection="row">
+            <Text color={t.color.dim} dimColor>
+              └{' '}
+            </Text>
+            <Box flexDirection="column" flexGrow={1}>
+              {lines.map((line, index) => (
+                <Text color={t.color.dim} dimColor key={index} wrap="wrap-trim">
+                  {line || ' '}
+                  {index === lines.length - 1 ? (
+                    <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+                  ) : null}
+                </Text>
+              ))}
+            </Box>
+          </Box>
+        ) : (
+          <Text color={t.color.dim} dimColor wrap="truncate-end">
+            <Text dimColor>└ </Text>
+            {preview}
+            <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+          </Text>
+        )
       ) : active ? (
         <Text color={t.color.dim} dimColor>
           <Text dimColor>└ </Text>
@@ -175,9 +190,11 @@ export const ToolTrail = memo(function ToolTrail({
   detailsMode = 'collapsed',
   reasoningActive = false,
   reasoning = '',
+  reasoningTokens,
   reasoningStreaming = false,
   t,
   tools = [],
+  toolTokens,
   trail = [],
   activity = []
 }: {
@@ -185,9 +202,11 @@ export const ToolTrail = memo(function ToolTrail({
   detailsMode?: DetailsMode
   reasoningActive?: boolean
   reasoning?: string
+  reasoningTokens?: number
   reasoningStreaming?: boolean
   t: Theme
   tools?: ActiveTool[]
+  toolTokens?: number
   trail?: string[]
   activity?: ActivityItem[]
 }) {
@@ -311,6 +330,17 @@ export const ToolTrail = memo(function ToolTrail({
   const hasTools = groups.length > 0
   const hasMeta = meta.length > 0
   const hasThinking = !!cot || reasoningActive || (busy && !hasTools)
+  const thinkingLive = reasoningActive || reasoningStreaming
+
+  const tokenCount = reasoningTokens !== undefined ? reasoningTokens : reasoning ? estimateTokensRough(reasoning) : 0
+
+  const toolTokenCount = toolTokens ?? 0
+  const totalTokenCount = tokenCount + toolTokenCount
+  const thinkingTokensLabel = tokenCount > 0 ? `~${fmtK(tokenCount)} tokens` : null
+
+  const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
+
+  const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
 
   // ── Hidden: errors/warnings only ──────────────────────────────
 
@@ -368,6 +398,13 @@ export const ToolTrail = memo(function ToolTrail({
       ))
     : null
 
+  const totalBlock = totalTokensLabel ? (
+    <Text color={t.color.statusFg} dimColor>
+      <Text color={t.color.amber}>Σ </Text>
+      {totalTokensLabel}
+    </Text>
+  ) : null
+
   // ── Expanded: flat, no accordions ──────────────────────────────
 
   if (detailsMode === 'expanded') {
@@ -376,6 +413,7 @@ export const ToolTrail = memo(function ToolTrail({
         {thinkingBlock}
         {toolBlock}
         {metaBlock}
+        {totalBlock}
       </Box>
     )
   }
@@ -392,7 +430,20 @@ export const ToolTrail = memo(function ToolTrail({
     <Box flexDirection="column">
       {hasThinking && (
         <>
-          <Chevron onClick={() => setOpenThinking(v => !v)} open={openThinking} t={t} title="Thinking" />
+          <Box onClick={() => setOpenThinking(v => !v)}>
+            <Text color={t.color.dim} dimColor={!thinkingLive}>
+              <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
+              <Text bold={thinkingLive} color={thinkingLive ? t.color.cornsilk : t.color.dim} dimColor={!thinkingLive}>
+                Thinking
+              </Text>
+              {thinkingTokensLabel ? (
+                <Text color={t.color.statusFg} dimColor>
+                  {'  '}
+                  {thinkingTokensLabel}
+                </Text>
+              ) : null}
+            </Text>
+          </Box>
           {openThinking && thinkingBlock}
         </>
       )}
@@ -403,6 +454,7 @@ export const ToolTrail = memo(function ToolTrail({
             count={groups.length}
             onClick={() => setOpenTools(v => !v)}
             open={openTools}
+            suffix={toolTokensLabel}
             t={t}
             title="Tool calls"
           />
@@ -423,6 +475,8 @@ export const ToolTrail = memo(function ToolTrail({
           {openMeta && metaBlock}
         </>
       )}
+
+      {totalBlock}
     </Box>
   )
 })

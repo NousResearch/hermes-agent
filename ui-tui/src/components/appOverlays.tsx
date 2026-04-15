@@ -2,7 +2,7 @@ import { Box, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { CompletionItem } from '../app/interfaces.js'
+import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 
@@ -11,19 +11,6 @@ import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
-
-export interface AppOverlaysProps {
-  cols: number
-  compIdx: number
-  completions: CompletionItem[]
-  onApprovalChoice: (choice: string) => void
-  onClarifyAnswer: (value: string) => void
-  onModelSelect: (value: string) => void
-  onPickerSelect: (sessionId: string) => void
-  onSecretSubmit: (value: string) => void
-  onSudoSubmit: (pw: string) => void
-  pagerPageSize: number
-}
 
 export function AppOverlays({
   cols,

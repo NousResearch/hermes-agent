@@ -1,57 +1,9 @@
-import { type ScrollBoxHandle, useInput } from '@hermes/ink'
+import { useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import type { Dispatch, RefObject, SetStateAction } from 'react'
 
-import type { Msg } from '../types.js'
-
-import type { GatewayServices } from './interfaces.js'
+import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
-import type { ComposerActions, ComposerRefs, ComposerState } from './useComposerState.js'
-import type { TurnActions, TurnRefs } from './useTurnState.js'
-
-export interface InputHandlerActions {
-  answerClarify: (answer: string) => void
-  appendMessage: (msg: Msg) => void
-  die: () => void
-  dispatchSubmission: (full: string) => void
-  guardBusySessionSwitch: (what?: string) => boolean
-  newSession: (msg?: string) => void
-  sys: (text: string) => void
-}
-
-export interface InputHandlerContext {
-  actions: InputHandlerActions
-  composer: {
-    actions: ComposerActions
-    refs: ComposerRefs
-    state: ComposerState
-  }
-  gateway: GatewayServices
-  terminal: {
-    hasSelection: boolean
-    scrollRef: RefObject<ScrollBoxHandle | null>
-    scrollWithSelection: (delta: number) => void
-    selection: {
-      copySelection: () => string
-    }
-    stdout?: NodeJS.WriteStream
-  }
-  turn: {
-    actions: TurnActions
-    refs: TurnRefs
-  }
-  voice: {
-    recording: boolean
-    setProcessing: Dispatch<SetStateAction<boolean>>
-    setRecording: Dispatch<SetStateAction<boolean>>
-  }
-  wheelStep: number
-}
-
-export interface InputHandlerResult {
-  pagerPageSize: number
-}
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, turn, voice, wheelStep } = ctx

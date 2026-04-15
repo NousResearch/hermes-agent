@@ -85,7 +85,14 @@ export const MessageLine = memo(function MessageLine({
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
-          <ToolTrail detailsMode={detailsMode} reasoning={thinking} t={t} trail={msg.tools} />
+          <ToolTrail
+            detailsMode={detailsMode}
+            reasoning={thinking}
+            reasoningTokens={msg.thinkingTokens}
+            t={t}
+            toolTokens={msg.toolTokens}
+            trail={msg.tools}
+          />
         </Box>
       )}
 

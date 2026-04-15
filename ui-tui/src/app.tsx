@@ -849,11 +849,14 @@ export function App({ gw }: { gw: GatewayClient }) {
             scheduleReasoning: turnActions.scheduleReasoning,
             scheduleStreaming: turnActions.scheduleStreaming,
             setActivity: turnActions.setActivity,
+            setReasoningTokens: turnActions.setReasoningTokens,
             setStreaming: turnActions.setStreaming,
+            setToolTokens: turnActions.setToolTokens,
             setTools: turnActions.setTools,
             setTurnTrail: turnActions.setTurnTrail
           },
           refs: {
+            activeToolsRef: turnRefs.activeToolsRef,
             bufRef: turnRefs.bufRef,
             interruptedRef: turnRefs.interruptedRef,
             lastStatusNoteRef: turnRefs.lastStatusNoteRef,
@@ -861,6 +864,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             protocolWarnedRef: turnRefs.protocolWarnedRef,
             reasoningRef: turnRefs.reasoningRef,
             statusTimerRef: turnRefs.statusTimerRef,
+            toolTokenAccRef: turnRefs.toolTokenAccRef,
             toolCompleteRibbonRef: turnRefs.toolCompleteRibbonRef,
             turnToolsRef: turnRefs.turnToolsRef
           }
@@ -1014,16 +1018,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       dispatchSubmission([...composerState.inputBuf, value].join('\n'))
     },
-    [
-      appendMessage,
-      composerActions,
-      composerRefs,
-      composerState,
-      dispatchSubmission,
-      gw,
-      sys,
-      turnActions
-    ]
+    [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys, turnActions]
   )
 
   submitRef.current = submit
@@ -1142,11 +1137,13 @@ export function App({ gw }: { gw: GatewayClient }) {
         progress={{
           activity: turnState.activity,
           reasoning: turnState.reasoning,
+          reasoningTokens: turnState.reasoningTokens,
           reasoningActive: turnState.reasoningActive,
           reasoningStreaming: turnState.reasoningStreaming,
           showProgressArea,
           showStreamingArea,
           streaming: turnState.streaming,
+          toolTokens: turnState.toolTokens,
           tools: turnState.tools,
           turnTrail: turnState.turnTrail
         }}

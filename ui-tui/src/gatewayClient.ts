@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { existsSync } from 'node:fs'
 import { delimiter, resolve } from 'node:path'
 import { createInterface } from 'node:readline'
 
@@ -7,6 +8,39 @@ const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_PREVIEW = 240
 const STARTUP_TIMEOUT_MS = Math.max(5000, parseInt(process.env.HERMES_TUI_STARTUP_TIMEOUT_MS ?? '15000', 10) || 15000)
 const REQUEST_TIMEOUT_MS = Math.max(30000, parseInt(process.env.HERMES_TUI_RPC_TIMEOUT_MS ?? '120000', 10) || 120000)
+
+const resolvePython = (root: string) => {
+  const configured = process.env.HERMES_PYTHON?.trim()
+
+  if (configured) {
+    return configured
+  }
+
+  const envPython = process.env.PYTHON?.trim()
+
+  if (envPython) {
+    return envPython
+  }
+
+  const venv = process.env.VIRTUAL_ENV?.trim()
+
+  const candidates = [
+    venv ? resolve(venv, 'bin/python') : '',
+    venv ? resolve(venv, 'Scripts/python.exe') : '',
+    resolve(root, '.venv/bin/python'),
+    resolve(root, '.venv/bin/python3'),
+    resolve(root, 'venv/bin/python'),
+    resolve(root, 'venv/bin/python3')
+  ].filter(Boolean)
+
+  const hit = candidates.find(path => existsSync(path))
+
+  if (hit) {
+    return hit
+  }
+
+  return process.platform === 'win32' ? 'python' : 'python3'
+}
 
 export interface GatewayEvent {
   type: string
@@ -53,7 +87,7 @@ export class GatewayClient extends EventEmitter {
 
   start() {
     const root = process.env.HERMES_PYTHON_SRC_ROOT ?? resolve(import.meta.dirname, '../../')
-    const python = process.env.HERMES_PYTHON ?? resolve(root, 'venv/bin/python')
+    const python = resolvePython(root)
     const cwd = process.env.HERMES_CWD || root
     const env = { ...process.env }
     const pyPath = (env.PYTHONPATH ?? '').trim()

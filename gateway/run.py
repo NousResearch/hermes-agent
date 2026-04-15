@@ -8047,6 +8047,8 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        tool_call_count = [0]  # Total tool calls fired this turn
+        _progress_start_ts = [time.monotonic()]  # When this turn started
         
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
@@ -8056,6 +8058,8 @@ class GatewayRunner:
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
             if event_type not in ("tool.started",):
                 return
+
+            tool_call_count[0] += 1
 
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
@@ -8182,7 +8186,9 @@ class GatewayRunner:
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        _elapsed = int(time.monotonic() - _progress_start_ts[0])
+                        _footer = f"⏳ {tool_call_count[0]} tool{'s' if tool_call_count[0] != 1 else ''} · {_elapsed}s"
+                        full_text = "\n".join(progress_lines) + "\n" + _footer
                         result = await adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=progress_msg_id,
@@ -8203,7 +8209,9 @@ class GatewayRunner:
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            _elapsed = int(time.monotonic() - _progress_start_ts[0])
+                            _footer = f"⏳ {tool_call_count[0]} tool{'s' if tool_call_count[0] != 1 else ''} · {_elapsed}s"
+                            full_text = "\n".join(progress_lines) + "\n" + _footer
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
                         else:
                             # Editing unsupported: send just this line

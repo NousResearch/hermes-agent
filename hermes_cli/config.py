@@ -2766,6 +2766,47 @@ def sanitize_env_file() -> int:
     return fixes
 
 
+def _check_non_ascii_credential(key: str, value: str) -> str:
+    """Warn and strip non-ASCII characters from credential values.
+
+    API keys and tokens must be pure ASCII — they are sent as HTTP header
+    values which httpx/httpcore encode as ASCII.  Non-ASCII characters
+    (commonly introduced by copy-pasting from rich-text editors or PDFs
+    that substitute lookalike Unicode glyphs for ASCII letters) cause
+    ``UnicodeEncodeError: 'ascii' codec can't encode character`` at
+    request time.
+
+    Returns the sanitized (ASCII-only) value.  Prints a warning if any
+    non-ASCII characters were found and removed.
+    """
+    try:
+        value.encode("ascii")
+        return value  # all ASCII — nothing to do
+    except UnicodeEncodeError:
+        pass
+
+    # Build a readable list of the offending characters
+    bad_chars: list[str] = []
+    for i, ch in enumerate(value):
+        if ord(ch) > 127:
+            bad_chars.append(f"  position {i}: {ch!r} (U+{ord(ch):04X})")
+    sanitized = value.encode("ascii", errors="ignore").decode("ascii")
+
+    import sys
+    print(
+        f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
+        f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
+        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n"
+        f"\n"
+        + "\n".join(f"  {line}" for line in bad_chars[:5])
+        + ("\n  ... and more" if len(bad_chars) > 5 else "")
+        + f"\n\n  The non-ASCII characters have been stripped automatically.\n"
+        f"  If authentication fails, re-copy the key from the provider's dashboard.\n",
+        file=sys.stderr,
+    )
+    return sanitized
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -2774,6 +2815,8 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
+    # API keys / tokens must be ASCII — strip non-ASCII with a warning.
+    value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
     

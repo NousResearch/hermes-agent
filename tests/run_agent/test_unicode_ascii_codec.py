@@ -142,6 +142,33 @@ class TestSurrogateVsAsciiSanitization:
         assert _sanitize_messages_surrogates(messages) is False
 
 
+class TestApiKeyNonAsciiSanitization:
+    """Tests for API key sanitization in the UnicodeEncodeError recovery.
+
+    Covers the root cause of issue #6843: a non-ASCII character (ʋ U+028B)
+    in the API key causes httpx to fail when encoding the Authorization
+    header as ASCII.  The recovery block must strip non-ASCII from the key.
+    """
+
+    def test_strip_non_ascii_from_api_key(self):
+        """_strip_non_ascii removes ʋ from an API key string."""
+        key = "sk-proj-abc" + "ʋ" + "def"
+        assert _strip_non_ascii(key) == "sk-proj-abcdef"
+
+    def test_api_key_at_position_153(self):
+        """Reproduce the exact error: ʋ at position 153 in 'Bearer <key>'."""
+        key = "sk-proj-" + "a" * 138 + "ʋ" + "bcd"
+        auth_value = f"Bearer {key}"
+        # This is what httpx does — and it fails:
+        with pytest.raises(UnicodeEncodeError) as exc_info:
+            auth_value.encode("ascii")
+        assert exc_info.value.start == 153
+        # After sanitization, it should work:
+        sanitized_key = _strip_non_ascii(key)
+        sanitized_auth = f"Bearer {sanitized_key}"
+        sanitized_auth.encode("ascii")  # should not raise
+
+
 class TestSanitizeToolsNonAscii:
     """Tests for _sanitize_tools_non_ascii."""
 

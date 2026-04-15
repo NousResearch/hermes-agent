@@ -281,6 +281,16 @@ Both are persistent across sessions, but they serve different purposes:
 
 **Update skills when they go stale.** If you use a skill and hit issues not covered by it, tell Hermes to update the skill with what you learned. Skills that aren't maintained become liabilities.
 
+**Use subagent profiles when delegating.** Spawned child sessions can carry a `subagent_profile` that nudges Hermes toward the best matching skills for that role. A reviewer profile will surface review-heavy skills first; a browser scout profile will bias toward browser and gstack browse/canary surfaces.
+
+**Audit the routing, don't trust vibes.** The command below prints the top recommendations for every built-in profile and highlights weak mappings:
+
+```bash
+python scripts/audit_subagent_skill_routing.py
+```
+
+If the audit starts flagging generic `gstack` top-hits or weak recommendation reasons, fix the metadata or the profile mapping before you trust the setup in production.
+
 ---
 
-*For the complete skills reference — frontmatter fields, conditional activation, external directories, and more — see [Skills System](/docs/user-guide/features/skills).*
+*For the complete skills reference — frontmatter fields, conditional activation, external directories, and more — see [Skills System](/docs/user-guide/features/skills).* 

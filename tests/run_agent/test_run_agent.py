@@ -705,6 +705,28 @@ class TestBuildSystemPrompt:
         assert mock_skills.call_args.kwargs["available_tools"] == set(toolset_map)
         assert mock_skills.call_args.kwargs["available_toolsets"] == {"web", "skills"}
 
+    def test_spawned_session_passes_subagent_profile_to_skills_prompt(self):
+        tools = _make_tool_defs("skills_list", "skill_view")
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=tools),
+            patch("run_agent.get_toolset_for_tool", create=True, return_value="skills"),
+            patch("run_agent.build_skills_system_prompt", return_value="SKILLS_PROMPT") as mock_skills,
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                spawned_session=True,
+                subagent_profile="reviewer",
+            )
+            prompt = agent._build_system_prompt()
+
+        assert "SKILLS_PROMPT" in prompt
+        assert mock_skills.call_args.kwargs["subagent_profile"] == "reviewer"
+
 
 class TestToolUseEnforcementConfig:
     """Tests for the agent.tool_use_enforcement config option."""

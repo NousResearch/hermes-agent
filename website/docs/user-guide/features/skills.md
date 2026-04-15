@@ -446,3 +446,23 @@ All the same commands work with `/skills`:
 ```
 
 Official optional skills still use identifiers like `official/security/1password` and `official/migration/openclaw-migration`.
+
+### Profile-aware subagent skills
+
+Hermes can now tune skill recommendations for spawned subagents by `subagent_profile`.
+Examples include `builder`, `reviewer`, `operator`, and `browser_scout`.
+When a child session has a profile, the system prompt prepends a `<recommended_skills>` block ahead of the normal `<available_skills>` catalog.
+
+Important details:
+- the full catalog still appears below the recommendation block
+- parent sessions with no profile keep the old behavior
+- imported gstack skills are treated as normal local skills under the `gstack-*` namespace
+- reviewer, operator, and browser-oriented profiles can prefer those `gstack-*` skills automatically without a separate gstack loader
+
+To inspect the live routing quality, run:
+
+```bash
+python scripts/audit_subagent_skill_routing.py
+```
+
+The audit is intentionally harsh. It now flags weak recommendation reasons and generic `gstack` top-hits so you can tighten metadata before the routing quality drifts into mush.

@@ -83,6 +83,10 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
 )
+from agent.spawned_session import (
+    build_spawned_session_system_guidance,
+    filter_spawned_session_toolsets,
+)
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
@@ -604,6 +608,9 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        spawned_session: bool = False,
+        allow_spawned_session_clarify: bool = False,
+        subagent_profile: str | None = None,
     ):
         """
         Initialize the AI Agent.
@@ -643,6 +650,10 @@ class AIAgent:
             skip_context_files (bool): If True, skip auto-injection of SOUL.md, AGENTS.md, and .cursorrules
                 into the system prompt. Use this for batch processing and data generation to avoid
                 polluting trajectories with user-specific persona or project instructions.
+            spawned_session (bool): Enable orchestrated child-session behavior: suppress onboarding
+                noise, default to non-interactive clarify policy, and inject spawned-session guidance.
+            allow_spawned_session_clarify (bool): Re-enable clarify inside spawned_session mode when
+                the caller explicitly wants interactive follow-up behavior.
         """
         _install_safe_stdio()
 
@@ -667,6 +678,16 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
+        self.spawned_session = bool(spawned_session)
+        self.allow_spawned_session_clarify = bool(allow_spawned_session_clarify)
+        self.subagent_profile = subagent_profile
+        if self.spawned_session:
+            enabled_toolsets, disabled_toolsets = filter_spawned_session_toolsets(
+                enabled_toolsets,
+                allow_clarify=self.allow_spawned_session_clarify,
+            )
+            if not self.allow_spawned_session_clarify:
+                clarify_callback = None
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -3184,6 +3205,9 @@ class AIAgent:
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
+        if self.spawned_session:
+            prompt_parts.append(build_spawned_session_system_guidance())
+
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
             prompt_parts.append(nous_subscription_prompt)
@@ -3259,6 +3283,7 @@ class AIAgent:
             skills_prompt = build_skills_system_prompt(
                 available_tools=self.valid_tool_names,
                 available_toolsets=avail_toolsets,
+                subagent_profile=self.subagent_profile if self.spawned_session else None,
             )
         else:
             skills_prompt = ""

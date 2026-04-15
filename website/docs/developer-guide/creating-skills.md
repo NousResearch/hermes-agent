@@ -330,3 +330,23 @@ Hermes can now consume third-party skills from multiple external discovery model
 - well-known endpoints served from `/.well-known/skills/index.json`
 
 If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace.
+
+## Subagent profile routing
+
+Hermes can tune skill recommendations for spawned child sessions with `subagent_profile`.
+That routing is metadata-driven, not a separate skill loader.
+
+Best practices:
+- add strong `metadata.hermes.tags` so profile ranking has something real to latch onto
+- use namespaced imported gstack skills like `gstack-review` or `gstack-browse` instead of inventing duplicate wrappers
+- keep `requires_toolsets` and `requires_tools` accurate so profile ranking can exclude impossible skills cleanly
+- if a skill belongs to a specific subagent role, document that in tags and description rather than burying it in prose
+
+When extending the built-in role mapping, update:
+- `agent/subagent_profiles.py`
+- `agent/skill_utils.py`
+- `tools/skills_tool.py`
+- `agent/prompt_builder.py`
+- `scripts/audit_subagent_skill_routing.py`
+
+Then run the audit script and the targeted pytest suites before shipping.

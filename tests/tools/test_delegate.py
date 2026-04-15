@@ -12,11 +12,14 @@ Run with:  python -m pytest tests/test_delegate.py -v
 import json
 import os
 import sys
+import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from agent.review_memory import record_review_adjudication
+from agent.subagent_profiles import get_subagent_profile
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -26,6 +29,9 @@ from tools.delegate_tool import (
     delegate_task,
     _build_child_agent,
     _build_child_system_prompt,
+    _load_config,
+    _resolve_task_subagent_profile,
+    _run_single_child,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
@@ -66,7 +72,9 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("subagent_profile", props)
         self.assertIn("max_iterations", props)
+        self.assertIn("review_mesh", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
@@ -86,6 +94,66 @@ class TestChildSystemPrompt(unittest.TestCase):
     def test_empty_context_ignored(self):
         prompt = _build_child_system_prompt("Do something", "  ")
         self.assertNotIn("CONTEXT", prompt)
+
+    def test_profile_guidance_includes_skills_and_gstack_hints(self):
+        prompt = _build_child_system_prompt(
+            "Review the patch",
+            "Focus on regressions.",
+            subagent_profile=get_subagent_profile("reviewer"),
+            gstack_mode="prefer",
+        )
+        self.assertIn("SUBAGENT PROFILE", prompt)
+        self.assertIn("Profile: reviewer", prompt)
+        self.assertIn("Preferred skill categories", prompt)
+        self.assertIn("Preferred gstack skills (high priority): gstack-review, gstack-plan-eng-review, gstack-qa", prompt)
+        self.assertIn("skill_view(name)", prompt)
+
+    def test_profile_guidance_can_disable_gstack_hints(self):
+        prompt = _build_child_system_prompt(
+            "Review the patch",
+            subagent_profile=get_subagent_profile("reviewer"),
+            gstack_mode="off",
+        )
+        self.assertNotIn("Preferred gstack skills", prompt)
+
+
+class TestDelegationProfileConfig(unittest.TestCase):
+    def test_load_config_preserves_profile_keys_from_runtime_cli_config(self):
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {
+            "delegation": {
+                "default_profile": "reviewer",
+                "profile_overrides": {
+                    "reviewer": {"gstack_skill_hints": ["gstack-custom-review"]},
+                },
+                "gstack_mode": "prefer",
+            }
+        }
+        mock_cli._active_agent_ref = object()
+
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            cfg = _load_config()
+
+        self.assertEqual(cfg["default_profile"], "reviewer")
+        self.assertEqual(cfg["profile_overrides"]["reviewer"]["gstack_skill_hints"], ["gstack-custom-review"])
+        self.assertEqual(cfg["gstack_mode"], "prefer")
+
+    @patch("hermes_cli.config.load_config")
+    def test_load_config_reads_profile_keys_from_persistent_config(self, mock_load_config):
+        mock_load_config.return_value = {
+            "delegation": {
+                "default_profile": "operator",
+                "profile_overrides": {"operator": {"prompt_preamble": "Prefer releases."}},
+                "gstack_mode": "off",
+            }
+        }
+
+        with patch.dict(sys.modules, {"cli": None}):
+            cfg = _load_config()
+
+        self.assertEqual(cfg["default_profile"], "operator")
+        self.assertEqual(cfg["profile_overrides"]["operator"]["prompt_preamble"], "Prefer releases.")
+        self.assertEqual(cfg["gstack_mode"], "off")
 
 
 class TestStripBlockedTools(unittest.TestCase):
@@ -205,6 +273,167 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "error")
         self.assertIn("Something broke", result["results"][0]["error"])
 
+    def test_review_mesh_requires_single_goal_mode(self):
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(
+            tasks=[{"goal": "review a"}, {"goal": "review b"}],
+            review_mesh={"touched_paths": ["src/auth.py"]},
+            parent_agent=parent,
+        ))
+        self.assertIn("error", result)
+        self.assertIn("review_mesh", result["error"])
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_review_mesh_returns_aggregated_findings(self, mock_run):
+        mock_run.side_effect = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Testing review complete.",
+                    "findings": [
+                        {
+                            "severity": "medium",
+                            "title": "Missing regression test",
+                            "summary": "No coverage for the new branch.",
+                            "confidence": 0.8,
+                        }
+                    ],
+                }),
+                "api_calls": 2,
+                "duration_seconds": 1.2,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Security review complete.",
+                    "findings": [
+                        {
+                            "severity": "high",
+                            "title": "Auth bypass",
+                            "summary": "Header trust allows privilege escalation.",
+                            "confidence": 0.9,
+                        }
+                    ],
+                }),
+                "api_calls": 3,
+                "duration_seconds": 1.5,
+            },
+            {
+                "task_index": 2,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Maintainability review complete.",
+                    "findings": [],
+                }),
+                "api_calls": 1,
+                "duration_seconds": 0.8,
+            },
+        ]
+        parent = _make_mock_parent()
+        result = json.loads(delegate_task(
+            goal="Review the auth change",
+            context="Changed files include src/auth/login.py and tests/test_login.py",
+            review_mesh={"touched_paths": ["src/auth/login.py", "tests/test_login.py"]},
+            parent_agent=parent,
+        ))
+
+        self.assertIn("review_mesh", result)
+        self.assertEqual(result["review_mesh"]["specialists"], ["testing", "security", "maintainability"])
+        self.assertEqual(result["review_mesh"]["aggregate"]["highest_severity"], "high")
+        self.assertEqual(
+            [f["title"] for f in result["review_mesh"]["aggregate"]["findings"]],
+            ["Auth bypass", "Missing regression test"],
+        )
+        self.assertEqual(result["review_mesh"]["aggregate"]["suppressed_count"], 0)
+        self.assertEqual(len(result["results"]), 3)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_review_mesh_applies_review_memory_suppression(self, mock_run):
+        mock_run.side_effect = [
+            {
+                "task_index": 0,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Testing review complete.",
+                    "findings": [
+                        {
+                            "severity": "medium",
+                            "title": "Missing regression test",
+                            "summary": "No coverage for the new branch.",
+                            "confidence": 0.8,
+                            "file_path": "tests/test_login.py",
+                        }
+                    ],
+                }),
+                "api_calls": 2,
+                "duration_seconds": 1.2,
+            },
+            {
+                "task_index": 1,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Security review complete.",
+                    "findings": [
+                        {
+                            "severity": "high",
+                            "title": "Auth bypass",
+                            "summary": "Header trust allows privilege escalation.",
+                            "confidence": 0.9,
+                            "file_path": "src/auth/login.py",
+                        }
+                    ],
+                }),
+                "api_calls": 3,
+                "duration_seconds": 1.5,
+            },
+            {
+                "task_index": 2,
+                "status": "completed",
+                "summary": json.dumps({
+                    "summary": "Maintainability review complete.",
+                    "findings": [],
+                }),
+                "api_calls": 1,
+                "duration_seconds": 0.8,
+            },
+        ]
+        parent = _make_mock_parent()
+        with tempfile.TemporaryDirectory() as hermes_home, tempfile.TemporaryDirectory() as project_root:
+            parent.cwd = project_root
+            os.environ["HERMES_HOME"] = hermes_home
+            record_review_adjudication(
+                {
+                    "specialist": "testing",
+                    "title": "Missing regression test",
+                    "summary": "No coverage for the new branch.",
+                    "file_path": "tests/test_login.py",
+                },
+                adjudication="false_positive",
+                project_root=project_root,
+                recorded_at="2026-04-15T21:00:00Z",
+            )
+            try:
+                result = json.loads(delegate_task(
+                    goal="Review the auth change",
+                    context="Changed files include src/auth/login.py and tests/test_login.py",
+                    review_mesh={"touched_paths": ["src/auth/login.py", "tests/test_login.py"]},
+                    parent_agent=parent,
+                ))
+            finally:
+                os.environ.pop("HERMES_HOME", None)
+
+        self.assertEqual(
+            [f["title"] for f in result["review_mesh"]["aggregate"]["findings"]],
+            ["Auth bypass"],
+        )
+        self.assertEqual(result["review_mesh"]["aggregate"]["suppressed_count"], 1)
+        self.assertEqual(
+            result["review_mesh"]["aggregate"]["suppressed_findings"][0]["review_memory"]["latest_adjudication"],
+            "false_positive",
+        )
+
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
         parent = _make_mock_parent(depth=0)
@@ -277,6 +506,57 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         self.assertIs(mock_child._print_fn, sink)
+
+    def test_child_agent_always_enables_spawned_session_mode(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use child runtime mode",
+                context=None,
+                toolsets=["web", "clarify"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertTrue(kwargs["spawned_session"])
+        self.assertFalse(kwargs["allow_spawned_session_clarify"])
+
+    def test_run_single_child_returns_structured_completion_summary(self):
+        parent = _make_mock_parent(depth=0)
+        child = MagicMock()
+        child.model = "anthropic/claude-sonnet-4"
+        child.session_id = "child-session"
+        child.session_prompt_tokens = 11
+        child.session_completion_tokens = 7
+        child.tool_progress_callback = None
+        child.run_conversation.return_value = {
+            "final_response": "Task complete",
+            "completed": True,
+            "api_calls": 2,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Summarize work",
+            child=child,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(result["summary"], "Task complete")
+        self.assertIn("completion", result)
+        self.assertEqual(result["completion"]["status"], "completed")
+        self.assertEqual(result["completion"]["summary"], "Task complete")
+        self.assertEqual(result["completion"]["mode"], "spawned_session")
+        self.assertEqual(result["completion"]["session_id"], "child-session")
+        self.assertEqual(result["completion"]["tokens"], {"input": 11, "output": 7})
 
     def test_child_uses_thinking_callback_when_progress_callback_available(self):
         parent = _make_mock_parent(depth=0)

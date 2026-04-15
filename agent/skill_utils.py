@@ -9,9 +9,11 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from agent.subagent_profiles import SubagentProfile
 from hermes_constants import get_config_path, get_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -253,6 +255,220 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
         "fallback_for_tools": hermes.get("fallback_for_tools", []),
         "requires_tools": hermes.get("requires_tools", []),
     }
+
+
+def _normalize_string_list(values: Any) -> List[str]:
+    if values is None:
+        return []
+    if isinstance(values, str):
+        text = values.strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        values = [part.strip() for part in text.split(",")]
+    result: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = str(value).strip().strip("'\"")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def extract_skill_tags(frontmatter: Dict[str, Any]) -> List[str]:
+    """Extract normalized skill tags from metadata.hermes or top-level fields."""
+    metadata = frontmatter.get("metadata")
+    hermes = metadata.get("hermes") if isinstance(metadata, dict) else None
+    raw = hermes.get("tags") if isinstance(hermes, dict) else None
+    if raw in (None, ""):
+        raw = frontmatter.get("tags")
+    return _normalize_string_list(raw)
+
+
+def extract_skill_related_skills(frontmatter: Dict[str, Any]) -> List[str]:
+    """Extract normalized related skill names from metadata.hermes or top-level fields."""
+    metadata = frontmatter.get("metadata")
+    hermes = metadata.get("hermes") if isinstance(metadata, dict) else None
+    raw = hermes.get("related_skills") if isinstance(hermes, dict) else None
+    if raw in (None, ""):
+        raw = frontmatter.get("related_skills")
+    return _normalize_string_list(raw)
+
+
+def build_skill_metadata_entry(
+    *,
+    skill_name: str,
+    category: str,
+    frontmatter: Dict[str, Any],
+    description: str = "",
+    source_dir: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build an enriched metadata record for one skill."""
+    platforms = frontmatter.get("platforms") or []
+    if isinstance(platforms, str):
+        platforms = [platforms]
+    frontmatter_name = str(frontmatter.get("name") or skill_name).strip() or skill_name
+    return {
+        "skill_name": skill_name,
+        "name": frontmatter_name,
+        "frontmatter_name": frontmatter_name,
+        "category": category,
+        "description": description,
+        "platforms": [str(p).strip() for p in platforms if str(p).strip()],
+        "conditions": extract_skill_conditions(frontmatter),
+        "tags": extract_skill_tags(frontmatter),
+        "related_skills": extract_skill_related_skills(frontmatter),
+        "source_dir": str(source_dir).strip() if source_dir else None,
+        "is_gstack": skill_name.startswith("gstack-") or category.startswith("gstack"),
+    }
+
+
+def skill_matches_availability(
+    skill: Dict[str, Any],
+    *,
+    available_tools: Optional[Set[str]] = None,
+    available_toolsets: Optional[Set[str]] = None,
+) -> bool:
+    """Return True when skill conditional activation rules allow it."""
+    conditions = skill.get("conditions") or {}
+    if available_tools is None and available_toolsets is None:
+        return True
+
+    at = available_tools or set()
+    ats = available_toolsets or set()
+    for ts in conditions.get("fallback_for_toolsets", []):
+        if ts in ats:
+            return False
+    for tool in conditions.get("fallback_for_tools", []):
+        if tool in at:
+            return False
+    for ts in conditions.get("requires_toolsets", []):
+        if ts not in ats:
+            return False
+    for tool in conditions.get("requires_tools", []):
+        if tool not in at:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class RankedSkill:
+    skill: Dict[str, Any]
+    score: int
+    reasons: tuple[str, ...]
+
+
+def rank_skills_for_profile(
+    skills: Iterable[Dict[str, Any]],
+    profile: Optional[SubagentProfile],
+    *,
+    available_tools: Optional[Set[str]] = None,
+    available_toolsets: Optional[Set[str]] = None,
+) -> List[RankedSkill]:
+    """Rank skills for a subagent profile using existing skill metadata."""
+    if profile is None:
+        return []
+
+    preferred_names = {name.lower() for name in profile.preferred_skill_names}
+    gstack_hints = {name.lower() for name in profile.gstack_skill_hints}
+    preferred_tags = {tag.lower() for tag in profile.preferred_tags}
+    preferred_categories = {category.lower() for category in profile.preferred_skill_categories}
+    excluded_names = {name.lower() for name in profile.excluded_skill_names}
+    excluded_categories = {category.lower() for category in profile.excluded_skill_categories}
+
+    ranked: List[RankedSkill] = []
+    for skill in skills:
+        skill_name = str(skill.get("skill_name") or skill.get("name") or "").strip()
+        category = str(skill.get("category") or "general").strip() or "general"
+        if not skill_name:
+            continue
+        if skill_name.lower() in excluded_names or category.lower() in excluded_categories:
+            continue
+        if not skill_matches_availability(
+            skill,
+            available_tools=available_tools,
+            available_toolsets=available_toolsets,
+        ):
+            continue
+
+        tags = {str(tag).lower() for tag in skill.get("tags") or [] if str(tag).strip()}
+        related = {str(rel).lower() for rel in skill.get("related_skills") or [] if str(rel).strip()}
+
+        score = 0
+        reasons: List[str] = []
+        penalties: List[str] = []
+        lowered_name = skill_name.lower()
+        if lowered_name in preferred_names:
+            score += 1000
+            reasons.append("preferred_name")
+        if lowered_name in gstack_hints:
+            score += 900
+            reasons.append("gstack_hint")
+        tag_matches = tags & preferred_tags
+        if tag_matches:
+            score += 600 + (25 * len(tag_matches))
+            reasons.append("tag_match")
+        if category.lower() in preferred_categories:
+            score += 300
+            reasons.append("category_match")
+        if related & preferred_names:
+            score += 120
+            reasons.append("related_skill_match")
+        if skill.get("is_gstack") and (
+            gstack_hints or profile.runtime_hints.get("gstack_affinity") == "high"
+        ):
+            score += 60
+            reasons.append("gstack_surface")
+
+        if lowered_name == "gstack":
+            score -= 220
+            penalties.append("generic_gstack_penalty")
+        elif skill.get("is_gstack") and lowered_name not in gstack_hints:
+            if not tag_matches and category.lower() not in preferred_categories:
+                score -= 120
+                penalties.append("weak_gstack_match_penalty")
+        if not tag_matches and category.lower() not in preferred_categories and lowered_name not in preferred_names:
+            if not (skill.get("is_gstack") and lowered_name in gstack_hints):
+                score -= 40
+                penalties.append("weak_metadata_match_penalty")
+
+        if score <= 0:
+            continue
+
+        ranked.append(RankedSkill(skill=skill, score=score, reasons=tuple(reasons + penalties)))
+
+    ranked.sort(
+        key=lambda entry: (
+            -entry.score,
+            str(entry.skill.get("category") or ""),
+            str(entry.skill.get("skill_name") or entry.skill.get("name") or ""),
+        )
+    )
+    return ranked
+
+
+def select_top_skills_for_profile(
+    skills: Iterable[Dict[str, Any]],
+    profile: Optional[SubagentProfile],
+    *,
+    limit: int = 8,
+    available_tools: Optional[Set[str]] = None,
+    available_toolsets: Optional[Set[str]] = None,
+) -> List[Dict[str, Any]]:
+    ranked = rank_skills_for_profile(
+        skills,
+        profile,
+        available_tools=available_tools,
+        available_toolsets=available_toolsets,
+    )
+    selected: List[Dict[str, Any]] = []
+    for entry in ranked[: max(0, int(limit))]:
+        record = dict(entry.skill)
+        record["score"] = entry.score
+        record["reasons"] = list(entry.reasons)
+        selected.append(record)
+    return selected
 
 
 # ── Skill config extraction ───────────────────────────────────────────────

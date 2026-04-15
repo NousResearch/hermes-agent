@@ -8,12 +8,14 @@ from unittest.mock import patch
 import pytest
 
 import tools.skills_tool as skills_tool_module
+from agent.subagent_profiles import get_subagent_profile
 from tools.skills_tool import (
     _get_required_environment_variables,
     _parse_frontmatter,
     _parse_tags,
     _get_category_from_path,
     _find_all_skills,
+    recommend_skills_for_profile,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -254,6 +256,119 @@ class TestFindAllSkills:
             skills = _find_all_skills()
         assert len(skills) == 1
         assert skills[0]["name"] == "real-skill"
+
+
+class TestRecommendSkillsForProfile:
+    def test_prefers_exact_name_and_gstack_hints(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gstack-review",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [review, audit]\n"
+                ),
+                category="gstack",
+            )
+            _make_skill(
+                tmp_path,
+                "plain-review",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [review]\n"
+                ),
+                category="quality",
+            )
+
+            recommended = recommend_skills_for_profile(
+                get_subagent_profile("reviewer"),
+                available_tools=set(),
+                available_toolsets=set(),
+            )
+
+        assert recommended
+        assert recommended[0]["skill_name"] == "gstack-review"
+        assert "gstack_hint" in recommended[0]["reasons"]
+
+    def test_excludes_skills_blocked_by_toolset_requirements(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "browser-only",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [browser, recon]\n"
+                    "    requires_toolsets: [browser]\n"
+                ),
+                category="browser",
+            )
+            _make_skill(
+                tmp_path,
+                "browser-safe-fallback",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [browser, recon]\n"
+                ),
+                category="browser",
+            )
+
+            recommended = recommend_skills_for_profile(
+                get_subagent_profile("browser_scout"),
+                available_tools=set(),
+                available_toolsets={"file"},
+            )
+
+        names = [entry["skill_name"] for entry in recommended]
+        assert "browser-safe-fallback" in names
+        assert "browser-only" not in names
+
+    def test_penalizes_generic_gstack_surface_when_better_matches_exist(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "gstack",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [workflow]\n"
+                ),
+                category="gstack",
+            )
+            _make_skill(
+                tmp_path,
+                "gstack-review",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [review, audit]\n"
+                ),
+                category="gstack",
+            )
+            _make_skill(
+                tmp_path,
+                "review-playbook",
+                frontmatter_extra=(
+                    "metadata:\n"
+                    "  hermes:\n"
+                    "    tags: [review, audit, regression]\n"
+                ),
+                category="quality",
+            )
+
+            recommended = recommend_skills_for_profile(
+                get_subagent_profile("reviewer"),
+                available_tools=set(),
+                available_toolsets={"file"},
+            )
+
+        names = [entry["skill_name"] for entry in recommended[:3]]
+        assert "gstack-review" in names
+        assert "review-playbook" in names
+        assert "gstack" not in names
 
 
 # ---------------------------------------------------------------------------

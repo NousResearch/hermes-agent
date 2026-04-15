@@ -533,9 +533,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
             filters out disabled skills.
 
     Returns:
-        List of skill metadata dicts (name, description, category).
+        List of skill metadata dicts. Includes ``name``, ``description``,
+        ``category``, and additive ranking metadata such as ``tags`` and
+        ``conditions``.
     """
-    from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_utils import build_skill_metadata_entry, get_external_skills_dirs
 
     skills = []
     seen_names: set = set()
@@ -581,12 +583,20 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
 
                 category = _get_category_from_path(skill_md)
+                metadata = build_skill_metadata_entry(
+                    skill_name=name,
+                    category=category or "general",
+                    frontmatter=frontmatter,
+                    description=description,
+                    source_dir=str(scan_dir),
+                )
 
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    **metadata,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -642,6 +652,28 @@ def _load_category_description(category_dir: Path) -> Optional[str]:
             "Error parsing category description %s: %s", desc_file, e, exc_info=True
         )
         return None
+
+
+def recommend_skills_for_profile(
+    profile,
+    *,
+    limit: int = 8,
+    available_tools: set[str] | None = None,
+    available_toolsets: set[str] | None = None,
+    skip_disabled: bool = False,
+) -> List[Dict[str, Any]]:
+    """Return top ranked skills for a subagent profile."""
+    from agent.skill_utils import select_top_skills_for_profile
+    from agent.subagent_profiles import get_subagent_profile
+
+    resolved_profile = get_subagent_profile(getattr(profile, "id", profile))
+    return select_top_skills_for_profile(
+        _find_all_skills(skip_disabled=skip_disabled),
+        resolved_profile,
+        limit=limit,
+        available_tools=available_tools,
+        available_toolsets=available_toolsets,
+    )
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:

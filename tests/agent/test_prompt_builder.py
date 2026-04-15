@@ -964,6 +964,70 @@ class TestBuildSkillsSystemPromptConditional:
         )
         assert "nested-null" in result
 
+    def test_profile_prompt_prepends_recommended_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        review_dir = tmp_path / "skills" / "quality" / "review-skill"
+        review_dir.mkdir(parents=True)
+        (review_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: review-skill\n"
+            "description: Review changes carefully\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    tags: [review, audit]\n"
+            "---\n"
+        )
+        gstack_dir = tmp_path / "skills" / "gstack" / "gstack-review"
+        gstack_dir.mkdir(parents=True)
+        (gstack_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: gstack-review\n"
+            "description: Gstack review flow\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    tags: [review, audit]\n"
+            "---\n"
+        )
+
+        result = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+            subagent_profile="reviewer",
+            recommended_skill_limit=3,
+        )
+
+        assert "<recommended_skills>" in result
+        assert "Recommended skills for profile 'reviewer'" in result
+        assert "gstack-review" in result
+        assert result.index("<recommended_skills>") < result.index("<available_skills>")
+
+    def test_profile_changes_prompt_cache_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "quality" / "review-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: review-skill\n"
+            "description: Review changes carefully\n"
+            "metadata:\n"
+            "  hermes:\n"
+            "    tags: [review, audit]\n"
+            "---\n"
+        )
+
+        base_prompt = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        reviewer_prompt = build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+            subagent_profile="reviewer",
+        )
+
+        assert "<recommended_skills>" not in base_prompt
+        assert "<recommended_skills>" in reviewer_prompt
+
 
 # =========================================================================
 # Tool-use enforcement guidance

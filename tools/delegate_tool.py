@@ -10,6 +10,7 @@ Each child gets:
   - A fresh conversation (no parent history)
   - Its own task_id (own terminal session, file ops cache)
   - A restricted toolset (configurable, with blocked tools always stripped)
+  - Spawned-session runtime mode (suppresses onboarding noise and clarify by default)
   - A focused system prompt built from the delegated goal + context
 
 The parent's context only sees the delegation call and the summary result,
@@ -26,6 +27,22 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.review_mesh import (
+    ReviewMeshRequest,
+    aggregate_review_findings,
+    build_specialist_task,
+    parse_specialist_summary,
+    plan_review_mesh,
+)
+from agent.spawned_session import build_spawned_session_completion
+from agent.subagent_profiles import (
+    DEFAULT_SUBAGENT_PROFILE,
+    SubagentProfile,
+    apply_subagent_profile_overrides,
+    canonicalize_subagent_profile_name,
+    get_subagent_profile,
+    resolve_subagent_profile,
+)
 
 
 # Tools that children must never have access to
@@ -87,13 +104,50 @@ def check_delegate_requirements() -> bool:
     return True
 
 
+def _render_profile_prompt_hints(profile: SubagentProfile, *, gstack_mode: str = "auto") -> str:
+    normalized_gstack_mode = str(gstack_mode or "auto").strip().lower() or "auto"
+    lines = [
+        "SUBAGENT PROFILE:",
+        f"- Profile: {profile.id}",
+        f"- Mandate: {profile.description}",
+    ]
+    if profile.default_toolsets:
+        lines.append(f"- Default toolsets: {', '.join(profile.default_toolsets)}")
+    if profile.preferred_skill_names:
+        lines.append(f"- Preferred local skills: {', '.join(profile.preferred_skill_names)}")
+    if profile.preferred_skill_categories:
+        lines.append(f"- Preferred skill categories: {', '.join(profile.preferred_skill_categories)}")
+    if profile.preferred_tags:
+        lines.append(f"- Preferred skill tags: {', '.join(profile.preferred_tags)}")
+    if profile.prompt_preamble:
+        lines.append(f"- Role guidance: {profile.prompt_preamble}")
+    if normalized_gstack_mode != "off" and profile.gstack_skill_hints:
+        label = "Preferred gstack skills"
+        if normalized_gstack_mode == "prefer":
+            label = "Preferred gstack skills (high priority)"
+        lines.append(f"- {label}: {', '.join(profile.gstack_skill_hints)}")
+
+    lines.extend([
+        "",
+        "SKILL LOADING HINTS:",
+        "- If a named skill looks relevant and your available tools include skill access, call skill_view(name) early before acting.",
+        "- Load the highest-confidence matching skills first, then execute the task with those instructions in mind.",
+    ])
+    if normalized_gstack_mode != "off" and profile.gstack_skill_hints:
+        lines.append("- Treat the listed gstack skills as an overlay to check first when they match the task.")
+    return "\n".join(lines)
+
+
 def _build_child_system_prompt(
     goal: str,
     context: Optional[str] = None,
     *,
     workspace_path: Optional[str] = None,
+    subagent_profile: Optional[SubagentProfile] = None,
+    gstack_mode: str = "auto",
 ) -> str:
     """Build a focused system prompt for a child agent."""
+    profile = subagent_profile or DEFAULT_SUBAGENT_PROFILE
     parts = [
         "You are a focused subagent working on a specific delegated task.",
         "",
@@ -101,6 +155,7 @@ def _build_child_system_prompt(
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    parts.append("\n" + _render_profile_prompt_hints(profile, gstack_mode=gstack_mode))
     if workspace_path and str(workspace_path).strip():
         parts.append(
             "\nWORKSPACE PATH:\n"
@@ -120,6 +175,55 @@ def _build_child_system_prompt(
         "parent agent as a summary."
     )
     return "\n".join(parts)
+
+
+def _resolve_delegation_profile_config(raw_cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = dict(raw_cfg or {})
+    profile_overrides = cfg.get("profile_overrides")
+    if not isinstance(profile_overrides, dict):
+        profile_overrides = {}
+    cfg["profile_overrides"] = profile_overrides
+    gstack_mode = str(cfg.get("gstack_mode") or "auto").strip().lower() or "auto"
+    if gstack_mode not in {"auto", "prefer", "off"}:
+        gstack_mode = "auto"
+    cfg["gstack_mode"] = gstack_mode
+    cfg["default_profile"] = str(cfg.get("default_profile") or "").strip()
+    return cfg
+
+
+def _resolve_task_subagent_profile(
+    *,
+    goal: Optional[str],
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    requested_profile: Optional[str],
+    delegation_cfg: Optional[Dict[str, Any]] = None,
+    specialist: Optional[str] = None,
+) -> Dict[str, Any]:
+    resolved_cfg = _resolve_delegation_profile_config(delegation_cfg)
+    explicit_name = str(requested_profile or "").strip()
+    fallback_name = str(resolved_cfg.get("default_profile") or "").strip()
+    role_hint = explicit_name or specialist or fallback_name or None
+    profile = resolve_subagent_profile(
+        role_hint=role_hint,
+        toolsets=toolsets,
+        goal=goal,
+        context=context,
+    )
+
+    requested_canonical = canonicalize_subagent_profile_name(role_hint)
+    if requested_canonical in resolved_cfg["profile_overrides"]:
+        profile = apply_subagent_profile_overrides(profile, resolved_cfg["profile_overrides"][requested_canonical])
+    elif profile.id in resolved_cfg["profile_overrides"]:
+        profile = apply_subagent_profile_overrides(profile, resolved_cfg["profile_overrides"][profile.id])
+
+    return {
+        "profile": profile,
+        "requested": role_hint,
+        "requested_canonical": requested_canonical,
+        "used_default": bool(role_hint and requested_canonical not in {profile.id, None}),
+        "gstack_mode": resolved_cfg["gstack_mode"],
+    }
 
 
 def _resolve_workspace_hint(parent_agent) -> Optional[str]:
@@ -243,6 +347,8 @@ def _build_child_agent(
     model: Optional[str],
     max_iterations: int,
     parent_agent,
+    subagent_profile: Optional[SubagentProfile] = None,
+    gstack_mode: str = "auto",
     # Credential overrides from delegation config (provider:model resolution)
     override_provider: Optional[str] = None,
     override_base_url: Optional[str] = None,
@@ -291,7 +397,14 @@ def _build_child_agent(
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
-    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
+    resolved_profile = subagent_profile or DEFAULT_SUBAGENT_PROFILE
+    child_prompt = _build_child_system_prompt(
+        goal,
+        context,
+        workspace_path=workspace_hint,
+        subagent_profile=resolved_profile,
+        gstack_mode=gstack_mode,
+    )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -365,9 +478,12 @@ def _build_child_agent(
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
+        spawned_session=True,
+        allow_spawned_session_clarify=False,
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, '_session_db', None),
         parent_session_id=getattr(parent_agent, 'session_id', None),
+        subagent_profile=resolved_profile.id,
         providers_allowed=parent_agent.providers_allowed,
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
@@ -376,6 +492,9 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, '_print_fn', None)
+    child.subagent_profile = resolved_profile.id
+    child.subagent_profile_description = resolved_profile.description
+    child.gstack_mode = gstack_mode
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -553,6 +672,7 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "subagent_profile": getattr(child, "subagent_profile", None),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": _input_tokens if isinstance(_input_tokens, (int, float)) else 0,
@@ -562,6 +682,22 @@ def _run_single_child(
         }
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        entry["completion"] = build_spawned_session_completion(
+            mode="spawned_session",
+            status=status,
+            summary=summary,
+            exit_reason=exit_reason,
+            session_id=getattr(child, "session_id", None),
+            model=entry["model"],
+            api_calls=api_calls,
+            duration_seconds=duration,
+            tokens=entry["tokens"],
+            error=entry.get("error"),
+            task_index=task_index,
+            goal=goal,
+        )
+        entry["completion"]["subagent_profile"] = entry["subagent_profile"]
 
         return entry
 
@@ -575,6 +711,24 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "subagent_profile": getattr(child, "subagent_profile", None),
+            "completion": {
+                **build_spawned_session_completion(
+                    mode="spawned_session",
+                    status="error",
+                    summary=None,
+                    exit_reason="error",
+                    session_id=getattr(child, "session_id", None),
+                    model=getattr(child, "model", None),
+                    api_calls=0,
+                    duration_seconds=duration,
+                    tokens={"input": 0, "output": 0},
+                    error=str(exc),
+                    task_index=task_index,
+                    goal=goal,
+                ),
+                "subagent_profile": getattr(child, "subagent_profile", None),
+            },
         }
 
     finally:
@@ -628,6 +782,8 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    review_mesh: Optional[Dict[str, Any]] = None,
+    subagent_profile: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -653,7 +809,7 @@ def delegate_task(
         })
 
     # Load config
-    cfg = _load_config()
+    cfg = _resolve_delegation_profile_config(_load_config())
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -669,7 +825,36 @@ def delegate_task(
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
-    if tasks and isinstance(tasks, list):
+    review_mesh_plan = None
+    review_mesh_request = None
+    review_mesh_specs = None
+    if review_mesh is not None:
+        if tasks:
+            return tool_error("review_mesh can only be used with single-goal delegation, not batch tasks.")
+        if not (goal and isinstance(goal, str) and goal.strip()):
+            return tool_error("review_mesh requires a non-empty top-level goal.")
+        review_mesh_request = _coerce_review_mesh_request(goal, context, review_mesh, parent_agent=parent_agent)
+        review_mesh_plan = plan_review_mesh(review_mesh_request)
+        review_mesh_specs = [
+            build_specialist_task(specialist, review_mesh_request, review_mesh_plan)
+            for specialist in review_mesh_plan.specialists
+        ]
+        if len(review_mesh_specs) > max_children:
+            return tool_error(
+                f"review_mesh selected {len(review_mesh_specs)} specialists, but "
+                f"max_concurrent_children is {max_children}. Increase delegation.max_concurrent_children or disable optional specialists."
+            )
+        task_list = [
+            {
+                "goal": spec["goal"],
+                "context": spec["context"],
+                "toolsets": spec["toolsets"],
+                "specialist": spec["specialist"],
+                "subagent_profile": subagent_profile or spec["subagent_profile"],
+            }
+            for spec in review_mesh_specs
+        ]
+    elif tasks and isinstance(tasks, list):
         if len(tasks) > max_children:
             return tool_error(
                 f"Too many tasks: {len(tasks)} provided, but "
@@ -680,7 +865,12 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "toolsets": toolsets,
+            "subagent_profile": subagent_profile,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -711,10 +901,21 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            profile_resolution = _resolve_task_subagent_profile(
+                goal=t["goal"],
+                context=t.get("context"),
+                toolsets=t.get("toolsets") or toolsets,
+                requested_profile=t.get("subagent_profile") or subagent_profile,
+                delegation_cfg=cfg,
+                specialist=t.get("specialist"),
+            )
+            t["resolved_subagent_profile"] = profile_resolution["profile"].id
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets, model=creds["model"],
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
+                subagent_profile=profile_resolution["profile"],
+                gstack_mode=profile_resolution["gstack_mode"],
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -807,10 +1008,46 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps({
+    status_counts = {}
+    for entry in results:
+        key = entry.get("status", "unknown")
+        status_counts[key] = status_counts.get(key, 0) + 1
+
+    response = {
         "results": results,
         "total_duration_seconds": total_duration,
-    }, ensure_ascii=False)
+        "completion": {
+            "mode": "spawned_session",
+            "task_count": len(results),
+            "status_counts": status_counts,
+            "duration_seconds": total_duration,
+        },
+    }
+    if review_mesh_plan is not None:
+        specialist_runs = []
+        for entry in results:
+            idx = entry.get("task_index", 0)
+            specialist = task_list[idx].get("specialist", f"specialist_{idx}") if idx < len(task_list) else f"specialist_{idx}"
+            normalized = parse_specialist_summary(
+                specialist=specialist,
+                raw_summary=entry.get("summary") or "",
+                task_index=idx,
+            )
+            normalized["status"] = entry.get("status")
+            normalized["duration_seconds"] = entry.get("duration_seconds")
+            normalized["api_calls"] = entry.get("api_calls")
+            specialist_runs.append(normalized)
+        response["review_mesh"] = {
+            "specialists": review_mesh_plan.specialists,
+            "activation_reasons": review_mesh_plan.activation_reasons,
+            "specialist_results": specialist_runs,
+            "aggregate": aggregate_review_findings(
+                specialist_runs,
+                project_root=review_mesh_request.project_root if review_mesh_request is not None else None,
+            ),
+        }
+
+    return json.dumps(response, ensure_ascii=False)
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
@@ -943,18 +1180,43 @@ def _load_config() -> dict:
     of the entry point (CLI, gateway, cron).
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
+        from cli import CLI_CONFIG, _active_agent_ref
+        if _active_agent_ref is not None:
+            cfg = CLI_CONFIG.get("delegation", {})
+            if cfg:
+                return _resolve_delegation_profile_config(cfg)
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
         full = load_config()
-        return full.get("delegation", {})
+        return _resolve_delegation_profile_config(full.get("delegation", {}))
     except Exception:
-        return {}
+        return _resolve_delegation_profile_config({})
+
+
+def _coerce_review_mesh_request(
+    goal: Optional[str],
+    context: Optional[str],
+    review_mesh: Dict[str, Any],
+    parent_agent=None,
+) -> ReviewMeshRequest:
+    review_mesh = review_mesh or {}
+    touched_paths = review_mesh.get("touched_paths") or review_mesh.get("files") or []
+    if isinstance(touched_paths, str):
+        touched_paths = [touched_paths]
+    explicit_specialists = review_mesh.get("specialists") or []
+    if isinstance(explicit_specialists, str):
+        explicit_specialists = [explicit_specialists]
+    project_root = review_mesh.get("project_root") or _resolve_workspace_hint(parent_agent)
+    return ReviewMeshRequest(
+        goal=(goal or "").strip(),
+        context=context,
+        touched_paths=[str(path) for path in touched_paths if str(path).strip()],
+        enable_red_team=bool(review_mesh.get("enable_red_team")),
+        explicit_specialists=[str(name) for name in explicit_specialists if str(name).strip()],
+        project_root=str(project_root).strip() if project_root else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -965,7 +1227,7 @@ DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     "description": (
         "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
+        "Each subagent gets its own conversation, terminal session, and spawned-session runtime policy. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
@@ -986,7 +1248,10 @@ DELEGATE_TASK_SCHEMA = {
         "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
         "execute_code.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
+        "- Results are always returned as an array, one entry per task.\n"
+        "- Optional review_mesh mode fans one review request out to specialist reviewers "
+        "(testing, security, performance, maintainability, optional red-team) and "
+        "returns normalized findings ranked by severity."
     ),
     "parameters": {
         "type": "object",
@@ -1019,6 +1284,14 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "subagent_profile": {
+                "type": "string",
+                "description": (
+                    "Optional subagent profile override (for example: builder, researcher, reviewer, operator, "
+                    "browser_scout, archivist, security_reviewer, performance_reviewer, maintainability_reviewer, red_team). "
+                    "When omitted, the profile is inferred from goal/context/toolsets and delegation config."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -1030,6 +1303,10 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "subagent_profile": {
+                            "type": "string",
+                            "description": "Optional per-task subagent profile override.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -1076,6 +1353,34 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "review_mesh": {
+                "type": "object",
+                "description": (
+                    "Optional specialist review mesh. Use with a single top-level goal to fan out into conditional "
+                    "testing/security/performance/maintainability specialists plus optional red-team review, then "
+                    "aggregate normalized findings by severity."
+                ),
+                "properties": {
+                    "touched_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Files or paths touched by the change. Used for deterministic specialist activation.",
+                    },
+                    "specialists": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional extra specialists to force on in addition to the activation rules.",
+                    },
+                    "enable_red_team": {
+                        "type": "boolean",
+                        "description": "Enable the optional adversarial red-team specialist.",
+                    },
+                    "project_root": {
+                        "type": "string",
+                        "description": "Optional repository root for per-project review memory. Defaults to the resolved workspace path when available.",
+                    },
+                },
+            },
         },
         "required": [],
     },
@@ -1097,6 +1402,8 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        review_mesh=args.get("review_mesh"),
+        subagent_profile=args.get("subagent_profile"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

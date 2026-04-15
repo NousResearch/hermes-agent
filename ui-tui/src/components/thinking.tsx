@@ -103,7 +103,7 @@ function Chevron({
   tone = 'dim'
 }: {
   count?: number
-  onClick: () => void
+  onClick: (deep?: boolean) => void
   open: boolean
   suffix?: string
   t: Theme
@@ -113,7 +113,7 @@ function Chevron({
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.dim
 
   return (
-    <Box onClick={onClick}>
+    <Box onClick={(e: { ctrlKey?: boolean; shiftKey?: boolean }) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
       <Text color={color} dimColor={tone === 'dim'}>
         <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
         {title}
@@ -131,6 +131,7 @@ function Chevron({
 
 function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: SubagentProgress; t: Theme }) {
   const [open, setOpen] = useState(expanded)
+  const [deep, setDeep] = useState(expanded)
   const [openThinking, setOpenThinking] = useState(expanded)
   const [openTools, setOpenTools] = useState(expanded)
   const [openNotes, setOpenNotes] = useState(expanded)
@@ -141,16 +142,26 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
     }
 
     setOpen(true)
+    setDeep(true)
     setOpenThinking(true)
     setOpenTools(true)
     setOpenNotes(true)
   }, [expanded])
 
+  const expandAll = () => {
+    setOpen(true)
+    setDeep(true)
+    setOpenThinking(true)
+    setOpenTools(true)
+    setOpenNotes(true)
+  }
+
   const statusTone: 'dim' | 'error' | 'warn' =
     item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
-  const title = `${prefix}${item.goal || `Subagent ${item.index + 1}`}`
+  const goalLabel = item.goal || `Subagent ${item.index + 1}`
+  const title = `${prefix}${open ? goalLabel : compactPreview(goalLabel, 60)}`
   const summary = compactPreview((item.summary || '').replace(/\s+/g, ' ').trim(), 72)
 
   const suffix =
@@ -163,23 +174,32 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
   const hasTools = item.tools.length > 0
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
-  const active = expanded || open
+  const showChildren = expanded || deep
 
   return (
     <Box flexDirection="column" paddingLeft={1}>
-      <Chevron onClick={() => setOpen(v => !v)} open={active} suffix={suffix} t={t} title={title} tone={statusTone} />
-      {active && (
+      <Chevron
+        onClick={shift => shift ? expandAll() : setOpen(v => { if (!v) setDeep(false); return !v })}
+        open={open}
+        suffix={suffix}
+        t={t}
+        title={title}
+        tone={statusTone}
+      />
+
+      {open && (
         <Box flexDirection="column" paddingLeft={2}>
           {hasThinking && (
             <>
               <Chevron
                 count={item.thinking.length}
-                onClick={() => setOpenThinking(v => !v)}
-                open={expanded || openThinking}
+                onClick={shift => { if (shift) expandAll(); else setOpenThinking(v => !v) }}
+                open={showChildren || openThinking}
                 t={t}
                 title="Thinking"
               />
-              {(expanded || openThinking) && (
+
+              {(showChildren || openThinking) && (
                 <Thinking
                   active={item.status === 'running'}
                   mode="full"
@@ -195,12 +215,13 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
             <>
               <Chevron
                 count={item.tools.length}
-                onClick={() => setOpenTools(v => !v)}
-                open={expanded || openTools}
+                onClick={shift => { if (shift) expandAll(); else setOpenTools(v => !v) }}
+                open={showChildren || openTools}
                 t={t}
                 title="Tool calls"
               />
-              {(expanded || openTools) && (
+
+              {(showChildren || openTools) && (
                 <Box flexDirection="column">
                   {item.tools.map((line, index) => (
                     <Text color={t.color.cornsilk} key={`${item.id}-tool-${index}`} wrap="wrap-trim">
@@ -217,13 +238,14 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
             <>
               <Chevron
                 count={noteRows.length}
-                onClick={() => setOpenNotes(v => !v)}
-                open={expanded || openNotes}
+                onClick={shift => { if (shift) expandAll(); else setOpenNotes(v => !v) }}
+                open={showChildren || openNotes}
                 t={t}
                 title="Progress"
                 tone={statusTone}
               />
-              {(expanded || openNotes) && (
+
+              {(showChildren || openNotes) && (
                 <Box flexDirection="column">
                   {noteRows.map((line, index) => (
                     <Text
@@ -339,6 +361,7 @@ export const ToolTrail = memo(function ToolTrail({
   const [openThinking, setOpenThinking] = useState(false)
   const [openTools, setOpenTools] = useState(false)
   const [openSubagents, setOpenSubagents] = useState(false)
+  const [deepSubagents, setDeepSubagents] = useState(false)
   const [openMeta, setOpenMeta] = useState(false)
 
   useEffect(() => {
@@ -519,7 +542,9 @@ export const ToolTrail = memo(function ToolTrail({
     : null
 
   const subagentBlock = hasSubagents
-    ? subagents.map(item => <SubagentAccordion expanded={detailsMode === 'expanded'} item={item} key={item.id} t={t} />)
+    ? subagents.map(item => (
+        <SubagentAccordion expanded={detailsMode === 'expanded' || deepSubagents} item={item} key={item.id} t={t} />
+      ))
     : null
 
   const metaBlock = hasMeta
@@ -554,6 +579,14 @@ export const ToolTrail = memo(function ToolTrail({
 
   // ── Collapsed: clickable accordions ────────────────────────────
 
+  const expandAll = () => {
+    setOpenThinking(true)
+    setOpenTools(true)
+    setOpenSubagents(true)
+    setDeepSubagents(true)
+    setOpenMeta(true)
+  }
+
   const metaTone: 'dim' | 'error' | 'warn' = activity.some(i => i.tone === 'error')
     ? 'error'
     : activity.some(i => i.tone === 'warn')
@@ -564,7 +597,7 @@ export const ToolTrail = memo(function ToolTrail({
     <Box flexDirection="column">
       {hasThinking && (
         <>
-          <Box onClick={() => setOpenThinking(v => !v)}>
+          <Box onClick={(e: { ctrlKey?: boolean; shiftKey?: boolean }) => (e?.shiftKey || e?.ctrlKey) ? expandAll() : setOpenThinking(v => !v)}>
             <Text color={t.color.dim} dimColor={!thinkingLive}>
               <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
               <Text bold={thinkingLive} color={thinkingLive ? t.color.cornsilk : t.color.dim} dimColor={!thinkingLive}>
@@ -586,7 +619,7 @@ export const ToolTrail = memo(function ToolTrail({
         <>
           <Chevron
             count={groups.length}
-            onClick={() => setOpenTools(v => !v)}
+            onClick={shift => shift ? expandAll() : setOpenTools(v => !v)}
             open={openTools}
             suffix={toolTokensLabel}
             t={t}
@@ -600,7 +633,15 @@ export const ToolTrail = memo(function ToolTrail({
         <>
           <Chevron
             count={subagents.length}
-            onClick={() => setOpenSubagents(v => !v)}
+            onClick={shift => {
+              if (shift) {
+                expandAll()
+                setDeepSubagents(true)
+              } else {
+                setOpenSubagents(v => !v)
+                setDeepSubagents(false)
+              }
+            }}
             open={openSubagents}
             t={t}
             title="Subagents"
@@ -613,7 +654,7 @@ export const ToolTrail = memo(function ToolTrail({
         <>
           <Chevron
             count={meta.length}
-            onClick={() => setOpenMeta(v => !v)}
+            onClick={shift => shift ? expandAll() : setOpenMeta(v => !v)}
             open={openMeta}
             t={t}
             title="Activity"

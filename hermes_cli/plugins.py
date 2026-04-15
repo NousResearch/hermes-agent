@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
+from hermes_cli.commands import COMMAND_REGISTRY, CommandDef, rebuild_lookups, resolve_command
 from utils import env_var_enabled
 
 try:
@@ -112,6 +113,7 @@ class LoadedPlugin:
     module: Optional[types.ModuleType] = None
     tools_registered: List[str] = field(default_factory=list)
     hooks_registered: List[str] = field(default_factory=list)
+    commands_registered: List[str] = field(default_factory=list)
     enabled: bool = False
     error: Optional[str] = None
 
@@ -262,6 +264,62 @@ class PluginContext:
         self._manager._hooks.setdefault(hook_name, []).append(callback)
         logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
 
+    # -- slash command registration ------------------------------------------
+
+    def register_command(
+        self,
+        name: str,
+        handler: Callable,
+        description: str = "",
+        *,
+        aliases: tuple[str, ...] | list[str] = (),
+        args_hint: str = "",
+        subcommands: tuple[str, ...] | list[str] = (),
+        cli_only: bool = False,
+        gateway_only: bool = False,
+        gateway_config_gate: str | None = None,
+        category: str = "Plugins",
+    ) -> None:
+        """Register a plugin-provided slash command."""
+        command_name = name.strip().lstrip("/").lower()
+        if not command_name:
+            raise ValueError("Plugin command name cannot be empty")
+
+        normalized_aliases = tuple(
+            alias.strip().lstrip("/").lower()
+            for alias in aliases
+            if alias and alias.strip()
+        )
+        normalized_subcommands = tuple(
+            sub.strip()
+            for sub in subcommands
+            if sub and sub.strip()
+        )
+
+        for candidate in (command_name, *normalized_aliases):
+            existing = resolve_command(candidate)
+            if existing is not None:
+                raise ValueError(
+                    f"Plugin command '/{candidate}' conflicts with existing '/{existing.name}'"
+                )
+
+        self._manager._plugin_commands[command_name] = handler
+        COMMAND_REGISTRY.append(
+            CommandDef(
+                name=command_name,
+                description=description or f"Plugin command: {command_name}",
+                category=category,
+                aliases=normalized_aliases,
+                args_hint=args_hint,
+                subcommands=normalized_subcommands,
+                cli_only=cli_only,
+                gateway_only=gateway_only,
+                gateway_config_gate=gateway_config_gate,
+            )
+        )
+        rebuild_lookups()
+        logger.debug("Plugin %s registered command: %s", self.manifest.name, command_name)
+
     # -- skill registration -------------------------------------------------
 
     def register_skill(
@@ -321,6 +379,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_commands: Dict[str, Callable] = {}
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._discovered: bool = False
@@ -485,6 +544,15 @@ class PluginManager:
                         for h in p.hooks_registered
                     }
                 )
+                loaded.commands_registered = [
+                    command_name
+                    for command_name in self._plugin_commands
+                    if command_name not in {
+                        registered_name
+                        for _name, plugin in self._plugins.items()
+                        for registered_name in plugin.commands_registered
+                    }
+                ]
                 loaded.enabled = True
 
         except Exception as exc:
@@ -598,6 +666,7 @@ class PluginManager:
                     "enabled": loaded.enabled,
                     "tools": len(loaded.tools_registered),
                     "hooks": len(loaded.hooks_registered),
+                    "commands": len(loaded.commands_registered),
                     "error": loaded.error,
                 }
             )
@@ -644,6 +713,23 @@ def get_plugin_manager() -> PluginManager:
 def discover_plugins() -> None:
     """Discover and load all plugins (idempotent)."""
     get_plugin_manager().discover_and_load()
+
+
+def get_plugin_command_handler(name: str) -> Callable | None:
+    """Return a plugin slash-command handler by canonical name or alias."""
+    if not name:
+        return None
+
+    normalized = name.strip().lstrip("/").lower()
+    manager = get_plugin_manager()
+    handler = manager._plugin_commands.get(normalized)
+    if handler is not None:
+        return handler
+
+    resolved = resolve_command(normalized)
+    if resolved is None:
+        return None
+    return manager._plugin_commands.get(resolved.name)
 
 
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

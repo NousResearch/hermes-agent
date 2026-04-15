@@ -10,6 +10,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+import hermes_cli.commands as commands_module
+import hermes_cli.plugins as plugins_module
+from hermes_cli.commands import COMMAND_REGISTRY, resolve_command
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
@@ -605,7 +608,78 @@ class TestPreLlmCallTargetRouting:
         assert "plain text C" in _plugin_user_context
 
 
-# NOTE: TestPluginCommands removed – register_command() was never implemented
-# in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
-# commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS
-# integration — all of which are unimplemented features.
+class TestPluginCommands:
+    """Tests for plugin slash-command registration and lookup."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_plugin_command_state(self):
+        original_registry = list(COMMAND_REGISTRY)
+        original_manager = plugins_module._plugin_manager
+        try:
+            yield
+        finally:
+            plugins_module._plugin_manager = original_manager
+            COMMAND_REGISTRY[:] = original_registry
+            rebuild = getattr(commands_module, "rebuild_lookups", None)
+            if callable(rebuild):
+                rebuild()
+
+    def test_register_command_records_handler_and_updates_command_lookup(self):
+        manifest = PluginManifest(name="cmd_plugin")
+        manager = PluginManager()
+        plugins_module._plugin_manager = manager
+        ctx = PluginContext(manifest, manager)
+
+        def handler(args: str) -> str:
+            return f"ok:{args}"
+
+        ctx.register_command(
+            name="/mirror-status",
+            handler=handler,
+            description="Show mirror status",
+            aliases=("mirrorstat",),
+            args_hint="[scope]",
+        )
+
+        command_lookup = getattr(manager, "_plugin_commands", {})
+        assert command_lookup == {"mirror-status": handler}
+        assert plugins_module.get_plugin_command_handler("mirror-status") is handler
+        assert plugins_module.get_plugin_command_handler("/mirrorstat") is handler
+
+        cmd = resolve_command("mirror-status")
+        assert cmd is not None
+        assert cmd.name == "mirror-status"
+        assert cmd.aliases == ("mirrorstat",)
+        assert cmd.args_hint == "[scope]"
+        assert cmd.category == "Plugins"
+        assert "mirror-status" in commands_module.GATEWAY_KNOWN_COMMANDS
+        assert "mirrorstat" in commands_module.GATEWAY_KNOWN_COMMANDS
+
+    def test_discovery_loads_plugin_commands_and_tracks_command_count(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "cmd_plugin",
+            register_body=(
+                'ctx.register_command('
+                'name="mirror-test", '
+                'handler=lambda args: f"mirror:{args}", '
+                'description="Send mirror test", '
+                'aliases=("mt",)'
+                ')'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        discover_plugins()
+
+        handler = plugins_module.get_plugin_command_handler("mt")
+        assert handler is not None
+        assert handler("hello") == "mirror:hello"
+
+        cmd = resolve_command("mirror-test")
+        assert cmd is not None
+        assert cmd.description == "Send mirror test"
+
+        plugin_info = discover_plugins.__globals__["get_plugin_manager"]().list_plugins()
+        assert plugin_info[0]["commands"] == 1

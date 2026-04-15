@@ -245,12 +245,52 @@ for _cmd in COMMAND_REGISTRY:
 # Set of all command names + aliases recognized by the gateway.
 # Includes config-gated commands so the gateway can dispatch them
 # (the handler checks the config gate at runtime).
-GATEWAY_KNOWN_COMMANDS: frozenset[str] = frozenset(
-    name
-    for cmd in COMMAND_REGISTRY
-    if not cmd.cli_only or cmd.gateway_config_gate
-    for name in (cmd.name, *cmd.aliases)
-)
+def _build_gateway_known_commands() -> frozenset[str]:
+    return frozenset(
+        name
+        for cmd in COMMAND_REGISTRY
+        if not cmd.cli_only or cmd.gateway_config_gate
+        for name in (cmd.name, *cmd.aliases)
+    )
+
+
+GATEWAY_KNOWN_COMMANDS: frozenset[str] = _build_gateway_known_commands()
+
+
+def rebuild_lookups() -> None:
+    """Refresh derived command lookup structures after registry mutation."""
+    global _COMMAND_LOOKUP, COMMANDS, COMMANDS_BY_CATEGORY, SUBCOMMANDS, GATEWAY_KNOWN_COMMANDS
+
+    _COMMAND_LOOKUP = _build_command_lookup()
+
+    COMMANDS = {}
+    for _cmd in COMMAND_REGISTRY:
+        if not _cmd.gateway_only:
+            COMMANDS[f"/{_cmd.name}"] = _build_description(_cmd)
+            for _alias in _cmd.aliases:
+                COMMANDS[f"/{_alias}"] = f"{_cmd.description} (alias for /{_cmd.name})"
+
+    COMMANDS_BY_CATEGORY = {}
+    for _cmd in COMMAND_REGISTRY:
+        if not _cmd.gateway_only:
+            _cat = COMMANDS_BY_CATEGORY.setdefault(_cmd.category, {})
+            _cat[f"/{_cmd.name}"] = COMMANDS[f"/{_cmd.name}"]
+            for _alias in _cmd.aliases:
+                _cat[f"/{_alias}"] = COMMANDS[f"/{_alias}"]
+
+    SUBCOMMANDS = {}
+    for _cmd in COMMAND_REGISTRY:
+        if _cmd.subcommands:
+            SUBCOMMANDS[f"/{_cmd.name}"] = list(_cmd.subcommands)
+    for _cmd in COMMAND_REGISTRY:
+        key = f"/{_cmd.name}"
+        if key in SUBCOMMANDS or not _cmd.args_hint:
+            continue
+        m = _PIPE_SUBS_RE.search(_cmd.args_hint)
+        if m:
+            SUBCOMMANDS[key] = m.group(0).split("|")
+
+    GATEWAY_KNOWN_COMMANDS = _build_gateway_known_commands()
 
 
 def _resolve_config_gates() -> set[str]:

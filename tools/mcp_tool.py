@@ -165,6 +165,21 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+# A connection that survived at least this long before dropping is
+# considered "healthy". The consecutive-reconnect counter is reset on a
+# healthy disconnect so that long-lived servers aren't permanently retired
+# after _MAX_RECONNECT_RETRIES lifetime disconnects.
+_HEALTHY_CONNECTION_SECONDS = 30.0
+# Exception class names that indicate the MCP stdio/HTTP transport has gone
+# away mid-call. Matched by type().__name__ so we don't need to import anyio.
+_STALE_TRANSPORT_EXC_NAMES = frozenset({
+    "ClosedResourceError",
+    "BrokenResourceError",
+    "EndOfStream",
+    "IncompleteReadError",
+    "ConnectionResetError",
+    "BrokenPipeError",
+})
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -269,6 +284,51 @@ def _scan_mcp_description(server_name: str, tool_name: str, description: str) ->
             description,
         )
     return findings
+
+
+def _is_stale_transport_error(exc: BaseException) -> bool:
+    """Return True if *exc* indicates the MCP transport has gone away.
+
+    Matches by exception class name rather than isinstance so we don't
+    have to import anyio (which may or may not be the underlying
+    transport library). Walks the exception chain to catch wrapped
+    errors raised through ExceptionGroup / __cause__ / __context__.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if type(current).__name__ in _STALE_TRANSPORT_EXC_NAMES:
+            return True
+        nested = getattr(current, "exceptions", None)
+        if nested:
+            try:
+                stack.extend(nested)
+            except TypeError:
+                pass
+        cause = getattr(current, "__cause__", None)
+        if cause is not None:
+            stack.append(cause)
+        context = getattr(current, "__context__", None)
+        if context is not None:
+            stack.append(context)
+    return False
+
+
+def _mark_session_stale(server_name: str) -> None:
+    """Clear the session reference for *server_name* so the handler fast-
+    fails subsequent calls while the background run() loop reconnects.
+
+    Safe to call from the MCP event loop thread or any caller thread —
+    the mutation is guarded by the module lock.
+    """
+    with _lock:
+        server = _servers.get(server_name)
+    if server is not None:
+        server.session = None
 
 
 def _prepend_path(env: dict, directory: str) -> dict:
@@ -785,6 +845,7 @@ class MCPServerTask:
         "name", "session", "tool_timeout",
         "_task", "_ready", "_shutdown_event", "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
+        "_connected_at",
     )
 
     def __init__(self, name: str):
@@ -801,6 +862,10 @@ class MCPServerTask:
         self._registered_tool_names: list[str] = []
         self._auth_type: str = ""
         self._refresh_lock = asyncio.Lock()
+        # monotonic timestamp of the most recent successful connection; used
+        # by run() to decide whether a disconnect should reset the
+        # consecutive-retry counter.
+        self._connected_at: float = 0.0
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
@@ -932,6 +997,7 @@ class MCPServerTask:
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
+                self._connected_at = time.monotonic()
                 await self._shutdown_event.wait()
         # Context exited cleanly — subprocess was terminated by the SDK.
         if new_pids:
@@ -995,6 +1061,7 @@ class MCPServerTask:
                         self.session = session
                         await self._discover_tools()
                         self._ready.set()
+                        self._connected_at = time.monotonic()
                         await self._shutdown_event.wait()
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
@@ -1012,6 +1079,7 @@ class MCPServerTask:
                     self.session = session
                     await self._discover_tools()
                     self._ready.set()
+                    self._connected_at = time.monotonic()
                     await self._shutdown_event.wait()
 
     async def _discover_tools(self):
@@ -1055,79 +1123,111 @@ class MCPServerTask:
         backoff = 1.0
 
         while True:
+            disconnect_exc: Optional[BaseException] = None
             try:
                 if self._is_http():
                     await self._run_http(config)
                 else:
                     await self._run_stdio(config)
-                # Normal exit (shutdown requested) -- break out
-                break
+                # _run_* returned without raising. Only a set shutdown_event
+                # is a legitimate reason for that; any other path is an
+                # unexpected clean disconnect (e.g. the SDK's stdio_client
+                # context exited because the subprocess died but the
+                # underlying stream cleanup swallowed the error). Fall
+                # through to the reconnect logic in that case.
+                if self._shutdown_event.is_set():
+                    break
+                disconnect_exc = ConnectionError(
+                    f"MCP server '{self.name}' transport exited without "
+                    "a shutdown request"
+                )
             except Exception as exc:
+                disconnect_exc = exc
+            finally:
                 self.session = None
 
-                # If this is the first connection attempt, retry with backoff
-                # before giving up. A transient DNS/network blip at startup
-                # should not permanently kill the server.
-                # (Ported from Kilo Code's MCP resilience fix.)
-                if not self._ready.is_set():
-                    initial_retries += 1
-                    if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
-                        logger.warning(
-                            "MCP server '%s' failed initial connection after "
-                            "%d attempts, giving up: %s",
-                            self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
-                        )
-                        self._error = exc
-                        self._ready.set()
-                        return
+            exc = disconnect_exc
+            assert exc is not None  # for type checkers
 
+            # If this is the first connection attempt, retry with backoff
+            # before giving up. A transient DNS/network blip at startup
+            # should not permanently kill the server.
+            # (Ported from Kilo Code's MCP resilience fix.)
+            if not self._ready.is_set():
+                initial_retries += 1
+                if initial_retries > _MAX_INITIAL_CONNECT_RETRIES:
                     logger.warning(
-                        "MCP server '%s' initial connection failed "
-                        "(attempt %d/%d), retrying in %.0fs: %s",
-                        self.name, initial_retries,
-                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                        "MCP server '%s' failed initial connection after "
+                        "%d attempts, giving up: %s",
+                        self.name, _MAX_INITIAL_CONNECT_RETRIES, exc,
                     )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
-
-                    # Check if shutdown was requested during the sleep
-                    if self._shutdown_event.is_set():
-                        self._error = exc
-                        self._ready.set()
-                        return
-                    continue
-
-                # If shutdown was requested, don't reconnect
-                if self._shutdown_event.is_set():
-                    logger.debug(
-                        "MCP server '%s' disconnected during shutdown: %s",
-                        self.name, exc,
-                    )
-                    return
-
-                retries += 1
-                if retries > _MAX_RECONNECT_RETRIES:
-                    logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
-                    )
+                    self._error = exc
+                    self._ready.set()
                     return
 
                 logger.warning(
-                    "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
+                    "MCP server '%s' initial connection failed "
+                    "(attempt %d/%d), retrying in %.0fs: %s",
+                    self.name, initial_retries,
+                    _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
                 )
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
-                # Check again after sleeping
+                # Check if shutdown was requested during the sleep
                 if self._shutdown_event.is_set():
+                    self._error = exc
+                    self._ready.set()
                     return
-            finally:
-                self.session = None
+                continue
+
+            # If shutdown was requested, don't reconnect
+            if self._shutdown_event.is_set():
+                logger.debug(
+                    "MCP server '%s' disconnected during shutdown: %s",
+                    self.name, exc,
+                )
+                return
+
+            # If the previous session was up for long enough to be
+            # considered healthy, reset the consecutive-retry counter so a
+            # long-running server is not permanently retired after
+            # _MAX_RECONNECT_RETRIES lifetime disconnects.
+            healthy_duration = 0.0
+            if self._connected_at:
+                healthy_duration = time.monotonic() - self._connected_at
+            self._connected_at = 0.0
+            if healthy_duration >= _HEALTHY_CONNECTION_SECONDS:
+                if retries > 0 or backoff > 1.0:
+                    logger.info(
+                        "MCP server '%s' disconnected after %.1fs uptime "
+                        "(healthy) — resetting retry counter",
+                        self.name, healthy_duration,
+                    )
+                retries = 0
+                backoff = 1.0
+
+            retries += 1
+            if retries > _MAX_RECONNECT_RETRIES:
+                logger.warning(
+                    "MCP server '%s' failed after %d consecutive "
+                    "reconnection attempts, giving up: %s",
+                    self.name, _MAX_RECONNECT_RETRIES, exc,
+                )
+                return
+
+            logger.warning(
+                "MCP server '%s' connection lost (attempt %d/%d, "
+                "last uptime %.1fs), reconnecting in %.0fs: %s",
+                self.name, retries, _MAX_RECONNECT_RETRIES,
+                healthy_duration, backoff, exc,
+            )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+
+            # Check again after sleeping
+            if self._shutdown_event.is_set():
+                return
 
     async def start(self, config: dict):
         """Create the background Task and wait until ready (or failed)."""
@@ -1403,6 +1503,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            stale = _is_stale_transport_error(exc)
+            if stale:
+                _mark_session_stale(server_name)
+                logger.warning(
+                    "MCP tool %s/%s call hit stale transport (%s); "
+                    "session cleared so run() can reconnect",
+                    server_name, tool_name, type(exc).__name__,
+                )
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' transport closed "
+                        "mid-call; reconnecting — please retry the tool"
+                    )
+                })
             logger.error(
                 "MCP tool %s/%s call failed: %s",
                 server_name, tool_name, exc,
@@ -1448,6 +1562,18 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            if _is_stale_transport_error(exc):
+                _mark_session_stale(server_name)
+                logger.warning(
+                    "MCP %s/list_resources hit stale transport (%s); "
+                    "session cleared", server_name, type(exc).__name__,
+                )
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' transport closed; "
+                        "reconnecting — please retry"
+                    )
+                })
             logger.error(
                 "MCP %s/list_resources failed: %s", server_name, exc,
             )
@@ -1494,6 +1620,18 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            if _is_stale_transport_error(exc):
+                _mark_session_stale(server_name)
+                logger.warning(
+                    "MCP %s/read_resource hit stale transport (%s); "
+                    "session cleared", server_name, type(exc).__name__,
+                )
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' transport closed; "
+                        "reconnecting — please retry"
+                    )
+                })
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -1543,6 +1681,18 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            if _is_stale_transport_error(exc):
+                _mark_session_stale(server_name)
+                logger.warning(
+                    "MCP %s/list_prompts hit stale transport (%s); "
+                    "session cleared", server_name, type(exc).__name__,
+                )
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' transport closed; "
+                        "reconnecting — please retry"
+                    )
+                })
             logger.error(
                 "MCP %s/list_prompts failed: %s", server_name, exc,
             )
@@ -1600,6 +1750,18 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         except InterruptedError:
             return _interrupted_call_result()
         except Exception as exc:
+            if _is_stale_transport_error(exc):
+                _mark_session_stale(server_name)
+                logger.warning(
+                    "MCP %s/get_prompt hit stale transport (%s); "
+                    "session cleared", server_name, type(exc).__name__,
+                )
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' transport closed; "
+                        "reconnecting — please retry"
+                    )
+                })
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )

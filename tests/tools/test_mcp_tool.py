@@ -1110,6 +1110,135 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_healthy_disconnect_resets_retry_counter(self):
+        """A disconnect after a long-lived healthy connection should reset
+        the consecutive-retry counter so the server survives more lifetime
+        disconnects than _MAX_RECONNECT_RETRIES.
+
+        Regression: before this fix, every disconnect incremented a
+        lifetime counter that capped at _MAX_RECONNECT_RETRIES (5), so a
+        long-running Hermes gateway whose MCP subprocesses each failed
+        more than 5 times would permanently retire those servers.
+        """
+        from tools.mcp_tool import (
+            MCPServerTask, _MAX_RECONNECT_RETRIES,
+            _HEALTHY_CONNECTION_SECONDS,
+        )
+
+        run_count = 0
+        target_server = None
+        disconnect_budget = _MAX_RECONNECT_RETRIES + 3
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            # Simulate a long-lived connection so the next disconnect is
+            # classified as "healthy" and the retry counter resets.
+            self_srv._connected_at = (
+                time.monotonic() - (_HEALTHY_CONNECTION_SECONDS + 5)
+            )
+
+            if run_count <= disconnect_budget:
+                raise ConnectionError(f"drop #{run_count}")
+            # Final iteration: signal shutdown so run() exits cleanly.
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            # Should have reconnected past _MAX_RECONNECT_RETRIES because
+            # every prior connection was healthy.
+            assert run_count == disconnect_budget + 1
+
+        asyncio.run(_test())
+
+    def test_unexpected_clean_exit_triggers_reconnect(self):
+        """If _run_stdio returns cleanly without shutdown_event being set,
+        run() should treat it as a disconnect and reconnect instead of
+        breaking out of the loop.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        run_count = 0
+        target_server = None
+
+        original_run_stdio = MCPServerTask._run_stdio
+
+        async def patched_run_stdio(self_srv, config):
+            nonlocal run_count, target_server
+            run_count += 1
+            if target_server is not self_srv:
+                return await original_run_stdio(self_srv, config)
+
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._connected_at = time.monotonic()
+
+            if run_count == 1:
+                # Clean return without setting shutdown_event — this used
+                # to cause run() to break out of the loop.
+                return
+            # Second attempt: signal shutdown so run() exits cleanly.
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("test_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_stdio", patched_run_stdio), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"command": "test"})
+
+            assert run_count == 2  # reconnected once
+
+        asyncio.run(_test())
+
+    def test_stale_transport_exception_detection(self):
+        """_is_stale_transport_error should catch wrapped anyio errors."""
+        from tools.mcp_tool import _is_stale_transport_error
+
+        class ClosedResourceError(Exception):
+            pass
+
+        class BrokenResourceError(Exception):
+            pass
+
+        assert _is_stale_transport_error(ClosedResourceError("closed"))
+        assert _is_stale_transport_error(BrokenResourceError("broken"))
+
+        # Wrapped via __cause__
+        wrapper = RuntimeError("wrap")
+        wrapper.__cause__ = ClosedResourceError("inner")
+        assert _is_stale_transport_error(wrapper)
+
+        # Wrapped via ExceptionGroup-like .exceptions attribute
+        class FakeGroup(Exception):
+            def __init__(self, exceptions):
+                self.exceptions = exceptions
+        group = FakeGroup([ValueError("nope"), BrokenResourceError("yep")])
+        assert _is_stale_transport_error(group)
+
+        # Unrelated exception
+        assert not _is_stale_transport_error(ValueError("unrelated"))
+
     def test_no_reconnect_on_initial_failure(self):
         """First connection failure retries up to _MAX_INITIAL_CONNECT_RETRIES times.
 

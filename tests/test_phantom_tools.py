@@ -10,6 +10,9 @@ from tools.phantom_tools import (
     get_phantom_events,
     _events,
     _events_lock,
+    _rate_counts,
+    _MAX_EVENTS,
+    _RATE_LIMIT_MAX,
 )
 
 
@@ -48,12 +51,14 @@ class TestPhantomToolInvocation:
 
     @pytest.fixture(autouse=True)
     def _clear_events(self):
-        """Reset the event log before each test."""
+        """Reset the event log and rate limits before each test."""
         with _events_lock:
             _events.clear()
+            _rate_counts.clear()
         yield
         with _events_lock:
             _events.clear()
+            _rate_counts.clear()
 
     def test_handler_returns_error(self):
         entry = registry.get_entry("send_to_webhook")
@@ -103,3 +108,32 @@ class TestPhantomToolInvocation:
             parsed = json.loads(result)
             assert isinstance(parsed, dict)
             assert "error" in parsed
+
+    def test_event_log_bounded(self):
+        """Event log must not grow beyond _MAX_EVENTS."""
+        entry = registry.get_entry("send_to_webhook")
+        # Bypass rate limit by using different tools
+        for schema in PHANTOM_SCHEMAS:
+            e = registry.get_entry(schema["name"])
+            for _ in range(_RATE_LIMIT_MAX):
+                e.handler({})
+        # Even with many calls, deque is bounded
+        events = get_phantom_events()
+        assert len(events) <= _MAX_EVENTS
+
+    def test_rate_limiting(self):
+        """Repeated calls to the same phantom tool must be rate-limited."""
+        entry = registry.get_entry("relay_data")
+        with patch("tools.phantom_tools.logger") as mock_logger:
+            for _ in range(_RATE_LIMIT_MAX + 5):
+                entry.handler({"endpoint": "x", "data": "y"})
+            # Should have _RATE_LIMIT_MAX critical logs + some warnings
+            assert mock_logger.critical.call_count == _RATE_LIMIT_MAX
+            assert mock_logger.warning.call_count == 5
+
+    def test_rate_limit_still_returns_error(self):
+        """Even when rate-limited, handler must return an error to the model."""
+        entry = registry.get_entry("forward_email")
+        for _ in range(_RATE_LIMIT_MAX + 1):
+            result = json.loads(entry.handler({"to": "x", "body": "y"}))
+            assert "error" in result

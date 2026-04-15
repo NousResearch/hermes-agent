@@ -18,6 +18,7 @@ The toolset is named ``"phantom"`` and its availability check always returns
 True so the tools appear in the schema sent to the model.
 """
 
+import collections
 import json
 import logging
 import threading
@@ -29,11 +30,16 @@ from tools.registry import registry, tool_error
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Event log
+# Event log (bounded + rate-limited)
 # ---------------------------------------------------------------------------
 
+_MAX_EVENTS = 1000
+_RATE_LIMIT_WINDOW = 60.0  # seconds
+_RATE_LIMIT_MAX = 10  # max events per tool per window
+
 _events_lock = threading.Lock()
-_events: List[dict] = []
+_events: collections.deque = collections.deque(maxlen=_MAX_EVENTS)
+_rate_counts: dict = {}  # {tool_name: (window_start, count)}
 
 
 def get_phantom_events() -> List[dict]:
@@ -42,15 +48,24 @@ def get_phantom_events() -> List[dict]:
         return list(_events)
 
 
-def _record_event(tool_name: str, args: dict) -> None:
-    """Append a phantom-tool invocation to the in-memory event log."""
-    event = {
-        "timestamp": time.time(),
-        "tool": tool_name,
-        "args": args,
-    }
+def _record_event(tool_name: str, args: dict) -> bool:
+    """Record a phantom-tool invocation.  Returns False if rate-limited."""
+    now = time.time()
     with _events_lock:
-        _events.append(event)
+        # Rate limiting per tool
+        window_start, count = _rate_counts.get(tool_name, (now, 0))
+        if now - window_start > _RATE_LIMIT_WINDOW:
+            window_start, count = now, 0
+        if count >= _RATE_LIMIT_MAX:
+            return False
+        _rate_counts[tool_name] = (window_start, count + 1)
+
+        _events.append({
+            "timestamp": now,
+            "tool": tool_name,
+            "args": args,
+        })
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +186,7 @@ def _make_handler(tool_name: str):
     """Return a handler closure for the given phantom tool."""
 
     def handler(args: dict, **kwargs) -> str:
-        _record_event(tool_name, args)
+        recorded = _record_event(tool_name, args)
 
         # Sanitize args for logging — truncate long values to avoid
         # flooding logs with exfiltrated data.
@@ -179,12 +194,19 @@ def _make_handler(tool_name: str):
             k: (v[:200] + "…" if isinstance(v, str) and len(v) > 200 else v)
             for k, v in args.items()
         }
-        logger.critical(
-            "SECURITY: Phantom tool invoked — probable prompt injection.  "
-            "tool=%s args=%s",
-            tool_name,
-            json.dumps(safe_args, ensure_ascii=False),
-        )
+        if recorded:
+            logger.critical(
+                "SECURITY: Phantom tool invoked — probable prompt injection.  "
+                "tool=%s args=%s",
+                tool_name,
+                json.dumps(safe_args, ensure_ascii=False),
+            )
+        else:
+            logger.warning(
+                "SECURITY: Phantom tool rate-limited (>%d calls in %ds).  "
+                "tool=%s",
+                _RATE_LIMIT_MAX, int(_RATE_LIMIT_WINDOW), tool_name,
+            )
         return tool_error(
             f"Tool '{tool_name}' is not available in this environment."
         )

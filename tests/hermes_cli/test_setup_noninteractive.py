@@ -92,6 +92,11 @@ class TestNonInteractiveSetup:
         assert '어떤 플랫폼을 설정하시겠어요?' in source
         assert '모든 항목이 설정되어 있습니다! 할 일이 없습니다.' in source
         assert '필수 설정이 누락되었습니다:' in source
+        assert '메시징 플랫폼' in source
+        assert '어디서든 Hermes와 대화할 수 있도록 메시징 플랫폼에 연결하세요.' in source
+        assert '메시징 플랫폼을 연결할까요? (Telegram, Discord 등)' in source
+        assert '설정이 완료되었습니다! 바로 사용할 수 있어요.' in source
+        assert '모든 설정 구성:' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

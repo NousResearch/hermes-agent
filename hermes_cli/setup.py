@@ -2161,9 +2161,9 @@ _GATEWAY_PLATFORMS = [
 
 def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
-    print_header("Messaging Platforms")
-    print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
-    print_info("Toggle with Space, confirm with Enter.")
+    print_header("메시징 플랫폼")
+    print_info("어디서든 Hermes와 대화할 수 있도록 메시징 플랫폼에 연결하세요.")
+    print_info("Space로 토글하고 Enter로 확인하세요.")
     print()
 
     # Build checklist items, pre-selecting already-configured platforms
@@ -3008,10 +3008,10 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     # Step 3: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
-        "Connect a messaging platform? (Telegram, Discord, etc.)",
+        "메시징 플랫폼을 연결할까요? (Telegram, Discord 등)",
         [
-            "Set up messaging now (recommended)",
-            "Skip — set up later with 'hermes setup gateway'",
+            "지금 메시징 설정하기 (권장)",
+            "건너뛰기 — 나중에 'hermes setup gateway'로 설정",
         ],
         0,
     )
@@ -3021,11 +3021,11 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
         save_config(config)
 
     print()
-    print_success("Setup complete! You're ready to go.")
+    print_success("설정이 완료되었습니다! 바로 사용할 수 있어요.")
     print()
-    print_info("  Configure all settings:    hermes setup")
+    print_info("  모든 설정 구성:        hermes setup")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+        print_info("  Telegram/Discord 연결:  hermes setup gateway")
     print()
 
     _print_setup_summary(config, hermes_home)

@@ -595,6 +595,14 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Local brokerage integration settings for deterministic trading workflows.
+    "brokerage": {
+        "enabled": False,
+        "service_url": "http://127.0.0.1:8787",
+        "default_account_mode": "paper",
+        "confirmation_ttl_seconds": 120,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -703,7 +711,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -719,6 +727,7 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
+    18: ["BROKERAGE_SERVICE_TOKEN"],
 }
 
 # Required environment variables with metadata for migration prompts.
@@ -1047,6 +1056,14 @@ OPTIONAL_ENV_VARS = {
         "tools": ["web_search", "web_extract", "web_crawl"],
         "password": True,
         "category": "tool",
+    },
+    "BROKERAGE_SERVICE_TOKEN": {
+        "description": "Shared bearer token used by Hermes brokerage tools to authenticate to the local brokerage service",
+        "prompt": "Brokerage service token",
+        "url": None,
+        "password": True,
+        "category": "tool",
+        "advanced": True,
     },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
@@ -1787,6 +1804,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "brokerage",
 }
 
 # Valid fields inside a custom_providers list entry

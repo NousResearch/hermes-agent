@@ -886,3 +886,39 @@ class TestSendToPlatformDiscordThread:
         send_mock.assert_awaited_once()
         _, call_kwargs = send_mock.await_args
         assert call_kwargs["thread_id"] is None
+
+
+class TestSendMatrixUrlEncoding:
+    """_send_matrix URL-encodes Matrix room IDs in the API path."""
+
+    def test_room_id_is_percent_encoded_in_url(self):
+        """Matrix room IDs with ! and : are percent-encoded in the PUT URL."""
+        import aiohttp
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"event_id": "$evt123"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=None)
+
+        mock_session = MagicMock()
+        mock_session.put = MagicMock(return_value=mock_resp)
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            from tools.send_message_tool import _send_matrix
+            result = asyncio.get_event_loop().run_until_complete(
+                _send_matrix(
+                    "test_token",
+                    {"homeserver": "https://matrix.example.org"},
+                    "!HLOQwxYGgFPMPJUSNR:matrix.org",
+                    "hello",
+                )
+            )
+
+        assert result["success"] is True
+        # Verify the URL was called with percent-encoded room ID
+        put_url = mock_session.put.call_args[0][0]
+        assert "%21HLOQwxYGgFPMPJUSNR%3Amatrix.org" in put_url
+        assert "!HLOQwxYGgFPMPJUSNR:matrix.org" not in put_url

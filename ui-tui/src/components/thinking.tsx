@@ -43,11 +43,16 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
   return <Text color={color}>{spin.frames[frame]}</Text>
 }
 
-type DetailRow = { color: string; content: ReactNode; dimColor?: boolean; key: string }
+interface DetailRow {
+  color: string
+  content: ReactNode
+  dimColor?: boolean
+  key: string
+}
 
 function Detail({ color, content, dimColor }: DetailRow) {
   return (
-    <Text color={color} dimColor={dimColor}>
+    <Text color={color} dimColor={dimColor} wrap="wrap-trim">
       <Text dimColor>└ </Text>
       {content}
     </Text>
@@ -141,7 +146,7 @@ export const Thinking = memo(function Thinking({
       </Text>
 
       {preview ? (
-        <Text color={t.color.dim} dimColor {...(mode !== 'full' ? { wrap: 'truncate-end' as const } : {})}>
+        <Text color={t.color.dim} dimColor wrap={mode === 'full' ? 'wrap-trim' : 'truncate-end'}>
           <Text dimColor>└ </Text>
           {preview}
           <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
@@ -158,7 +163,12 @@ export const Thinking = memo(function Thinking({
 
 // ── ToolTrail ────────────────────────────────────────────────────────
 
-type Group = { color: string; content: ReactNode; details: DetailRow[]; key: string }
+interface Group {
+  color: string
+  content: ReactNode
+  details: DetailRow[]
+  key: string
+}
 
 export const ToolTrail = memo(function ToolTrail({
   busy = false,

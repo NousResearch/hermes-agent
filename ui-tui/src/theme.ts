@@ -4,6 +4,8 @@ export interface ThemeColors {
   bronze: string
   cornsilk: string
   dim: string
+  completionBg: string
+  completionCurrentBg: string
 
   label: string
   ok: string
@@ -39,6 +41,35 @@ export interface Theme {
   bannerHero: string
 }
 
+// ── Color math ───────────────────────────────────────────────────────
+
+function parseHex(h: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(h)
+
+  if (!m) {
+    return null
+  }
+
+  const n = parseInt(m[1]!, 16)
+
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff]
+}
+
+function mix(a: string, b: string, t: number) {
+  const pa = parseHex(a)
+  const pb = parseHex(b)
+
+  if (!pa || !pb) {
+    return a
+  }
+
+  const lerp = (i: 0 | 1 | 2) => Math.round(pa[i] + (pb[i] - pa[i]) * t)
+
+  return '#' + ((1 << 24) | (lerp(0) << 16) | (lerp(1) << 8) | lerp(2)).toString(16).slice(1)
+}
+
+// ── Defaults ─────────────────────────────────────────────────────────
+
 export const DEFAULT_THEME: Theme = {
   color: {
     gold: '#FFD700',
@@ -46,8 +77,10 @@ export const DEFAULT_THEME: Theme = {
     bronze: '#CD7F32',
     cornsilk: '#FFF8DC',
     dim: '#B8860B',
+    completionBg: '#FFFFFF',
+    completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
 
-    label: '#4dd0e1',
+    label: '#DAA520',
     ok: '#4caf50',
     error: '#ef5350',
     warn: '#ffa726',
@@ -78,6 +111,8 @@ export const DEFAULT_THEME: Theme = {
   bannerHero: ''
 }
 
+// ── Skin → Theme ─────────────────────────────────────────────────────
+
 export function fromSkin(
   colors: Record<string, string>,
   branding: Record<string, string>,
@@ -87,6 +122,8 @@ export function fromSkin(
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
 
+  const accent = c('banner_accent') ?? c('banner_title') ?? d.color.amber
+
   return {
     color: {
       gold: c('banner_title') ?? d.color.gold,
@@ -94,6 +131,8 @@ export function fromSkin(
       bronze: c('banner_border') ?? d.color.bronze,
       cornsilk: c('banner_text') ?? d.color.cornsilk,
       dim: c('banner_dim') ?? d.color.dim,
+      completionBg: c('completion_menu_bg') ?? '#FFFFFF',
+      completionCurrentBg: c('completion_menu_current_bg') ?? mix('#FFFFFF', accent, 0.25),
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,

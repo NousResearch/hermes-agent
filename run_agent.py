@@ -676,13 +676,19 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        # openai-codex MUST use /responses — /chat/completions is now blocked by
+        # Cloudflare managed challenge (observed 2026-04-14). Force the required
+        # api_mode before honoring any caller-passed override, because stale
+        # api_mode="chat_completions" can leak in via delegate_tool inheritance
+        # (see tools/delegate_tool.py:325) or resolve_runtime_provider() cache.
+        if self.provider == "openai-codex" or (
+            (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower
+        ):
+            self.api_mode = "codex_responses"
+            if self.provider != "openai-codex":
+                self.provider = "openai-codex"
+        elif api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
             self.api_mode = api_mode
-        elif self.provider == "openai-codex":
-            self.api_mode = "codex_responses"
-        elif (provider_name is None) and "chatgpt.com/backend-api/codex" in self._base_url_lower:
-            self.api_mode = "codex_responses"
-            self.provider = "openai-codex"
         elif self.provider == "anthropic" or (provider_name is None and "api.anthropic.com" in self._base_url_lower):
             self.api_mode = "anthropic_messages"
             self.provider = "anthropic"

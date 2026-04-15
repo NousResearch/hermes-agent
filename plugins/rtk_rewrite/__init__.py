@@ -86,7 +86,7 @@ def _try_rewrite(command: str, *, binary: str, timeout_seconds: float) -> Option
         return None
 
     rewritten = result.stdout.strip()
-    if result.returncode == 0 and rewritten and rewritten != command:
+    if rewritten and rewritten != command:
         return rewritten
     return None
 

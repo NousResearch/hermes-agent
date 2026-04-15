@@ -77,6 +77,11 @@ class TestTryRewrite:
             rewritten = rtk_rewrite._try_rewrite("echo hi", binary="rtk", timeout_seconds=2)
         assert rewritten is None
 
+    def test_nonzero_exit_with_rewrite_still_returns_rewrite(self):
+        with patch("plugins.rtk_rewrite.subprocess.run", return_value=self._completed("rtk git status\n", returncode=3)):
+            rewritten = rtk_rewrite._try_rewrite("git status", binary="rtk", timeout_seconds=2)
+        assert rewritten == "rtk git status"
+
     def test_nonzero_exit_returns_none(self):
         with patch("plugins.rtk_rewrite.subprocess.run", return_value=self._completed(returncode=1)):
             rewritten = rtk_rewrite._try_rewrite("git status", binary="rtk", timeout_seconds=2)

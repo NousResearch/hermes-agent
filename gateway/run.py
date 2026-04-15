@@ -1769,6 +1769,20 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
+        # Recover async tasks (delegate_task + terminal_background) from previous session
+        try:
+            from tools.async_task_tracker import recover_async_tasks_on_startup
+            recovery = recover_async_tasks_on_startup(session_id=self.session_id)
+            if recovery.get("recovered") or recovery.get("cancelled"):
+                logger.info(
+                    "Async task recovery: %d recovered, %d cancelled, %d stale",
+                    recovery.get("recovered", 0),
+                    recovery.get("cancelled", 0),
+                    recovery.get("stale", 0),
+                )
+        except Exception as e:
+            logger.warning("Async task recovery failed: %s", e)
+
         # Suspend sessions that were active when the gateway last exited.
         # This prevents stuck sessions from being blindly resumed on restart,
         # which can create an unrecoverable loop (#7536).  Suspended sessions
@@ -9630,10 +9644,10 @@ def main():
     
     config = None
     if args.config:
-        import json
+        import yaml
         with open(args.config, encoding="utf-8") as f:
-            data = json.load(f)
-            config = GatewayConfig.from_dict(data)
+            data = yaml.safe_load(f)
+        config = GatewayConfig.from_dict(data)
     
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)

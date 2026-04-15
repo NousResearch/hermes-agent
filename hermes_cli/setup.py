@@ -229,7 +229,7 @@ def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     idx = _curses_prompt_choice(question, choices, default)
     if idx >= 0:
         if idx == default:
-            print_info("  Skipped (keeping current)")
+            print_info("  건너뜀 (현재 설정 유지)")
             print()
             return default
         print()
@@ -327,9 +327,9 @@ def _prompt_api_key(var: dict):
     print(color(f"  ─── {var.get('description', var['name'])} ───", Colors.CYAN))
     print()
     if tools_str:
-        print_info(f"  Enables: {tools_str}")
+        print_info(f"  활성화 기능: {tools_str}")
     if var.get("url"):
-        print_info(f"  Get your key at: {var['url']}")
+        print_info(f"  키 발급 위치: {var['url']}")
     print()
 
     if var.get("password"):
@@ -339,9 +339,9 @@ def _prompt_api_key(var: dict):
 
     if value:
         save_env_value(var["name"], value)
-        print_success("  ✓ Saved")
+        print_success("  ✓ 저장 완료")
     else:
-        print_warning("  Skipped (configure later with 'hermes setup')")
+        print_warning("  건너뜀 (나중에 'hermes setup'으로 설정 가능)")
 
 
 def _print_setup_summary(config: dict, hermes_home):
@@ -1601,13 +1601,13 @@ def _setup_telegram():
         if not prompt_yes_no("Telegram을 다시 설정할까요?", False):
             # Check missing allowlist on existing config
             if not get_env_value("TELEGRAM_ALLOWED_USERS"):
-                print_info("⚠️  Telegram has no user allowlist - anyone can use your bot!")
-                if prompt_yes_no("Add allowed users now?", True):
+                print_info("⚠️  Telegram에 사용자 허용 목록이 없습니다 - 누구나 봇을 사용할 수 있어요!")
+                if prompt_yes_no("허용할 사용자를 지금 추가할까요?", True):
                     print_info("   Telegram 사용자 ID 확인: @userinfobot에 메시지 보내기")
                     allowed_users = prompt("허용할 사용자 ID (쉼표로 구분)")
                     if allowed_users:
                         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-                        print_success("Telegram allowlist configured")
+                        print_success("Telegram allowlist 설정 완료")
             return
 
     print_info("@BotFather로 Telegram 봇 만들기")
@@ -1615,22 +1615,22 @@ def _setup_telegram():
     if not token:
         return
     save_env_value("TELEGRAM_BOT_TOKEN", token)
-    print_success("Telegram token saved")
+    print_success("Telegram 토큰 저장 완료")
 
     print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find your Telegram user ID:")
-    print_info("   1. Message @userinfobot on Telegram")
-    print_info("   2. It will reply with your numeric ID (e.g., 123456789)")
+    print_info("🔒 보안: 누가 봇을 사용할 수 있는지 제한하세요")
+    print_info("   Telegram 사용자 ID 확인 방법:")
+    print_info("   1. Telegram에서 @userinfobot에 메시지 보내기")
+    print_info("   2. 숫자 ID(예: 123456789)를 답장으로 받습니다")
     print()
     allowed_users = prompt(
         "허용할 사용자 ID (쉼표로 구분, 비워두면 누구나 접근 가능)"
     )
     if allowed_users:
         save_env_value("TELEGRAM_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Telegram allowlist configured - only listed users can use the bot")
+        print_success("Telegram allowlist 설정 완료 - 목록에 있는 사용자만 봇을 사용할 수 있습니다")
     else:
-        print_info("⚠️  No allowlist set - anyone who finds your bot can use it!")
+        print_info("⚠️  allowlist가 없습니다 - 봇을 찾는 누구나 사용할 수 있습니다!")
 
     print()
     print_info("📬 홈 채널: Hermes가 cron 결과, 플랫폼 간 메시지, 알림을 전달하는 곳입니다.")
@@ -1640,7 +1640,7 @@ def _setup_telegram():
     if first_user_id:
         if prompt_yes_no(f"Use your user ID ({first_user_id}) as the home channel?", True):
             save_env_value("TELEGRAM_HOME_CHANNEL", first_user_id)
-            print_success(f"Telegram home channel set to {first_user_id}")
+            print_success(f"Telegram 홈 채널을 {first_user_id}(으)로 설정했습니다")
         else:
             home_channel = prompt("홈 채널 ID (또는 비워두고 나중에 Telegram에서 /set-home으로 설정)")
             if home_channel:
@@ -1661,13 +1661,13 @@ def _setup_discord():
         if not prompt_yes_no("Discord를 다시 설정할까요?", False):
             if not get_env_value("DISCORD_ALLOWED_USERS"):
                 print_info("⚠️  Discord에 사용자 허용 목록이 없습니다 - 누구나 봇을 사용할 수 있어요!")
-                if prompt_yes_no("Add allowed users now?", True):
+                if prompt_yes_no("허용할 사용자를 지금 추가할까요?", True):
                     print_info("   Discord ID 확인: 개발자 모드를 켜고 이름을 우클릭 → ID 복사")
                     allowed_users = prompt("허용할 사용자 ID (쉼표로 구분)")
                     if allowed_users:
                         cleaned_ids = _clean_discord_user_ids(allowed_users)
                         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-                        print_success("Discord allowlist configured")
+                        print_success("Discord allowlist 설정 완료")
             return
 
     print_info("Discord 개발자 포털에서 봇 만들기: https://discord.com/developers/applications")
@@ -1675,7 +1675,7 @@ def _setup_discord():
     if not token:
         return
     save_env_value("DISCORD_BOT_TOKEN", token)
-    print_success("Discord token saved")
+    print_success("Discord 토큰 저장 완료")
 
     print()
     print_info("🔒 보안: 누가 봇을 사용할 수 있는지 제한하세요")
@@ -1683,7 +1683,7 @@ def _setup_discord():
     print_info("   1. Discord 설정에서 개발자 모드 활성화")
     print_info("   2. 내 이름을 우클릭 → ID 복사")
     print()
-    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print_info("   gateway 시작 시 Discord 사용자명도 사용할 수 있습니다.")
     print()
     allowed_users = prompt(
         "허용할 사용자 ID 또는 사용자명 (쉼표로 구분, 비워두면 누구나 접근 가능)"
@@ -1691,9 +1691,9 @@ def _setup_discord():
     if allowed_users:
         cleaned_ids = _clean_discord_user_ids(allowed_users)
         save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-        print_success("Discord allowlist configured")
+        print_success("Discord allowlist 설정 완료")
     else:
-        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+        print_info("⚠️  allowlist가 없습니다 - 봇이 있는 서버의 누구나 사용할 수 있습니다!")
 
     print()
     print_info("📬 홈 채널: Hermes가 cron 결과, 플랫폼 간 메시지, 알림을 전달하는 곳입니다.")
@@ -1740,10 +1740,10 @@ def _setup_slack():
     print_info("   4. 이벤트 구독: Features → Event Subscriptions → Enable")
     print_info("      필수 이벤트: message.im, message.channels, app_mention")
     print_info("      비공개 채널용 선택 이벤트: message.groups")
-    print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
-    print_warning("     not public channels.")
-    print_info("   5. Install to Workspace: Settings → Install App")
-    print_info("   6. Reinstall the app after any scope or event changes")
+    print_warning("   ⚠ message.channels scope가 없으면 봇은 DM에서만 동작하고,")
+    print_warning("     공개 채널에서는 동작하지 않습니다.")
+    print_info("   5. Workspace에 설치: Settings → Install App")
+    print_info("   6. scope나 event를 바꾼 뒤에는 앱을 다시 설치하세요")
     print_info("   7. After installing, invite the bot to channels: /invite @YourBot")
     print()
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
@@ -1762,14 +1762,15 @@ def _setup_slack():
     print_info("   To find a Member ID: click a user's name → View full profile → ⋮ → Copy member ID")
     print()
     allowed_users = prompt(
-        "Allowed user IDs (comma-separated, leave empty to deny everyone except paired users)"
+        "허용할 사용자 ID (쉼표로 구분, 비워두면 페어링된 사용자 외에는 모두 거부)"
     )
     if allowed_users:
         save_env_value("SLACK_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("Slack allowlist configured")
+        print_success("Slack allowlist 설정 완료")
     else:
-        print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
-        print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+        print_warning("⚠️  Slack allowlist가 없습니다 - 페어링되지 않은 사용자는 기본적으로 거부됩니다.")
+        print_info("   진짜로 워크스페이스 전체 접근을 열려면")
+        print_info("   SLACK_ALLOW_ALL_USERS=true 또는 GATEWAY_ALLOW_ALL_USERS=true 를 설정하세요.")
 
 
 def _setup_matrix():
@@ -1809,7 +1810,7 @@ def _setup_matrix():
 
     if token or get_env_value("MATRIX_PASSWORD"):
         print()
-        want_e2ee = prompt_yes_no("Enable end-to-end encryption (E2EE)?", False)
+        want_e2ee = prompt_yes_no("종단간 암호화(E2EE)를 활성화할까요?", False)
         if want_e2ee:
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
@@ -1834,7 +1835,7 @@ def _setup_matrix():
             if result.returncode == 0:
                 print_success(f"{matrix_pkg} installed")
             else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
+                print_warning(f"설치 실패 — 직접 실행하세요: pip install '{matrix_pkg}'")
                 if result.stderr:
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
@@ -2291,7 +2292,7 @@ def setup_gateway(config: dict):
         elif supports_service_manager:
             svc_name = "systemd" if supports_systemd else "launchd"
             if prompt_yes_no(
-                f"  Install the gateway as a {svc_name} service? (runs in background, starts on boot)",
+                f"  게이트웨이를 {svc_name} 서비스로 설치할까요? (백그라운드 실행, 부팅 시 자동 시작)",
                 True,
             ):
                 try:
@@ -2303,34 +2304,34 @@ def setup_gateway(config: dict):
                         launchd_install(force=False)
                         did_install = True
                     print()
-                    if did_install and prompt_yes_no("  Start the service now?", True):
+                    if did_install and prompt_yes_no("  지금 서비스를 시작할까요?", True):
                         try:
                             if supports_systemd:
                                 systemd_start(system=installed_scope == "system")
                             elif _is_macos:
                                 launchd_start()
                         except Exception as e:
-                            print_error(f"  Start failed: {e}")
+                            print_error(f"  시작 실패: {e}")
                 except Exception as e:
-                    print_error(f"  Install failed: {e}")
-                    print_info("  You can try manually: hermes gateway install")
+                    print_error(f"  설치 실패: {e}")
+                    print_info("  수동으로 시도할 수 있습니다: hermes gateway install")
             else:
-                print_info("  You can install later: hermes gateway install")
+                print_info("  나중에 설치할 수 있습니다: hermes gateway install")
                 if supports_systemd:
-                    print_info("  Or as a boot-time service: sudo hermes gateway install --system")
-                print_info("  Or run in foreground:  hermes gateway")
+                    print_info("  또는 부팅 서비스로: sudo hermes gateway install --system")
+                print_info("  또는 포그라운드 실행:  hermes gateway")
         else:
             from hermes_constants import is_container
             if is_container():
-                print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway run          # Run as container main process")
+                print_info("봇을 온라인으로 올리려면 gateway를 시작하세요:")
+                print_info("   hermes gateway run          # 컨테이너의 메인 프로세스로 실행")
                 print_info("")
-                print_info("For automatic restarts, use a Docker restart policy:")
+                print_info("자동 재시작에는 Docker restart 정책을 사용하세요:")
                 print_info("   docker run --restart unless-stopped ...")
-                print_info("   docker restart <container>  # Manual restart")
+                print_info("   docker restart <container>  # 수동 재시작")
             else:
-                print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway              # Run in foreground")
+                print_info("봇을 온라인으로 올리려면 gateway를 시작하세요:")
+                print_info("   hermes gateway              # 포그라운드 실행")
 
         print_info("━" * 50)
 

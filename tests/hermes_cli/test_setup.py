@@ -177,7 +177,7 @@ def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch,
 
     out = capsys.readouterr().out
     assert "Messaging platforms configured!" in out
-    assert "Start the gateway to bring your bots online:" in out
+    assert "봇을 온라인으로 올리려면 gateway를 시작하세요:" in out
     assert "hermes gateway" in out
 
 

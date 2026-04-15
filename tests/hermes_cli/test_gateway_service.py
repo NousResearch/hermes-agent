@@ -83,6 +83,13 @@ class TestSystemdServiceRefresh:
         ]
 
 
+class TestProfileScopedServiceNames:
+    def test_custom_external_home_uses_hashed_launchd_label(self, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", "/Users/jakubkrcmar/Dev/Rocky/.hermes-home")
+
+        assert gateway_cli.get_launchd_label() == "ai.hermes.gateway-2fe7f184"
+
+
 class TestGeneratedSystemdUnits:
     def test_user_unit_avoids_recursive_execstop_and_uses_extended_stop_timeout(self):
         unit = gateway_cli.generate_systemd_unit(system=False)

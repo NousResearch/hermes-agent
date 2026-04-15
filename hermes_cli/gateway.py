@@ -380,26 +380,35 @@ SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
-    Returns ``""`` for the default root, the profile name for
+    Returns ``""`` for the native default root, the profile name for
     ``<root>/profiles/<name>``, or a short hash for any other path.
-    Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
+    Works correctly for external custom roots (for example Rocky's
+    ``/Users/.../Rocky/.hermes-home``) and for Docker deployments.
     """
     import hashlib
     import re
-    from hermes_constants import get_default_hermes_root
+
     home = get_hermes_home().resolve()
-    default = get_default_hermes_root().resolve()
-    if home == default:
+    native_default = (Path.home() / ".hermes").resolve()
+    if home == native_default:
         return ""
-    # Detect <root>/profiles/<name> pattern → use the profile name
-    profiles_root = (default / "profiles").resolve()
+
+    profile_name = None
+    native_profiles_root = native_default / "profiles"
     try:
-        rel = home.relative_to(profiles_root)
+        rel = home.relative_to(native_profiles_root)
         parts = rel.parts
-        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
-            return parts[0]
+        if len(parts) == 1:
+            profile_name = parts[0]
     except ValueError:
         pass
+
+    if profile_name is None and home.parent.name == "profiles":
+        profile_name = home.name
+
+    if profile_name and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+        return profile_name
+
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 

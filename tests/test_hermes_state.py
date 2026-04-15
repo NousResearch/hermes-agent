@@ -1010,6 +1010,153 @@ class TestSchemaInit:
 
         migrated_db.close()
 
+    def test_repairs_partial_v5_migration_when_schema_version_is_already_6(self, tmp_path):
+        """A DB that claims v6 but is missing one v5 column should self-heal."""
+        import sqlite3
+        from agent.insights import InsightsEngine
+
+        db_path = tmp_path / "partial_v6.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                title TEXT,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?)",
+            ("existing", "cli", time.time(), 12, 7),
+        )
+        conn.commit()
+        conn.close()
+
+        repaired_db = SessionDB(db_path=db_path)
+        cursor = repaired_db._conn.execute("PRAGMA table_info(sessions)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "cache_read_tokens" in columns
+
+        report = InsightsEngine(repaired_db).generate(days=30)
+        assert report["empty"] is False
+        assert report["overview"]["total_sessions"] == 1
+
+        repaired_db.close()
+
+    def test_repairs_missing_parent_session_id_before_creating_indexes(self, tmp_path):
+        """A broken DB missing parent_session_id should repair before idx_sessions_parent is created."""
+        import sqlite3
+
+        db_path = tmp_path / "partial_missing_parent.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                title TEXT,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("existing", "cli", time.time()),
+        )
+        conn.commit()
+        conn.close()
+
+        repaired_db = SessionDB(db_path=db_path)
+        columns = {
+            row[1] for row in repaired_db._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        assert "parent_session_id" in columns
+
+        index_names = {
+            row[1] for row in repaired_db._conn.execute("PRAGMA index_list('sessions')").fetchall()
+        }
+        assert "idx_sessions_parent" in index_names
+
+        repaired_db.close()
+
 
 class TestTitleUniqueness:
     """Tests for unique title enforcement and title-based lookups."""

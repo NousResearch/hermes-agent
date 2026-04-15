@@ -208,6 +208,7 @@ TOOLSETS = {
             "confirm_trade_intent",
             "cancel_trade_intent",
             "get_trade_intent_status",
+            "brokerage_health",
         ],
         "includes": []
     },

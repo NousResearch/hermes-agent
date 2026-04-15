@@ -137,9 +137,9 @@ def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path,
     doctor._check_gateway_service_linger(issues)
 
     out = capsys.readouterr().out
-    assert "Gateway Service" in out
-    assert "Systemd linger disabled" in out
-    assert "loginctl enable-linger" in out
+    assert "Gateway 서비스" in out
+    assert "Systemd linger 비활성화됨" in out
+    assert "실행: sudo loginctl enable-linger $USER" in out
     assert issues == [
         "Enable linger for the gateway user service: sudo loginctl enable-linger $USER"
     ]

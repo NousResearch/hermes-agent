@@ -136,7 +136,7 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
             is_linux,
         )
     except Exception as e:
-        check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
+        check_warn("Gateway 서비스 linger", f"(gateway helper를 불러오지 못했어요: {e})")
         return
 
     if not is_linux():
@@ -147,17 +147,17 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         return
 
     print()
-    print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
+    print(color("◆ Gateway 서비스", Colors.CYAN, Colors.BOLD))
 
     linger_enabled, linger_detail = get_systemd_linger_status()
     if linger_enabled is True:
-        check_ok("Systemd linger enabled", "(gateway service survives logout)")
+        check_ok("Systemd linger 활성화됨", "(로그아웃 후에도 gateway 서비스가 유지됨)")
     elif linger_enabled is False:
-        check_warn("Systemd linger disabled", "(gateway may stop after logout)")
-        check_info("Run: sudo loginctl enable-linger $USER")
+        check_warn("Systemd linger 비활성화됨", "(로그아웃 후 gateway가 중지될 수 있어요)")
+        check_info("실행: sudo loginctl enable-linger $USER")
         issues.append("Enable linger for the gateway user service: sudo loginctl enable-linger $USER")
     else:
-        check_warn("Could not verify systemd linger", f"({linger_detail})")
+        check_warn("Systemd linger 상태를 확인하지 못했어요", f"({linger_detail})")
 
 
 def run_doctor(args):

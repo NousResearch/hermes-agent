@@ -2832,7 +2832,7 @@ def cmd_version(args):
         import openai
         print(f"OpenAI SDK: {openai.__version__}")
     except ImportError:
-        print("OpenAI SDK: Not installed")
+        print("OpenAI SDK: 설치되지 않음")
 
     # Show update status (synchronous — acceptable since user asked for version info)
     try:
@@ -2840,13 +2840,13 @@ def cmd_version(args):
         from hermes_cli.config import recommended_update_command
         behind = check_for_updates()
         if behind and behind > 0:
-            commits_word = "commit" if behind == 1 else "commits"
+            commits_word = "커밋" if behind == 1 else "커밋"
             print(
-                f"Update available: {behind} {commits_word} behind — "
-                f"run '{recommended_update_command()}'"
+                f"업데이트 가능: 최신 버전보다 {behind} {commits_word} 뒤처져 있어요 — "
+                f"'{recommended_update_command()}' 실행"
             )
         elif behind == 0:
-            print("Up to date")
+            print("최신 상태예요")
     except Exception:
         pass
 
@@ -2953,25 +2953,25 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     npm = shutil.which("npm")
     if not npm:
         if fatal:
-            print("Web UI frontend not built and npm is not available.")
-            print("Install Node.js, then run:  cd web && npm install && npm run build")
+            print("Web UI 프런트엔드가 빌드되지 않았고 npm도 사용할 수 없어요.")
+            print("Node.js를 설치한 뒤 다음을 실행하세요: cd web && npm install && npm run build")
         return not fatal
-    print("→ Building web UI...")
+    print("→ Web UI를 빌드하는 중...")
     r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
     if r1.returncode != 0:
-        print(f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-              + ("" if fatal else " (hermes web will not be available)"))
+        print(f"  {'✗' if fatal else '⚠'} Web UI npm install에 실패했어요"
+              + ("" if fatal else " (hermes web을 사용할 수 없어요)"))
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            print("  수동 실행: cd web && npm install && npm run build")
         return False
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
-        print(f"  {'✗' if fatal else '⚠'} Web UI build failed"
-              + ("" if fatal else " (hermes web will not be available)"))
+        print(f"  {'✗' if fatal else '⚠'} Web UI 빌드에 실패했어요"
+              + ("" if fatal else " (hermes web을 사용할 수 없어요)"))
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            print("  수동 실행: cd web && npm install && npm run build")
         return False
-    print("  ✓ Web UI built")
+    print("  ✓ Web UI 빌드 완료")
     return True
 
 
@@ -2989,13 +2989,13 @@ def _update_via_zip(args):
     branch = "main"
     zip_url = f"https://github.com/NousResearch/hermes-agent/archive/refs/heads/{branch}.zip"
     
-    print("→ Downloading latest version...")
+    print("→ 최신 버전을 다운로드하는 중...")
     try:
         tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
         
-        print("→ Extracting...")
+        print("→ 압축을 푸는 중...")
         with zipfile.ZipFile(zip_path, 'r') as zf:
             # Validate paths to prevent zip-slip (path traversal)
             tmp_dir_real = os.path.realpath(tmp_dir)
@@ -3031,19 +3031,19 @@ def _update_via_zip(args):
                 shutil.copy2(src, dst)
             update_count += 1
         
-        print(f"✓ Updated {update_count} items from ZIP")
+        print(f"✓ ZIP에서 {update_count}개 항목을 업데이트했어요")
         
         # Cleanup
         shutil.rmtree(tmp_dir, ignore_errors=True)
         
     except Exception as e:
-        print(f"✗ ZIP update failed: {e}")
+        print(f"✗ ZIP 업데이트에 실패했어요: {e}")
         sys.exit(1)
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
     if removed:
-        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        print(f"  ✓ 오래된 __pycache__ 디렉터리 {removed}개를 정리했어요")
     
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras

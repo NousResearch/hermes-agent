@@ -39,6 +39,9 @@ def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys,
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     output = capsys.readouterr().out
-    assert "Manager:      Termux / manual process" in output
-    assert "Start with:   hermes gateway" in output
+    assert "◆ 환경" in output
+    assert ".env 파일:" in output
+    assert "◆ Gateway 서비스" in output
+    assert "관리자:       Termux / 수동 프로세스" in output
+    assert "시작 명령:    hermes gateway" in output
     assert "systemd (user)" not in output

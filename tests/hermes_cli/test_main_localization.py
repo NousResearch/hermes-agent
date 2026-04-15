@@ -4,6 +4,7 @@ import pytest
 
 from hermes_cli.commands import get_category_label
 from hermes_cli.main import (
+    _build_web_ui,
     _model_flow_openrouter,
     _model_flow_qwen_oauth,
     _prompt_provider_choice,
@@ -72,3 +73,17 @@ def test_model_flow_qwen_not_logged_in_is_localized(monkeypatch, capsys):
     assert "실행: qwen auth qwen-oauth" in out
     assert "예상 자격 증명 파일 위치: /tmp/qwen-auth.json" in out
     assert "오류: missing token" in out
+
+
+def test_build_web_ui_fatal_missing_npm_is_localized(monkeypatch, capsys, tmp_path):
+    web_dir = tmp_path / "web"
+    web_dir.mkdir()
+    (web_dir / "package.json").write_text("{}")
+
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+
+    assert _build_web_ui(web_dir, fatal=True) is False
+
+    out = capsys.readouterr().out
+    assert "Web UI 프런트엔드가 빌드되지 않았고 npm도 사용할 수 없어요." in out
+    assert "Node.js를 설치한 뒤 다음을 실행하세요" in out

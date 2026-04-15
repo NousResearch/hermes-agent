@@ -98,9 +98,9 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
     status_mod.show_status(SimpleNamespace(all=False, deep=False))
 
     out = capsys.readouterr().out
-    assert "Nous Subscription Features" in out
+    assert "Nous 구독 기능" in out
     assert "Browser automation" in out
-    assert "active via Nous subscription" in out
+    assert "Nous 구독으로 활성화됨" in out
 
 
 def test_show_status_hides_nous_subscription_section_when_feature_flag_is_off(monkeypatch, capsys, tmp_path):

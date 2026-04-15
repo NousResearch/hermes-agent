@@ -96,12 +96,12 @@ def show_status(args):
     # Environment
     # =========================================================================
     print()
-    print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 환경", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
     
     env_path = get_env_path()
-    print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    print(f"  .env 파일:    {check_mark(env_path.exists())} {'존재함' if env_path.exists() else '없음'}")
 
     try:
         config = load_config()
@@ -115,7 +115,7 @@ def show_status(args):
     # API Keys
     # =========================================================================
     print()
-    print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
+    print(color("◆ API 키", Colors.CYAN, Colors.BOLD))
     
     keys = {
         "OpenRouter": "OPENROUTER_API_KEY",
@@ -150,7 +150,7 @@ def show_status(args):
     # Auth Providers (OAuth)
     # =========================================================================
     print()
-    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 인증 provider", Colors.CYAN, Colors.BOLD))
 
     try:
         from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
@@ -165,7 +165,7 @@ def show_status(args):
     nous_logged_in = bool(nous_status.get("logged_in"))
     print(
         f"  {'Nous Portal':<12}  {check_mark(nous_logged_in)} "
-        f"{'logged in' if nous_logged_in else 'not logged in (run: hermes model)'}"
+        f"{'로그인됨' if nous_logged_in else '로그인 안 됨 (실행: hermes model)'}"
     )
     if nous_logged_in:
         portal_url = nous_status.get("portal_base_url") or "(unknown)"
@@ -173,38 +173,38 @@ def show_status(args):
         key_exp = _format_iso_timestamp(nous_status.get("agent_key_expires_at"))
         refresh_label = "yes" if nous_status.get("has_refresh_token") else "no"
         print(f"    Portal URL: {portal_url}")
-        print(f"    Access exp: {access_exp}")
-        print(f"    Key exp:    {key_exp}")
-        print(f"    Refresh:    {refresh_label}")
+        print(f"    액세스 만료: {access_exp}")
+        print(f"    키 만료:    {key_exp}")
+        print(f"    리프레시:   {refresh_label}")
 
     codex_logged_in = bool(codex_status.get("logged_in"))
     print(
         f"  {'OpenAI Codex':<12}  {check_mark(codex_logged_in)} "
-        f"{'logged in' if codex_logged_in else 'not logged in (run: hermes model)'}"
+        f"{'로그인됨' if codex_logged_in else '로그인 안 됨 (실행: hermes model)'}"
     )
     codex_auth_file = codex_status.get("auth_store")
     if codex_auth_file:
-        print(f"    Auth file:  {codex_auth_file}")
+        print(f"    인증 파일:  {codex_auth_file}")
     codex_last_refresh = _format_iso_timestamp(codex_status.get("last_refresh"))
     if codex_status.get("last_refresh"):
-        print(f"    Refreshed:  {codex_last_refresh}")
+        print(f"    최근 갱신:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
-        print(f"    Error:      {codex_status.get('error')}")
+        print(f"    오류:       {codex_status.get('error')}")
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(
         f"  {'Qwen OAuth':<12}  {check_mark(qwen_logged_in)} "
-        f"{'logged in' if qwen_logged_in else 'not logged in (run: qwen auth qwen-oauth)'}"
+        f"{'로그인됨' if qwen_logged_in else '로그인 안 됨 (실행: qwen auth qwen-oauth)'}"
     )
     qwen_auth_file = qwen_status.get("auth_file")
     if qwen_auth_file:
-        print(f"    Auth file:  {qwen_auth_file}")
+        print(f"    인증 파일:  {qwen_auth_file}")
     qwen_exp = qwen_status.get("expires_at_ms")
     if qwen_exp:
         from datetime import datetime, timezone
-        print(f"    Access exp: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
+        print(f"    액세스 만료: {datetime.fromtimestamp(int(qwen_exp) / 1000, tz=timezone.utc).isoformat()}")
     if qwen_status.get("error") and not qwen_logged_in:
-        print(f"    Error:      {qwen_status.get('error')}")
+        print(f"    오류:       {qwen_status.get('error')}")
 
     # =========================================================================
     # Nous Subscription Features
@@ -212,30 +212,30 @@ def show_status(args):
     if managed_nous_tools_enabled():
         features = get_nous_subscription_features(config)
         print()
-        print(color("◆ Nous Subscription Features", Colors.CYAN, Colors.BOLD))
+        print(color("◆ Nous 구독 기능", Colors.CYAN, Colors.BOLD))
         if not features.nous_auth_present:
-            print("  Nous Portal   ✗ not logged in")
+            print("  Nous Portal   ✗ 로그인 안 됨")
         else:
-            print("  Nous Portal   ✓ managed tools available")
+            print("  Nous Portal   ✓ 관리형 도구 사용 가능")
         for feature in features.items():
             if feature.managed_by_nous:
-                state = "active via Nous subscription"
+                state = "Nous 구독으로 활성화됨"
             elif feature.active:
-                current = feature.current_provider or "configured provider"
-                state = f"active via {current}"
+                current = feature.current_provider or "설정된 provider"
+                state = f"{current}를 통해 활성화됨"
             elif feature.included_by_default and features.nous_auth_present:
-                state = "included by subscription, not currently selected"
+                state = "구독에 포함되지만 현재 선택되지는 않음"
             elif feature.key == "modal" and features.nous_auth_present:
-                state = "available via subscription (optional)"
+                state = "구독으로 사용 가능(선택 사항)"
             else:
-                state = "not configured"
+                state = "설정되지 않음"
             print(f"  {feature.label:<15} {check_mark(feature.available or feature.active or feature.managed_by_nous)} {state}")
 
     # =========================================================================
     # API-Key Providers
     # =========================================================================
     print()
-    print(color("◆ API-Key Providers", Colors.CYAN, Colors.BOLD))
+    print(color("◆ API 키 provider", Colors.CYAN, Colors.BOLD))
 
     apikey_providers = {
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
@@ -250,14 +250,14 @@ def show_status(args):
             if key_val:
                 break
         configured = bool(key_val)
-        label = "configured" if configured else "not configured (run: hermes model)"
+        label = "설정됨" if configured else "설정되지 않음 (실행: hermes model)"
         print(f"  {pname:<16} {check_mark(configured)} {label}")
 
     # =========================================================================
     # Terminal Configuration
     # =========================================================================
     print()
-    print(color("◆ Terminal Backend", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 터미널 백엔드", Colors.CYAN, Colors.BOLD))
     
     terminal_env = os.getenv("TERMINAL_ENV", "")
     if not terminal_env:
@@ -273,8 +273,8 @@ def show_status(args):
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST", "")
         ssh_user = os.getenv("TERMINAL_SSH_USER", "")
-        print(f"  SSH Host:     {ssh_host or '(not set)'}")
-        print(f"  SSH User:     {ssh_user or '(not set)'}")
+        print(f"  SSH 호스트:   {ssh_host or '(설정 안 됨)'}")
+        print(f"  SSH 사용자:   {ssh_user or '(설정 안 됨)'}")
     elif terminal_env == "docker":
         docker_image = os.getenv("TERMINAL_DOCKER_IMAGE", "python:3.11-slim")
         print(f"  Docker Image: {docker_image}")
@@ -283,13 +283,13 @@ def show_status(args):
         print(f"  Daytona Image: {daytona_image}")
     
     sudo_password = os.getenv("SUDO_PASSWORD", "")
-    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")
+    print(f"  Sudo:         {check_mark(bool(sudo_password))} {'활성화됨' if sudo_password else '비활성화됨'}")
     
     # =========================================================================
     # Messaging Platforms
     # =========================================================================
     print()
-    print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 메시징 플랫폼", Colors.CYAN, Colors.BOLD))
     
     platforms = {
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
@@ -316,7 +316,7 @@ def show_status(args):
         if home_var:
             home_channel = os.getenv(home_var, "")
         
-        status = "configured" if has_token else "not configured"
+        status = "설정됨" if has_token else "설정되지 않음"
         if home_channel:
             status += f" (home: {home_channel})"
         
@@ -326,7 +326,7 @@ def show_status(args):
     # Gateway Status
     # =========================================================================
     print()
-    print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
+    print(color("◆ Gateway 서비스", Colors.CYAN, Colors.BOLD))
     
     if _is_termux():
         try:
@@ -335,16 +335,16 @@ def show_status(args):
         except Exception:
             gateway_pids = []
         is_running = bool(gateway_pids)
-        print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
-        print("  Manager:      Termux / manual process")
+        print(f"  상태:         {check_mark(is_running)} {'실행 중' if is_running else '중지됨'}")
+        print("  관리자:       Termux / 수동 프로세스")
         if gateway_pids:
             rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
             if len(gateway_pids) > 3:
                 rendered += ", ..."
-            print(f"  PID(s):       {rendered}")
+            print(f"  PID:          {rendered}")
         else:
-            print("  Start with:   hermes gateway")
-            print("  Note:         Android may stop background jobs when Termux is suspended")
+            print("  시작 명령:    hermes gateway")
+            print("  참고:         Android는 Termux가 일시중지되면 백그라운드 작업을 중단할 수 있어요")
 
     elif sys.platform.startswith('linux'):
         from hermes_constants import is_container

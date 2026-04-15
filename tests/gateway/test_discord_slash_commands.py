@@ -621,3 +621,182 @@ def test_register_skill_group_handler_dispatches_command(adapter):
     # The callback name should reflect the skill
     assert "gif_search" in gif_cmd.callback.__name__
 
+
+# ------------------------------------------------------------------
+# /skill group payload size estimation and splitting
+# ------------------------------------------------------------------
+
+
+class TestEstimateGroupPayloadSize:
+    """Tests for _estimate_group_payload_size."""
+
+    def test_small_payload_under_limit(self, adapter):
+        """A small skill set should produce a payload well under 8 KB."""
+        categories = {
+            "media": [("gif-search", "Search for GIFs", "/gif-search")],
+        }
+        uncategorized = [("dogfood", "QA testing", "/dogfood")]
+
+        size = adapter._estimate_group_payload_size(
+            "skill", "Run a Hermes skill", categories, uncategorized,
+        )
+        assert size < 8000
+        assert size > 0
+
+    def test_empty_skills_empty_payload(self, adapter):
+        """Empty categories and uncategorized should still produce a valid payload."""
+        size = adapter._estimate_group_payload_size(
+            "skill", "Run a Hermes skill", {}, [],
+        )
+        # Just {"name":"skill","description":"Run a Hermes skill","options":[]}
+        assert size > 0
+        assert size < 200
+
+    def test_large_payload_calculation(self, adapter):
+        """A large skill set should produce a payload proportional to its size."""
+        # Simulate 20 categories with 25 skills each (500 skills total)
+        categories = {}
+        for i in range(20):
+            cat = f"cat-{i:02d}"
+            categories[cat] = [
+                (f"skill-{i:02d}-{j:02d}", f"Description for skill {i}-{j}", f"/skill-{i:02d}-{j:02d}")
+                for j in range(25)
+            ]
+        uncategorized = [
+            (f"root-{k}", f"Root skill {k}", f"/root-{k}") for k in range(5)
+        ]
+
+        size = adapter._estimate_group_payload_size(
+            "skill", "Run a Hermes skill", categories, uncategorized,
+        )
+        # 500+ skills should definitely exceed 8 KB
+        assert size > 8000
+
+    def test_uncategorized_included_in_size(self, adapter):
+        """Uncategorized skills should be included in the payload size estimate."""
+        categories = {}
+        uncategorized = [
+            (f"skill-{i}", f"A skill with a long description #{i}", f"/skill-{i}")
+            for i in range(50)
+        ]
+
+        size = adapter._estimate_group_payload_size(
+            "skill", "Run a Hermes skill", categories, uncategorized,
+        )
+        # 50 uncategorized skills should produce a substantial payload
+        assert size > 2000
+
+
+class TestSkillGroupSplitting:
+    """Tests for automatic splitting when payload exceeds Discord's 8 KB limit."""
+
+    def test_small_skill_set_uses_single_group(self, adapter):
+        """When the payload fits under 8 KB, a single /skill group is used."""
+        mock_categories = {
+            "media": [("gif-search", "Search for GIFs", "/gif-search")],
+        }
+        mock_uncategorized = [("dogfood", "QA testing", "/dogfood")]
+
+        with patch(
+            "hermes_cli.commands.discord_skill_commands_by_category",
+            return_value=(mock_categories, mock_uncategorized, 0),
+        ):
+            adapter._register_slash_commands()
+
+        tree = adapter._client.tree
+        # Should use the single /skill group (not split)
+        assert "skill" in tree.commands
+        assert "skill-media" not in tree.commands
+
+    def test_large_skill_set_splits_into_per_category_groups(self, adapter):
+        """When payload exceeds 8 KB, skills split into per-category groups."""
+        # Create enough skills to exceed 8 KB
+        categories = {}
+        for i in range(20):
+            cat = f"cat-{i:02d}"
+            categories[cat] = [
+                (f"skill-{i:02d}-{j:02d}", f"Description for skill {i}-{j}", f"/skill-{i:02d}-{j:02d}")
+                for j in range(25)
+            ]
+        uncategorized = [("dogfood", "Exploratory QA testing", "/dogfood")]
+
+        with patch(
+            "hermes_cli.commands.discord_skill_commands_by_category",
+            return_value=(categories, uncategorized, 0),
+        ):
+            adapter._register_slash_commands()
+
+        tree = adapter._client.tree
+        # Should NOT have a single /skill group — split mode instead
+        assert "skill" not in tree.commands
+        # Should have per-category groups like /skill-cat-00
+        assert "skill-cat-00" in tree.commands
+        assert "skill-cat-01" in tree.commands
+        # Should have /skill-other for uncategorized
+        assert "skill-other" in tree.commands
+
+    def test_split_mode_category_group_has_skills(self, adapter):
+        """In split mode, each /skill-<cat> group should contain its skills."""
+        categories = {
+            "creative": [
+                ("ascii-art", "Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, and custom blocks from any text or image", "/ascii-art"),
+                ("excalidraw", "Create hand-drawn style diagrams using Excalidraw JSON format for tech architecture, flowcharts, and wireframes", "/excalidraw"),
+            ],
+            "mlops": [
+                (f"skill-{i:02d}", f"MLOps skill {i}: detailed description for machine learning operations workflow {i}", f"/skill-{i:02d}")
+                for i in range(25)
+            ],
+            "research": [
+                ("arxiv", "Search and retrieve academic papers from arXiv using their API with full-text search and categorization", "/arxiv"),
+            ],
+        }
+        # Add more categories with longer descriptions to push over 8KB
+        for i in range(20):
+            cat = f"dev-{i:02d}"
+            categories[cat] = [
+                (f"dev-skill-{i:02d}", f"Development workflow skill {i}: comprehensive tooling for code quality and review", f"/dev-skill-{i:02d}")
+            ]
+
+        uncategorized = [("dogfood", "QA testing", "/dogfood")]
+
+        with patch(
+            "hermes_cli.commands.discord_skill_commands_by_category",
+            return_value=(categories, uncategorized, 0),
+        ):
+            adapter._register_slash_commands()
+
+        tree = adapter._client.tree
+        # In split mode, /skill-creative should have ascii-art and excalidraw
+        creative_group = tree.commands["skill-creative"]
+        assert "ascii-art" in creative_group._children
+        assert "excalidraw" in creative_group._children
+
+        # /skill-mlops should have all 25 mlops skills
+        mlops_group = tree.commands["skill-mlops"]
+        assert len(mlops_group._children) == 25
+
+        # /skill-other should have dogfood
+        other_group = tree.commands["skill-other"]
+        assert "dogfood" in other_group._children
+
+    def test_split_mode_no_uncategorized(self, adapter):
+        """In split mode with no uncategorized skills, no /skill-other group."""
+        # 20 categories with 25 skills each is definitely over 8KB
+        categories = {
+            f"cat-{i:02d}": [
+                (f"skill-{i:02d}-{j:02d}", f"Description {i}-{j}", f"/skill-{i:02d}-{j:02d}")
+                for j in range(25)
+            ]
+            for i in range(20)
+        }
+
+        with patch(
+            "hermes_cli.commands.discord_skill_commands_by_category",
+            return_value=(categories, [], 0),
+        ):
+            adapter._register_slash_commands()
+
+        tree = adapter._client.tree
+        assert "skill-other" not in tree.commands
+        assert "skill-cat-00" in tree.commands
+

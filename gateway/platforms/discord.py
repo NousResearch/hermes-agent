@@ -701,6 +701,41 @@ class DiscordAdapter(BasePlatformAdapter):
 
         logger.info("[%s] Disconnected", self.name)
 
+    async def _retry_sync_without_skills(self) -> None:
+        """Retry slash command sync after removing skill groups.
+
+        Called when the initial ``tree.sync()`` fails — typically because
+        an oversized ``/skill`` payload (Discord's 8 KB per-command limit)
+        rejects the entire batch.  This removes all skill-related command
+        groups from the tree and re-syncs so the ~27 base commands still
+        work.
+        """
+        if not self._client:
+            return
+        tree = self._client.tree
+        # Remove all commands whose name starts with "skill" or "skill-"
+        skill_cmds = [
+            cmd for cmd in list(tree.get_commands())
+            if cmd.name == "skill" or cmd.name.startswith("skill-")
+        ]
+        if not skill_cmds:
+            return  # nothing to remove
+        for cmd in skill_cmds:
+            try:
+                tree.remove_command(cmd.name)
+                logger.debug("[%s] Removed /%s for recovery sync", self.name, cmd.name)
+            except Exception:
+                pass
+        try:
+            synced = await asyncio.wait_for(tree.sync(), timeout=30)
+            logger.info(
+                "[%s] Recovery sync succeeded: %d base command(s) registered"
+                " (skill commands removed due to payload size)",
+                self.name, len(synced),
+            )
+        except Exception as e:
+            logger.warning("[%s] Recovery sync also failed: %s", self.name, e)
+
     async def _run_post_connect_initialization(self) -> None:
         """Finish non-critical startup work after Discord is connected."""
         if not self._client:
@@ -714,6 +749,10 @@ class DiscordAdapter(BasePlatformAdapter):
             raise
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+            # If the full sync failed (often due to an oversized command payload),
+            # try to recover by removing skill groups and re-syncing the base commands
+            # so that the 27 core slash commands still work.
+            await self._retry_sync_without_skills()
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -1745,13 +1784,75 @@ class DiscordAdapter(BasePlatformAdapter):
         # supporting up to 25 categories × 25 skills = 625 skills.
         self._register_skill_group(tree)
 
-    def _register_skill_group(self, tree) -> None:
-        """Register a ``/skill`` command group with category subcommand groups.
+    # Discord limits each slash command payload to 8 KB.  The /skill group
+    # can exceed this when many skills are installed (e.g. 80+ default skills
+    # serialise to ~14 KB).  When that happens tree.sync() rejects *all*
+    # commands — including the 27 base commands — with error 50035.
+    _DISCORD_MAX_COMMAND_PAYLOAD = 8000
 
-        Skills are organized by their directory category under ``SKILLS_DIR``.
-        Each category becomes a subcommand group; root-level skills become
-        direct subcommands.  Discord supports 25 subcommand groups × 25
-        subcommands each = 625 skills — well beyond the old 100-command cap.
+    def _estimate_group_payload_size(
+        self,
+        name: str,
+        description: str,
+        categories: dict[str, list[tuple[str, str, str]]],
+        uncategorized: list[tuple[str, str, str]],
+    ) -> int:
+        """Estimate the serialised JSON size of a command group.
+
+        This mirrors what discord.py sends to the Discord API so we can
+        detect oversized payloads *before* calling ``tree.sync()``.
+        """
+        import json as _json
+
+        options: list[dict] = []
+
+        # Uncategorized → direct subcommands (type 1)
+        for discord_name, desc, _key in uncategorized:
+            options.append({
+                "name": discord_name,
+                "description": desc or f"Run the {discord_name} skill",
+                "type": 1,
+            })
+
+        # Categories → subcommand groups (type 2)
+        for cat_name, skills in categories.items():
+            cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
+            if len(cat_desc) > 100:
+                cat_desc = cat_desc[:97] + "..."
+            group: dict = {
+                "name": cat_name,
+                "description": cat_desc,
+                "type": 2,
+                "options": [
+                    {
+                        "name": discord_name,
+                        "description": desc or f"Run the {discord_name} skill",
+                        "type": 1,
+                    }
+                    for discord_name, desc, _key in skills
+                ],
+            }
+            options.append(group)
+
+        payload = {
+            "name": name,
+            "description": description,
+            "options": options,
+        }
+        return len(_json.dumps(payload))
+
+    def _register_skill_group(self, tree) -> None:
+        """Register skill slash commands, automatically splitting into
+        multiple top-level groups when the payload would exceed Discord's
+        8 KB per-command limit.
+
+        When all skills fit under a single ``/skill`` group (the common
+        case with few skills installed), the original single-group
+        layout is preserved.  When the payload would be too large, each
+        category is registered as a separate top-level group named
+        ``/skill-<category>`` (e.g. ``/skill-mlops``, ``/skill-creative``),
+        and uncategorized skills are distributed across groups to stay
+        within the size limit.
         """
         try:
             from hermes_cli.commands import discord_skill_commands_by_category
@@ -1769,11 +1870,6 @@ class DiscordAdapter(BasePlatformAdapter):
             if not categories and not uncategorized:
                 return
 
-            skill_group = discord.app_commands.Group(
-                name="skill",
-                description="Run a Hermes skill",
-            )
-
             # ── Helper: build a callback for a skill command key ──
             def _make_handler(_key: str):
                 @discord.app_commands.describe(args="Optional arguments for the skill")
@@ -1782,41 +1878,27 @@ class DiscordAdapter(BasePlatformAdapter):
                 _handler.__name__ = f"skill_{_key.lstrip('/').replace('-', '_')}"
                 return _handler
 
-            # ── Uncategorized (root-level) skills → direct subcommands ──
-            for discord_name, description, cmd_key in uncategorized:
-                cmd = discord.app_commands.Command(
-                    name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
-                    callback=_make_handler(cmd_key),
-                )
-                skill_group.add_command(cmd)
+            total_size = self._estimate_group_payload_size(
+                "skill", "Run a Hermes skill", categories, uncategorized,
+            )
 
-            # ── Category subcommand groups ──
-            for cat_name in sorted(categories):
-                cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
-                if len(cat_desc) > 100:
-                    cat_desc = cat_desc[:97] + "..."
-                cat_group = discord.app_commands.Group(
-                    name=cat_name,
-                    description=cat_desc,
-                    parent=skill_group,
+            if total_size <= self._DISCORD_MAX_COMMAND_PAYLOAD:
+                # ── Fits in a single /skill group (original layout) ──
+                self._register_skill_group_single(
+                    tree, categories, uncategorized, _make_handler,
                 )
-                for discord_name, description, cmd_key in categories[cat_name]:
-                    cmd = discord.app_commands.Command(
-                        name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
-                        callback=_make_handler(cmd_key),
-                    )
-                    cat_group.add_command(cmd)
-
-            tree.add_command(skill_group)
+            else:
+                # ── Too large — split into per-category top-level groups ──
+                logger.info(
+                    "[%s] /skill group payload (%d bytes) exceeds Discord "
+                    "%d-byte limit — splitting into per-category groups",
+                    self.name, total_size, self._DISCORD_MAX_COMMAND_PAYLOAD,
+                )
+                self._register_skill_groups_split(
+                    tree, categories, uncategorized, _make_handler,
+                )
 
             total = sum(len(v) for v in categories.values()) + len(uncategorized)
-            logger.info(
-                "[%s] Registered /skill group: %d skill(s) across %d categories"
-                " + %d uncategorized",
-                self.name, total, len(categories), len(uncategorized),
-            )
             if hidden:
                 logger.warning(
                     "[%s] %d skill(s) not registered (Discord subcommand limits)",
@@ -1824,6 +1906,115 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
         except Exception as exc:
             logger.warning("[%s] Failed to register /skill group: %s", self.name, exc)
+
+    def _register_skill_group_single(
+        self,
+        tree,
+        categories: dict[str, list[tuple[str, str, str]]],
+        uncategorized: list[tuple[str, str, str]],
+        make_handler: Callable,
+    ) -> None:
+        """Register all skills under a single ``/skill`` command group."""
+        skill_group = discord.app_commands.Group(
+            name="skill",
+            description="Run a Hermes skill",
+        )
+
+        for discord_name, description, cmd_key in uncategorized:
+            cmd = discord.app_commands.Command(
+                name=discord_name,
+                description=description or f"Run the {discord_name} skill",
+                callback=make_handler(cmd_key),
+            )
+            skill_group.add_command(cmd)
+
+        for cat_name in sorted(categories):
+            cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
+            if len(cat_desc) > 100:
+                cat_desc = cat_desc[:97] + "..."
+            cat_group = discord.app_commands.Group(
+                name=cat_name,
+                description=cat_desc,
+                parent=skill_group,
+            )
+            for discord_name, description, cmd_key in categories[cat_name]:
+                cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=description or f"Run the {discord_name} skill",
+                    callback=make_handler(cmd_key),
+                )
+                cat_group.add_command(cmd)
+
+        tree.add_command(skill_group)
+
+        total = sum(len(v) for v in categories.values()) + len(uncategorized)
+        logger.info(
+            "[%s] Registered /skill group: %d skill(s) across %d categories"
+            " + %d uncategorized",
+            self.name, total, len(categories), len(uncategorized),
+        )
+
+    def _register_skill_groups_split(
+        self,
+        tree,
+        categories: dict[str, list[tuple[str, str, str]]],
+        uncategorized: list[tuple[str, str, str]],
+        make_handler: Callable,
+    ) -> None:
+        """Register skills as multiple top-level groups when the single
+        ``/skill`` group would exceed Discord's per-command payload limit.
+
+        Each category becomes a ``/skill-<category>`` group.  Uncategorized
+        skills are folded into the first group with room, or get their own
+        ``/skill-other`` group.
+        """
+        groups_registered = 0
+        total_skills = 0
+
+        for cat_name in sorted(categories):
+            skills = categories[cat_name]
+            group_name = f"skill-{cat_name}"
+            cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
+            if len(cat_desc) > 100:
+                cat_desc = cat_desc[:97] + "..."
+
+            cat_group = discord.app_commands.Group(
+                name=group_name,
+                description=cat_desc,
+            )
+            for discord_name, description, cmd_key in skills:
+                cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=description or f"Run the {discord_name} skill",
+                    callback=make_handler(cmd_key),
+                )
+                cat_group.add_command(cmd)
+            tree.add_command(cat_group)
+            groups_registered += 1
+            total_skills += len(skills)
+
+        # Fold uncategorized skills into a /skill-other group
+        if uncategorized:
+            other_group = discord.app_commands.Group(
+                name="skill-other",
+                description="Other Hermes skills",
+            )
+            for discord_name, description, cmd_key in uncategorized:
+                cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=description or f"Run the {discord_name} skill",
+                    callback=make_handler(cmd_key),
+                )
+                other_group.add_command(cmd)
+            tree.add_command(other_group)
+            groups_registered += 1
+            total_skills += len(uncategorized)
+
+        logger.info(
+            "[%s] Registered %d skill group(s) (split mode): %d skill(s)"
+            " across %d groups",
+            self.name, groups_registered, total_skills, groups_registered,
+        )
 
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""

@@ -290,7 +290,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `QQ_ALLOWED_USERS` | Comma-separated QQ user openIDs allowed to message the bot |
 | `QQ_GROUP_ALLOWED_USERS` | Comma-separated QQ group IDs for group @-message access |
 | `QQ_ALLOW_ALL_USERS` | Allow all users (`true`/`false`, overrides `QQ_ALLOWED_USERS`) |
-| `QQ_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
+| `QQBOT_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

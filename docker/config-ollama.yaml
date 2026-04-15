@@ -1,0 +1,18 @@
+# Hermes config — uses OpenRouter free tier by default.
+# Swap provider/model to use local Ollama instead (see comments below).
+
+model:
+  # Free OpenRouter models (no cost, require OPENROUTER_API_KEY in .env):
+  #   meta-llama/llama-3.1-8b-instruct:free
+  #   deepseek/deepseek-r1:free
+  #   google/gemma-3-12b-it:free
+  #   mistralai/mistral-7b-instruct:free
+  default: "gemma4-e4b"
+  provider: "custom"
+  base_url: "http://ollama:11434/v1"
+  api_key: "ollama"
+
+  # To use OpenRouter instead, comment out above and uncomment below:
+  # default: "qwen/qwen3-coder:free"
+  # provider: "openrouter"
+  # base_url: "https://openrouter.ai/api/v1"

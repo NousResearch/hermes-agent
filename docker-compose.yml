@@ -1,0 +1,110 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks:
+      ollama-net:
+        aliases:
+          - ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    # Uncomment for NVIDIA GPU support:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-agent
+    pull_policy: never
+    container_name: hermes
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    networks:
+      - ollama-net
+    volumes:
+      - hermes_data:/opt/data
+      - ./docker/config-ollama.yaml:/opt/data/config.yaml:ro
+    stdin_open: true
+    tty: true
+    command: chat
+
+  gateway:
+    image: hermes-agent
+    pull_policy: never
+    container_name: hermes-gateway
+    restart: unless-stopped
+    depends_on:
+      - hermes
+    networks:
+      - ollama-net
+    env_file:
+      - .env
+    volumes:
+      - hermes_data:/opt/data
+      - ./docker/config-ollama.yaml:/opt/data/config.yaml:ro
+    ports:
+      - "8642:8642"
+    command: gateway
+
+  # api-server is a gateway platform adapter, not a standalone service.
+  # Enable it via the gateway by setting API_SERVER_ENABLED=true in .env
+
+  whatsapp-bridge:
+    image: hermes-agent
+    pull_policy: never
+    container_name: hermes-whatsapp
+    profiles: [whatsapp]
+    restart: unless-stopped
+    depends_on:
+      - hermes
+    networks:
+      - ollama-net
+    volumes:
+      - hermes_data:/opt/data
+    ports:
+      - "3010:3000"
+    entrypoint: ["node", "/opt/hermes/scripts/whatsapp-bridge/bridge.js"]
+
+  acp-adapter:
+    image: hermes-agent
+    pull_policy: never
+    container_name: hermes-acp
+    restart: unless-stopped
+    depends_on:
+      - hermes
+    networks:
+      - ollama-net
+    volumes:
+      - hermes_data:/opt/data
+    ports:
+      - "8081:8080"
+    entrypoint: ["/opt/venv/bin/python", "-m", "acp_adapter"]
+
+  website:
+    image: hermes-agent
+    pull_policy: never
+    container_name: hermes-website
+    restart: "no"
+    ports:
+      - "3002:3000"
+    networks:
+      - ollama-net
+    entrypoint: ["sh", "-c", "cd /opt/hermes/website && npm install && npm start"]
+
+networks:
+  ollama-net:
+    external: true
+
+volumes:
+  ollama_data:
+    external: true
+  hermes_data:

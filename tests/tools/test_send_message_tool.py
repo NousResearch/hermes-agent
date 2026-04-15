@@ -752,6 +752,38 @@ class TestParseTargetRefDiscord:
         assert is_explicit is True
 
 
+class TestParseTargetRefMatrix:
+    """_parse_target_ref correctly handles Matrix room IDs and user MXIDs."""
+
+    def test_matrix_room_id_is_explicit(self):
+        """Matrix room IDs (!) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "!HLOQwxYGgFPMPJUSNR:matrix.org")
+        assert chat_id == "!HLOQwxYGgFPMPJUSNR:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_user_mxid_is_explicit(self):
+        """Matrix user MXIDs (@) are recognized as explicit targets."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "@hermes:matrix.org")
+        assert chat_id == "@hermes:matrix.org"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_matrix_alias_is_not_explicit(self):
+        """Matrix room aliases (#) are NOT explicit — they need resolution."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("matrix", "#general:matrix.org")
+        assert chat_id is None
+        assert is_explicit is False
+
+    def test_matrix_prefix_only_matches_matrix_platform(self):
+        """! and @ prefixes are only treated as explicit for the matrix platform."""
+        chat_id, _, is_explicit = _parse_target_ref("telegram", "!something")
+        assert is_explicit is False
+
+        chat_id, _, is_explicit = _parse_target_ref("discord", "@someone")
+        assert is_explicit is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

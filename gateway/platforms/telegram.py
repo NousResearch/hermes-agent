@@ -2344,9 +2344,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if not self._should_process_message(update.message):
             return
-        
+
+        # Check authorization before downloading media
         msg = update.message
-        
+        if self._auth_check and msg.from_user:
+            source = self.build_source(
+                chat_id=str(msg.chat.id),
+                user_id=str(msg.from_user.id),
+                user_name=msg.from_user.full_name,
+            )
+            if not self._auth_check(source):
+                logger.debug("[Telegram] Skipping media download for unauthorized user %s", msg.from_user.id)
+                return
+
         # Determine media type
         if msg.sticker:
             msg_type = MessageType.STICKER

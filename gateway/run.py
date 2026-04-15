@@ -1747,6 +1747,7 @@ class GatewayRunner:
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_auth_check(self._is_user_authorized)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -2091,6 +2092,7 @@ class GatewayRunner:
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter.set_auth_check(self._is_user_authorized)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)

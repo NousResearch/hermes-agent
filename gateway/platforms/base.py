@@ -791,6 +791,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._auth_check: Optional[Callable[[Any], bool]] = None
         self._running = False
         self._fatal_error_code: Optional[str] = None
         self._fatal_error_message: Optional[str] = None
@@ -924,6 +925,10 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_auth_check(self, checker: Callable[[Any], bool]) -> None:
+        """Set an authorization checker (receives SessionSource, returns bool)."""
+        self._auth_check = checker
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""

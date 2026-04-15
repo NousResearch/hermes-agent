@@ -97,6 +97,7 @@ AUTHOR_MAP = {
     "mcosma@gmail.com": "wakamex",
     "clawdia.nash@proton.me": "clawdia-nash",
     "pickett.austin@gmail.com": "austinpickett",
+    "dangtc94@gmail.com": "dieutx",
     "jaisehgal11299@gmail.com": "jaisup",
     "percydikec@gmail.com": "PercyDikec",
     "dean.kerr@gmail.com": "deankerr",

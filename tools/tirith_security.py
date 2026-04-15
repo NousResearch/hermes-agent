@@ -346,13 +346,19 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             return None, "checksum_failed"
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
+            # Extract only the tirith binary (safety: reject paths with .. and absolute paths)
             for member in tar.getmembers():
                 if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
+                    # Security: reject path traversal attempts
+                    if ".." in member.name or os.path.isabs(member.name):
+                        logger.warning("Skipping potentially unsafe tar member: %s", member.name)
                         continue
                     member.name = "tirith"
-                    tar.extract(member, tmpdir)
+                    # Use data filter for Python 3.12+ for extra safety
+                    if hasattr(tarfile, 'data_filter'):
+                        tar.extract(member, tmpdir, filter='data')
+                    else:
+                        tar.extract(member, tmpdir)
                     break
             else:
                 log("tirith binary not found in archive")

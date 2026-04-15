@@ -137,6 +137,12 @@ DANGEROUS_PATTERNS = [
     (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
 ]
 
+# Pre-compile regex patterns for better performance (avoid re-compiling on every detection)
+_COMPILED_DANGEROUS_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE | re.DOTALL), description)
+    for pattern, description in DANGEROUS_PATTERNS
+]
+
 
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
@@ -190,8 +196,8 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
-    for pattern, description in DANGEROUS_PATTERNS:
-        if re.search(pattern, command_lower, re.IGNORECASE | re.DOTALL):
+    for compiled_pattern, description in _COMPILED_DANGEROUS_PATTERNS:
+        if compiled_pattern.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
     return (False, None, None)

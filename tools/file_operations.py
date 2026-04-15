@@ -386,9 +386,12 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
+            sample_len = min(len(content_sample), 1000)
+            if sample_len == 0:
+                return False
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
-            return non_printable / min(len(content_sample), 1000) > 0.30
+            return non_printable / sample_len > 0.30
         
         return False
     

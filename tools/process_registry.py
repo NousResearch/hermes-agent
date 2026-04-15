@@ -260,7 +260,13 @@ class ProcessRegistry:
     def _terminate_host_pid(pid: int) -> None:
         """Terminate a host-visible PID without requiring the original process handle."""
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            # On Windows, SIGTERM is mapped to TerminateProcess which forcefully kills.
+            # Use CTRL_BREAK_EVENT for graceful termination when possible.
+            try:
+                os.kill(pid, signal.CTRL_BREAK_EVENT)
+            except (OSError, ProcessLookupError, PermissionError):
+                # Fallback to SIGTERM if CTRL_BREAK_EVENT fails
+                os.kill(pid, signal.SIGTERM)
             return
 
         try:

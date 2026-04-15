@@ -275,7 +275,7 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
-
+            "input_max_height": 8,   # Max visual lines for the input area (1–50)
             "skin": "default",
         },
         "clarify": {
@@ -8867,7 +8867,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-line_width // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), CLI_CONFIG.get("display", {}).get("input_max_height", 8))
             except Exception:
                 return 1
 

@@ -173,17 +173,24 @@ class PlatformConfig:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        _KNOWN_KEYS = {"enabled", "token", "api_key", "home_channel", "reply_to_mode", "extra"}
         home_channel = None
         if "home_channel" in data:
             home_channel = HomeChannel.from_dict(data["home_channel"])
-        
+
+        # Collect unrecognized top-level keys into extra so they aren't silently dropped
+        extra = dict(data.get("extra", {}))
+        for key, value in data.items():
+            if key not in _KNOWN_KEYS:
+                extra[key] = value
+
         return cls(
             enabled=data.get("enabled", False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 

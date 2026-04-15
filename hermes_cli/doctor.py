@@ -369,62 +369,63 @@ def run_doctor(args):
     # Check: Auth providers
     # =========================================================================
     print()
-    print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 인증 provider", Colors.CYAN, Colors.BOLD))
 
     try:
         from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status
 
         nous_status = get_nous_auth_status()
         if nous_status.get("logged_in"):
-            check_ok("Nous Portal auth", "(logged in)")
+            check_ok("Nous Portal 인증", "(로그인됨)")
         else:
-            check_warn("Nous Portal auth", "(not logged in)")
+            check_warn("Nous Portal 인증", "(로그인 안 됨)")
 
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
-            check_ok("OpenAI Codex auth", "(logged in)")
+            check_ok("OpenAI Codex 인증", "(로그인됨)")
         else:
-            check_warn("OpenAI Codex auth", "(not logged in)")
+            check_warn("OpenAI Codex 인증", "(로그인 안 됨)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
     except Exception as e:
-        check_warn("Auth provider status", f"(could not check: {e})")
+        check_warn("인증 provider 상태", f"(확인하지 못했어요: {e})")
 
     if shutil.which("codex"):
         check_ok("codex CLI")
     else:
-        check_warn("codex CLI not found", "(required for openai-codex login)")
+        check_warn("codex CLI를 찾지 못했어요", "(openai-codex 로그인에 필요)"
+        )
 
     # =========================================================================
     # Check: Directory structure
     # =========================================================================
     print()
-    print(color("◆ Directory Structure", Colors.CYAN, Colors.BOLD))
+    print(color("◆ 디렉터리 구조", Colors.CYAN, Colors.BOLD))
     
     hermes_home = HERMES_HOME
     if hermes_home.exists():
-        check_ok(f"{_DHH} directory exists")
+        check_ok(f"{_DHH} 디렉터리가 있어요")
     else:
         if should_fix:
             hermes_home.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH} directory")
+            check_ok(f"{_DHH} 디렉터리를 만들었어요")
             fixed_count += 1
         else:
-            check_warn(f"{_DHH} not found", "(will be created on first use)")
+            check_warn(f"{_DHH}를 찾지 못했어요", "(처음 사용할 때 만들어져요)")
     
     # Check expected subdirectories
     expected_subdirs = ["cron", "sessions", "logs", "skills", "memories"]
     for subdir_name in expected_subdirs:
         subdir_path = hermes_home / subdir_name
         if subdir_path.exists():
-            check_ok(f"{_DHH}/{subdir_name}/ exists")
+            check_ok(f"{_DHH}/{subdir_name}/ 디렉터리가 있어요")
         else:
             if should_fix:
                 subdir_path.mkdir(parents=True, exist_ok=True)
-                check_ok(f"Created {_DHH}/{subdir_name}/")
+                check_ok(f"{_DHH}/{subdir_name}/ 디렉터리를 만들었어요")
                 fixed_count += 1
             else:
-                check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
+                check_warn(f"{_DHH}/{subdir_name}/를 찾지 못했어요", "(처음 사용할 때 만들어져요)")
     
     # Check for SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
@@ -433,11 +434,11 @@ def run_doctor(args):
         # Check if it's just the template comments (no real content)
         lines = [l for l in content.splitlines() if l.strip() and not l.strip().startswith(("<!--", "-->", "#"))]
         if lines:
-            check_ok(f"{_DHH}/SOUL.md exists (persona configured)")
+            check_ok(f"{_DHH}/SOUL.md가 있어요 (persona 설정됨)")
         else:
-            check_info(f"{_DHH}/SOUL.md exists but is empty — edit it to customize personality")
+            check_info(f"{_DHH}/SOUL.md는 있지만 비어 있어요 — 수정해서 personality를 커스터마이즈하세요")
     else:
-        check_warn(f"{_DHH}/SOUL.md not found", "(create it to give Hermes a custom personality)")
+        check_warn(f"{_DHH}/SOUL.md를 찾지 못했어요", "(Hermes에 custom personality를 주려면 만들어 주세요)")
         if should_fix:
             soul_path.parent.mkdir(parents=True, exist_ok=True)
             soul_path.write_text(
@@ -446,30 +447,30 @@ def run_doctor(args):
                 "You are Hermes, a helpful AI assistant.\n",
                 encoding="utf-8",
             )
-            check_ok(f"Created {_DHH}/SOUL.md with basic template")
+            check_ok(f"기본 템플릿으로 {_DHH}/SOUL.md를 만들었어요")
             fixed_count += 1
     
     # Check memory directory
     memories_dir = hermes_home / "memories"
     if memories_dir.exists():
-        check_ok(f"{_DHH}/memories/ directory exists")
+        check_ok(f"{_DHH}/memories/ 디렉터리가 있어요")
         memory_file = memories_dir / "MEMORY.md"
         user_file = memories_dir / "USER.md"
         if memory_file.exists():
             size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
+            check_ok(f"MEMORY.md가 있어요 ({size}자)")
         else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
+            check_info("MEMORY.md는 아직 없어요 (에이전트가 처음 memory를 쓸 때 만들어져요)")
         if user_file.exists():
             size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
+            check_ok(f"USER.md가 있어요 ({size}자)")
         else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+            check_info("USER.md는 아직 없어요 (에이전트가 처음 memory를 쓸 때 만들어져요)")
     else:
-        check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
+        check_warn(f"{_DHH}/memories/를 찾지 못했어요", "(처음 사용할 때 만들어져요)")
         if should_fix:
             memories_dir.mkdir(parents=True, exist_ok=True)
-            check_ok(f"Created {_DHH}/memories/")
+            check_ok(f"{_DHH}/memories/ 디렉터리를 만들었어요")
             fixed_count += 1
     
     # Check SQLite session store
@@ -481,11 +482,11 @@ def run_doctor(args):
             cursor = conn.execute("SELECT COUNT(*) FROM sessions")
             count = cursor.fetchone()[0]
             conn.close()
-            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+            check_ok(f"{_DHH}/state.db가 있어요 ({count}개 세션)")
         except Exception as e:
-            check_warn(f"{_DHH}/state.db exists but has issues: {e}")
+            check_warn(f"{_DHH}/state.db는 있지만 문제가 있어요: {e}")
     else:
-        check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
+        check_info(f"{_DHH}/state.db는 아직 없어요 (첫 세션에서 만들어져요)")
 
     # Check WAL file size (unbounded growth indicates missed checkpoints)
     wal_path = hermes_home / "state.db-wal"
@@ -494,8 +495,8 @@ def run_doctor(args):
             wal_size = wal_path.stat().st_size
             if wal_size > 50 * 1024 * 1024:  # 50 MB
                 check_warn(
-                    f"WAL file is large ({wal_size // (1024*1024)} MB)",
-                    "(may indicate missed checkpoints)"
+                    f"WAL 파일이 커요 ({wal_size // (1024*1024)} MB)",
+                    "(체크포인트를 놓쳤을 수 있어요)"
                 )
                 if should_fix:
                     import sqlite3
@@ -503,12 +504,12 @@ def run_doctor(args):
                     conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     conn.close()
                     new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
+                    check_ok(f"WAL 체크포인트를 수행했어요 ({wal_size // 1024}K → {new_size // 1024}K)")
                     fixed_count += 1
                 else:
-                    issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
+                    issues.append("WAL 파일이 커요 — 체크포인트를 수행하려면 'hermes doctor --fix'를 실행하세요")
             elif wal_size > 10 * 1024 * 1024:  # 10 MB
-                check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
+                check_info(f"WAL 파일 크기는 {wal_size // (1024*1024)} MB예요 (활성 세션에서는 정상일 수 있어요)")
         except Exception:
             pass
 

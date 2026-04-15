@@ -381,3 +381,51 @@ def test_run_doctor_localizes_python_and_config_sections(monkeypatch, tmp_path):
     assert "◆ 필수 패키지" in out
     assert "◆ 설정 파일" in out
     assert "API key 또는 custom endpoint가 설정되어 있어요" in out
+
+
+def test_run_doctor_localizes_auth_and_directory_sections(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+    (home / ".env").write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+    (home / "SOUL.md").write_text("You are Hermes.\n", encoding="utf-8")
+    memories = home / "memories"
+    memories.mkdir()
+    (memories / "MEMORY.md").write_text("memo\n", encoding="utf-8")
+    (memories / "USER.md").write_text("user\n", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: "/usr/bin/codex" if cmd == "codex" else None)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {"logged_in": True})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {"logged_in": False, "error": "expired"})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "◆ 인증 provider" in out
+    assert "Nous Portal 인증" in out
+    assert "OpenAI Codex 인증" in out
+    assert "로그인됨" in out
+    assert "로그인 안 됨" in out
+    assert "◆ 디렉터리 구조" in out
+    assert "SOUL.md가 있어요" in out
+    assert "MEMORY.md가 있어요" in out
+    assert "USER.md가 있어요" in out

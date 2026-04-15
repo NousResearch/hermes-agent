@@ -1,6 +1,6 @@
 # Hermes Agent - AI 上下文文档
 
-> 更新时间：2026-04-13 16:35:00
+> 更新时间：2026-04-16 | 当前版本：v2026.4.13 | 上游版本：v2026.4.13
 
 ## 项目愿景
 
@@ -14,6 +14,8 @@ Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https:
 - **定时自动化**：内置 cron 调度器，支持向任何平台传递
 - **委派和并行化**：生成隔离的子代理用于并行工作流
 - **随处运行**：六种终端后端（本地、Docker、SSH、Daytona、Singularity、Modal）
+- **备份和恢复**：完整备份和快速快照功能，支持安全的 SQLite 复制
+- **OAuth 认证**：Web Dashboard 中的 OAuth 提供商管理
 
 ## 架构总览
 
@@ -23,6 +25,7 @@ Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https:
 - **CLI 框架**：prompt_toolkit、Rich
 - **Web UI**：FastAPI、React 19、Vite、Tailwind CSS v4
 - **消息平台**：python-telegram-bot、discord.py、slack-bolt、aiohttp
+- **备份系统**：zipfile、sqlite3.backup() API
 - **测试框架**：pytest、pytest-asyncio、pytest-xdist（~3000 测试用例）
 - **依赖管理**：pyproject.toml、setuptools、npm
 
@@ -31,6 +34,8 @@ Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https:
 - **工具注册表**：中央化的工具注册系统，支持动态发现和调度
 - **配置系统**：YAML 配置文件 + 环境变量，支持多实例配置
 - **插件系统**：技能系统、MCP 集成、记忆提供者插件
+- **备份系统**：完整备份 + 快速快照，支持 SQLite 安全复制
+- **OAuth 认证**：Web Dashboard 中的 OAuth 提供商管理
 
 ### 设计原则
 1. **提示缓存不能破坏**：整个对话过程中保持缓存有效性
@@ -58,6 +63,8 @@ graph TD
     B --> B3["memory_manager.py"];
     B --> B4["display.py"];
     B --> B5["skill_commands.py"];
+    B --> B6["credential_pool.py"];
+    B --> B7["context_engine.py"];
 
     C --> C1["main.py"];
     C --> C2["config.py"];
@@ -65,6 +72,8 @@ graph TD
     C --> C4["setup.py"];
     C --> C5["skin_engine.py"];
     C --> C6["web_server.py"];
+    C --> C7["backup.py"];
+    C --> C8["auth_commands.py"];
 
     D --> D1["registry.py"];
     D --> D2["terminal_tool.py"];
@@ -386,6 +395,12 @@ hermes gateway
 
 # 启动 Web UI Dashboard
 hermes web
+
+# 创建备份
+hermes backup
+
+# 快速快照
+hermes backup --quick
 ```
 
 ### 开发环境设置
@@ -411,8 +426,17 @@ python -m pytest tests/ -q
 - `hermes config set` - 设置配置值
 - `hermes gateway` - 启动消息网关
 - `hermes web` - 启动 Web UI Dashboard（默认 http://127.0.0.1:9119）
+- `hermes backup` - 创建完整备份或快速快照
+- `hermes import` - 从备份恢复
+- `hermes debug share` - 上传调试报告到 pastebin
 - `hermes setup` - 运行完整设置向导
 - `hermes doctor` - 诊断问题
+
+### 斜杠命令
+- `/model` - 原生模型选择器模态框
+- `/snapshot` 或 `/snap` - 快速状态快照（create/list/restore/prune）
+- `/debug` - 调试命令
+- `/compress <focus>` - 引导式压缩，支持聚焦主题
 
 ## 测试策略
 
@@ -529,6 +553,20 @@ run_agent.py, cli.py, batch_runner.py, environments/
 - **Tinker**：RL 工具集成（可选）
 
 ## 变更记录 (Changelog)
+
+### 2026-04-16 - 同步上游 v2026.4.13 版本变更 🚀
+- ✅ **新增备份和导入系统**：完整的 `hermes backup` 和 `hermes import` 命令
+- 📸 **新增快照功能**：`hermes backup --quick` 和 `/snapshot` 斜杠命令
+- 🔐 **新增 OAuth 提供商管理**：Web Dashboard 中的 OAuth 登录功能
+- 🇨🇳 **新增 Kimi/Moonshot 提供商**：支持中国地区的模型提供商
+- 🐛 **新增调试命令**：`/debug` 斜杠命令和 `hermes debug share`
+- 💡 **新增提示功能**：会话开始时显示随机提示（279 条提示）
+- 🎯 **新增模型选择器**：原生 `/model` 选择器模态框
+- 🌐 **新增网络配置**：`network.force_ipv4` 配置选项
+- 📝 **新增组件化日志**：带会话上下文和过滤功能的日志系统
+- 🔧 **修复 SQLite 备份安全**：使用 `sqlite3.Connection.backup()` API
+- 🛠️ **修复 78 个 CI 测试**：移除死代码和修复测试失败
+- 📚 **修复 30+ 文档错误**：全面的文档更新
 
 ### 2026-04-13 16:35:00 - 代码变更同步更新 🔄
 - ✅ **新增 Web UI Dashboard**：基于 React 19 + Vite + Tailwind CSS v4 的浏览器管理界面

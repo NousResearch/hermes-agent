@@ -201,6 +201,17 @@ TOOLSETS = {
         "includes": []
     },
 
+    "brokerage": {
+        "description": "Deterministic brokerage intent tools that call the local FastAPI trading service",
+        "tools": [
+            "create_trade_intent",
+            "confirm_trade_intent",
+            "cancel_trade_intent",
+            "get_trade_intent_status",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

@@ -156,7 +156,7 @@ def auth_add_command(args) -> None:
         if not token:
             token = getpass("Paste your API key: ").strip()
         if not token:
-            raise SystemExit("No API key provided.")
+            raise SystemExit("API key가 제공되지 않았어요.")
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
@@ -311,8 +311,8 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f"{error} Provider: {provider}.")
     removed = pool.remove_index(index)
     if removed is None:
-        raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
-    print(f"Removed {provider} credential #{index} ({removed.label})")
+        raise SystemExit(f'provider {provider} 에서 "{target}" 와(과) 일치하는 자격 증명을 찾지 못했어요.')
+    print(f"{provider} 자격 증명 #{index} ({removed.label}) 을(를) 제거했어요")
 
     # If this was an env-seeded credential, also clear the env var from .env
     # so it doesn't get re-seeded on the next load_pool() call.
@@ -337,34 +337,34 @@ def auth_remove_command(args) -> None:
             if isinstance(providers_dict, dict) and provider in providers_dict:
                 del providers_dict[provider]
                 _save_auth_store(auth_store)
-                print(f"Cleared {provider} OAuth tokens from auth store")
+                print(f"auth store에서 {provider} OAuth 토큰을 지웠어요")
 
     elif removed.source == "hermes_pkce" and provider == "anthropic":
         from hermes_constants import get_hermes_home
         oauth_file = get_hermes_home() / ".anthropic_oauth.json"
         if oauth_file.exists():
             oauth_file.unlink()
-            print("Cleared Hermes Anthropic OAuth credentials")
+            print("Hermes Anthropic OAuth 자격 증명을 지웠어요")
 
     elif removed.source == "claude_code" and provider == "anthropic":
         from hermes_cli.auth import suppress_credential_source
         suppress_credential_source(provider, "claude_code")
-        print("Suppressed claude_code credential — it will not be re-seeded.")
-        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
-        print("Run `hermes auth add anthropic` to re-enable if needed.")
+        print("claude_code 자격 증명을 억제했어요 — 다시 자동 주입되지 않아요.")
+        print("참고: Claude Code 자격 증명 자체는 ~/.claude/.credentials.json 에 남아 있어요")
+        print("다시 활성화하려면 `hermes auth add anthropic` 를 실행하세요.")
 
 
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     pool = load_pool(provider)
     count = pool.reset_statuses()
-    print(f"Reset status on {count} {provider} credentials")
+    print(f"{provider} 자격 증명 {count}개의 상태를 초기화했어요")
 
 
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
-    print("Credential Pool Status")
+    print("자격 증명 풀 상태")
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
@@ -372,18 +372,18 @@ def _interactive_auth() -> None:
 
     # Main menu
     choices = [
-        "Add a credential",
-        "Remove a credential",
-        "Reset cooldowns for a provider",
-        "Set rotation strategy for a provider",
-        "Exit",
+        "자격 증명 추가",
+        "자격 증명 제거",
+        "provider 쿨다운 초기화",
+        "provider 회전 전략 설정",
+        "종료",
     ]
-    print("What would you like to do?")
+    print("무엇을 할까요?")
     for i, choice in enumerate(choices, 1):
         print(f"  {i}. {choice}")
 
     try:
-        raw = input("\nChoice: ").strip()
+        raw = input("\n선택: ").strip()
     except (EOFError, KeyboardInterrupt):
         return
 
@@ -406,10 +406,10 @@ def _pick_provider(prompt: str = "Provider") -> str:
     custom_names = _get_custom_provider_names()
     if custom_names:
         custom_display = [name for name, _key, _provider_key in custom_names]
-        print(f"\nKnown providers: {', '.join(known)}")
-        print(f"Custom endpoints: {', '.join(custom_display)}")
+        print(f"\n알려진 provider: {', '.join(known)}")
+        print(f"custom endpoint: {', '.join(custom_display)}")
     else:
-        print(f"\nKnown providers: {', '.join(known)}")
+        print(f"\n알려진 provider: {', '.join(known)}")
     try:
         raw = input(f"{prompt}: ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -418,17 +418,17 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 
 def _interactive_add() -> None:
-    provider = _pick_provider("Provider to add credential for")
+    provider = _pick_provider("자격 증명을 추가할 provider")
     if provider not in PROVIDER_REGISTRY and provider != "openrouter" and not provider.startswith(CUSTOM_POOL_PREFIX):
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
     if provider in _OAUTH_CAPABLE_PROVIDERS:
-        print(f"\n{provider} supports both API keys and OAuth login.")
-        print("  1. API key (paste a key from the provider dashboard)")
-        print("  2. OAuth login (authenticate via browser)")
+        print(f"\n{provider} 는 API key와 OAuth 로그인을 모두 지원해요.")
+        print("  1. API key (provider 대시보드에서 key를 붙여넣기)")
+        print("  2. OAuth 로그인 (브라우저에서 인증)")
         try:
-            type_choice = input("Type [1/2]: ").strip()
+            type_choice = input("유형 [1/2]: ").strip()
         except (EOFError, KeyboardInterrupt):
             return
         if type_choice == "2":
@@ -440,7 +440,7 @@ def _interactive_add() -> None:
 
     label = None
     try:
-        typed_label = input("Label / account name (optional): ").strip()
+        typed_label = input("라벨 / 계정 이름(선택): ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if typed_label:
@@ -454,10 +454,10 @@ def _interactive_add() -> None:
 
 
 def _interactive_remove() -> None:
-    provider = _pick_provider("Provider to remove credential from")
+    provider = _pick_provider("자격 증명을 제거할 provider")
     pool = load_pool(provider)
     if not pool.has_credentials():
-        print(f"No credentials for {provider}.")
+        print(f"{provider} 용 자격 증명이 없어요.")
         return
 
     # Show entries with indices
@@ -466,7 +466,7 @@ def _interactive_remove() -> None:
         print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
 
     try:
-        raw = input("Remove #, id, or label (blank to cancel): ").strip()
+        raw = input("제거할 #, id, 또는 라벨(비워 두면 취소): ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:
@@ -476,30 +476,30 @@ def _interactive_remove() -> None:
 
 
 def _interactive_reset() -> None:
-    provider = _pick_provider("Provider to reset cooldowns for")
+    provider = _pick_provider("쿨다운을 초기화할 provider")
 
     auth_reset_command(SimpleNamespace(provider=provider))
 
 
 def _interactive_strategy() -> None:
-    provider = _pick_provider("Provider to set strategy for")
+    provider = _pick_provider("전략을 설정할 provider")
     current = get_pool_strategy(provider)
     strategies = [STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN, STRATEGY_LEAST_USED, STRATEGY_RANDOM]
 
-    print(f"\nCurrent strategy for {provider}: {current}")
+    print(f"\n{provider} 의 현재 전략: {current}")
     print()
     descriptions = {
-        STRATEGY_FILL_FIRST: "Use first key until exhausted, then next",
-        STRATEGY_ROUND_ROBIN: "Cycle through keys evenly",
-        STRATEGY_LEAST_USED: "Always pick the least-used key",
-        STRATEGY_RANDOM: "Random selection",
+        STRATEGY_FILL_FIRST: "첫 번째 key를 소진할 때까지 쓰고 다음 key로 이동",
+        STRATEGY_ROUND_ROBIN: "key를 고르게 순환 사용",
+        STRATEGY_LEAST_USED: "가장 적게 사용한 key를 항상 선택",
+        STRATEGY_RANDOM: "무작위 선택",
     }
     for i, s in enumerate(strategies, 1):
         marker = " ←" if s == current else ""
         print(f"  {i}. {s:15s} — {descriptions.get(s, '')}{marker}")
 
     try:
-        raw = input("\nStrategy [1-4]: ").strip()
+        raw = input("\n전략 [1-4]: ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:
@@ -509,7 +509,7 @@ def _interactive_strategy() -> None:
         idx = int(raw) - 1
         strategy = strategies[idx]
     except (ValueError, IndexError):
-        print("Invalid choice.")
+        print("올바르지 않은 선택이에요.")
         return
 
     from hermes_cli.config import load_config, save_config
@@ -520,7 +520,7 @@ def _interactive_strategy() -> None:
     pool_strategies[provider] = strategy
     cfg["credential_pool_strategies"] = pool_strategies
     save_config(cfg)
-    print(f"Set {provider} strategy to: {strategy}")
+    print(f"{provider} 전략을 다음으로 설정했어요: {strategy}")
 
 
 def auth_command(args) -> None:

@@ -369,7 +369,7 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     auth_reset_command(_Args())
 
     out = capsys.readouterr().out
-    assert "Reset status" in out
+    assert "초기화했어요" in out
 
     payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
     entry = payload["credential_pool"]["anthropic"][0]

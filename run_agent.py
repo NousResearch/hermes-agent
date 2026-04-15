@@ -252,6 +252,10 @@ _DESTRUCTIVE_PATTERNS = re.compile(
 # Output redirects that overwrite files (> but not >>)
 _REDIRECT_OVERWRITE = re.compile(r'[^>]>[^>]|^>[^>]')
 
+_PROVIDER_API_KEY_ENV_HINTS = {
+    "alibaba": "DASHSCOPE_API_KEY",
+}
+
 
 def _is_destructive_command(cmd: str) -> bool:
     """Heuristic: does this terminal command look like it modifies/deletes files?"""
@@ -262,6 +266,12 @@ def _is_destructive_command(cmd: str) -> bool:
     if _REDIRECT_OVERWRITE.search(cmd):
         return True
     return False
+
+
+def _missing_provider_api_key_env(provider: str) -> str:
+    """Return the actual env var users should set for a provider."""
+    provider_id = (provider or "").strip().lower()
+    return _PROVIDER_API_KEY_ENV_HINTS.get(provider_id, f"{provider_id.upper()}_API_KEY")
 
 
 def _should_parallelize_tool_batch(tool_calls) -> bool:
@@ -939,7 +949,7 @@ class AIAgent:
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"was found. Set the {_missing_provider_api_key_env(_explicit)} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key

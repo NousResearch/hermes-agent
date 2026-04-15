@@ -448,6 +448,25 @@ class TestMaskApiKey:
 
 
 class TestInit:
+    def test_explicit_alibaba_provider_missing_key_mentions_dashscope_env(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(None, None)),
+        ):
+            with pytest.raises(RuntimeError) as exc_info:
+                AIAgent(
+                    provider="alibaba",
+                    quiet_mode=True,
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+
+        message = str(exc_info.value)
+        assert "DASHSCOPE_API_KEY" in message
+        assert "ALIBABA_API_KEY" not in message
+
     def test_anthropic_base_url_accepted(self):
         """Anthropic base URLs should route to native Anthropic client."""
         with (

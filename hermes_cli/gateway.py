@@ -1284,7 +1284,25 @@ def get_launchd_label() -> str:
 
 def _launchd_domain() -> str:
     import os
-    return f"gui/{os.getuid()}"
+
+    uid = os.getuid()
+    candidates = [f"gui/{uid}", f"user/{uid}"]
+    for domain in candidates:
+        try:
+            probe = subprocess.run(
+                ["launchctl", "print", domain],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return domain
+
+    # Fall back to the historical default so GUI-attached shells keep the
+    # previous behavior even if the probe was inconclusive.
+    return candidates[0]
 
 
 def generate_launchd_plist() -> str:

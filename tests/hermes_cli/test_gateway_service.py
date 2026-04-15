@@ -5,6 +5,8 @@ import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 import hermes_cli.gateway as gateway_cli
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -166,6 +168,10 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    @pytest.fixture(autouse=True)
+    def _stub_launchd_domain(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
         monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
@@ -613,6 +619,7 @@ class TestDetectVenvDir:
         # Not inside a virtualenv
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
 
         dot_venv = tmp_path / ".venv"
@@ -624,6 +631,7 @@ class TestDetectVenvDir:
     def test_falls_back_to_venv_directory(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
 
         venv = tmp_path / "venv"
@@ -635,6 +643,7 @@ class TestDetectVenvDir:
     def test_prefers_dot_venv_over_venv(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
 
         (tmp_path / ".venv").mkdir()
@@ -646,6 +655,7 @@ class TestDetectVenvDir:
     def test_returns_none_when_no_virtualenv(self, tmp_path, monkeypatch):
         monkeypatch.setattr("sys.prefix", "/usr")
         monkeypatch.setattr("sys.base_prefix", "/usr")
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
         monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", tmp_path)
 
         result = gateway_cli._detect_venv_dir()

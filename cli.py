@@ -4095,12 +4095,13 @@ class HermesCLI:
 
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
-        old_history = self.conversation_history
-        if self.agent and old_history:
+        if self.agent and self.conversation_history:
             try:
-                self.agent.flush_memories(old_history)
+                self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            # Trigger memory extraction on the old session before session_id rotates.
+            self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
         elif self.agent:
             # First session or empty history — still finalize the old session
@@ -4149,9 +4150,6 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
-            # Commit the old session and rebind memory providers to the
-            # new session_id so subsequent turns are tracked correctly.
-            self.agent.rotate_memory_session(self.session_id, old_history)
             self._notify_session_boundary("on_session_reset")
 
         if not silent:

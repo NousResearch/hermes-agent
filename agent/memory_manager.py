@@ -281,22 +281,6 @@ class MemoryManager:
                     provider.name, e,
                 )
 
-    def on_session_reset(self, new_session_id: str) -> None:
-        """Notify all providers of a session reset.
-
-        Called after on_session_end() has committed the previous session.
-        Providers with per-session state override on_session_reset to rebind
-        it cheaply (default is a no-op on the base class).
-        """
-        for provider in self._providers:
-            try:
-                provider.on_session_reset(new_session_id)
-            except Exception as e:
-                logger.debug(
-                    "Memory provider '%s' on_session_reset failed: %s",
-                    provider.name, e,
-                )
-
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         """Notify all providers before context compression.
 

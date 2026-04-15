@@ -698,124 +698,41 @@ class TestMemoryContextFencing:
 
 
 # ---------------------------------------------------------------------------
-# MemoryManager.on_session_reset() tests
+# AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------
 
 
-class ResettableProvider(FakeMemoryProvider):
-    """Provider that records on_session_reset calls for assertions."""
+class _CommitRecorder(FakeMemoryProvider):
+    """Provider that records on_session_end calls for assertions."""
 
-    def __init__(self, name="resettable"):
+    def __init__(self, name="recorder"):
         super().__init__(name)
-        self.reset_session_calls = []
+        self.end_calls = []
 
-    def on_session_reset(self, new_session_id: str) -> None:
-        self.reset_session_calls.append(new_session_id)
+    def on_session_end(self, messages):
+        self.end_calls.append(list(messages or []))
 
 
-class TestMemoryManagerOnSessionReset:
-    def test_fans_out_to_all_providers(self):
+class TestCommitMemorySessionRouting:
+    def test_on_session_end_fans_out(self):
         mgr = MemoryManager()
-        builtin = ResettableProvider("builtin")
-        external = ResettableProvider("openviking")
+        builtin = _CommitRecorder("builtin")
+        external = _CommitRecorder("openviking")
         mgr.add_provider(builtin)
         mgr.add_provider(external)
 
-        mgr.on_session_reset("new-session-123")
+        msgs = [{"role": "user", "content": "hi"}]
+        mgr.on_session_end(msgs)
 
-        assert builtin.reset_session_calls == ["new-session-123"]
-        assert external.reset_session_calls == ["new-session-123"]
+        assert builtin.end_calls == [msgs]
+        assert external.end_calls == [msgs]
 
-    def test_base_default_is_noop(self):
-        """Providers that don't override on_session_reset get the base no-op."""
+    def test_on_session_end_tolerates_failure(self):
         mgr = MemoryManager()
         builtin = FakeMemoryProvider("builtin")
-        external = FakeMemoryProvider("honcho")
-        mgr.add_provider(builtin)
-        mgr.add_provider(external)
-
-        # Must not raise — default is a no-op
-        mgr.on_session_reset("noop-session")
-        assert not external.initialized
-
-    def test_tolerates_provider_failure(self):
-        mgr = MemoryManager()
-        builtin = FakeMemoryProvider("builtin")
-        bad = ResettableProvider("bad-provider")
-
-        def _explode(new_sid):
-            raise RuntimeError("network error")
-
-        bad.on_session_reset = _explode
+        bad = _CommitRecorder("bad-provider")
+        bad.on_session_end = lambda m: (_ for _ in ()).throw(RuntimeError("boom"))
         mgr.add_provider(builtin)
         mgr.add_provider(bad)
 
-        mgr.on_session_reset("safe-session")  # must not raise
-
-    def test_no_providers_is_noop(self):
-        mgr = MemoryManager()
-        mgr.on_session_reset("empty-session")  # must not raise
-
-
-# ---------------------------------------------------------------------------
-# OpenVikingMemoryProvider.on_session_reset() tests
-# ---------------------------------------------------------------------------
-
-
-class TestOpenVikingOnSessionReset:
-    """Unit tests for the cheap session-transition path in the OV plugin."""
-
-    def _make_provider(self):
-        try:
-            from plugins.memory.openviking import OpenVikingMemoryProvider
-        except ImportError:
-            pytest.skip("openviking plugin not importable")
-
-        provider = OpenVikingMemoryProvider()
-        provider._session_id = "old-session"
-        provider._turn_count = 5
-        provider._prefetch_result = "cached result"
-        provider._sync_thread = None
-        provider._prefetch_thread = None
-
-        mock_client = MagicMock()
-        mock_client.post.return_value = {}
-        provider._client = mock_client
-        return provider, mock_client
-
-    def test_reset_updates_session_id(self):
-        provider, _ = self._make_provider()
-        provider.on_session_reset("new-session-abc")
-        assert provider._session_id == "new-session-abc"
-
-    def test_reset_clears_per_session_state(self):
-        provider, _ = self._make_provider()
-        provider.on_session_reset("new-session-xyz")
-        assert provider._turn_count == 0
-        assert provider._prefetch_result == ""
-        assert provider._sync_thread is None
-        assert provider._prefetch_thread is None
-
-    def test_reset_does_not_create_ov_session(self):
-        """OV auto-creates on first message; reset must not POST /sessions."""
-        provider, mock_client = self._make_provider()
-        provider.on_session_reset("new-session-post")
-        mock_client.post.assert_not_called()
-
-    def test_reset_without_client_is_safe(self):
-        try:
-            from plugins.memory.openviking import OpenVikingMemoryProvider
-        except ImportError:
-            pytest.skip("openviking plugin not importable")
-
-        provider = OpenVikingMemoryProvider()
-        provider._client = None
-        provider._session_id = "old"
-        provider._turn_count = 3
-        provider._sync_thread = None
-        provider._prefetch_thread = None
-        provider._prefetch_result = ""
-
-        provider.on_session_reset("new-no-client")
-        assert provider._session_id == "new-no-client"
-        assert provider._turn_count == 0
+        mgr.on_session_end([])  # must not raise

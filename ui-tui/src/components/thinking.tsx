@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, NoSelect, Text } from '@hermes/ink'
 import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -25,16 +25,124 @@ const fmtElapsed = (ms: number) => {
   return sec < 10 ? `${sec.toFixed(1)}s` : `${Math.round(sec)}s`
 }
 
+type TreeBranch = 'mid' | 'last'
+type TreeRails = readonly boolean[]
+
+const nextTreeRails = (rails: TreeRails, branch: TreeBranch) => [...rails, branch === 'mid']
+
+const treeLead = (rails: TreeRails, branch: TreeBranch) =>
+  `${rails.map(on => (on ? '│ ' : '  ')).join('')}${branch === 'mid' ? '├─ ' : '└─ '}`
+
 // ── Primitives ───────────────────────────────────────────────────────
 
-export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
-  const [spin] = useState(() => {
+function TreeRow({
+  branch,
+  children,
+  rails = [],
+  stemColor,
+  stemDim = true,
+  t
+}: {
+  branch: TreeBranch
+  children: ReactNode
+  rails?: TreeRails
+  stemColor?: string
+  stemDim?: boolean
+  t: Theme
+}) {
+  const lead = treeLead(rails, branch)
+
+  return (
+    <Box>
+      <NoSelect flexShrink={0} fromLeftEdge width={lead.length}>
+        <Text color={(stemColor ?? t.color.dim) as any} dim={stemDim}>
+          {lead}
+        </Text>
+      </NoSelect>
+      <Box flexDirection="column" flexGrow={1}>
+        {children}
+      </Box>
+    </Box>
+  )
+}
+
+function TreeTextRow({
+  branch,
+  color,
+  content,
+  dimColor,
+  rails = [],
+  t,
+  wrap = 'wrap-trim'
+}: {
+  branch: TreeBranch
+  color: string
+  content: ReactNode
+  dimColor?: boolean
+  rails?: TreeRails
+  t: Theme
+  wrap?: 'truncate-end' | 'wrap' | 'wrap-trim'
+}) {
+  const text = dimColor ? (
+    <Text color={color as any} dim wrap={wrap}>
+      {content}
+    </Text>
+  ) : (
+    <Text color={color as any} wrap={wrap}>
+      {content}
+    </Text>
+  )
+
+  return (
+    <TreeRow branch={branch} rails={rails} t={t}>
+      {text}
+    </TreeRow>
+  )
+}
+
+function TreeNode({
+  branch,
+  children,
+  header,
+  open,
+  rails = [],
+  t
+}: {
+  branch: TreeBranch
+  children?: (rails: boolean[]) => ReactNode
+  header: ReactNode
+  open: boolean
+  rails?: TreeRails
+  t: Theme
+}) {
+  return (
+    <Box flexDirection="column">
+      <TreeRow branch={branch} rails={rails} t={t}>
+        {header}
+      </TreeRow>
+      {open ? children?.(nextTreeRails(rails, branch)) : null}
+    </Box>
+  )
+}
+
+export function Spinner({
+  color,
+  variant = 'think'
+}: {
+  color: string
+  variant?: 'think' | 'tool'
+}) {
+  const spin = useMemo(() => {
     const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
 
     return { ...raw, frames: raw.frames.map(f => [...f][0] ?? '⠀') }
-  })
+  }, [variant])
 
   const [frame, setFrame] = useState(0)
+
+  useEffect(() => {
+    setFrame(0)
+  }, [spin])
 
   useEffect(() => {
     const id = setInterval(() => setFrame(f => (f + 1) % spin.frames.length), spin.interval)
@@ -42,7 +150,7 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
     return () => clearInterval(id)
   }, [spin])
 
-  return <Text color={color}>{spin.frames[frame]}</Text>
+  return <Text color={color as any}>{spin.frames[frame]}</Text>
 }
 
 interface DetailRow {
@@ -52,13 +160,15 @@ interface DetailRow {
   key: string
 }
 
-function Detail({ color, content, dimColor }: DetailRow) {
-  return (
-    <Text color={color} dimColor={dimColor} wrap="wrap-trim">
-      <Text dimColor>└ </Text>
-      {content}
-    </Text>
-  )
+function Detail({
+  branch = 'last',
+  color,
+  content,
+  dimColor,
+  rails = [],
+  t
+}: DetailRow & { branch?: TreeBranch; rails?: TreeRails; t: Theme }) {
+  return <TreeTextRow branch={branch} color={color} content={content} dimColor={dimColor} rails={rails} t={t} />
 }
 
 function StreamCursor({
@@ -86,11 +196,17 @@ function StreamCursor({
     return () => clearInterval(id)
   }, [streaming, visible])
 
-  return visible ? (
-    <Text color={color} dimColor={dimColor}>
+  if (!visible) {
+    return null
+  }
+
+  return dimColor ? (
+    <Text color={color as any} dim>
       {streaming && on ? '▍' : ' '}
     </Text>
-  ) : null
+  ) : (
+    <Text color={color as any}>{streaming && on ? '▍' : ' '}</Text>
+  )
 }
 
 function Chevron({
@@ -113,13 +229,13 @@ function Chevron({
   const color = tone === 'error' ? t.color.error : tone === 'warn' ? t.color.warn : t.color.dim
 
   return (
-    <Box onClick={(e: { ctrlKey?: boolean; shiftKey?: boolean }) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
-      <Text color={color} dimColor={tone === 'dim'}>
-        <Text color={t.color.amber}>{open ? '▾ ' : '▸ '}</Text>
+    <Box onClick={(e: any) => onClick(!!e?.shiftKey || !!e?.ctrlKey)}>
+      <Text color={color as any} dim={tone === 'dim'}>
+        <Text color={t.color.amber as any}>{open ? '▾ ' : '▸ '}</Text>
         {title}
         {typeof count === 'number' ? ` (${count})` : ''}
         {suffix ? (
-          <Text color={t.color.statusFg} dimColor>
+          <Text color={t.color.statusFg as any} dim>
             {'  '}
             {suffix}
           </Text>
@@ -129,7 +245,19 @@ function Chevron({
   )
 }
 
-function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: SubagentProgress; t: Theme }) {
+function SubagentAccordion({
+  branch,
+  expanded,
+  item,
+  rails = [],
+  t
+}: {
+  branch: TreeBranch
+  expanded: boolean
+  item: SubagentProgress
+  rails?: TreeRails
+  t: Theme
+}) {
   const [open, setOpen] = useState(expanded)
   const [deep, setDeep] = useState(expanded)
   const [openThinking, setOpenThinking] = useState(expanded)
@@ -175,95 +303,175 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
   const showChildren = expanded || deep
+  const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.dim
+
+  const sections: {
+    header: ReactNode
+    key: string
+    open: boolean
+    render: (rails: boolean[]) => ReactNode
+  }[] = []
+
+  if (hasThinking) {
+    sections.push({
+      header: (
+        <Chevron
+          count={item.thinking.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenThinking(v => !v)
+            }
+          }}
+          open={showChildren || openThinking}
+          t={t}
+          title="Thinking"
+        />
+      ),
+      key: 'thinking',
+      open: showChildren || openThinking,
+      render: childRails => (
+        <Thinking
+          active={item.status === 'running'}
+          branch="last"
+          mode="full"
+          rails={childRails}
+          reasoning={thinkingText}
+          streaming={item.status === 'running'}
+          t={t}
+        />
+      )
+    })
+  }
+
+  if (hasTools) {
+    sections.push({
+      header: (
+        <Chevron
+          count={item.tools.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenTools(v => !v)
+            }
+          }}
+          open={showChildren || openTools}
+          t={t}
+          title="Tool calls"
+        />
+      ),
+      key: 'tools',
+      open: showChildren || openTools,
+      render: childRails => (
+        <Box flexDirection="column">
+          {item.tools.map((line, index) => (
+            <TreeTextRow
+              branch={index === item.tools.length - 1 ? 'last' : 'mid'}
+              color={t.color.cornsilk}
+              content={
+                <>
+                  <Text color={t.color.amber as any}>● </Text>
+                  {line}
+                </>
+              }
+              key={`${item.id}-tool-${index}`}
+              rails={childRails}
+              t={t}
+            />
+          ))}
+        </Box>
+      )
+    })
+  }
+
+  if (hasNotes) {
+    sections.push({
+      header: (
+        <Chevron
+          count={noteRows.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenNotes(v => !v)
+            }
+          }}
+          open={showChildren || openNotes}
+          t={t}
+          title="Progress"
+          tone={statusTone}
+        />
+      ),
+      key: 'notes',
+      open: showChildren || openNotes,
+      render: childRails => (
+        <Box flexDirection="column">
+          {noteRows.map((line, index) => (
+            <TreeTextRow
+              branch={index === noteRows.length - 1 ? 'last' : 'mid'}
+              color={noteColor}
+              content={line}
+              dimColor={statusTone === 'dim'}
+              key={`${item.id}-note-${index}`}
+              rails={childRails}
+              t={t}
+            />
+          ))}
+        </Box>
+      )
+    })
+  }
 
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Chevron
-        onClick={shift => shift ? expandAll() : setOpen(v => { if (!v) setDeep(false); return !v })}
-        open={open}
-        suffix={suffix}
-        t={t}
-        title={title}
-        tone={statusTone}
-      />
+    <TreeNode
+      branch={branch}
+      header={
+        <Chevron
+          onClick={shift => {
+            if (shift) {
+              expandAll()
 
-      {open && (
-        <Box flexDirection="column" paddingLeft={2}>
-          {hasThinking && (
-            <>
-              <Chevron
-                count={item.thinking.length}
-                onClick={shift => { if (shift) expandAll(); else setOpenThinking(v => !v) }}
-                open={showChildren || openThinking}
-                t={t}
-                title="Thinking"
-              />
+              return
+            }
 
-              {(showChildren || openThinking) && (
-                <Thinking
-                  active={item.status === 'running'}
-                  mode="full"
-                  reasoning={thinkingText}
-                  streaming={item.status === 'running'}
-                  t={t}
-                />
-              )}
-            </>
-          )}
+            setOpen(v => {
+              if (!v) {
+                setDeep(false)
+              }
 
-          {hasTools && (
-            <>
-              <Chevron
-                count={item.tools.length}
-                onClick={shift => { if (shift) expandAll(); else setOpenTools(v => !v) }}
-                open={showChildren || openTools}
-                t={t}
-                title="Tool calls"
-              />
-
-              {(showChildren || openTools) && (
-                <Box flexDirection="column">
-                  {item.tools.map((line, index) => (
-                    <Text color={t.color.cornsilk} key={`${item.id}-tool-${index}`} wrap="wrap-trim">
-                      <Text color={t.color.amber}>● </Text>
-                      {line}
-                    </Text>
-                  ))}
-                </Box>
-              )}
-            </>
-          )}
-
-          {hasNotes && (
-            <>
-              <Chevron
-                count={noteRows.length}
-                onClick={shift => { if (shift) expandAll(); else setOpenNotes(v => !v) }}
-                open={showChildren || openNotes}
-                t={t}
-                title="Progress"
-                tone={statusTone}
-              />
-
-              {(showChildren || openNotes) && (
-                <Box flexDirection="column">
-                  {noteRows.map((line, index) => (
-                    <Text
-                      color={statusTone === 'error' ? t.color.error : t.color.dim}
-                      dimColor
-                      key={`${item.id}-note-${index}`}
-                    >
-                      <Text dimColor>{index === noteRows.length - 1 ? '└ ' : '├ '}</Text>
-                      {line}
-                    </Text>
-                  ))}
-                </Box>
-              )}
-            </>
-          )}
+              return !v
+            })
+          }}
+          open={open}
+          suffix={suffix}
+          t={t}
+          title={title}
+          tone={statusTone}
+        />
+      }
+      open={open}
+      rails={rails}
+      t={t}
+    >
+      {childRails => (
+        <Box flexDirection="column">
+          {sections.map((section, index) => (
+            <TreeNode
+              branch={index === sections.length - 1 ? 'last' : 'mid'}
+              header={section.header}
+              key={`${item.id}-${section.key}`}
+              open={section.open}
+              rails={childRails}
+              t={t}
+            >
+              {section.render}
+            </TreeNode>
+          ))}
         </Box>
       )}
-    </Box>
+    </TreeNode>
   )
 }
 
@@ -271,13 +479,17 @@ function SubagentAccordion({ expanded, item, t }: { expanded: boolean; item: Sub
 
 export const Thinking = memo(function Thinking({
   active = false,
+  branch = 'last',
   mode = 'truncated',
+  rails = [],
   reasoning,
   streaming = false,
   t
 }: {
   active?: boolean
+  branch?: TreeBranch
   mode?: ThinkingMode
+  rails?: TreeRails
   reasoning: string
   streaming?: boolean
   t: Theme
@@ -285,39 +497,36 @@ export const Thinking = memo(function Thinking({
   const preview = useMemo(() => thinkingPreview(reasoning, mode, THINKING_COT_MAX), [mode, reasoning])
   const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
+  if (!preview && !active) {
+    return null
+  }
+
   return (
-    <Box flexDirection="column">
-      {preview ? (
-        mode === 'full' ? (
-          <Box flexDirection="row">
-            <Text color={t.color.dim} dimColor>
-              └{' '}
+    <TreeRow branch={branch} rails={rails} t={t}>
+      <Box flexDirection="column" flexGrow={1}>
+        {preview ? (
+          mode === 'full' ? (
+            lines.map((line, index) => (
+              <Text color={t.color.dim as any} dim key={index} wrap="wrap-trim">
+                {line || ' '}
+                {index === lines.length - 1 ? (
+                  <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+                ) : null}
+              </Text>
+            ))
+          ) : (
+            <Text color={t.color.dim as any} dim wrap="truncate-end">
+              {preview}
+              <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
             </Text>
-            <Box flexDirection="column" flexGrow={1}>
-              {lines.map((line, index) => (
-                <Text color={t.color.dim} dimColor key={index} wrap="wrap-trim">
-                  {line || ' '}
-                  {index === lines.length - 1 ? (
-                    <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
-                  ) : null}
-                </Text>
-              ))}
-            </Box>
-          </Box>
+          )
         ) : (
-          <Text color={t.color.dim} dimColor wrap="truncate-end">
-            <Text dimColor>└ </Text>
-            {preview}
+          <Text color={t.color.dim as any} dim>
             <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
           </Text>
-        )
-      ) : active ? (
-        <Text color={t.color.dim} dimColor>
-          <Text dimColor>└ </Text>
-          <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
-        </Text>
-      ) : null}
-    </Box>
+        )}
+      </Box>
+    </TreeRow>
   )
 })
 
@@ -328,6 +537,7 @@ interface Group {
   content: ReactNode
   details: DetailRow[]
   key: string
+  label: string
 }
 
 export const ToolTrail = memo(function ToolTrail({
@@ -410,7 +620,8 @@ export const ToolTrail = memo(function ToolTrail({
         color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
         content: parsed.detail ? parsed.call : `${parsed.call} ${parsed.mark}`,
         details: [],
-        key: `tr-${i}`
+        key: `tr-${i}`,
+        label: parsed.call
       })
 
       if (parsed.detail) {
@@ -426,11 +637,14 @@ export const ToolTrail = memo(function ToolTrail({
     }
 
     if (line.startsWith('drafting ')) {
+      const label = toolTrailLabel(line.slice(9).replace(/…$/, '').trim())
+
       groups.push({
         color: t.color.cornsilk,
-        content: toolTrailLabel(line.slice(9).replace(/…$/, '').trim()),
+        content: label,
         details: [{ color: t.color.dim, content: 'drafting...', dimColor: true, key: `tr-${i}-d` }],
-        key: `tr-${i}`
+        key: `tr-${i}`,
+        label
       })
 
       continue
@@ -457,13 +671,16 @@ export const ToolTrail = memo(function ToolTrail({
   }
 
   for (const tool of tools) {
+    const label = formatToolCall(tool.name, tool.context || '')
+
     groups.push({
       color: t.color.cornsilk,
       key: tool.id,
+      label,
       details: [],
       content: (
         <>
-          <Spinner color={t.color.amber} variant="tool" /> {formatToolCall(tool.name, tool.context || '')}
+          <Spinner color={t.color.amber} variant="tool" /> {label}
           {tool.startedAt ? ` (${fmtElapsed(now - tool.startedAt)})` : ''}
         </>
       )
@@ -493,6 +710,8 @@ export const ToolTrail = memo(function ToolTrail({
   const toolTokensLabel = toolTokens !== undefined && toolTokens > 0 ? `~${fmtK(toolTokens)} tokens` : undefined
 
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
+  const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
+  const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
 
   // ── Hidden: errors/warnings only ──────────────────────────────
 
@@ -502,7 +721,7 @@ export const ToolTrail = memo(function ToolTrail({
     return alerts.length ? (
       <Box flexDirection="column">
         {alerts.map(i => (
-          <Text color={i.tone === 'error' ? t.color.error : t.color.warn} key={`ha-${i.id}`}>
+          <Text color={(i.tone === 'error' ? t.color.error : t.color.warn) as any} key={`ha-${i.id}`}>
             {i.tone === 'error' ? '✗' : '!'} {i.text}
           </Text>
         ))}
@@ -510,74 +729,7 @@ export const ToolTrail = memo(function ToolTrail({
     ) : null
   }
 
-  // ── Shared render fragments ────────────────────────────────────
-
-  const thinkingBlock = hasThinking ? (
-    busy ? (
-      <Thinking active={reasoningActive} mode="full" reasoning={reasoning} streaming={reasoningStreaming} t={t} />
-    ) : cot ? (
-      <Detail color={t.color.dim} content={cot} dimColor key="cot" />
-    ) : (
-      <Detail
-        color={t.color.dim}
-        content={<StreamCursor color={t.color.dim} dimColor streaming={reasoningStreaming} visible={reasoningActive} />}
-        dimColor
-        key="cot"
-      />
-    )
-  ) : null
-
-  const toolBlock = hasTools
-    ? groups.map(g => (
-        <Box flexDirection="column" key={g.key}>
-          <Text color={g.color}>
-            <Text color={t.color.amber}>● </Text>
-            {g.content}
-          </Text>
-          {g.details.map(d => (
-            <Detail {...d} key={d.key} />
-          ))}
-        </Box>
-      ))
-    : null
-
-  const subagentBlock = hasSubagents
-    ? subagents.map(item => (
-        <SubagentAccordion expanded={detailsMode === 'expanded' || deepSubagents} item={item} key={item.id} t={t} />
-      ))
-    : null
-
-  const metaBlock = hasMeta
-    ? meta.map((row, i) => (
-        <Text color={row.color} dimColor={row.dimColor} key={row.key}>
-          <Text dimColor>{i === meta.length - 1 ? '└ ' : '├ '}</Text>
-          {row.content}
-        </Text>
-      ))
-    : null
-
-  const totalBlock = totalTokensLabel ? (
-    <Text color={t.color.statusFg} dimColor>
-      <Text color={t.color.amber}>Σ </Text>
-      {totalTokensLabel}
-    </Text>
-  ) : null
-
-  // ── Expanded: flat, no accordions ──────────────────────────────
-
-  if (detailsMode === 'expanded') {
-    return (
-      <Box flexDirection="column">
-        {thinkingBlock}
-        {toolBlock}
-        {subagentBlock}
-        {metaBlock}
-        {totalBlock}
-      </Box>
-    )
-  }
-
-  // ── Collapsed: clickable accordions ────────────────────────────
+  // ── Tree render fragments ──────────────────────────────────────
 
   const expandAll = () => {
     setOpenThinking(true)
@@ -593,78 +745,227 @@ export const ToolTrail = memo(function ToolTrail({
       ? 'warn'
       : 'dim'
 
-  return (
+  const renderSubagentList = (rails: boolean[]) => (
     <Box flexDirection="column">
-      {hasThinking && (
-        <>
-          <Box onClick={(e: { ctrlKey?: boolean; shiftKey?: boolean }) => (e?.shiftKey || e?.ctrlKey) ? expandAll() : setOpenThinking(v => !v)}>
-            <Text color={t.color.dim} dimColor={!thinkingLive}>
-              <Text color={t.color.amber}>{openThinking ? '▾ ' : '▸ '}</Text>
-              <Text bold={thinkingLive} color={thinkingLive ? t.color.cornsilk : t.color.dim} dimColor={!thinkingLive}>
+      {subagents.map((item, index) => (
+        <SubagentAccordion
+          branch={index === subagents.length - 1 ? 'last' : 'mid'}
+          expanded={detailsMode === 'expanded' || deepSubagents}
+          item={item}
+          key={item.id}
+          rails={rails}
+          t={t}
+        />
+      ))}
+    </Box>
+  )
+
+  const sections: {
+    header: ReactNode
+    key: string
+    open: boolean
+    render: (rails: boolean[]) => ReactNode
+  }[] = []
+
+  if (hasThinking) {
+    sections.push({
+      header: (
+        <Box
+          onClick={(e: any) => {
+            if (e?.shiftKey || e?.ctrlKey) {
+              expandAll()
+            } else {
+              setOpenThinking(v => !v)
+            }
+          }}
+        >
+          <Text color={t.color.dim as any} dim={!thinkingLive}>
+            <Text color={t.color.amber as any}>{detailsMode === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
+            {thinkingLive ? (
+              <Text bold color={t.color.cornsilk as any}>
                 Thinking
               </Text>
-              {thinkingTokensLabel ? (
-                <Text color={t.color.statusFg} dimColor>
-                  {'  '}
-                  {thinkingTokensLabel}
-                </Text>
-              ) : null}
-            </Text>
-          </Box>
-          {openThinking && thinkingBlock}
-        </>
-      )}
+            ) : (
+              <Text color={t.color.dim as any} dim>
+                Thinking
+              </Text>
+            )}
+            {thinkingTokensLabel ? (
+              <Text color={t.color.statusFg as any} dim>
+                {'  '}
+                {thinkingTokensLabel}
+              </Text>
+            ) : null}
+          </Text>
+        </Box>
+      ),
+      key: 'thinking',
+      open: detailsMode === 'expanded' || openThinking,
+      render: rails => (
+        <Thinking
+          active={reasoningActive}
+          branch="last"
+          mode="full"
+          rails={rails}
+          reasoning={busy ? reasoning : cot}
+          streaming={busy && reasoningStreaming}
+          t={t}
+        />
+      )
+    })
+  }
 
-      {hasTools && (
-        <>
-          <Chevron
-            count={groups.length}
-            onClick={shift => shift ? expandAll() : setOpenTools(v => !v)}
-            open={openTools}
-            suffix={toolTokensLabel}
-            t={t}
-            title="Tool calls"
-          />
-          {openTools && toolBlock}
-        </>
-      )}
+  if (hasTools) {
+    sections.push({
+      header: (
+        <Chevron
+          count={groups.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenTools(v => !v)
+            }
+          }}
+          open={detailsMode === 'expanded' || openTools}
+          suffix={toolTokensLabel}
+          t={t}
+          title="Tool calls"
+        />
+      ),
+      key: 'tools',
+      open: detailsMode === 'expanded' || openTools,
+      render: rails => (
+        <Box flexDirection="column">
+          {groups.map((group, index) => {
+            const branch: TreeBranch = index === groups.length - 1 ? 'last' : 'mid'
+            const childRails = nextTreeRails(rails, branch)
+            const hasInlineSubagents = inlineDelegateKey === group.key
 
-      {hasSubagents && (
-        <>
-          <Chevron
-            count={subagents.length}
-            onClick={shift => {
-              if (shift) {
-                expandAll()
-                setDeepSubagents(true)
-              } else {
-                setOpenSubagents(v => !v)
-                setDeepSubagents(false)
-              }
-            }}
-            open={openSubagents}
-            t={t}
-            title="Subagents"
-          />
-          {openSubagents && subagentBlock}
-        </>
-      )}
+            return (
+              <Box flexDirection="column" key={group.key}>
+                <TreeTextRow
+                  branch={branch}
+                  color={group.color}
+                  content={
+                    <>
+                      <Text color={t.color.amber as any}>● </Text>
+                      {group.content}
+                    </>
+                  }
+                  rails={rails}
+                  t={t}
+                />
+                {group.details.map((detail, detailIndex) => (
+                  <Detail
+                    {...detail}
+                    branch={detailIndex === group.details.length - 1 && !hasInlineSubagents ? 'last' : 'mid'}
+                    key={detail.key}
+                    rails={childRails}
+                    t={t}
+                  />
+                ))}
+                {hasInlineSubagents ? renderSubagentList(childRails) : null}
+              </Box>
+            )
+          })}
+        </Box>
+      )
+    })
+  }
 
-      {hasMeta && (
-        <>
-          <Chevron
-            count={meta.length}
-            onClick={shift => shift ? expandAll() : setOpenMeta(v => !v)}
-            open={openMeta}
-            t={t}
-            title="Activity"
-            tone={metaTone}
-          />
-          {openMeta && metaBlock}
-        </>
-      )}
+  if (hasSubagents && !inlineDelegateKey) {
+    sections.push({
+      header: (
+        <Chevron
+          count={subagents.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+              setDeepSubagents(true)
+            } else {
+              setOpenSubagents(v => !v)
+              setDeepSubagents(false)
+            }
+          }}
+          open={detailsMode === 'expanded' || openSubagents}
+          t={t}
+          title="Subagents"
+        />
+      ),
+      key: 'subagents',
+      open: detailsMode === 'expanded' || openSubagents,
+      render: renderSubagentList
+    })
+  }
 
-      {totalBlock}
+  if (hasMeta) {
+    sections.push({
+      header: (
+        <Chevron
+          count={meta.length}
+          onClick={shift => {
+            if (shift) {
+              expandAll()
+            } else {
+              setOpenMeta(v => !v)
+            }
+          }}
+          open={detailsMode === 'expanded' || openMeta}
+          t={t}
+          title="Activity"
+          tone={metaTone}
+        />
+      ),
+      key: 'meta',
+      open: detailsMode === 'expanded' || openMeta,
+      render: rails => (
+        <Box flexDirection="column">
+          {meta.map((row, index) => (
+            <TreeTextRow
+              branch={index === meta.length - 1 ? 'last' : 'mid'}
+              color={row.color}
+              content={row.content}
+              dimColor={row.dimColor}
+              key={row.key}
+              rails={rails}
+              t={t}
+            />
+          ))}
+        </Box>
+      )
+    })
+  }
+
+  const topCount = sections.length + (totalTokensLabel ? 1 : 0)
+
+  return (
+    <Box flexDirection="column">
+      {sections.map((section, index) => (
+        <TreeNode
+          branch={index === topCount - 1 ? 'last' : 'mid'}
+          header={section.header}
+          key={section.key}
+          open={section.open}
+          t={t}
+        >
+          {section.render}
+        </TreeNode>
+      ))}
+      {totalTokensLabel ? (
+        <TreeTextRow
+          branch="last"
+          color={t.color.statusFg}
+          content={
+            <>
+              <Text color={t.color.amber as any}>Σ </Text>
+              {totalTokensLabel}
+            </>
+          }
+          dimColor
+          t={t}
+        />
+      ) : null}
     </Box>
   )
 })

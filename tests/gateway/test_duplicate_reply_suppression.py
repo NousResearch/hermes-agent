@@ -232,8 +232,71 @@ class TestAlreadySentWithoutResponsePreviewed:
 
 
 # ===================================================================
-# Test 3: run.py queued-message path — _already_streamed detection
+# Test 2b: run.py — empty response never suppressed (#10xxx)
 # ===================================================================
+
+class TestEmptyResponseNotSuppressed:
+    """When the model returns '(empty)' after tool calls (e.g. mimo-v2-pro
+    going silent after web_search), the gateway must NOT suppress delivery
+    even if the stream consumer sent intermediate text earlier.
+
+    Without this fix, the user sees partial streaming text ('Let me search
+    for that') and then silence — the '(empty)' sentinel is swallowed by
+    already_sent=True."""
+
+    def _make_mock_stream_consumer(self, already_sent=False, final_response_sent=False):
+        return SimpleNamespace(
+            already_sent=already_sent,
+            final_response_sent=final_response_sent,
+        )
+
+    def _apply_suppression_logic(self, response, sc):
+        """Reproduce the fixed logic from gateway/run.py return path."""
+        if sc and isinstance(response, dict) and not response.get("failed"):
+            _final = response.get("final_response") or ""
+            _is_empty_sentinel = not _final or _final == "(empty)"
+            if not _is_empty_sentinel and (
+                getattr(sc, "final_response_sent", False)
+                or getattr(sc, "already_sent", False)
+            ):
+                response["already_sent"] = True
+
+    def test_empty_sentinel_not_suppressed_with_already_sent(self):
+        """'(empty)' final_response should NOT be suppressed even when
+        streaming sent intermediate content."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": "(empty)"}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_empty_string_not_suppressed_with_already_sent(self):
+        """Empty string final_response should NOT be suppressed."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": ""}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_none_response_not_suppressed_with_already_sent(self):
+        """None final_response should NOT be suppressed."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": None}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
+
+    def test_real_response_still_suppressed_with_already_sent(self):
+        """Normal non-empty response should still be suppressed when
+        streaming delivered content."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=False)
+        response = {"final_response": "Here are the search results..."}
+        self._apply_suppression_logic(response, sc)
+        assert response.get("already_sent") is True
+
+    def test_failed_empty_response_never_suppressed(self):
+        """Failed responses are never suppressed regardless of content."""
+        sc = self._make_mock_stream_consumer(already_sent=True, final_response_sent=True)
+        response = {"final_response": "(empty)", "failed": True}
+        self._apply_suppression_logic(response, sc)
+        assert "already_sent" not in response
 
 class TestQueuedMessageAlreadyStreamed:
     """The queued-message path should detect that the first response was

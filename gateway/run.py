@@ -485,17 +485,21 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
-    Session keys follow the format ``agent:main:{platform}:{chat_type}:{chat_id}``.
-    Returns a dict with ``platform``, ``chat_type``, and ``chat_id`` keys,
-    or None if the key doesn't match the expected format.
+    Session keys follow the format
+    ``agent:main:{platform}:{chat_type}:{chat_id}[:{thread_id}[:{user_id}]]``.
+    Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
+    optionally ``thread_id`` keys, or None if the key doesn't match.
     """
     parts = session_key.split(":")
     if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
-        return {
+        result = {
             "platform": parts[2],
             "chat_type": parts[3],
             "chat_id": parts[4],
         }
+        if len(parts) > 5:
+            result["thread_id"] = parts[5]
+        return result
     return None
 
 
@@ -1526,7 +1530,7 @@ class GatewayRunner:
 
                 # Include thread_id if present so the message lands in the
                 # correct forum topic / thread.
-                thread_id = parts[5] if len(parts) > 5 else None
+                thread_id = _parsed.get("thread_id")
                 metadata = {"thread_id": thread_id} if thread_id else None
 
                 await adapter.send(chat_id, msg, metadata=metadata)

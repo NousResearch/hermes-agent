@@ -383,9 +383,15 @@ def test_parse_session_key_valid():
 
 
 def test_parse_session_key_with_extra_parts():
-    """Extra trailing parts (thread_id etc.) are ignored — only first 5 matter."""
+    """Thread ID (6th part) is extracted; further parts are ignored."""
     result = _parse_session_key("agent:main:discord:group:chan123:thread456")
-    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123"}
+    assert result == {"platform": "discord", "chat_type": "group", "chat_id": "chan123", "thread_id": "thread456"}
+
+
+def test_parse_session_key_with_user_id_part():
+    """7th part (user_id) is ignored — only up to thread_id is extracted."""
+    result = _parse_session_key("agent:main:telegram:group:chat1:thread42:user99")
+    assert result == {"platform": "telegram", "chat_type": "group", "chat_id": "chat1", "thread_id": "thread42"}
 
 
 def test_parse_session_key_too_short():

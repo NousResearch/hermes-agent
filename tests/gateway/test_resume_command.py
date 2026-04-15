@@ -76,8 +76,8 @@ class TestHandleResumeCommand:
         assert "not available" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_list_named_sessions_when_no_arg(self, tmp_path):
-        """With no argument, lists recently titled sessions."""
+    async def test_list_sessions_when_no_arg_uses_plaintext_fallback(self, tmp_path):
+        """With no argument, fallback output is deterministic plaintext."""
         from hermes_state import SessionDB
         db = SessionDB(db_path=tmp_path / "state.db")
         db.create_session("sess_001", "telegram")
@@ -88,23 +88,86 @@ class TestHandleResumeCommand:
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
         result = await runner._handle_resume_command(event)
-        assert "Research" in result
-        assert "Coding" in result
-        assert "Named Sessions" in result
+
+        assert result == (
+            "Resume Sessions:\n"
+            "1. sess_002 | Coding\n"
+            "2. sess_001 | Research\n"
+            "Use: /resume <session name or id>"
+        )
         db.close()
 
     @pytest.mark.asyncio
-    async def test_list_shows_usage_when_no_titled(self, tmp_path):
-        """With no arg and no titled sessions, shows instructions."""
+    async def test_telegram_no_arg_uses_inline_menu_when_available(self, tmp_path):
         from hermes_state import SessionDB
+
         db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("sess_001", "telegram")  # No title
+        db.create_session("sess_001", "telegram")
+        db.create_session("sess_002", "telegram")
+        db.set_session_title("sess_001", "Research")
+        db.set_session_title("sess_002", "Coding")
 
         event = _make_event(text="/resume")
         runner = _make_runner(session_db=db, event=event)
+        tg_adapter = MagicMock()
+        tg_adapter.send_resume_menu = AsyncMock(return_value=MagicMock(success=True, message_id="99"))
+        runner.adapters[Platform.TELEGRAM] = tg_adapter
+
         result = await runner._handle_resume_command(event)
-        assert "No named sessions" in result
-        assert "/title" in result
+
+        assert result == ""
+        tg_adapter.send_resume_menu.assert_called_once()
+        kwargs = tg_adapter.send_resume_menu.call_args.kwargs
+        assert kwargs["chat_id"] == "67890"
+        assert kwargs["session_key"] == "agent:main:telegram:dm:67890"
+        assert [s["title"] for s in kwargs["sessions"]] == ["Coding", "Research"]
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_telegram_no_arg_keeps_compressed_root_as_menu_anchor(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "Research")
+        db.append_message("sess_root", "user", "old part")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.append_message("sess_child", "user", "latest part")
+
+        event = _make_event(text="/resume")
+        runner = _make_runner(session_db=db, event=event)
+        tg_adapter = MagicMock()
+        tg_adapter.send_resume_menu = AsyncMock(return_value=MagicMock(success=True, message_id="99"))
+        runner.adapters[Platform.TELEGRAM] = tg_adapter
+
+        result = await runner._handle_resume_command(event)
+
+        assert result == ""
+        kwargs = tg_adapter.send_resume_menu.call_args.kwargs
+        assert kwargs["sessions"][0]["id"] == "sess_root"
+        assert kwargs["sessions"][0]["title"] == "Research"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_list_includes_untitled_sessions_with_preview_or_id_fallback(self, tmp_path):
+        """With no arg, untitled root sessions are still listed deterministically."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_preview", "discord")
+        db.append_message("sess_preview", "user", "latest untitled session preview")
+        db.create_session("sess_empty", "discord")
+
+        event = _make_event(text="/resume", platform=Platform.DISCORD)
+        runner = _make_runner(session_db=db, event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result == (
+            "Resume Sessions:\n"
+            "1. sess_empty\n"
+            "2. sess_preview | latest untitled session preview\n"
+            "Use: /resume <session name or id>"
+        )
         db.close()
 
     @pytest.mark.asyncio
@@ -177,6 +240,137 @@ class TestHandleResumeCommand:
         # Should resolve to #2 (latest in lineage)
         call_args = runner.session_store.switch_session.call_args
         assert call_args[0][1] == "sess_v2"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_title_uses_anchor_session_without_auto_follow(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume My Project")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_root"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_session_id_uses_anchor_session_without_auto_follow(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume sess_root")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001",
+                              event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_root"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_title_with_last_follows_latest_compression_child(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume My Project --last")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_child"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_session_id_with_last_follows_latest_compression_child(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume sess_root --last")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "sess_child"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_title_with_list_on_telegram_opens_chain_menu(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "telegram")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "telegram", parent_session_id="sess_root")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume My Project --list")
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        tg_adapter = MagicMock()
+        tg_adapter.send_resume_menu = AsyncMock(return_value=MagicMock(success=True, message_id="99"))
+        runner.adapters[Platform.TELEGRAM] = tg_adapter
+
+        result = await runner._handle_resume_command(event)
+
+        assert result == ""
+        kwargs = tg_adapter.send_resume_menu.call_args.kwargs
+        assert [s["id"] for s in kwargs["sessions"]] == ["sess_root", "sess_child"]
+        assert kwargs["metadata"]["resume_menu_mode"] == "chain"
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_by_title_with_list_uses_plaintext_fallback_on_non_telegram(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("sess_root", "discord")
+        db.set_session_title("sess_root", "My Project")
+        db.end_session("sess_root", "compression")
+        db.create_session("sess_child", "discord", parent_session_id="sess_root")
+        db.set_session_title("sess_child", "My Project #2")
+        db.create_session("current_session_001", "discord")
+
+        event = _make_event(text="/resume sess_root --list", platform=Platform.DISCORD)
+        runner = _make_runner(session_db=db, current_session_id="current_session_001", event=event)
+        result = await runner._handle_resume_command(event)
+
+        assert result == (
+            "Resume Points:\n"
+            "1. sess_root | My Project\n"
+            "2. sess_child | My Project #2\n"
+            "Use: /resume <session id>"
+        )
         db.close()
 
     @pytest.mark.asyncio

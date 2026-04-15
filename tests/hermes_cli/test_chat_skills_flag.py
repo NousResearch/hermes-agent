@@ -99,3 +99,57 @@ def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
         "skills": ["hermes-agent-dev"],
         "command": "chat",
     }
+
+
+def test_top_level_resume_last_flag_defaults_to_chat(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["resume"] = args.resume
+        captured["last"] = getattr(args, "last", False)
+        captured["resume_list"] = getattr(args, "resume_list", False)
+        captured["command"] = args.command
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "--resume", "My", "Session", "--last"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "resume": "My Session",
+        "last": True,
+        "resume_list": False,
+        "command": "chat",
+    }
+
+
+def test_chat_subcommand_accepts_resume_list_flag(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["resume"] = args.resume
+        captured["last"] = getattr(args, "last", False)
+        captured["resume_list"] = getattr(args, "resume_list", False)
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "--resume", "My", "Session", "--list"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "resume": "My Session",
+        "last": False,
+        "resume_list": True,
+    }

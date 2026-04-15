@@ -1091,6 +1091,134 @@ class TestTitleLineage:
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 
+    def test_latest_compression_continuation_follows_chain(self, db):
+        db.create_session("root", "cli")
+        db.set_session_title("root", "my project")
+        db.end_session("root", "compression")
+        db.create_session("child", "cli", parent_session_id="root")
+        db.end_session("child", "compression")
+        db.create_session("grandchild", "cli", parent_session_id="child")
+
+        assert db.get_latest_compression_continuation_id("root") == "grandchild"
+
+    def test_resolve_resume_target_by_title_uses_latest_compression_child_even_if_untitled(self, db):
+        db.create_session("root", "telegram")
+        db.set_session_title("root", "my project")
+        db.end_session("root", "compression")
+        db.create_session("child", "telegram", parent_session_id="root")
+
+        assert db.resolve_resume_target("my project", source="telegram") == "child"
+
+    def test_resolve_resume_target_by_session_id_uses_latest_compression_child(self, db):
+        db.create_session("root", "telegram")
+        db.set_session_title("root", "my project")
+        db.end_session("root", "compression")
+        db.create_session("child", "telegram", parent_session_id="root")
+
+        assert db.resolve_resume_target("root", source="telegram") == "child"
+
+    def test_get_compression_continuation_chain_returns_root_when_no_children(self, db):
+        db.create_session("root", "cli")
+        db.set_session_title("root", "my project")
+
+        chain = db.get_compression_continuation_chain("root")
+
+        assert [entry["id"] for entry in chain] == ["root"]
+
+    def test_get_compression_continuation_chain_returns_full_root_to_leaf_chain(self, db):
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("child", "cli", parent_session_id="root")
+        db.end_session("child", "compression")
+        db.create_session("grandchild", "cli", parent_session_id="child")
+
+        chain = db.get_compression_continuation_chain("root")
+
+        assert [entry["id"] for entry in chain] == ["root", "child", "grandchild"]
+
+    def test_get_compression_continuation_chain_uses_latest_child_with_tiebreaker(self, db):
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("child_a", "cli", parent_session_id="root")
+        db.create_session("child_b", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id IN (?, ?)",
+            (12345.0, "child_a", "child_b"),
+        )
+        db._conn.commit()
+
+        chain = db.get_compression_continuation_chain("root")
+
+        assert [entry["id"] for entry in chain] == ["root", "child_b"]
+
+    def test_get_compression_continuation_chain_stops_on_cycle(self, db):
+        db.create_session("root", "cli")
+        db.end_session("root", "compression")
+        db.create_session("child", "cli", parent_session_id="root")
+        db.end_session("child", "compression")
+        db._conn.execute(
+            "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+            ("child", "root"),
+        )
+        db._conn.commit()
+
+        chain = db.get_compression_continuation_chain("root")
+
+        assert [entry["id"] for entry in chain] == ["root", "child"]
+
+    def test_resolve_resume_anchor_by_title_does_not_follow_compression(self, db):
+        db.create_session("root", "telegram")
+        db.set_session_title("root", "my project")
+        db.end_session("root", "compression")
+        db.create_session("child", "telegram", parent_session_id="root")
+
+        assert db.resolve_resume_anchor("my project", source="telegram") == "root"
+        assert db.get_latest_compression_continuation_id("root") == "child"
+
+    def test_resolve_resume_anchor_by_child_id_starts_chain_at_child(self, db):
+        db.create_session("root", "telegram")
+        db.end_session("root", "compression")
+        db.create_session("child", "telegram", parent_session_id="root")
+        db.end_session("child", "compression")
+        db.create_session("grandchild", "telegram", parent_session_id="child")
+
+        assert db.resolve_resume_anchor("child", source="telegram") == "child"
+        assert [entry["id"] for entry in db.get_compression_continuation_chain("child")] == [
+            "child",
+            "grandchild",
+        ]
+
+    def test_resolve_resume_anchor_prefers_exact_id_over_title(self, db):
+        db.create_session("dup", "cli")
+        db.set_session_title("dup", "something else")
+        db.create_session("other", "cli")
+        db.set_session_title("other", "dup")
+
+        assert db.resolve_resume_anchor("dup", source="cli") == "dup"
+
+    def test_resolve_resume_anchor_prefers_exact_title_over_unique_prefix(self, db):
+        db.create_session("alpha_target_xyz", "cli")
+        db.set_session_title("alpha_target_xyz", "other title")
+        db.create_session("plain", "cli")
+        db.set_session_title("plain", "alpha")
+
+        assert db.resolve_resume_anchor("alpha", source="cli") == "plain"
+
+    def test_resolve_resume_anchor_returns_none_for_ambiguous_prefix(self, db):
+        db.create_session("prefix-aa", "cli")
+        db.create_session("prefix-ab", "cli")
+
+        assert db.resolve_resume_anchor("prefix-a", source="cli") is None
+
+    def test_resolve_resume_anchor_honors_source_filter(self, db):
+        db.create_session("cli-root", "cli")
+        db.set_session_title("cli-root", "shared title")
+        db.create_session("tg-root", "telegram")
+        db.set_session_title("tg-root", "shared title #2")
+
+        assert db.resolve_resume_anchor("shared title", source="telegram") == "tg-root"
+        assert db.resolve_resume_anchor("shared title", source="cli") == "cli-root"
+
     def test_next_title_no_existing(self, db):
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"

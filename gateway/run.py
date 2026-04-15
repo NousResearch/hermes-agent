@@ -6409,6 +6409,232 @@ class GatewayRunner:
             else:
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
+    async def _do_resume_session(self, session_key: str, source, target_id: str, name: str) -> str:
+        """Perform the actual session switch and return the confirmation text."""
+        current_entry = self.session_store.get_or_create_session(source)
+        if current_entry.session_id == target_id:
+            return f"📌 Already on session **{name}**."
+
+        try:
+            _flush_task = asyncio.create_task(
+                self._async_flush_memories(current_entry.session_id, session_key)
+            )
+            self._background_tasks.add(_flush_task)
+            _flush_task.add_done_callback(self._background_tasks.discard)
+        except Exception as e:
+            logger.debug("Memory flush on resume failed: %s", e)
+
+        if session_key in self._running_agents:
+            del self._running_agents[session_key]
+
+        new_entry = self.session_store.switch_session(session_key, target_id)
+        if not new_entry:
+            return "Failed to switch session."
+
+        title = self._session_db.get_session_title(target_id) or name
+        history = self.session_store.load_transcript(target_id)
+        msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+        return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    def _parse_resume_command_args(self, raw_args: str) -> tuple[str, bool, bool]:
+        """Parse /resume [target] [--last|--list] arguments."""
+        if not raw_args:
+            return "", False, False
+
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            raise ValueError(f"Invalid /resume arguments: {exc}") from exc
+
+        resume_last = False
+        resume_list = False
+        target_parts: list[str] = []
+        for token in tokens:
+            if token == "--last":
+                resume_last = True
+                continue
+            if token == "--list":
+                resume_list = True
+                continue
+            if token.startswith("-"):
+                raise ValueError(f"Unknown /resume flag: {token}")
+            target_parts.append(token)
+
+        if resume_last and resume_list:
+            raise ValueError("/resume accepts at most one of --last or --list.")
+        if (resume_last or resume_list) and not target_parts:
+            raise ValueError("/resume --last and --list require a target.")
+
+        return " ".join(target_parts).strip(), resume_last, resume_list
+
+    def _resume_session_label(self, session: dict) -> str:
+        """Return a deterministic plaintext label for /resume lists."""
+        title = (session.get("title") or "").strip()
+        if title:
+            return title
+
+        preview = (session.get("preview") or "").strip()
+        if preview:
+            return preview[:60]
+
+        session_id = (session.get("id") or "").strip()
+        if session_id:
+            return session_id
+
+        return "Untitled"
+
+    def _format_resume_selection_line(self, index: int, session: dict) -> str:
+        """Format a single deterministic plaintext /resume list line."""
+        session_id = (session.get("id") or "").strip()
+        label = self._resume_session_label(session)
+        if session_id and label and label != session_id:
+            return f"{index}. {session_id} | {label}"
+        if session_id:
+            return f"{index}. {session_id}"
+        return f"{index}. {label}"
+
+    def _format_resume_root_list(self, sessions: list[dict]) -> str:
+        """Format the non-Telegram /resume root-session fallback."""
+        lines = ["Resume Sessions:"]
+        lines.extend(
+            self._format_resume_selection_line(index, session)
+            for index, session in enumerate(sessions, start=1)
+        )
+        lines.append("Use: /resume <session name or id>")
+        return "\n".join(lines)
+
+    def _format_resume_chain_list(self, chain: list[dict]) -> str:
+        """Format the non-Telegram /resume --list fallback."""
+        lines = ["Resume Points:"]
+        lines.extend(
+            self._format_resume_selection_line(index, session)
+            for index, session in enumerate(chain, start=1)
+        )
+        lines.append("Use: /resume <session id>")
+        return "\n".join(lines)
+
+    def _list_resume_root_sessions(
+        self,
+        source_name: Optional[str],
+        current_session_id: Optional[str],
+        limit: int = 50,
+    ) -> list[dict]:
+        """Return root sessions for gateway /resume menus."""
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source=source_name,
+                exclude_sources=["tool"],
+                limit=limit,
+                include_children=False,
+            )
+        except TypeError:
+            sessions = self._session_db.list_sessions_rich(
+                source=source_name,
+                exclude_sources=["tool"],
+                limit=limit,
+            )
+
+        roots: list[dict] = []
+        for session in sessions or []:
+            if current_session_id and session.get("id") == current_session_id:
+                continue
+            entry = dict(session)
+            chain = self._session_db.get_compression_continuation_chain(entry["id"]) or []
+            if len(chain) > 1:
+                entry["resume_chain"] = chain
+            roots.append(entry)
+
+        roots.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        return roots[:limit]
+
+    async def _handle_resume_command(self, event: MessageEvent) -> str:
+        """Handle /resume command — switch to a previously-named session."""
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        raw_args = event.get_command_args().strip()
+        try:
+            name, resume_last, resume_list = self._parse_resume_command_args(raw_args)
+        except ValueError as exc:
+            return str(exc)
+
+        current_entry = self.session_store.get_or_create_session(source)
+        current_session_id = getattr(current_entry, "session_id", None)
+        user_source = source.platform.value if source.platform else None
+
+        if not name:
+            try:
+                sessions = self._list_resume_root_sessions(user_source, current_session_id, limit=50)
+                if not sessions:
+                    return (
+                        "No resumable sessions found.\n"
+                        "Use /title My Session to name your current session, "
+                        "then /resume <session name or id> to return to it later."
+                    )
+
+                from gateway.config import Platform
+                if source.platform == Platform.TELEGRAM:
+                    tg_adapter = self.adapters.get(Platform.TELEGRAM)
+                    if tg_adapter and hasattr(tg_adapter, "send_resume_menu"):
+                        async def on_session_resumed(session_id: str, title: str) -> str:
+                            return await self._do_resume_session(session_key, source, session_id, title)
+
+                        result = await tg_adapter.send_resume_menu(
+                            chat_id=source.chat_id,
+                            sessions=sessions,
+                            session_key=session_key,
+                            on_session_resumed=on_session_resumed,
+                            metadata={"thread_id": source.thread_id},
+                        )
+                        if result.success:
+                            return ""
+
+                return self._format_resume_root_list(sessions)
+            except Exception as e:
+                logger.debug("Failed to list resume sessions: %s", e)
+                return f"Could not list sessions: {e}"
+
+        anchor_id = self._session_db.resolve_resume_anchor(name, source=user_source)
+        if not anchor_id:
+            return (
+                f"No session found matching '**{name}**'.\n"
+                "Use `/resume` with no arguments to see available sessions."
+            )
+
+        if resume_list:
+            chain = self._session_db.get_compression_continuation_chain(anchor_id) or []
+            if len(chain) > 1:
+                from gateway.config import Platform
+                if source.platform == Platform.TELEGRAM:
+                    tg_adapter = self.adapters.get(Platform.TELEGRAM)
+                    if tg_adapter and hasattr(tg_adapter, "send_resume_menu"):
+                        async def on_session_resumed(session_id: str, title: str) -> str:
+                            return await self._do_resume_session(session_key, source, session_id, title)
+
+                        result = await tg_adapter.send_resume_menu(
+                            chat_id=source.chat_id,
+                            sessions=chain,
+                            session_key=session_key,
+                            on_session_resumed=on_session_resumed,
+                            metadata={
+                                "thread_id": source.thread_id,
+                                "resume_menu_mode": "chain",
+                            },
+                        )
+                        if result.success:
+                            return ""
+
+                return self._format_resume_chain_list(chain)
+
+        if resume_last:
+            target_id = self._session_db.get_latest_compression_continuation_id(anchor_id) or anchor_id
+        else:
+            target_id = anchor_id
+
+        return await self._do_resume_session(session_key, source, target_id, name)
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.

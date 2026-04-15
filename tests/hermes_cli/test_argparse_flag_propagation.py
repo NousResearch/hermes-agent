@@ -28,6 +28,8 @@ def _build_parser():
     """
     parser = argparse.ArgumentParser(prog="hermes")
     parser.add_argument("--resume", "-r", metavar="SESSION", default=None)
+    parser.add_argument("--last", action="store_true", default=False)
+    parser.add_argument("--list", dest="resume_list", action="store_true", default=False)
     parser.add_argument(
         "--continue", "-c", dest="continue_last", nargs="?",
         const=True, default=None, metavar="SESSION_NAME",
@@ -49,6 +51,10 @@ def _build_parser():
     chat.add_argument("--pass-session-id", action="store_true",
                       default=argparse.SUPPRESS)
     chat.add_argument("--resume", "-r", metavar="SESSION_ID",
+                      default=argparse.SUPPRESS)
+    chat.add_argument("--last", action="store_true",
+                      default=argparse.SUPPRESS)
+    chat.add_argument("--list", dest="resume_list", action="store_true",
                       default=argparse.SUPPRESS)
     chat.add_argument(
         "--continue", "-c", dest="continue_last", nargs="?",
@@ -85,6 +91,18 @@ class TestFlagBeforeSubcommand:
         args = parser.parse_args(["-r", "abc123", "chat"])
         assert getattr(args, "resume", None) == "abc123"
 
+    def test_resume_last_before_chat(self):
+        parser = _build_parser()
+        args = parser.parse_args(["-r", "abc123", "--last", "chat"])
+        assert getattr(args, "resume", None) == "abc123"
+        assert getattr(args, "last", False) is True
+
+    def test_resume_list_before_chat(self):
+        parser = _build_parser()
+        args = parser.parse_args(["-r", "abc123", "--list", "chat"])
+        assert getattr(args, "resume", None) == "abc123"
+        assert getattr(args, "resume_list", False) is True
+
 
 class TestFlagAfterSubcommand:
     """Flags placed after 'chat' must still work."""
@@ -108,6 +126,18 @@ class TestFlagAfterSubcommand:
         parser = _build_parser()
         args = parser.parse_args(["chat", "-r", "abc123"])
         assert getattr(args, "resume", None) == "abc123"
+
+    def test_resume_last_after_chat(self):
+        parser = _build_parser()
+        args = parser.parse_args(["chat", "-r", "abc123", "--last"])
+        assert getattr(args, "resume", None) == "abc123"
+        assert getattr(args, "last", False) is True
+
+    def test_resume_list_after_chat(self):
+        parser = _build_parser()
+        args = parser.parse_args(["chat", "-r", "abc123", "--list"])
+        assert getattr(args, "resume", None) == "abc123"
+        assert getattr(args, "resume_list", False) is True
 
 
 class TestNoSubcommandDefaults:

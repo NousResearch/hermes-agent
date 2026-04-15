@@ -74,6 +74,24 @@ class TestCoalesceSessionNameArgs:
             ["-r", "My", "Session", "-w"]
         ) == ["-r", "My Session", "-w"]
 
+    def test_resume_multiword_then_last_modifier(self):
+        """hermes --resume My Session --last"""
+        assert _coalesce_session_name_args(
+            ["--resume", "My", "Session", "--last"]
+        ) == ["--resume", "My Session", "--last"]
+
+    def test_resume_multiword_then_list_modifier(self):
+        """hermes chat --resume My Session --list"""
+        assert _coalesce_session_name_args(
+            ["chat", "--resume", "My", "Session", "--list"]
+        ) == ["chat", "--resume", "My Session", "--list"]
+
+    def test_resume_does_not_swallow_unrelated_flag_after_chat(self):
+        """hermes chat --resume My Session --worktree"""
+        assert _coalesce_session_name_args(
+            ["chat", "--resume", "My", "Session", "--worktree"]
+        ) == ["chat", "--resume", "My Session", "--worktree"]
+
     # ── combined flags ───────────────────────────────────────────────────
 
     def test_worktree_and_continue_multiword(self):

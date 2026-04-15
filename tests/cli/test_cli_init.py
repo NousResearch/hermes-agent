@@ -3,7 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -219,31 +219,99 @@ class TestHistoryDisplay:
         assert "/resume" in output
         assert "Current preview" not in output
 
-    def test_resume_without_target_lists_recent_sessions(self, capsys):
+    def test_resume_without_target_uses_picker_for_root_sessions(self, capsys):
         cli = _make_cli()
         cli.session_id = "current"
         cli._session_db = MagicMock()
         cli._session_db.list_sessions_rich.return_value = [
-            {
-                "id": "current",
-                "title": "Current",
-                "preview": "Current preview",
-                "last_active": 0,
-            },
-            {
-                "id": "20260401_201329_d85961",
-                "title": "Checking Running Hermes Agent",
-                "preview": "check running gateways for hermes agent",
-                "last_active": 0,
-            },
+            {"id": "current", "title": "Current", "preview": "Current preview", "last_active": 0, "parent_session_id": None},
+            {"id": "root", "title": "Checking Running Hermes Agent", "preview": "check running gateways", "last_active": 0, "parent_session_id": None},
+            {"id": "child", "title": None, "preview": "compressed tail", "last_active": 0, "parent_session_id": "root"},
+        ]
+        cli._session_db.get_compression_continuation_chain.return_value = [
+            {"id": "root", "title": "Checking Running Hermes Agent", "preview": "check running gateways", "last_active": 0, "parent_session_id": None},
+            {"id": "child", "title": None, "preview": "compressed tail", "last_active": 0, "parent_session_id": "root"},
+        ]
+        cli._session_db.get_session.side_effect = lambda sid: {
+            "root": {"id": "root", "title": "Checking Running Hermes Agent"},
+            "child": {"id": "child", "title": None},
+        }.get(sid)
+        cli._session_db.get_messages_as_conversation.return_value = []
+
+        import hermes_cli.main as main_mod
+        with patch.object(main_mod, "_session_browse_picker", side_effect=["root", "child"]):
+            cli._handle_resume_command("/resume")
+
+        output = capsys.readouterr().out
+        assert "Recent sessions" not in output
+        assert cli.session_id == "child"
+
+    def test_resume_without_target_cancel_leaves_session_untouched(self, capsys):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {"id": "root", "title": "Checking Running Hermes Agent", "preview": "check running gateways", "last_active": 0, "parent_session_id": None},
         ]
 
-        cli._handle_resume_command("/resume")
-        output = capsys.readouterr().out
+        import hermes_cli.main as main_mod
+        with patch.object(main_mod, "_session_browse_picker", return_value=None):
+            cli._handle_resume_command("/resume")
 
-        assert "Recent sessions" in output
-        assert "Checking Running Hermes Agent" in output
-        assert "Use /resume <session id or title> to continue" in output
+        output = capsys.readouterr().out
+        assert "Recent sessions" not in output
+        assert cli.session_id == "current"
+
+    def test_resume_without_target_when_no_roots_shows_tip(self):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = []
+
+        import hermes_cli.main as main_mod
+        with patch.object(main_mod, "_session_browse_picker") as picker_mock:
+            cli._handle_resume_command("/resume")
+
+        picker_mock.assert_not_called()
+        assert cli.session_id == "current"
+
+    def test_resume_last_flag_before_target_resumes_latest_chain_leaf(self):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.get_latest_compression_continuation_id.return_value = "child"
+        cli._session_db.get_session.side_effect = lambda sid: {
+            "child": {"id": "child", "title": "My Project #2"},
+            "root": {"id": "root", "title": "My Project"},
+        }.get(sid)
+        cli._session_db.get_messages_as_conversation.return_value = []
+
+        import hermes_cli.main as main_mod
+        with patch.object(main_mod, "_resolve_session_by_name_or_id", side_effect=lambda target: "root" if target == "My Project" else None):
+            cli._handle_resume_command("/resume --last My Project")
+
+        assert cli.session_id == "child"
+
+    def test_resume_list_flag_after_target_uses_chain_picker(self):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.get_compression_continuation_chain.return_value = [
+            {"id": "root", "title": "My Project", "preview": "", "last_active": 0},
+            {"id": "child", "title": None, "preview": "compressed tail", "last_active": 0},
+        ]
+        cli._session_db.get_session.side_effect = lambda sid: {
+            "child": {"id": "child", "title": None},
+            "root": {"id": "root", "title": "My Project"},
+        }.get(sid)
+        cli._session_db.get_messages_as_conversation.return_value = []
+
+        import hermes_cli.main as main_mod
+        with patch.object(main_mod, "_resolve_session_by_name_or_id", side_effect=lambda target: "root" if target == "My Project" else None), \
+             patch.object(main_mod, "_session_browse_picker", return_value="child"):
+            cli._handle_resume_command("/resume My Project --list")
+
+        assert cli.session_id == "child"
 
 
 class TestRootLevelProviderOverride:

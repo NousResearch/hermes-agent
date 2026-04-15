@@ -650,6 +650,111 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
+    def get_compression_continuation_chain(self, session_id: str, max_hops: int = 100) -> List[Dict[str, Any]]:
+        """Return the anchor session followed by its compression continuation chain.
+
+        Traversal follows the current storage invariant used elsewhere in Hermes:
+        only continue while the current row has ``end_reason='compression'`` and,
+        when multiple children exist, pick the most recent child by
+        ``started_at DESC, id DESC``.
+        """
+        current = self.get_session(session_id)
+        if not current:
+            return []
+
+        chain: List[Dict[str, Any]] = []
+        visited: set[str] = set()
+
+        for _ in range(max_hops):
+            current_id = current["id"]
+            if current_id in visited:
+                break
+            visited.add(current_id)
+            chain.append(current)
+
+            if current.get("end_reason") != "compression":
+                break
+
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ? "
+                    "ORDER BY started_at DESC, id DESC LIMIT 1",
+                    (current_id,),
+                )
+                row = cursor.fetchone()
+            if not row:
+                break
+
+            next_session = self.get_session(row["id"])
+            if not next_session:
+                break
+            current = next_session
+
+        return chain
+
+    def get_latest_compression_continuation_id(self, session_id: str) -> Optional[str]:
+        """Follow a compression continuation chain and return the latest session ID."""
+        chain = self.get_compression_continuation_chain(session_id)
+        if not chain:
+            return None
+        return chain[-1]["id"]
+
+    def resolve_resume_anchor(self, name_or_id: str, source: Optional[str] = None) -> Optional[str]:
+        """Resolve a resume target to its anchor row without auto-following compression.
+
+        Precedence:
+        1. exact session ID
+        2. exact title / numbered-title lineage
+        3. unique session ID prefix
+        """
+        session = self.get_session(name_or_id)
+        if session and (not source or session.get("source") == source):
+            return session["id"]
+
+        exact = self.get_session_by_title(name_or_id, source=source)
+        escaped = name_or_id.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        title_query = (
+            "SELECT id FROM sessions WHERE title LIKE ? ESCAPE '\\'"
+            + (" AND source = ?" if source else "")
+            + " ORDER BY started_at DESC"
+        )
+        title_params = [f"{escaped} #%"]
+        if source:
+            title_params.append(source)
+        with self._lock:
+            cursor = self._conn.execute(title_query, tuple(title_params))
+            numbered = cursor.fetchall()
+
+        if numbered:
+            return numbered[0]["id"]
+        if exact:
+            return exact["id"]
+
+        prefix_query = "SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\'"
+        prefix_params = [f"{escaped}%"]
+        if source:
+            prefix_query += " AND source = ?"
+            prefix_params.append(source)
+        prefix_query += " ORDER BY started_at DESC, id DESC LIMIT 2"
+        with self._lock:
+            cursor = self._conn.execute(prefix_query, tuple(prefix_params))
+            rows = cursor.fetchall()
+        if len(rows) == 1:
+            return rows[0]["id"]
+        return None
+
+    def resolve_resume_target(self, name_or_id: str, source: Optional[str] = None) -> Optional[str]:
+        """Resolve a /resume argument to the latest resumable session row.
+
+        Supports exact/unique-prefix session IDs and titles. When the matched
+        session has been continued through compression, returns the newest child
+        continuation instead of the stale parent row.
+        """
+        anchor_id = self.resolve_resume_anchor(name_or_id, source=source)
+        if not anchor_id:
+            return None
+        return self.get_latest_compression_continuation_id(anchor_id)
+
     def resolve_session_by_title(self, title: str) -> Optional[str]:
         """Resolve a title to a session ID, preferring the latest in a lineage.
 

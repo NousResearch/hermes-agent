@@ -4024,6 +4024,32 @@ class HermesCLI:
         print()
         return True
 
+    def _list_resume_root_sessions(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Return resumable root sessions for in-chat /resume navigation."""
+        if not self._session_db:
+            return []
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source="cli",
+                exclude_sources=["tool"],
+                limit=limit,
+                include_children=False,
+            )
+        except TypeError:
+            sessions = self._session_db.list_sessions_rich(
+                source="cli",
+                exclude_sources=["tool"],
+                limit=limit,
+            )
+        except Exception:
+            return []
+
+        roots = [
+            s for s in (sessions or [])
+            if s.get("id") != self.session_id and s.get("parent_session_id") is None
+        ]
+        return roots
+
     def show_history(self):
         """Display conversation history."""
         if not self.conversation_history:
@@ -4169,26 +4195,99 @@ class HermesCLI:
         if not silent:
             print("(^_^)v New session started!")
 
+    def _parse_resume_command_args(self, cmd_original: str) -> tuple[str, bool, bool] | None:
+        """Parse /resume [target] [--last|--list] arguments."""
+        import shlex
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        if not raw_args:
+            return "", False, False
+
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            _cprint(f"  Invalid /resume arguments: {exc}")
+            return None
+
+        resume_last = False
+        resume_list = False
+        target_parts: list[str] = []
+        for token in tokens:
+            if token == "--last":
+                resume_last = True
+                continue
+            if token == "--list":
+                resume_list = True
+                continue
+            if token.startswith("-"):
+                _cprint(f"  Unknown /resume flag: {token}")
+                return None
+            target_parts.append(token)
+
+        if resume_last and resume_list:
+            _cprint("  /resume accepts at most one of --last or --list.")
+            return None
+        if (resume_last or resume_list) and not target_parts:
+            _cprint("  /resume --last and --list require a target.")
+            return None
+
+        return " ".join(target_parts).strip(), resume_last, resume_list
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
-        parts = cmd_original.split(None, 1)
-        target = parts[1].strip() if len(parts) > 1 else ""
-
-        if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
-                return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+        parsed = self._parse_resume_command_args(cmd_original)
+        if parsed is None:
             return
+        target, resume_last, resume_list = parsed
 
         if not self._session_db:
             _cprint("  Session database not available.")
             return
 
+        if not target:
+            from hermes_cli.main import _session_browse_picker
+
+            roots = self._list_resume_root_sessions(limit=50)
+            if not roots:
+                _cprint("  No resumable sessions found.")
+                _cprint("  Use /history or `hermes sessions list` to find sessions.")
+                return
+
+            target_id = None
+            while True:
+                root_id = _session_browse_picker(roots)
+                if not root_id:
+                    return
+
+                chain = self._session_db.get_compression_continuation_chain(root_id) or []
+                if len(chain) <= 1:
+                    target_id = root_id
+                    break
+
+                selected_id = _session_browse_picker(chain)
+                if selected_id:
+                    target_id = selected_id
+                    break
+
+            target = target_id or ""
+
         # Resolve title or ID
-        from hermes_cli.main import _resolve_session_by_name_or_id
+        from hermes_cli.main import _resolve_session_by_name_or_id, _session_browse_picker
         resolved = _resolve_session_by_name_or_id(target)
         target_id = resolved or target
+
+        if resume_last:
+            latest_id = self._session_db.get_latest_compression_continuation_id(target_id)
+            if latest_id:
+                target_id = latest_id
+        elif resume_list:
+            chain = self._session_db.get_compression_continuation_chain(target_id) or []
+            if len(chain) > 1:
+                selected_id = _session_browse_picker(chain)
+                if not selected_id:
+                    return
+                target_id = selected_id
 
         session_meta = self._session_db.get_session(target_id)
         if not session_meta:

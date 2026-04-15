@@ -648,26 +648,18 @@ def _exec_in_container(container_info: dict, cli_args: list):
 
 
 def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
-    """Resolve a session name (title) or ID to a session ID.
+    """Resolve a session name (title lineage) or ID to a concrete session ID.
 
-    - If it looks like a session ID (contains underscore + hex), try direct lookup first.
-    - Otherwise, treat it as a title and use resolve_session_by_title (auto-latest).
-    - Falls back to the other method if the first doesn't match.
+    Uses explicit anchor semantics for ``--resume``/``/resume``: exact session ID
+    first, then title/numbered-title lineage, then unique ID prefix.
     """
     try:
         from hermes_state import SessionDB
         db = SessionDB()
-
-        # Try as exact session ID first
-        session = db.get_session(name_or_id)
-        if session:
+        try:
+            return db.resolve_resume_anchor(name_or_id)
+        finally:
             db.close()
-            return session["id"]
-
-        # Try as title (with auto-latest for lineage)
-        session_id = db.resolve_session_by_title(name_or_id)
-        db.close()
-        return session_id
     except Exception:
         pass
     return None
@@ -675,6 +667,17 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    resume_last = bool(getattr(args, "last", False))
+    resume_list = bool(getattr(args, "resume_list", False))
+
+    if resume_last and resume_list:
+        print("Error: --last and --list cannot be used together.")
+        sys.exit(2)
+
+    if (resume_last or resume_list) and not getattr(args, "resume", None):
+        print("Error: --last and --list require --resume <target>.")
+        sys.exit(2)
+
     # Resolve --continue into --resume with the latest CLI session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -696,12 +699,36 @@ def cmd_chat(args):
                 print("No previous CLI session found to continue.")
                 sys.exit(1)
 
-    # Resolve --resume by title if it's not a direct session ID
+    # Resolve --resume by title or prefix without auto-following compression.
     resume_val = getattr(args, "resume", None)
     if resume_val:
         resolved = _resolve_session_by_name_or_id(resume_val)
         if resolved:
             args.resume = resolved
+
+        if resume_last or resume_list:
+            try:
+                from hermes_state import SessionDB
+                db = SessionDB()
+                try:
+                    anchor_id = args.resume
+                    if resume_last:
+                        latest_id = db.get_latest_compression_continuation_id(anchor_id)
+                        if latest_id:
+                            args.resume = latest_id
+                    elif resume_list:
+                        chain = db.get_compression_continuation_chain(anchor_id)
+                        if len(chain) > 1:
+                            selected_id = _session_browse_picker(chain)
+                            if not selected_id:
+                                print("Resume cancelled.")
+                                return
+                            args.resume = selected_id
+                finally:
+                    db.close()
+            except Exception as exc:
+                print(f"Could not resolve resume target: {exc}")
+                sys.exit(1)
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
 
@@ -4815,6 +4842,19 @@ For more help on a command:
         help="Resume a previous session by ID or title"
     )
     parser.add_argument(
+        "--last",
+        action="store_true",
+        default=False,
+        help="With --resume, follow the target's compression chain to the latest continuation"
+    )
+    parser.add_argument(
+        "--list",
+        dest="resume_list",
+        action="store_true",
+        default=False,
+        help="With --resume, choose from the target's compression continuation chain"
+    )
+    parser.add_argument(
         "--continue", "-c",
         dest="continue_last",
         nargs="?",
@@ -4900,7 +4940,20 @@ For more help on a command:
         "--resume", "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)"
+        help="Resume a previous session by ID or title"
+    )
+    chat_parser.add_argument(
+        "--last",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="With --resume, follow the target's compression chain to the latest continuation"
+    )
+    chat_parser.add_argument(
+        "--list",
+        dest="resume_list",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="With --resume, choose from the target's compression continuation chain"
     )
     chat_parser.add_argument(
         "--continue", "-c",

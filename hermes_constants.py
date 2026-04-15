@@ -137,6 +137,83 @@ def get_subprocess_home() -> str | None:
     return None
 
 
+def is_profiled_mode() -> bool:
+    """Return True if the current process is running under a named profile.
+
+    In profile mode, ``HERMES_HOME`` is ``<root>/profiles/<name>`` and the
+    agent should be restricted to its own data directory to prevent
+    cross-profile data leakage (reading another profile's memory, sessions,
+    or config).
+
+    The default profile (``HERMES_HOME == ~/.hermes``) returns ``False``
+    because the default profile is the admin — it needs access to all
+    profiles for management tasks (``profile list``, skill syncing, etc.).
+    """
+    env_home = os.environ.get("HERMES_HOME", "")
+    if not env_home:
+        return False
+    env_path = Path(env_home)
+    # Check if HERMES_HOME is <something>/profiles/<name>
+    return env_path.parent.name == "profiles"
+
+
+def get_profile_boundary() -> Path | None:
+    """Return the allowed root path for file operations, or None if unrestricted.
+
+    - Default profile (admin): returns ``None`` — full filesystem access.
+    - Named profile: returns ``HERMES_HOME`` (e.g. ``~/.hermes/profiles/frog/``).
+    """
+    if is_profiled_mode():
+        return get_hermes_home()
+    return None
+
+
+def is_within_profile_boundary(path: str) -> tuple[bool, str]:
+    """Check whether *path* is within the current profile's boundary.
+
+    Returns ``(allowed, reason)``.  When *allowed* is ``False``, *reason*
+    explains why (for the tool's error response).
+
+    The policy is **cross-profile isolation only** — we block access to
+    *other profiles' data directories* but allow everything else (home
+    directory projects, /tmp, system paths, installed packages, etc.).
+
+    This is intentionally NOT a full sandbox.  Named profiles still need
+    to read/write project code, system configs, and installed tools.
+    The goal is solely to prevent one profile from reading another
+    profile's memory, sessions, or config.
+    """
+    boundary = get_profile_boundary()
+    if boundary is None:
+        return True, ""
+
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, ValueError):
+        return True, ""  # Unresolvable paths are not our concern
+
+    # Get the parent profiles root: ~/.hermes/profiles/
+    profiles_root = boundary.resolve().parent  # <root>/profiles/
+
+    # If the path is NOT under the profiles root at all, allow it freely.
+    # This covers /tmp, ~/projects, /usr, etc.
+    try:
+        resolved.relative_to(profiles_root)
+    except ValueError:
+        return True, ""
+
+    # Path IS under ~/.hermes/profiles/ — check it's within OUR profile
+    try:
+        resolved.relative_to(boundary.resolve())
+        return True, ""
+    except ValueError:
+        return False, (
+            f"Access denied: '{path}' is in another profile's data directory. "
+            f"This agent is restricted to {display_hermes_home()}/ to prevent "
+            f"cross-profile data leakage."
+        )
+
+
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 

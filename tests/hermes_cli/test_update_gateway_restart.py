@@ -799,6 +799,34 @@ class TestFindGatewayPidsExclude:
 
         assert pids == [100]
 
+    def test_falls_back_when_primary_ps_flags_fail(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "")
+        monkeypatch.setattr("os.getpid", lambda: 999)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == ["ps", "-eww", "-ax"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unsupported")
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout="100 python gateway/run.py\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [100]
+        assert calls == [
+            ["ps", "-eww", "-ax", "-o", "pid=,command="],
+            ["ps", "-ax", "-o", "pid=,command="],
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Gateway mode writes exit code before restart (#8300)

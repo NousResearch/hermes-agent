@@ -221,12 +221,26 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
                             pass
                     current_cmd = ""
         else:
-            result = subprocess.run(
-                ["ps", "eww", "-ax", "-o", "pid=,command="],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            result = None
+            # procps on Ubuntu/WSL accepts `-eww`, while the mixed BSD-style
+            # `eww -ax` form can fail and make status checks report false
+            # negatives even when the gateway is running.
+            for ps_cmd in (
+                ["ps", "-eww", "-ax", "-o", "pid=,command="],
+                ["ps", "-ax", "-o", "pid=,command="],
+            ):
+                result = subprocess.run(
+                    ps_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    break
+
+            if result is None or result.returncode != 0:
+                return pids
+
             for line in result.stdout.split('\n'):
                 stripped = line.strip()
                 if not stripped or 'grep' in stripped:

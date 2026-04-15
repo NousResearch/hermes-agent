@@ -725,9 +725,18 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
     )
 
 
-def _tui_deps_ready(root: Path) -> bool:
-    """Nix and local dev both need file: workspace @hermes/ink under node_modules."""
-    return (root / "node_modules" / "@hermes" / "ink" / "package.json").is_file()
+def _tui_need_npm_install(root: Path) -> bool:
+    """True when @hermes/ink is missing or node_modules is behind package-lock.json (post-pull)."""
+    ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
+    if not ink.is_file():
+        return True
+    lock = root / "package-lock.json"
+    if not lock.is_file():
+        return False
+    marker = root / "node_modules" / ".package-lock.json"
+    if not marker.is_file():
+        return True
+    return lock.stat().st_mtime > marker.stat().st_mtime
 
 
 def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
@@ -735,9 +744,9 @@ def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
     env = os.environ.get("HERMES_TUI_DIR")
     if env:
         p = Path(env)
-        if (p / "dist" / "entry.js").exists() and _tui_deps_ready(p):
+        if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
             return p
-    if (tui_dir / "dist" / "entry.js").exists() and _tui_deps_ready(tui_dir):
+    if (tui_dir / "dist" / "entry.js").exists() and not _tui_need_npm_install(tui_dir):
         return tui_dir
     return None
 
@@ -794,12 +803,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         ext_dir = os.environ.get("HERMES_TUI_DIR")
         if ext_dir:
             p = Path(ext_dir)
-            if (p / "dist" / "entry.js").exists() and _tui_deps_ready(p):
+            if (p / "dist" / "entry.js").exists() and not _tui_need_npm_install(p):
                 node = _node_bin("node")
                 return [node, str(p / "dist" / "entry.js")], p
 
     npm = _node_bin("npm")
-    if not _tui_deps_ready(tui_dir):
+    if _tui_need_npm_install(tui_dir):
         print("Installing TUI dependencies…")
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],

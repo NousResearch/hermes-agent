@@ -149,6 +149,20 @@ class TestNonInteractiveSetup:
         assert '비전 및 이미지 분석 (선택 사항)' in source
         assert 'vision 설정:' in source
         assert 'OpenRouter 키 저장 완료 — vision은 Gemini를 사용합니다' in source
+        assert 'WhatsApp' in source
+        assert 'BlueBubbles' in source
+        assert 'QQ Bot: 이미 설정되어 있음' in source
+        assert 'OpenID' in source
+        assert '설정할 플랫폼을 선택하세요:' in source
+        assert '지금 대화를 시작할까요?' in source
+        assert '자동으로 Hermes를 다시 실행할 수 없습니다.' in source
+        assert '설정 위치' in source
+        assert '데이터 폴더:' in source
+        assert '설치 디렉터리:' in source
+        assert '지금 WhatsApp을 활성화할까요?' in source
+        assert 'QQ Bot을 다시 설정할까요?' in source
+        assert 'BlueBubbles를 다시 설정할까요?' in source
+        assert '설정할 플랫폼을 선택하세요:' in source
         assert 'Provider 설정을 건너뛰었습니다.' in source
         assert 'Provider 설정 중 오류가 발생했습니다:' in source
         assert '나중에 ' in source

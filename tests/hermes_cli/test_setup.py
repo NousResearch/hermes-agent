@@ -491,4 +491,4 @@ def test_offer_launch_chat_manual_fallback_when_unresolvable(monkeypatch, capsys
     setup_mod._offer_launch_chat()
 
     captured = capsys.readouterr()
-    assert "Run 'hermes chat' manually" in captured.out
+    assert "자동으로 Hermes를 다시 실행할 수 없습니다" in captured.out

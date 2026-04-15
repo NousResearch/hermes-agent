@@ -1909,14 +1909,14 @@ def _setup_whatsapp():
         print_info("WhatsApp: already enabled")
         return
 
-    print_info("WhatsApp connects via a built-in bridge (Baileys).")
-    print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
+    print_info("WhatsApp은 내장 브리지(Baileys)로 연결됩니다.")
+    print_info("Node.js가 필요합니다. 안내형 설정은 'hermes whatsapp'을 실행하세요.")
     print()
-    if prompt_yes_no("Enable WhatsApp now?", True):
+    if prompt_yes_no("지금 WhatsApp을 활성화할까요?", True):
         save_env_value("WHATSAPP_ENABLED", "true")
-        print_success("WhatsApp enabled")
-        print_info("Run 'hermes whatsapp' to choose your mode (separate bot number")
-        print_info("or personal self-chat) and pair via QR code.")
+        print_success("WhatsApp 활성화 완료")
+        print_info("'hermes whatsapp'을 실행해 모드(별도 봇 번호 또는")
+        print_info("개인 셀프 채팅)를 선택하고 QR 코드로 페어링하세요.")
 
 
 def _setup_weixin():
@@ -1972,42 +1972,42 @@ def _setup_qqbot():
     print_header("QQ Bot")
     existing = get_env_value("QQ_APP_ID")
     if existing:
-        print_info("QQ Bot: already configured")
-        if not prompt_yes_no("Reconfigure QQ Bot?", False):
+        print_info("QQ Bot: 이미 설정되어 있음")
+        if not prompt_yes_no("QQ Bot을 다시 설정할까요?", False):
             return
 
-    print_info("Connects Hermes to QQ via the Official QQ Bot API (v2).")
-    print_info("   Requires a QQ Bot application at q.qq.com")
-    print_info("   Reference: https://bot.q.qq.com/wiki/develop/api-v2/")
+    print_info("공식 QQ Bot API (v2)를 통해 Hermes를 QQ에 연결합니다.")
+    print_info("   q.qq.com 에서 QQ Bot 애플리케이션이 필요합니다")
+    print_info("   참고: https://bot.q.qq.com/wiki/develop/api-v2/")
     print()
 
     app_id = prompt("QQ Bot App ID")
     if not app_id:
-        print_warning("App ID is required — skipping QQ Bot setup")
+        print_warning("App ID가 필요합니다 — QQ Bot 설정을 건너뜁니다")
         return
     save_env_value("QQ_APP_ID", app_id.strip())
 
     client_secret = prompt("QQ Bot App Secret", password=True)
     if not client_secret:
-        print_warning("App Secret is required — skipping QQ Bot setup")
+        print_warning("App Secret이 필요합니다 — QQ Bot 설정을 건너뜁니다")
         return
     save_env_value("QQ_CLIENT_SECRET", client_secret)
-    print_success("QQ Bot credentials saved")
+    print_success("QQ Bot 자격 증명 저장 완료")
 
     print()
-    print_info("🔒 Security: Restrict who can DM your bot")
-    print_info("   Use QQ user OpenIDs (found in event payloads)")
+    print_info("🔒 보안: 누가 봇에 DM을 보낼 수 있는지 제한하세요")
+    print_info("   QQ 사용자 OpenID를 사용하세요 (이벤트 payload에서 확인 가능)")
     print()
-    allowed_users = prompt("Allowed user OpenIDs (comma-separated, leave empty for open access)")
+    allowed_users = prompt("허용할 사용자 OpenID (쉼표로 구분, 비워두면 누구나 접근 가능)")
     if allowed_users:
         save_env_value("QQ_ALLOWED_USERS", allowed_users.replace(" ", ""))
-        print_success("QQ Bot allowlist configured")
+        print_success("QQ Bot allowlist 설정 완료")
     else:
-        print_info("⚠️  No allowlist set — anyone can DM the bot!")
+        print_info("⚠️  allowlist가 없습니다 — 누구나 봇에 DM을 보낼 수 있습니다!")
 
     print()
-    print_info("📬 Home Channel: OpenID for cron job delivery and notifications.")
-    home_channel = prompt("Home channel OpenID (leave empty to set later)")
+    print_info("📬 홈 채널: cron 전달과 알림에 사용할 OpenID입니다.")
+    home_channel = prompt("홈 채널 OpenID (비워두면 나중에 설정)")
     if home_channel:
         save_env_value("QQ_HOME_CHANNEL", home_channel)
 
@@ -2020,36 +2020,36 @@ def _setup_bluebubbles():
     print_header("BlueBubbles (iMessage)")
     existing = get_env_value("BLUEBUBBLES_SERVER_URL")
     if existing:
-        print_info("BlueBubbles: already configured")
-        if not prompt_yes_no("Reconfigure BlueBubbles?", False):
+        print_info("BlueBubbles: 이미 설정되어 있음")
+        if not prompt_yes_no("BlueBubbles를 다시 설정할까요?", False):
             return
 
-    print_info("Connects Hermes to iMessage via BlueBubbles — a free, open-source")
-    print_info("macOS server that bridges iMessage to any device.")
-    print_info("   Requires a Mac running BlueBubbles Server v1.0.0+")
-    print_info("   Download: https://bluebubbles.app/")
+    print_info("BlueBubbles를 통해 Hermes를 iMessage에 연결합니다 — 무료 오픈소스")
+    print_info("macOS 서버가 iMessage를 다른 기기에 브리지합니다.")
+    print_info("   BlueBubbles Server v1.0.0+가 실행 중인 Mac이 필요합니다")
+    print_info("   다운로드: https://bluebubbles.app/")
     print()
-    print_info("In BlueBubbles Server → Settings → API, note your Server URL and Password.")
+    print_info("BlueBubbles Server → Settings → API 에서 Server URL과 Password를 확인하세요.")
     print()
 
-    server_url = prompt("BlueBubbles server URL (e.g. http://192.168.1.10:1234)")
+    server_url = prompt("BlueBubbles 서버 URL (예: http://192.168.1.10:1234)")
     if not server_url:
-        print_warning("Server URL is required — skipping BlueBubbles setup")
+        print_warning("서버 URL이 필요합니다 — BlueBubbles 설정을 건너뜁니다")
         return
     save_env_value("BLUEBUBBLES_SERVER_URL", server_url.rstrip("/"))
 
-    password = prompt("BlueBubbles server password", password=True)
+    password = prompt("BlueBubbles 서버 비밀번호", password=True)
     if not password:
-        print_warning("Password is required — skipping BlueBubbles setup")
+        print_warning("비밀번호가 필요합니다 — BlueBubbles 설정을 건너뜁니다")
         return
     save_env_value("BLUEBUBBLES_PASSWORD", password)
-    print_success("BlueBubbles credentials saved")
+    print_success("BlueBubbles 자격 증명 저장 완료")
 
     print()
-    print_info("🔒 Security: Restrict who can message your bot")
-    print_info("   Use iMessage addresses: email (user@icloud.com) or phone (+15551234567)")
+    print_info("🔒 보안: 누가 봇에 메시지를 보낼 수 있는지 제한하세요")
+    print_info("   iMessage 주소를 사용하세요: 이메일(user@icloud.com) 또는 전화번호(+155****4567)")
     print()
-    allowed_users = prompt("Allowed iMessage addresses (comma-separated, leave empty for open access)")
+    allowed_users = prompt("허용할 iMessage 주소 (쉼표로 구분, 비워두면 누구나 접근 가능)")
     if allowed_users:
         save_env_value("BLUEBUBBLES_ALLOWED_USERS", allowed_users.replace(" ", ""))
         print_success("BlueBubbles allowlist configured")
@@ -2057,9 +2057,9 @@ def _setup_bluebubbles():
         print_info("⚠️  No allowlist set — anyone who can iMessage you can use the bot!")
 
     print()
-    print_info("📬 Home Channel: phone or email for cron job delivery and notifications.")
-    print_info("   You can also set this later with /set-home in your iMessage chat.")
-    home_channel = prompt("Home channel address (leave empty to set later)")
+    print_info("📬 홈 채널: cron 전달과 알림에 사용할 전화번호 또는 이메일입니다.")
+    print_info("   나중에 iMessage 채팅에서 /set-home으로도 설정할 수 있습니다.")
+    home_channel = prompt("홈 채널 주소 (비워두면 나중에 설정)")
     if home_channel:
         save_env_value("BLUEBUBBLES_HOME_CHANNEL", home_channel)
 
@@ -2075,8 +2075,8 @@ def _setup_bluebubbles():
                 print_warning("잘못된 포트 번호입니다. 기본값 8645를 사용합니다")
 
     print()
-    print_info("Requires the BlueBubbles Private API helper for typing indicators,")
-    print_info("read receipts, and tapback reactions. Basic messaging works without it.")
+    print_info("BlueBubbles Private API helper가 있으면 타이핑 표시,")
+    print_info("읽음 확인, tapback 반응을 지원합니다. 기본 메시징은 없어도 동작합니다.")
     print_info("   Install: https://docs.bluebubbles.app/helper-bundle/installation")
 
 
@@ -2177,10 +2177,10 @@ def setup_gateway(config: dict):
         if is_configured:
             pre_selected.append(i)
 
-    selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
+    selected = prompt_checklist("설정할 플랫폼을 선택하세요:", items, pre_selected)
 
     if not selected:
-        print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
+        print_info("선택한 플랫폼이 없습니다. 나중에 'hermes setup gateway'로 설정하세요.")
         return
 
     for idx in selected:
@@ -2917,19 +2917,19 @@ def run_setup_wizard(args):
             return
 
     # ── Full Setup — run all sections ──
-    print_header("Configuration Location")
-    print_info(f"Config file:  {get_config_path()}")
-    print_info(f"Secrets file: {get_env_path()}")
-    print_info(f"Data folder:  {hermes_home}")
-    print_info(f"Install dir:  {PROJECT_ROOT}")
+    print_header("설정 위치")
+    print_info(f"Config 파일:   {get_config_path()}")
+    print_info(f"Secrets 파일:  {get_env_path()}")
+    print_info(f"데이터 폴더:   {hermes_home}")
+    print_info(f"설치 디렉터리: {PROJECT_ROOT}")
     print()
-    print_info("You can edit these files directly or use 'hermes config edit'")
+    print_info("이 파일들은 직접 수정하거나 'hermes config edit'를 사용할 수 있습니다")
 
     if migration_ran:
         print()
-        print_info("Settings were imported from OpenClaw.")
-        print_info("Each section below will show what was imported — press Enter to keep,")
-        print_info("or choose to reconfigure if needed.")
+        print_info("설정이 OpenClaw에서 가져와졌습니다.")
+        print_info("아래 각 섹션에는 가져온 내용이 표시되며, Enter를 누르면 유지되고")
+        print_info("필요하면 다시 설정할 수 있습니다.")
 
     # Section 1: Model & Provider
     if not (migration_ran and _skip_configured_section(config, "model", "Model & Provider")):
@@ -2976,12 +2976,12 @@ def _resolve_hermes_chat_argv() -> Optional[list[str]]:
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
-    if not prompt_yes_no("Launch hermes chat now?", True):
+    if not prompt_yes_no("지금 대화를 시작할까요?", True):
         return
 
     chat_argv = _resolve_hermes_chat_argv()
     if not chat_argv:
-        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
+        print_info("자동으로 Hermes를 다시 실행할 수 없습니다. 'hermes chat'을 수동으로 실행하세요.")
         return
 
     os.execvp(chat_argv[0], chat_argv)

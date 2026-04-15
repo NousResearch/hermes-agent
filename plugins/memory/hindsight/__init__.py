@@ -458,7 +458,10 @@ class HindsightMemoryProvider(MemoryProvider):
                 self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
-                kwargs = {"base_url": self._api_url, "timeout": 30.0}
+                kwargs = {
+                    "base_url": self._api_url,
+                    "timeout": float(os.environ.get("HINDSIGHT_TIMEOUT", 300.0)),
+                }
                 if self._api_key:
                     kwargs["api_key"] = self._api_key
                 logger.debug("Creating Hindsight cloud client (url=%s, has_key=%s)",

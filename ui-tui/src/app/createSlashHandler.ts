@@ -1,4 +1,12 @@
 import { HOTKEYS } from '../constants.js'
+import type {
+  BackgroundStartResponse,
+  SessionHistoryResponse,
+  SlashExecResponse,
+  ToolsConfigureResponse,
+  ToolsListResponse,
+  ToolsShowResponse
+} from '../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../lib/osc52.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { fmtK } from '../lib/text.js'
@@ -12,7 +20,7 @@ import { getUiState, patchUiState } from './uiStore.js'
 export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => boolean {
   const { enqueue, hasSelection, paste, queueRef, selection, setInput } = ctx.composer
   const { gw, rpc } = ctx.gateway
-  const { catalog, lastUserMsg, maybeWarn, messages } = ctx.local
+  const { catalog, getHistoryItems, getLastUserMsg, maybeWarn } = ctx.local
 
   const {
     closeSession,
@@ -24,8 +32,23 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
     setSessionStartedAt
   } = ctx.session
 
-  const { page, panel, send, setHistoryItems, setMessages, sys, trimLastExchange } = ctx.transcript
+  const { page, panel, send, setHistoryItems, sys, trimLastExchange } = ctx.transcript
   const { setVoiceEnabled } = ctx.voice
+
+  const showSlashOutput = (title: string, command: string) => {
+    gw.request<SlashExecResponse>('slash.exec', { command, session_id: getUiState().sid })
+      .then(r => {
+        const text = r?.warning ? `warning: ${r.warning}\n${r?.output || '(no output)'}` : r?.output || '(no output)'
+        const lines = text.split('\n').filter(Boolean)
+
+        if (lines.length > 2 || text.length > 180) {
+          page(text, title)
+        } else {
+          sys(text)
+        }
+      })
+      .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+  }
 
   const handler = (cmd: string): boolean => {
     const ui = getUiState()
@@ -160,7 +183,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           }
         }
 
-        const all = messages.filter((m: any) => m.role === 'assistant')
+        const all = getHistoryItems().filter((m: any) => m.role === 'assistant')
 
         if (arg && Number.isNaN(parseInt(arg, 10))) {
           sys('usage: /copy [number]')
@@ -244,7 +267,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           }
 
           if (r.removed > 0) {
-            setMessages((prev: any[]) => trimLastExchange(prev))
             setHistoryItems((prev: any[]) => trimLastExchange(prev))
             sys(`undid ${r.removed} messages`)
           } else {
@@ -253,8 +275,9 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         })
 
         return true
+      case 'retry': {
+        const lastUserMsg = getLastUserMsg()
 
-      case 'retry':
         if (!lastUserMsg) {
           sys('nothing to retry')
 
@@ -273,7 +296,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
               return
             }
 
-            setMessages((prev: any[]) => trimLastExchange(prev))
             setHistoryItems((prev: any[]) => trimLastExchange(prev))
             send(lastUserMsg)
           })
@@ -284,6 +306,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         send(lastUserMsg)
 
         return true
+      }
 
       case 'background':
 
@@ -294,13 +317,15 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           return true
         }
 
-        rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) => {
-          if (!r?.task_id) {
+        rpc<BackgroundStartResponse>('prompt.background', { session_id: sid, text: arg }).then(r => {
+          const taskId = r?.task_id
+
+          if (!taskId) {
             return
           }
 
-          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(r.task_id) }))
-          sys(`bg ${r.task_id} started`)
+          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add(taskId) }))
+          sys(`bg ${taskId} started`)
         })
 
         return true
@@ -483,7 +508,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
           if (Array.isArray(r.messages)) {
             const resumed = toTranscriptMessages(r.messages)
-            setMessages(resumed)
             setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
           }
 
@@ -526,7 +550,6 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
             patchUiState({ sid: r.session_id })
             setSessionStartedAt(Date.now())
             setHistoryItems([])
-            setMessages([])
             sys(`branched → ${r.title}`)
           }
         })
@@ -544,6 +567,26 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
 
           sys('MCP reloaded')
         })
+
+        return true
+
+      case 'fast':
+        showSlashOutput('Fast', cmd.slice(1))
+
+        return true
+
+      case 'debug':
+        showSlashOutput('Debug', cmd.slice(1))
+
+        return true
+
+      case 'snapshot':
+        showSlashOutput('Snapshot', cmd.slice(1))
+
+        return true
+
+      case 'platforms':
+        showSlashOutput('Platforms', cmd.slice(1))
 
         return true
 
@@ -618,12 +661,28 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         return true
 
       case 'history':
-        rpc('session.history', { session_id: sid }).then((r: any) => {
+        rpc<SessionHistoryResponse>('session.history', { session_id: sid }).then(r => {
           if (typeof r?.count !== 'number') {
             return
           }
 
-          sys(`${r.count} messages`)
+          if (!r.messages?.length) {
+            sys(`${r.count} messages`)
+
+            return
+          }
+
+          const text = r.messages
+            .map((msg, index) => {
+              if (msg.role === 'tool') {
+                return `[Tool #${index + 1}] ${msg.name || 'tool'} ${msg.context || ''}`.trim()
+              }
+
+              return `[${msg.role === 'assistant' ? 'Hermes' : msg.role === 'user' ? 'You' : 'System'} #${index + 1}] ${msg.text || ''}`.trim()
+            })
+            .join('\n\n')
+
+          page(text, `History (${r.count})`)
         })
 
         return true
@@ -917,29 +976,98 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
           .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
         return true
+      case 'tools': {
+        const [subcommand, ...names] = arg.trim().split(/\s+/).filter(Boolean)
 
-      case 'tools':
-        rpc('tools.list', { session_id: sid })
-          .then((r: any) => {
-            if (!r) {
-              return
-            }
+        if (!subcommand) {
+          rpc<ToolsShowResponse>('tools.show', { session_id: sid })
+            .then(r => {
+              if (!r?.sections?.length) {
+                return sys('no tools')
+              }
 
-            if (!r.toolsets?.length) {
-              return sys('no tools')
-            }
+              panel(
+                `Tools${typeof r.total === 'number' ? ` (${r.total})` : ''}`,
+                r.sections.map(section => ({
+                  title: section.name,
+                  rows: section.tools.map(tool => [tool.name, tool.description] as [string, string])
+                }))
+              )
+            })
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
 
-            panel(
-              'Tools',
-              r.toolsets.map((ts: any) => ({
-                title: `${ts.enabled ? '*' : ' '} ${ts.name} [${ts.tool_count} tools]`,
-                items: ts.tools
-              }))
-            )
+          return true
+        }
+
+        if (subcommand === 'list') {
+          rpc<ToolsListResponse>('tools.list', { session_id: sid })
+            .then(r => {
+              if (!r?.toolsets?.length) {
+                return sys('no tools')
+              }
+
+              panel(
+                'Tools',
+                r.toolsets.map(ts => ({
+                  title: `${ts.enabled ? '*' : ' '} ${ts.name} [${ts.tool_count} tools]`,
+                  items: ts.tools
+                }))
+              )
+            })
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+
+          return true
+        }
+
+        if (subcommand === 'disable' || subcommand === 'enable') {
+          if (!names.length) {
+            sys(`usage: /tools ${subcommand} <name> [name ...]`)
+            sys(`built-in toolset: /tools ${subcommand} web`)
+            sys(`MCP tool: /tools ${subcommand} github:create_issue`)
+
+            return true
+          }
+
+          rpc<ToolsConfigureResponse>('tools.configure', {
+            action: subcommand,
+            names,
+            session_id: sid
           })
-          .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+            .then(r => {
+              if (!r) {
+                return
+              }
+
+              if (r.info) {
+                setSessionStartedAt(Date.now())
+                resetVisibleHistory(r.info)
+              }
+
+              if (r.changed?.length) {
+                sys(`${subcommand === 'disable' ? 'disabled' : 'enabled'}: ${r.changed.join(', ')}`)
+              }
+
+              if (r.unknown?.length) {
+                sys(`unknown toolsets: ${r.unknown.join(', ')}`)
+              }
+
+              if (r.missing_servers?.length) {
+                sys(`missing MCP servers: ${r.missing_servers.join(', ')}`)
+              }
+
+              if (r.reset) {
+                sys('session reset. new tool configuration is active.')
+              }
+            })
+            .catch((e: unknown) => sys(`error: ${rpcErrorMessage(e)}`))
+
+          return true
+        }
+
+        sys('usage: /tools [list|disable|enable] ...')
 
         return true
+      }
 
       case 'toolsets':
         rpc('toolsets.list', { session_id: sid })
@@ -969,6 +1097,28 @@ export function createSlashHandler(ctx: SlashHandlerContext): (cmd: string) => b
         return true
 
       default:
+        if (catalog?.canon) {
+          const needle = `/${name}`.toLowerCase()
+
+          const matches = [
+            ...new Set(
+              Object.entries(catalog.canon)
+                .filter(([alias]) => alias.startsWith(needle))
+                .map(([, canon]) => canon)
+            )
+          ]
+
+          if (matches.length === 1 && matches[0]!.toLowerCase() !== needle) {
+            return handler(`${matches[0]}${arg ? ' ' + arg : ''}`)
+          }
+
+          if (matches.length > 1) {
+            sys(`ambiguous command: ${matches.slice(0, 6).join(', ')}${matches.length > 6 ? ', …' : ''}`)
+
+            return true
+          }
+        }
+
         gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
           .then((r: any) => {
             sys(

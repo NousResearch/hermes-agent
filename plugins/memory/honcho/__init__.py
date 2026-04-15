@@ -554,6 +554,20 @@ class HonchoMemoryProvider(MemoryProvider):
             parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
+        # On the very first turn, no queue_prefetch() has run yet so the
+        # dialectic result is empty.  Mirror the base-context pattern:
+        # run the dialectic synchronously on the first call so turn 0
+        # always gets the cold-start synthesis.
+        if self._last_dialectic_turn == -999 and query:
+            try:
+                first_turn_dialectic = self._run_dialectic_depth(query)
+                if first_turn_dialectic and first_turn_dialectic.strip():
+                    with self._prefetch_lock:
+                        self._prefetch_result = first_turn_dialectic
+                self._last_dialectic_turn = self._turn_count
+            except Exception as e:
+                logger.debug("Honcho first-turn dialectic failed: %s", e)
+
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:

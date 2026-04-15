@@ -580,6 +580,19 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Compose all found context files instead of first-match-wins.
+        "compose": True,
+        # How far to walk up parent directories:
+        #   "git_root" | "home" | "unlimited" | absolute path
+        "walk_limit": "home",
+        # Print discovered context files at startup.
+        "show_loaded": True,
+        # When compose=True, AGENTS.md takes priority over CLAUDE.md at each
+        # directory level. If both exist in the same directory, only AGENTS.md
+        # is loaded from that level. CLAUDE.md is loaded from directories
+        # that don't have AGENTS.md. .hermes.md is always loaded as
+        # complementary Hermes-specific instructions.
+        "agents_priority": True,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -703,7 +716,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 17,
+    "_config_version": 18,
 }
 
 # =============================================================================
@@ -2230,6 +2243,25 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Migrated compression.summary_* → auxiliary.compression: {', '.join(migrated_keys)}")
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
+
+    # ── Version 17 → 18: add context file discovery settings ──
+    if current_ver < 18:
+        ctx = config.get("context", {})
+        if not isinstance(ctx, dict):
+            ctx = {}
+        if "compose" not in ctx:
+            ctx["compose"] = True
+            if not quiet:
+                print("  ✓ Added context.compose=true")
+        if "walk_limit" not in ctx:
+            ctx["walk_limit"] = "home"
+            if not quiet:
+                print("  ✓ Added context.walk_limit=\"home\"")
+        if "show_loaded" not in ctx:
+            ctx["show_loaded"] = True
+            if not quiet:
+                print("  ✓ Added context.show_loaded=true")
+        config["context"] = ctx
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

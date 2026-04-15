@@ -4,6 +4,8 @@ All functions are stateless. AIAgent._build_system_prompt() calls these to
 assemble pieces, then combines them with memory and ephemeral prompts.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -939,8 +941,132 @@ def _load_hermes_md(cwd_path: Path) -> str:
         return ""
 
 
-def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
+def _resolve_walk_limit(raw: str) -> Path | None:
+    """Resolve a walk_limit config value to a stopping parent path.
+
+    Returns a Path to stop at (inclusive), or None for unlimited walking.
+    Supported values: "git_root", "home", "unlimited", or an absolute path.
+    """
+    stripped = (raw or "").strip()
+    lowered = stripped.lower()
+    if lowered in ("unlimited", ""):
+        return None
+    if lowered == "home":
+        try:
+            from pathlib import Path as _Path
+            return _Path.home()
+        except Exception:
+            return None
+    if lowered == "git_root":
+        return None  # handled specially by _walk_parents
+    # Treat as an absolute path — do NOT lowercase, preserve path case
+    try:
+        p = Path(stripped).expanduser()
+        if p.is_absolute():
+            return p.resolve()
+    except Exception:
+        pass
+    return None
+
+
+def _walk_parents(
+    cwd: Path,
+    walk_limit: str = "home",
+) -> list[Path]:
+    """Return cwd + parent directories up to the configured walk_limit.
+
+    When walk_limit is "git_root", stops at the git repository root.
+    When "home", stops at the user home directory.
+    When "unlimited", walks to the filesystem root.
+    When an absolute path, stops when that path is reached.
+    """
+    dirs: list[Path] = [cwd]
+    if walk_limit == "git_root":
+        git_root = _find_git_root(cwd)
+        if git_root:
+            current = cwd
+            for parent in current.parents:
+                if parent == git_root:
+                    dirs.append(git_root)
+                    break
+                dirs.append(parent)
+        return dirs
+
+    stop_path = _resolve_walk_limit(walk_limit)
+    current = cwd
+    for parent in current.parents:
+        if stop_path is not None:
+            try:
+                parent_resolved = parent.resolve()
+                if parent_resolved == stop_path:
+                    dirs.append(parent)
+                    break
+                # Check if we've gone past the stop path
+                if str(parent_resolved).startswith(str(stop_path)):
+                    dirs.append(parent)
+                    continue
+                if not str(parent_resolved).startswith(str(stop_path)):
+                    # We've walked above the stop path — check if cwd was already under it
+                    cwd_resolved = cwd.resolve()
+                    if not str(cwd_resolved).startswith(str(stop_path)):
+                        break
+            except Exception:
+                pass
+        dirs.append(parent)
+    return dirs
+
+
+def _load_all_of_type(
+    dirs: list[Path],
+    names: tuple[str, ...],
+    label: str,
+) -> list[tuple[str, str]]:
+    """Search *dirs* in order for files matching *names*, return all found.
+
+    Returns a list of (relative_name, truncated_content) tuples.
+    Unlike the first-match-wins loaders, this collects every match found
+    across the directory hierarchy.
+    """
+    results: list[tuple[str, str]] = []
+    seen: set[Path] = set()
+    for d in dirs:
+        for name in names:
+            candidate = d / name
+            try:
+                candidate_resolved = candidate.resolve()
+            except Exception:
+                continue
+            if candidate_resolved in seen:
+                continue
+            if not candidate.is_file():
+                continue
+            seen.add(candidate_resolved)
+            try:
+                content = candidate.read_text(encoding="utf-8").strip()
+                if not content:
+                    continue
+                content = _strip_yaml_frontmatter(content) if name.endswith(".md") else content
+                rel = name
+                try:
+                    rel = str(candidate.relative_to(Path.cwd()))
+                except ValueError:
+                    pass
+                content = _scan_context_content(content, rel)
+                content = _truncate_content(content, rel)
+                results.append((rel, f"## {rel}\n\n{content}"))
+            except Exception as e:
+                logger.debug("Could not read %s: %s", candidate, e)
+    return results
+
+
+def _load_agents_md(cwd_path: Path, walk_limit: str = "home") -> str:
+    """AGENTS.md — collect all found files walking up the directory tree.
+
+    When *compose* mode is off (legacy), only the cwd-level file is loaded
+    for backward compatibility.  When compose mode is on, all AGENTS.md
+    files found walking up to the walk_limit are concatenated.
+    """
+    # First check cwd-level (always present in both modes)
     for name in ["AGENTS.md", "agents.md"]:
         candidate = cwd_path / name
         if candidate.exists():
@@ -955,8 +1081,12 @@ def _load_agents_md(cwd_path: Path) -> str:
     return ""
 
 
-def _load_claude_md(cwd_path: Path) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
+def _load_claude_md(cwd_path: Path, walk_limit: str = "home") -> str:
+    """CLAUDE.md / claude.md — cwd only for backward compat.
+
+    The walk-based collection is handled by build_context_files_prompt
+    when compose=True.
+    """
     for name in ["CLAUDE.md", "claude.md"]:
         candidate = cwd_path / name
         if candidate.exists():
@@ -969,6 +1099,102 @@ def _load_claude_md(cwd_path: Path) -> str:
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
     return ""
+
+
+def discover_context_files(
+    cwd: str | None = None,
+    walk_limit: str = "home",
+    compose: bool = True,
+    agents_priority: bool = True,
+) -> list[str]:
+    """Discover all context files that would be loaded.
+
+    Returns a list of human-readable file paths (relative or absolute).
+    Used by the /context command to show what files are active.
+    """
+    if cwd is None:
+        cwd = os.getcwd()
+    cwd_path = Path(cwd).resolve()
+    found: list[str] = []
+
+    if compose:
+        # Collect all files by type across the walk hierarchy
+        parent_dirs = list(_walk_parents(cwd_path, walk_limit))
+
+        # .hermes.md files — always complementary
+        for d in parent_dirs:
+            for name in _HERMES_MD_NAMES:
+                candidate = d / name
+                if candidate.is_file():
+                    try:
+                        found.append(str(candidate.relative_to(cwd_path)))
+                    except ValueError:
+                        found.append(str(candidate))
+
+        # AGENTS.md files — track dirs for priority
+        dirs_with_agents = set()
+        for d in parent_dirs:
+            for name in ["AGENTS.md", "agents.md"]:
+                candidate = d / name
+                if candidate.is_file():
+                    dirs_with_agents.add(d.resolve())
+                    try:
+                        found.append(str(candidate.relative_to(cwd_path)))
+                    except ValueError:
+                        found.append(str(candidate))
+
+        # CLAUDE.md files — skip dirs with AGENTS.md when agents_priority=True
+        for d in parent_dirs:
+            if agents_priority and d.resolve() in dirs_with_agents:
+                continue
+            for name in ["CLAUDE.md", "claude.md"]:
+                candidate = d / name
+                if candidate.is_file():
+                    try:
+                        found.append(str(candidate.relative_to(cwd_path)))
+                    except ValueError:
+                        found.append(str(candidate))
+
+        # .cursorrules and .cursor/rules/*.mdc
+        cursorrules = cwd_path / ".cursorrules"
+        if cursorrules.is_file():
+            found.append(".cursorrules")
+        cursor_rules_dir = cwd_path / ".cursor" / "rules"
+        if cursor_rules_dir.is_dir():
+            for mdc in sorted(cursor_rules_dir.glob("*.mdc")):
+                found.append(f".cursor/rules/{mdc.name}")
+    else:
+        # First-match-wins legacy behavior
+        hermes_md = _find_hermes_md(cwd_path)
+        if hermes_md:
+            try:
+                found.append(str(hermes_md.relative_to(cwd_path)))
+            except ValueError:
+                found.append(str(hermes_md))
+        else:
+            for name in ["AGENTS.md", "agents.md"]:
+                if (cwd_path / name).is_file():
+                    found.append(name)
+                    break
+            else:
+                for name in ["CLAUDE.md", "claude.md"]:
+                    if (cwd_path / name).is_file():
+                        found.append(name)
+                        break
+                else:
+                    if (cwd_path / ".cursorrules").is_file():
+                        found.append(".cursorrules")
+                    cursor_rules_dir = cwd_path / ".cursor" / "rules"
+                    if cursor_rules_dir.is_dir():
+                        for mdc in sorted(cursor_rules_dir.glob("*.mdc")):
+                            found.append(f".cursor/rules/{mdc.name}")
+
+    # SOUL.md from HERMES_HOME
+    soul_path = get_hermes_home() / "SOUL.md"
+    if soul_path.is_file():
+        found.append(str(soul_path))
+
+    return found
 
 
 def _load_cursorrules(cwd_path: Path) -> str:
@@ -1001,10 +1227,35 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
-def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
+def build_context_files_prompt(
+    cwd: Optional[str] = None,
+    skip_soul: bool = False,
+    compose: bool = True,
+    walk_limit: str = "home",
+    agents_priority: bool = True,
+) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    When *compose* is True (default), all found context files are loaded
+    and concatenated — .hermes.md, AGENTS.md, CLAUDE.md, and .cursorrules
+    files found walking up the directory tree to *walk_limit*.
+
+    When *agents_priority* is True (default) and compose is True, AGENTS.md
+    takes priority over CLAUDE.md at each directory level. If both exist in
+    the same directory, only AGENTS.md is loaded from that directory.
+    CLAUDE.md is loaded from directories that don't have AGENTS.md.
+    .hermes.md is always loaded as complementary Hermes-specific instructions.
+
+    When *compose* is False, legacy first-match-wins behavior: only the
+    highest-priority single context file is loaded.
+
+    Priority order within compose mode (all found are included):
+      1. .hermes.md / HERMES.md  (walk to walk_limit, always complementary)
+      2. AGENTS.md / agents.md   (walk to walk_limit, priority over CLAUDE.md per dir)
+      3. CLAUDE.md / claude.md   (walk to walk_limit, skipped where AGENTS.md exists)
+      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+
+    Legacy priority (first found wins — only ONE project context type):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
@@ -1022,15 +1273,90 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     cwd_path = Path(cwd).resolve()
     sections = []
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    if compose:
+        # Compose mode: collect all found files
+        parent_dirs = _walk_parents(cwd_path, walk_limit)
+
+        # .hermes.md files — collect all across hierarchy
+        for d in parent_dirs:
+            for name in _HERMES_MD_NAMES:
+                candidate = d / name
+                if candidate.is_file():
+                    try:
+                        content = candidate.read_text(encoding="utf-8").strip()
+                        if not content:
+                            continue
+                        content = _strip_yaml_frontmatter(content)
+                        rel = name
+                        try:
+                            rel = str(candidate.relative_to(cwd_path))
+                        except ValueError:
+                            pass
+                        content = _scan_context_content(content, rel)
+                        section = f"## {rel}\n\n{content}"
+                        sections.append(_truncate_content(section, rel))
+                    except Exception as e:
+                        logger.debug("Could not read %s: %s", candidate, e)
+
+        # AGENTS.md files — collect all across hierarchy, track dirs for priority
+        dirs_with_agents = set()
+        for d in parent_dirs:
+            for name in ["AGENTS.md", "agents.md"]:
+                candidate = d / name
+                if candidate.is_file():
+                    dirs_with_agents.add(d.resolve())
+                    try:
+                        content = candidate.read_text(encoding="utf-8").strip()
+                        if not content:
+                            continue
+                        rel = name
+                        try:
+                            rel = str(candidate.relative_to(cwd_path))
+                        except ValueError:
+                            pass
+                        content = _scan_context_content(content, rel)
+                        section = f"## {rel}\n\n{content}"
+                        sections.append(_truncate_content(section, rel))
+                    except Exception as e:
+                        logger.debug("Could not read %s: %s", candidate, e)
+
+        # CLAUDE.md files — collect all across hierarchy, skip dirs with AGENTS.md
+        # when agents_priority is True
+        for d in parent_dirs:
+            if agents_priority and d.resolve() in dirs_with_agents:
+                continue  # AGENTS.md takes priority in this directory
+            for name in ["CLAUDE.md", "claude.md"]:
+                candidate = d / name
+                if candidate.is_file():
+                    try:
+                        content = candidate.read_text(encoding="utf-8").strip()
+                        if not content:
+                            continue
+                        rel = name
+                        try:
+                            rel = str(candidate.relative_to(cwd_path))
+                        except ValueError:
+                            pass
+                        content = _scan_context_content(content, rel)
+                        section = f"## {rel}\n\n{content}"
+                        sections.append(_truncate_content(section, rel))
+                    except Exception as e:
+                        logger.debug("Could not read %s: %s", candidate, e)
+
+        # .cursorrules and .cursor/rules/*.mdc — cwd only
+        cursorrules_content = _load_cursorrules(cwd_path)
+        if cursorrules_content:
+            sections.append(cursorrules_content)
+    else:
+        # Legacy first-match-wins behavior
+        project_context = (
+            _load_hermes_md(cwd_path)
+            or _load_agents_md(cwd_path, walk_limit)
+            or _load_claude_md(cwd_path, walk_limit)
+            or _load_cursorrules(cwd_path)
+        )
+        if project_context:
+            sections.append(project_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

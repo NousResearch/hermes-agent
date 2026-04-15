@@ -5443,6 +5443,8 @@ class HermesCLI:
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "context":
+            self._handle_context_command(cmd_original)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"
@@ -6199,6 +6201,47 @@ class HermesCLI:
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
+
+    def _handle_context_command(self, cmd: str):
+        """Handle /context — show loaded context files and settings."""
+        from agent.prompt_builder import discover_context_files
+
+        # Read config settings
+        compose = True
+        walk_limit = "home"
+        show_loaded = True
+        agents_priority = True
+        try:
+            from hermes_cli.config import read_raw_config as _read_ctx_cfg
+            _ctx_cfg = _read_ctx_cfg()
+            if isinstance(_ctx_cfg, dict):
+                _ctx_section = _ctx_cfg.get("context", {})
+                if isinstance(_ctx_section, dict):
+                    compose = _ctx_section.get("compose", True)
+                    walk_limit = _ctx_section.get("walk_limit", "home")
+                    show_loaded = _ctx_section.get("show_loaded", True)
+                    agents_priority = _ctx_section.get("agents_priority", True)
+        except Exception:
+            pass
+
+        cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+        files = discover_context_files(
+            cwd=cwd, walk_limit=walk_limit, compose=compose,
+            agents_priority=agents_priority)
+
+        _cprint(f"  Context file discovery:")
+        _cprint(f"    Mode: {'compose (all files)' if compose else 'first-match-wins'}")
+        _cprint(f"    Walk limit: {walk_limit}")
+        _cprint(f"    AGENTS priority: {'on' if agents_priority else 'off'}")
+        _cprint(f"    Working dir: {cwd}")
+        _cprint("")
+
+        if files:
+            _cprint(f"  Loaded files ({len(files)}):")
+            for f in files:
+                _cprint(f"    {f}")
+        else:
+            _cprint("  No context files found.")
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""

@@ -3271,8 +3271,24 @@ class AIAgent:
             # dir, so os.getcwd() would pick up the repo's AGENTS.md and
             # other dev files — inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
+            # Read compose/walk_limit from config.yaml context section
+            _ctx_compose = True
+            _ctx_walk_limit = "home"
+            try:
+                from hermes_cli.config import read_raw_config as _read_ctx_cfg
+                _ctx_cfg = _read_ctx_cfg()
+                if isinstance(_ctx_cfg, dict):
+                    _ctx_section = _ctx_cfg.get("context", {})
+                    if isinstance(_ctx_section, dict):
+                        _ctx_compose = _ctx_section.get("compose", True)
+                        _ctx_walk_limit = _ctx_section.get("walk_limit", "home")
+                        _ctx_agents_priority = _ctx_section.get("agents_priority", True)
+            except Exception:
+                pass
             context_files_prompt = build_context_files_prompt(
-                cwd=_context_cwd, skip_soul=_soul_loaded)
+                cwd=_context_cwd, skip_soul=_soul_loaded,
+                compose=_ctx_compose, walk_limit=_ctx_walk_limit,
+                agents_priority=_ctx_agents_priority)
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 

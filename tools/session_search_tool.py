@@ -413,14 +413,36 @@ def session_search(
                     exc_info=True,
                 )
 
-        # Summarize all sessions in parallel
+        # Summarize all sessions in parallel, but don't let one hung summary
+        # kill the whole tool call. Timed-out summaries fall back to raw previews.
         async def _summarize_all() -> List[Union[str, Exception]]:
-            """Summarize all sessions in parallel."""
-            coros = [
-                _summarize_session(text, query, meta)
-                for _, _, text, meta in tasks
-            ]
-            return await asyncio.gather(*coros, return_exceptions=True)
+            """Summarize all sessions in parallel with per-task degradation."""
+            task_map = {
+                asyncio.create_task(_summarize_session(text, query, meta)): idx
+                for idx, (_, _, text, meta) in enumerate(tasks)
+            }
+            if not task_map:
+                return []
+
+            done, pending = await asyncio.wait(task_map.keys(), timeout=60)
+            results: List[Union[str, Exception, None]] = [None] * len(tasks)
+
+            for finished in done:
+                idx = task_map[finished]
+                try:
+                    results[idx] = finished.result()
+                except Exception as exc:  # pragma: no cover - defensive
+                    results[idx] = exc
+
+            for pending_task in pending:
+                pending_task.cancel()
+                idx = task_map[pending_task]
+                results[idx] = TimeoutError("session summarization timed out")
+
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+            return [result if result is not None else RuntimeError("missing summary result") for result in results]
 
         try:
             # Use _run_async() which properly manages event loops across
@@ -436,10 +458,7 @@ def session_search(
                 "Session summarization timed out after 60 seconds",
                 exc_info=True,
             )
-            return json.dumps({
-                "success": False,
-                "error": "Session summarization timed out. Try a more specific query or reduce the limit.",
-            }, ensure_ascii=False)
+            results = [TimeoutError("session summarization timed out")] * len(tasks)
 
         summaries = []
         for (session_id, match_info, conversation_text, _), result in zip(tasks, results):

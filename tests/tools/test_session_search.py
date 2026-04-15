@@ -1,5 +1,6 @@
 """Tests for tools/session_search_tool.py — helper functions and search dispatcher."""
 
+import concurrent.futures
 import json
 import time
 import pytest
@@ -318,3 +319,39 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_timeout_degrades_to_raw_preview(self):
+        """A top-level summarization timeout should fall back to raw previews."""
+        from unittest.mock import MagicMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "other_sid",
+                "content": "match",
+                "source": "cli",
+                "session_started": 1709500000,
+                "model": "test",
+            },
+        ]
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"},
+        ]
+        mock_db.get_session.return_value = {"parent_session_id": None}
+
+        def _raise_timeout(coro):
+            coro.close()
+            raise concurrent.futures.TimeoutError()
+
+        with _patch(
+            "model_tools._run_async",
+            side_effect=_raise_timeout,
+        ):
+            result = json.loads(session_search(query="test", db=mock_db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "other_sid"
+        assert "[Raw preview — summarization unavailable]" in result["results"][0]["summary"]

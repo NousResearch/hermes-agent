@@ -83,7 +83,7 @@ Override with `dialecticDepthLevels`: an explicit array of reasoning level strin
 
 ### Input Sanitization
 
-`run_conversation` strips leaked `<memory-context>` blocks from user input before processing. When `saveMessages` persists a turn that included injected context, the block can reappear in subsequent turns via message history. The sanitizer removes `<memory-context>`, `<supermemory-context>`, and `<supermemory-containers>` blocks plus associated system notes.
+`run_conversation` strips leaked `<memory-context>` blocks from user input before processing. When `saveMessages` persists a turn that included injected context, the block can reappear in subsequent turns via message history. The sanitizer removes `<memory-context>` blocks plus associated system notes.
 
 ## Tools
 

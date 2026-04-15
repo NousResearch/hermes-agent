@@ -1366,6 +1366,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "response": completed_env,
                         "conversation_history": full_history,
                         "instructions": instructions,
+                        "session_id": session_id,
                     })
                     if conversation:
                         self._response_store.set_conversation(conversation, response_id)
@@ -1459,11 +1460,13 @@ class APIServerAdapter(BasePlatformAdapter):
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
+        stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
+            stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
             if instructions is None:
                 instructions = stored.get("instructions")
@@ -1481,8 +1484,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
 
-        # Run the agent (with Idempotency-Key support)
-        session_id = str(uuid.uuid4())
+        # Reuse session from previous_response_id chain so the dashboard
+        # groups the entire conversation under one session entry.
+        session_id = stored_session_id or str(uuid.uuid4())
 
         stream = bool(body.get("stream", False))
         if stream:
@@ -1631,6 +1635,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
+                "session_id": session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
@@ -2145,10 +2150,12 @@ class APIServerAdapter(BasePlatformAdapter):
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
+        stored_session_id = None
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))
+                stored_session_id = stored.get("session_id")
                 if instructions is None:
                     instructions = stored.get("instructions")
 
@@ -2167,7 +2174,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        session_id = body.get("session_id") or run_id
+        session_id = body.get("session_id") or stored_session_id or run_id
         ephemeral_system_prompt = instructions
 
         async def _run_and_close():

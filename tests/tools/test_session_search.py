@@ -290,6 +290,63 @@ class TestSessionSearch:
         assert result["results"] == []
         assert result["sessions_searched"] == 0
 
+    def test_limit_none_coerced_to_default(self):
+        """Model sends limit=null → should fall back to 3, not TypeError."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, limit=None,
+        ))
+        assert result["success"] is True
+
+    def test_limit_type_object_coerced_to_default(self):
+        """Model sends limit as a type object → should fall back to 3, not TypeError."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, limit=int,
+        ))
+        assert result["success"] is True
+
+    def test_limit_string_coerced(self):
+        """Model sends limit as string '2' → should coerce to int."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, limit="2",
+        ))
+        assert result["success"] is True
+
+    def test_limit_clamped_to_range(self):
+        """Negative or zero limit should be clamped to 1."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = []
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, limit=-5,
+        ))
+        assert result["success"] is True
+
+        result = json.loads(session_search(
+            query="test", db=mock_db, limit=0,
+        ))
+        assert result["success"] is True
+
     def test_current_root_session_excludes_child_lineage(self):
         """Delegation child hits should be excluded when they resolve to the current root session."""
         from unittest.mock import MagicMock

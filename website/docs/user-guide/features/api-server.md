@@ -130,7 +130,7 @@ Chain responses to maintain full context (including tool calls) across turns:
 }
 ```
 
-The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved.
+The server reconstructs the full conversation from the stored response chain — all previous tool calls and results are preserved. Chained requests also share the same session, so multi-turn conversations appear as a single entry in the dashboard and session history.
 
 #### Named conversations
 

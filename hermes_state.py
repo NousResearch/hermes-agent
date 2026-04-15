@@ -2441,6 +2441,7 @@ class SessionDB(_ObsidianMixin):
         role_filter: List[str] = None,
         limit: int = 20,
         offset: int = 0,
+        owner_fingerprint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -2453,6 +2454,10 @@ class SessionDB(_ObsidianMixin):
 
         Returns matching messages with session metadata, content snippet,
         and surrounding context (1 message before and after the match).
+
+        ``owner_fingerprint``: when set, results are restricted to sessions
+        owned by that fingerprint (matches F-003 gateway isolation). Pass
+        ``None`` (default) for admin/CLI scope — sees all sessions.
         """
         if not query or not query.strip():
             return []
@@ -2479,6 +2484,13 @@ class SessionDB(_ObsidianMixin):
             role_placeholders = ",".join("?" for _ in role_filter)
             where_clauses.append(f"m.role IN ({role_placeholders})")
             params.extend(role_filter)
+
+        if owner_fingerprint is not None:
+            # Match sessions explicitly owned by this fingerprint. Legacy rows
+            # with NULL owner_fingerprint are treated as "unbound" and EXCLUDED
+            # here: F-003 binds them on first authenticated use, not on read.
+            where_clauses.append("s.owner_fingerprint = ?")
+            params.append(owner_fingerprint)
 
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
@@ -2541,19 +2553,28 @@ class SessionDB(_ObsidianMixin):
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        owner_fingerprint: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """List sessions, optionally filtered by source."""
+        """List sessions, optionally filtered by source and/or owner fingerprint.
+
+        ``owner_fingerprint``: when set, only sessions owned by that fingerprint
+        are returned (F-003 isolation). ``None`` (default) = admin scope.
+        """
         with self._lock:
+            where: list[str] = []
+            params: list = []
             if source:
-                cursor = self._conn.execute(
-                    "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                    (source, limit, offset),
-                )
-            else:
-                cursor = self._conn.execute(
-                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
+                where.append("source = ?")
+                params.append(source)
+            if owner_fingerprint is not None:
+                where.append("owner_fingerprint = ?")
+                params.append(owner_fingerprint)
+            where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+            params.extend([limit, offset])
+            cursor = self._conn.execute(
+                f"SELECT * FROM sessions{where_sql} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                params,
+            )
             return [dict(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -2594,12 +2615,21 @@ class SessionDB(_ObsidianMixin):
         messages = self.get_messages(session_id)
         return {**session, "messages": messages}
 
-    def export_all(self, source: str = None) -> List[Dict[str, Any]]:
+    def export_all(
+        self,
+        source: str = None,
+        owner_fingerprint: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """
         Export all sessions (with messages) as a list of dicts.
         Suitable for writing to a JSONL file for backup/analysis.
+
+        ``owner_fingerprint``: when set, only sessions owned by that fingerprint
+        are exported (F-003 isolation). ``None`` (default) = admin scope.
         """
-        sessions = self.search_sessions(source=source, limit=100000)
+        sessions = self.search_sessions(
+            source=source, limit=100000, owner_fingerprint=owner_fingerprint,
+        )
         results = []
         for session in sessions:
             messages = self.get_messages(session["id"])

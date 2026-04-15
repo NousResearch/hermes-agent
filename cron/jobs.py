@@ -6,16 +6,18 @@ Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 """
 
 import copy
+import fcntl
 import json
 import logging
 import tempfile
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any
+from typing import Iterator, Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +36,46 @@ except ImportError:
 HERMES_DIR = get_hermes_home()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
+JOBS_LOCK_FILE = CRON_DIR / ".jobs.lock"
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+@contextmanager
+def _jobs_file_lock() -> Iterator[None]:
+    """Serialize read-modify-write of jobs.json across processes.
+
+    jobs.json is written by the scheduler tick, the gateway HTTP cron API, and
+    `hermes cron` CLI commands. Without an inter-process lock, concurrent
+    load→mutate→save cycles can lose updates. `fcntl.flock` is advisory; every
+    writer must cooperate by going through this context manager.
+    """
+    ensure_dirs()
+    # Use a sidecar lock file so the lock survives tmp-rename swaps of jobs.json.
+    fd = os.open(str(JOBS_LOCK_FILE), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+@contextmanager
+def update_jobs() -> Iterator[List[Dict[str, Any]]]:
+    """Load jobs, yield the mutable list under an exclusive lock, save on exit.
+
+    Usage:
+        with update_jobs() as jobs:
+            jobs.append(new_job)
+            # or modify in place; saved automatically on exit
+    """
+    with _jobs_file_lock():
+        jobs = load_jobs()
+        yield jobs
+        _save_jobs_unlocked(jobs)
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -376,8 +416,8 @@ def load_jobs() -> List[Dict[str, Any]]:
         return []
 
 
-def save_jobs(jobs: List[Dict[str, Any]]):
-    """Save all jobs to storage."""
+def _save_jobs_unlocked(jobs: List[Dict[str, Any]]) -> None:
+    """Write jobs to disk atomically. Caller must already hold `_jobs_file_lock`."""
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(JOBS_FILE.parent), suffix='.tmp', prefix='.jobs_')
     try:
@@ -393,6 +433,19 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def save_jobs(jobs: List[Dict[str, Any]]):
+    """Save all jobs to storage.
+
+    Acquires the inter-process flock during write so concurrent writers
+    (scheduler tick + gateway HTTP API + `hermes cron` CLI) cannot overwrite
+    each other with torn snapshots. For true read-modify-write atomicity,
+    callers should use `update_jobs()` which holds the lock across
+    load+mutate+save.
+    """
+    with _jobs_file_lock():
+        _save_jobs_unlocked(jobs)
 
 
 def create_job(
@@ -497,9 +550,8 @@ def create_job(
         "metadata": normalized_metadata,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with update_jobs() as jobs:
+        jobs.append(job)
 
     return job
 
@@ -617,13 +669,10 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 def remove_job(job_id: str) -> bool:
     """Remove a job by ID."""
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
-        return True
-    return False
+    with update_jobs() as jobs:
+        original_len = len(jobs)
+        jobs[:] = [j for j in jobs if j["id"] != job_id]
+        return len(jobs) < original_len
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
@@ -688,20 +737,19 @@ def advance_next_run(job_id: str) -> bool:
 
     Returns True if next_run_at was advanced, False otherwise.
     """
-    jobs = load_jobs()
-    for job in jobs:
-        if job["id"] == job_id:
-            kind = job.get("schedule", {}).get("kind")
-            if kind not in ("cron", "interval"):
+    with update_jobs() as jobs:
+        for job in jobs:
+            if job["id"] == job_id:
+                kind = job.get("schedule", {}).get("kind")
+                if kind not in ("cron", "interval"):
+                    return False
+                now = _hermes_now().isoformat()
+                new_next = compute_next_run(job["schedule"], now)
+                if new_next and new_next != job.get("next_run_at"):
+                    job["next_run_at"] = new_next
+                    return True
                 return False
-            now = _hermes_now().isoformat()
-            new_next = compute_next_run(job["schedule"], now)
-            if new_next and new_next != job.get("next_run_at"):
-                job["next_run_at"] = new_next
-                save_jobs(jobs)
-                return True
-            return False
-    return False
+        return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

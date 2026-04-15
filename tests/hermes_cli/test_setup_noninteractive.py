@@ -115,6 +115,11 @@ class TestNonInteractiveSetup:
         assert '터미널 백엔드: Singularity/Apptainer' in source
         assert '터미널 백엔드: Modal' in source
         assert '메시징 세션의 작업 디렉터리:' in source
+        assert '터미널 백엔드: Daytona' in source
+        assert '터미널 백엔드: SSH' in source
+        assert '원격 머신에서 SSH로 명령어를 실행합니다.' in source
+        assert 'Daytona 클라우드 개발 환경입니다.' in source
+        assert 'SSH 호스트 (hostname 또는 IP)' in source
 
     def test_cmd_setup_allows_noninteractive_flag_without_tty(self):
         """The CLI entrypoint should not block --non-interactive before setup.py handles it."""

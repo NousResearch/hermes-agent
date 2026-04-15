@@ -1276,16 +1276,16 @@ def setup_terminal_backend(config: dict):
         _prompt_container_resources(config)
 
     elif selected_backend == "daytona":
-        print_success("Terminal backend: Daytona")
-        print_info("Persistent cloud development environments.")
-        print_info("Each session gets a dedicated sandbox with filesystem persistence.")
-        print_info("Sign up at: https://daytona.io")
+        print_success("터미널 백엔드: Daytona")
+        print_info("Daytona 클라우드 개발 환경입니다.")
+        print_info("세션마다 파일시스템이 유지되는 전용 샌드박스를 제공합니다.")
+        print_info("가입: https://daytona.io")
 
         # Check if daytona SDK is installed
         try:
             __import__("daytona")
         except ImportError:
-            print_info("Installing daytona SDK...")
+            print_info("daytona SDK 설치 중...")
             import subprocess
 
             uv_bin = shutil.which("uv")
@@ -1302,70 +1302,70 @@ def setup_terminal_backend(config: dict):
                     text=True,
                 )
             if result.returncode == 0:
-                print_success("daytona SDK installed")
+                print_success("daytona SDK 설치 완료")
             else:
-                print_warning("Install failed — run manually: pip install daytona")
+                print_warning("설치 실패 — 직접 실행하세요: pip install daytona")
                 if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                    print_info(f"  오류: {result.stderr.strip().splitlines()[-1]}")
 
         # Daytona API key
         print()
         existing_key = get_env_value("DAYTONA_API_KEY")
         if existing_key:
-            print_info("  Daytona API key: already configured")
-            if prompt_yes_no("  Update API key?", False):
-                api_key = prompt("    Daytona API key", password=True)
+            print_info("  Daytona API 키: 이미 설정되어 있음")
+            if prompt_yes_no("  API 키를 업데이트할까요?", False):
+                api_key = prompt("    Daytona API 키", password=True)
                 if api_key:
                     save_env_value("DAYTONA_API_KEY", api_key)
-                    print_success("    Updated")
+                    print_success("    업데이트 완료")
         else:
-            api_key = prompt("    Daytona API key", password=True)
+            api_key = prompt("    Daytona API 키", password=True)
             if api_key:
                 save_env_value("DAYTONA_API_KEY", api_key)
-                print_success("    Configured")
+                print_success("    설정 완료")
 
         # Daytona image
         current_image = config.get("terminal", {}).get(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Sandbox image", current_image)
+        image = prompt("  샌드박스 이미지", current_image)
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
 
         _prompt_container_resources(config)
 
     elif selected_backend == "ssh":
-        print_success("Terminal backend: SSH")
-        print_info("Run commands on a remote machine via SSH.")
+        print_success("터미널 백엔드: SSH")
+        print_info("원격 머신에서 SSH로 명령어를 실행합니다.")
 
         # SSH host
         current_host = get_env_value("TERMINAL_SSH_HOST") or ""
-        host = prompt("  SSH host (hostname or IP)", current_host)
+        host = prompt("  SSH 호스트 (hostname 또는 IP)", current_host)
         if host:
             save_env_value("TERMINAL_SSH_HOST", host)
 
         # SSH user
         current_user = get_env_value("TERMINAL_SSH_USER") or ""
-        user = prompt("  SSH user", current_user or os.getenv("USER", ""))
+        user = prompt("  SSH 사용자", current_user or os.getenv("USER", ""))
         if user:
             save_env_value("TERMINAL_SSH_USER", user)
 
         # SSH port
         current_port = get_env_value("TERMINAL_SSH_PORT") or "22"
-        port = prompt("  SSH port", current_port)
+        port = prompt("  SSH 포트", current_port)
         if port and port != "22":
             save_env_value("TERMINAL_SSH_PORT", port)
 
         # SSH key
         current_key = get_env_value("TERMINAL_SSH_KEY") or ""
         default_key = str(Path.home() / ".ssh" / "id_rsa")
-        ssh_key = prompt("  SSH private key path", current_key or default_key)
+        ssh_key = prompt("  SSH 개인키 경로", current_key or default_key)
         if ssh_key:
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
         # Test connection
-        if host and prompt_yes_no("  Test SSH connection?", True):
-            print_info("  Testing connection...")
+        if host and prompt_yes_no("  SSH 연결을 테스트할까요?", True):
+            print_info("  연결 테스트 중...")
             import subprocess
 
             ssh_cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
@@ -1377,10 +1377,10 @@ def setup_terminal_backend(config: dict):
             ssh_cmd.append("echo ok")
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
-                print_success("  SSH connection successful!")
+                print_success("  SSH 연결 성공!")
             else:
-                print_warning(f"  SSH connection failed: {result.stderr.strip()}")
-                print_info("  Check your SSH key and host settings.")
+                print_warning(f"  SSH 연결 실패: {result.stderr.strip()}")
+                print_info("  SSH 키와 호스트 설정을 확인하세요.")
 
     # Sync terminal backend to .env so terminal_tool picks it up directly.
     # config.yaml is the source of truth, but terminal_tool reads TERMINAL_ENV.
@@ -1389,7 +1389,7 @@ def setup_terminal_backend(config: dict):
         save_env_value("TERMINAL_MODAL_MODE", config["terminal"].get("modal_mode", "auto"))
     save_config(config)
     print()
-    print_success(f"Terminal backend set to: {selected_backend}")
+    print_success(f"터미널 백엔드 설정 완료: {selected_backend}")
 
 
 # =============================================================================

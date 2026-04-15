@@ -7858,7 +7858,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = 10
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False

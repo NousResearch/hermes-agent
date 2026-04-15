@@ -60,6 +60,49 @@ class TestEnsureHermesHome:
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
 
 
+class TestSecureFileMode:
+    """_secure_file honors HERMES_FILE_MODE (paired with HERMES_HOME_MODE)."""
+
+    def test_default_mode_is_0600(self, tmp_path):
+        from hermes_cli.config import _secure_file
+        f = tmp_path / "default.txt"
+        f.write_text("x")
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("HERMES_FILE_MODE", None)
+            _secure_file(f)
+        assert (f.stat().st_mode & 0o777) == 0o600
+
+    def test_env_override_applies_0660(self, tmp_path):
+        from hermes_cli.config import _secure_file
+        f = tmp_path / "shared.txt"
+        f.write_text("x")
+        with patch.dict(os.environ, {"HERMES_FILE_MODE": "0660"}):
+            _secure_file(f)
+        assert (f.stat().st_mode & 0o777) == 0o660
+
+    def test_env_override_applies_0640(self, tmp_path):
+        from hermes_cli.config import _secure_file
+        f = tmp_path / "readable.txt"
+        f.write_text("x")
+        with patch.dict(os.environ, {"HERMES_FILE_MODE": "0640"}):
+            _secure_file(f)
+        assert (f.stat().st_mode & 0o777) == 0o640
+
+    def test_invalid_mode_falls_back_to_default(self, tmp_path):
+        from hermes_cli.config import _secure_file
+        f = tmp_path / "invalid.txt"
+        f.write_text("x")
+        with patch.dict(os.environ, {"HERMES_FILE_MODE": "not-octal"}):
+            _secure_file(f)
+        assert (f.stat().st_mode & 0o777) == 0o600
+
+    def test_nonexistent_path_is_noop(self):
+        from hermes_cli.config import _secure_file
+        # Should not raise, regardless of env.
+        with patch.dict(os.environ, {"HERMES_FILE_MODE": "0660"}):
+            _secure_file(Path("/nonexistent/path/never.txt"))
+
+
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

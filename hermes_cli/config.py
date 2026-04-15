@@ -242,16 +242,34 @@ def _secure_dir(path):
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows.
+    """Set file to owner-only read/write (0600 by default). No-op on Windows.
 
     Skipped in managed mode — the NixOS activation script sets
     group-readable permissions (0640) on config files.
+
+    The mode can be overridden via the HERMES_FILE_MODE environment variable
+    (e.g. HERMES_FILE_MODE=0660) for deployments where multiple users in a
+    shared group need to read and write HERMES_HOME state. This is the
+    file-level counterpart to HERMES_HOME_MODE (which governs directory
+    permissions) and is intended to be set alongside it.
+
+    Typical shared-state pairing:
+        HERMES_HOME_MODE=02770   # rwxrwx--- + setgid on dirs
+        HERMES_FILE_MODE=0660    # rw-rw---- on files
+
+    If HERMES_FILE_MODE is unset or invalid, the default 0600 is used —
+    fully backward compatible.
     """
     if is_managed():
         return
     try:
+        mode_str = os.environ.get("HERMES_FILE_MODE", "").strip()
+        mode = int(mode_str, 8) if mode_str else 0o600
+    except ValueError:
+        mode = 0o600
+    try:
         if os.path.exists(str(path)):
-            os.chmod(path, 0o600)
+            os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
 

@@ -220,10 +220,13 @@ class MemoryStore:
                 current = self._char_count(target)
                 return {
                     "success": False,
+                    "no_retry": True,
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Replace or remove existing entries first."
+                        f"Replace or remove existing entries first. "
+                        f"Do NOT retry this call — reduce the content size or "
+                        f"remove entries first."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",

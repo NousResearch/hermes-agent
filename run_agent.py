@@ -6997,6 +6997,7 @@ class AIAgent:
 
         # ── Parse args + pre-execution bookkeeping ───────────────────────
         parsed_calls = []  # list of (tool_call, function_name, function_args)
+        _skipped_no_retry = []  # tool calls skipped due to no-retry guard
         for tool_call in tool_calls:
             function_name = tool_call.function.name
 
@@ -7012,6 +7013,13 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+
+            # ── No-retry guard: skip terminal-failed tool calls
+            _no_retry_key = (function_name, tool_call.function.arguments)
+            if _no_retry_key in self._no_retry_tool_keys:
+                logger.info("Skipping no-retry tool call (concurrent): %s", function_name)
+                _skipped_no_retry.append(tool_call)
+                continue
 
             # Checkpoint for file-mutating tools
             if function_name in ("write_file", "patch") and self._checkpoint_mgr.enabled:
@@ -7175,6 +7183,30 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Track terminal (no-retry) tool failures
+            try:
+                _parsed = json.loads(function_result)
+                if isinstance(_parsed, dict) and _parsed.get("no_retry"):
+                    _nr_key = (name, tc.function.arguments)
+                    self._no_retry_tool_keys.add(_nr_key)
+                    logger.info("Marked tool call as no-retry (concurrent): %s", name)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # ── Append canned results for no-retry-skipped tool calls ────────
+        for tc in _skipped_no_retry:
+            messages.append({
+                "role": "tool",
+                "content": json.dumps({
+                    "success": False,
+                    "error": (
+                        f"This {tc.function.name} call was already attempted and failed permanently. "
+                        f"Do not retry with the same arguments. Change your approach."
+                    ),
+                }),
+                "tool_call_id": tc.id,
+            })
+
         # ── Per-turn aggregate budget enforcement ─────────────────────────
         num_tools = len(parsed_calls)
         if num_tools > 0:
@@ -7210,6 +7242,26 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+
+            # ── No-retry guard: skip tool calls that previously failed
+            # with a terminal (no_retry) error.  Prevents tight retry
+            # loops when e.g. memory writes repeatedly exceed char limits.
+            _no_retry_key = (function_name, tool_call.function.arguments)
+            if _no_retry_key in self._no_retry_tool_keys:
+                logger.info("Skipping no-retry tool call: %s (already failed terminally)", function_name)
+                tool_msg = {
+                    "role": "tool",
+                    "content": json.dumps({
+                        "success": False,
+                        "error": (
+                            f"This {function_name} call was already attempted and failed permanently. "
+                            f"Do not retry with the same arguments. Change your approach."
+                        ),
+                    }),
+                    "tool_call_id": tool_call.id,
+                }
+                messages.append(tool_msg)
+                continue
 
             # Check plugin hooks for a block directive before executing.
             _block_msg: Optional[str] = None
@@ -7521,6 +7573,17 @@ class AIAgent:
             }
             messages.append(tool_msg)
 
+            # ── Track terminal (no-retry) tool failures so identical
+            # calls are short-circuited on subsequent turns.
+            try:
+                _parsed = json.loads(function_result)
+                if isinstance(_parsed, dict) and _parsed.get("no_retry"):
+                    _no_retry_key = (function_name, tool_call.function.arguments)
+                    self._no_retry_tool_keys.add(_no_retry_key)
+                    logger.info("Marked tool call as no-retry: %s", function_name)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
             if not self.quiet_mode:
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -7810,6 +7873,7 @@ class AIAgent:
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._no_retry_tool_keys: set = set()
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.

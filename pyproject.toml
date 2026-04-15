@@ -34,6 +34,8 @@ dependencies = [
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  # QR code rendering for scan-to-configure flows
+  "qrcode>=7.4,<9",
 ]
 
 [project.optional-dependencies]

@@ -44,7 +44,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
     "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
-    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_HOME_CHANNEL", "QQ_HOME_CHANNEL_NAME",
+    "QQ_APP_ID", "QQ_CLIENT_SECRET", "QQBOT_HOME_CHANNEL", "QQBOT_HOME_CHANNEL_NAME",
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
@@ -1534,12 +1534,12 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Allow All QQ Users",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL": {
+    "QQBOT_HOME_CHANNEL": {
         "description": "Default QQ channel/group for cron delivery and notifications",
         "prompt": "QQ Home Channel",
         "category": "messaging",
     },
-    "QQ_HOME_CHANNEL_NAME": {
+    "QQBOT_HOME_CHANNEL_NAME": {
         "description": "Display name for the QQ home channel",
         "prompt": "QQ Home Channel Name",
         "category": "messaging",

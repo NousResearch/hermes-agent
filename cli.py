@@ -209,6 +209,7 @@ def load_cli_config() -> Dict[str, Any]:
             "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
             "show_full_user_message": False,  # When true, show all lines instead of first + (+N lines)
             "image_preview": True,   # Render images inline in terminal when tools produce them (iTerm2/Kitty/chafa)
+            "input_max_height": 8,   # Max visual lines for the input area (1–50)
             "skin": "default",
         },
         "clarify": {
@@ -7881,29 +7882,18 @@ class HermesCLI:
                 edit_dir.mkdir(parents=True, exist_ok=True)
                 edit_file = edit_dir / "prompt.md"
 
-                SENTINEL_START = "\n<!-- ✂️ PASTE-REGION-START -->\n"
-                SENTINEL_END = "\n<!-- ✂️ PASTE-REGION-END -->\n"
-
                 if paste_matches:
-                    # Expand paste references inline with sentinel markers
-                    # so we can locate edited paste content after the user saves.
+                    # Expand paste references inline — user sees and edits
+                    # the FULL prompt text, no markers, no references.
                     expanded = original_text
-                    paste_info = []  # (paste_path, original_content, ref_text)
-                    offset = 0
-                    for pm in paste_matches:
+                    for pm in reversed(paste_matches):
                         paste_path = Path(pm.group(1))
-                        old_content = paste_path.read_text(encoding="utf-8") if paste_path.exists() else pm.group(0)
-                        ref_text = pm.group(0)
-                        paste_info.append((paste_path, old_content, ref_text))
-                        # Insert at this position (adjusting for previous expansions)
-                        insert_pos = pm.start() + offset
-                        replacement = SENTINEL_START + old_content + SENTINEL_END
-                        expanded = expanded[:insert_pos] + replacement + expanded[insert_pos + len(ref_text):]
-                        offset += len(replacement) - len(ref_text)
+                        if paste_path.exists():
+                            content = paste_path.read_text(encoding="utf-8")
+                            expanded = expanded[:pm.start()] + content + expanded[pm.end():]
                     edit_file.write_text(expanded, encoding="utf-8")
                 else:
                     edit_file.write_text(original_text, encoding="utf-8")
-                    paste_info = []
 
                 # Resolve editor: $VISUAL > $EDITOR > code --wait > cursor --wait > vi
                 editor_cmd = os.environ.get("VISUAL") or os.environ.get("EDITOR") or ""
@@ -7921,46 +7911,47 @@ class HermesCLI:
                     subprocess.run(parts + [str(edit_file)], check=False)
                     new_text = edit_file.read_text(encoding="utf-8")
 
-                    if paste_info:
-                        # Find sentinel markers in the edited text and extract
-                        # content between them. Update paste files if changed.
-                        final_parts = []
-                        last_end = 0
-                        for paste_path, old_content, ref_text in paste_info:
-                            # Find the next sentinel start
-                            start_marker = new_text.find(SENTINEL_START, last_end)
-                            if start_marker < 0:
-                                # User deleted the sentinel — keep everything from
-                                # last_end as-is and skip this paste ref
-                                final_parts.append(new_text[last_end:])
-                                last_end = len(new_text)
+                    if paste_matches:
+                        # Rebuild the prompt with updated paste references.
+                        # For each paste reference, check if the user edited
+                        # the corresponding content by matching the unchanged
+                        # before/after text.
+                        final_text = new_text  # default: use full edited text
+                        for pm in paste_matches:
+                            paste_path = Path(pm.group(1))
+                            if not paste_path.exists():
                                 continue
-                            # Text before this paste region
-                            final_parts.append(new_text[last_end:start_marker])
-                            # Find the end marker
-                            content_start = start_marker + len(SENTINEL_START)
-                            end_marker = new_text.find(SENTINEL_END, content_start)
-                            if end_marker < 0:
-                                # User deleted the end marker — treat rest as paste
-                                new_content = new_text[content_start:]
-                                last_end = len(new_text)
+                            old_content = paste_path.read_text(encoding="utf-8")
+                            ref_text = pm.group(0)
+                            before = original_text[:pm.start()]
+                            after = original_text[pm.end():]
+
+                            # Check if the old paste content is still in the
+                            # edited text (user didn't change it)
+                            if new_text.find(old_content) >= 0:
+                                continue  # unchanged — keep original reference
+
+                            # User edited the paste content. Extract the new
+                            # content by finding what's between the unchanged
+                            # before/after text.
+                            new_content = new_text
+                            if before and new_text.startswith(before):
+                                content_start = len(before)
                             else:
-                                new_content = new_text[content_start:end_marker]
-                                last_end = end_marker + len(SENTINEL_END)
-                            # Check if paste content changed
-                            if new_content != old_content:
+                                content_start = 0
+                            if after and new_text.endswith(after):
+                                content_end = len(new_text) - len(after)
+                            else:
+                                content_end = len(new_text)
+
+                            new_content = new_text[content_start:content_end]
+                            if new_content and new_content != old_content:
+                                # Update the paste file with edited content
                                 paste_path.write_text(new_content, encoding="utf-8")
                                 line_count = new_content.count('\n') + 1
                                 updated_ref = _re.sub(r'\d+ lines', f'{line_count} lines', ref_text)
-                                final_parts.append(updated_ref)
-                            else:
-                                final_parts.append(ref_text)
-                        # Remaining text after last paste region
-                        if last_end < len(new_text):
-                            final_parts.append(new_text[last_end:])
-                        final_text = "".join(final_parts)
-                    else:
-                        final_text = new_text
+                                # Rebuild: before + updated ref + after
+                                final_text = before + updated_ref + after
 
                     # Update the buffer in the app thread
                     def _update():
@@ -8430,7 +8421,7 @@ class HermesCLI:
                         visual_lines += 1
                     else:
                         visual_lines += max(1, -(-len(line) // available_width))  # ceil division
-                return min(max(visual_lines, 1), 8)
+                return min(max(visual_lines, 1), CLI_CONFIG.get("display", {}).get("input_max_height", 8))
             except Exception:
                 return 1
 
@@ -8445,9 +8436,11 @@ class HermesCLI:
         def _on_text_changed(buf):
             """Detect large pastes and collapse them to a file reference.
 
-            When bracketed paste is available, handle_paste collapses
-            large pastes directly.  This handler is a fallback for
-            terminals without bracketed paste support.
+            Fallback for terminals without bracketed paste support.
+            Only collapses when the entire buffer content is the paste
+            (no existing text before/after).  If the buffer already has
+            content, we skip collapsing here — handle_paste() already
+            does the right thing by inserting just the placeholder.
 
             Two heuristics (either triggers collapse):
             1. Many characters added at once (chars_added > 1) — works
@@ -8468,16 +8461,17 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            # Only collapse if the ENTIRE buffer is the paste (no existing text).
+            # If the user typed something before pasting, handle_paste() already
+            # inserted just the placeholder — don't clobber the whole buffer.
+            if line_count >= 5 and is_paste and not text.startswith('/') and not text.startswith('[Pasted text'):
                 _paste_counter[0] += 1
-                # Save to temp file
                 paste_dir = _hermes_home / "pastes"
                 paste_dir.mkdir(parents=True, exist_ok=True)
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
-                # Replace buffer with compact reference
                 _paste_just_collapsed[0] = True
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed

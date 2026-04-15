@@ -5073,6 +5073,7 @@ Examples:
     hermes debug share --lines 500  Include more log lines
     hermes debug share --expire 30  Keep paste for 30 days
     hermes debug share --local      Print report locally (no upload)
+    hermes debug delete <url>       Delete a previously uploaded paste
 """,
     )
     debug_sub = debug_parser.add_subparsers(dest="debug_command")
@@ -5091,6 +5092,14 @@ Examples:
     share_parser.add_argument(
         "--local", action="store_true",
         help="Print the report locally instead of uploading",
+    )
+    delete_parser = debug_sub.add_parser(
+        "delete",
+        help="Delete a paste uploaded by 'hermes debug share'",
+    )
+    delete_parser.add_argument(
+        "urls", nargs="*", default=[],
+        help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
     debug_parser.set_defaults(func=cmd_debug)
 

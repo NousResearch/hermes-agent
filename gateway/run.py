@@ -6803,11 +6803,17 @@ class GatewayRunner:
     })
 
     async def _handle_debug_command(self, event: MessageEvent) -> str:
-        """Handle /debug — upload debug report + logs and return paste URLs."""
+        """Handle /debug — upload debug report (summary only) and return paste URLs.
+
+        Gateway uploads ONLY the summary report (system info + log tails),
+        NOT full log files, to protect conversation privacy.  Users who need
+        full log uploads should use ``hermes debug share`` from the CLI.
+        """
         import asyncio
         from hermes_cli.debug import (
-            _capture_dump, collect_debug_report, _read_full_log,
-            upload_to_pastebin,
+            _capture_dump, collect_debug_report,
+            upload_to_pastebin, _schedule_auto_delete,
+            _GATEWAY_PRIVACY_NOTICE,
         )
 
         loop = asyncio.get_running_loop()
@@ -6816,43 +6822,25 @@ class GatewayRunner:
         def _collect_and_upload():
             dump_text = _capture_dump()
             report = collect_debug_report(log_lines=200, dump_text=dump_text)
-            agent_log = _read_full_log("agent")
-            gateway_log = _read_full_log("gateway")
-
-            if agent_log:
-                agent_log = dump_text + "\n\n--- full agent.log ---\n" + agent_log
-            if gateway_log:
-                gateway_log = dump_text + "\n\n--- full gateway.log ---\n" + gateway_log
 
             urls = {}
-            failures = []
-
             try:
                 urls["Report"] = upload_to_pastebin(report)
             except Exception as exc:
                 return f"✗ Failed to upload debug report: {exc}"
 
-            if agent_log:
-                try:
-                    urls["agent.log"] = upload_to_pastebin(agent_log)
-                except Exception:
-                    failures.append("agent.log")
+            # Schedule auto-deletion after 1 hour
+            _schedule_auto_delete(list(urls.values()))
 
-            if gateway_log:
-                try:
-                    urls["gateway.log"] = upload_to_pastebin(gateway_log)
-                except Exception:
-                    failures.append("gateway.log")
-
-            lines = ["**Debug report uploaded:**", ""]
+            lines = [_GATEWAY_PRIVACY_NOTICE, "", "**Debug report uploaded:**", ""]
             label_width = max(len(k) for k in urls)
             for label, url in urls.items():
                 lines.append(f"`{label:<{label_width}}`  {url}")
 
-            if failures:
-                lines.append(f"\n_(failed to upload: {', '.join(failures)})_")
-
-            lines.append("\nShare these links with the Hermes team for support.")
+            lines.append("")
+            lines.append("⏱ Pastes will auto-delete in 1 hour.")
+            lines.append("For full log uploads, use `hermes debug share` from the CLI.")
+            lines.append("Share these links with the Hermes team for support.")
             return "\n".join(lines)
 
         return await loop.run_in_executor(None, _collect_and_upload)

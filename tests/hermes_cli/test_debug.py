@@ -428,7 +428,9 @@ class TestRunDebug:
         run_debug(args)
 
         out = capsys.readouterr().out
-        assert "hermes debug share" in out
+        assert "hermes debug" in out
+        assert "share" in out
+        assert "delete" in out
 
     def test_share_subcommand_routes(self, hermes_home):
         from hermes_cli.debug import run_debug
@@ -459,3 +461,187 @@ class TestArgparseIntegration:
         args = MagicMock()
         args.debug_command = None
         cmd_debug(args)
+
+
+# ---------------------------------------------------------------------------
+# Delete / auto-delete
+# ---------------------------------------------------------------------------
+
+class TestExtractPasteId:
+    def test_paste_rs_url(self):
+        from hermes_cli.debug import _extract_paste_id
+        assert _extract_paste_id("https://paste.rs/abc123") == "abc123"
+
+    def test_paste_rs_trailing_slash(self):
+        from hermes_cli.debug import _extract_paste_id
+        assert _extract_paste_id("https://paste.rs/abc123/") == "abc123"
+
+    def test_http_variant(self):
+        from hermes_cli.debug import _extract_paste_id
+        assert _extract_paste_id("http://paste.rs/xyz") == "xyz"
+
+    def test_non_paste_rs_returns_none(self):
+        from hermes_cli.debug import _extract_paste_id
+        assert _extract_paste_id("https://dpaste.com/ABCDEF") is None
+
+    def test_empty_returns_none(self):
+        from hermes_cli.debug import _extract_paste_id
+        assert _extract_paste_id("") is None
+
+
+class TestDeletePaste:
+    def test_delete_sends_delete_request(self):
+        from hermes_cli.debug import delete_paste
+
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("hermes_cli.debug.urllib.request.urlopen",
+                    return_value=mock_resp) as mock_open:
+            result = delete_paste("https://paste.rs/abc123")
+
+        assert result is True
+        req = mock_open.call_args[0][0]
+        assert req.method == "DELETE"
+        assert "paste.rs/abc123" in req.full_url
+
+    def test_delete_rejects_non_paste_rs(self):
+        from hermes_cli.debug import delete_paste
+
+        with pytest.raises(ValueError, match="only paste.rs"):
+            delete_paste("https://dpaste.com/something")
+
+
+class TestScheduleAutoDelete:
+    def test_spawns_detached_process(self):
+        from hermes_cli.debug import _schedule_auto_delete
+
+        with patch("subprocess.Popen") as mock_popen:
+            _schedule_auto_delete(
+                ["https://paste.rs/abc", "https://paste.rs/def"],
+                delay_seconds=10,
+            )
+
+        mock_popen.assert_called_once()
+        call_args = mock_popen.call_args
+        # Verify detached
+        assert call_args[1]["start_new_session"] is True
+        # Verify the script references both URLs
+        script = call_args[0][0][2]  # [python, -c, script]
+        assert "paste.rs/abc" in script
+        assert "paste.rs/def" in script
+        assert "time.sleep(10)" in script
+
+    def test_skips_non_paste_rs_urls(self):
+        from hermes_cli.debug import _schedule_auto_delete
+
+        with patch("subprocess.Popen") as mock_popen:
+            _schedule_auto_delete(["https://dpaste.com/something"])
+
+        mock_popen.assert_not_called()
+
+    def test_handles_popen_failure_gracefully(self):
+        from hermes_cli.debug import _schedule_auto_delete
+
+        with patch("subprocess.Popen",
+                    side_effect=OSError("no such file")):
+            # Should not raise
+            _schedule_auto_delete(["https://paste.rs/abc"])
+
+
+class TestRunDebugDelete:
+    def test_deletes_valid_url(self, capsys):
+        from hermes_cli.debug import run_debug_delete
+
+        args = MagicMock()
+        args.urls = ["https://paste.rs/abc"]
+
+        with patch("hermes_cli.debug.delete_paste", return_value=True):
+            run_debug_delete(args)
+
+        out = capsys.readouterr().out
+        assert "Deleted" in out
+        assert "paste.rs/abc" in out
+
+    def test_handles_delete_failure(self, capsys):
+        from hermes_cli.debug import run_debug_delete
+
+        args = MagicMock()
+        args.urls = ["https://paste.rs/abc"]
+
+        with patch("hermes_cli.debug.delete_paste",
+                    side_effect=Exception("network error")):
+            run_debug_delete(args)
+
+        out = capsys.readouterr().out
+        assert "Could not delete" in out
+
+    def test_no_urls_shows_usage(self, capsys):
+        from hermes_cli.debug import run_debug_delete
+
+        args = MagicMock()
+        args.urls = []
+
+        run_debug_delete(args)
+
+        out = capsys.readouterr().out
+        assert "Usage" in out
+
+
+class TestShareIncludesAutoDelete:
+    """Verify that run_debug_share schedules auto-deletion and prints TTL."""
+
+    def test_share_schedules_auto_delete(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test1"), \
+             patch("hermes_cli.debug._schedule_auto_delete") as mock_sched:
+            run_debug_share(args)
+
+        # auto-delete was scheduled with the uploaded URLs
+        mock_sched.assert_called_once()
+        urls_arg = mock_sched.call_args[0][0]
+        assert "https://paste.rs/test1" in urls_arg
+
+        out = capsys.readouterr().out
+        assert "auto-delete" in out
+
+    def test_share_shows_privacy_notice(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = False
+
+        with patch("hermes_cli.dump.run_dump"), \
+             patch("hermes_cli.debug.upload_to_pastebin",
+                    return_value="https://paste.rs/test"), \
+             patch("hermes_cli.debug._schedule_auto_delete"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "public paste service" in out
+
+    def test_local_no_privacy_notice(self, hermes_home, capsys):
+        from hermes_cli.debug import run_debug_share
+
+        args = MagicMock()
+        args.lines = 50
+        args.expire = 7
+        args.local = True
+
+        with patch("hermes_cli.dump.run_dump"):
+            run_debug_share(args)
+
+        out = capsys.readouterr().out
+        assert "public paste service" not in out

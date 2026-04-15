@@ -12,18 +12,123 @@ a thin dispatcher that delegates to a platform-provided callback.
 """
 
 import json
+import logging
+import threading
 from typing import List, Optional, Callable
 
+logger = logging.getLogger(__name__)
 
 # Maximum number of predefined choices the agent can offer.
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
+
+# =========================================================================
+# Gateway clarify state — mirrors approval.py's blocking mechanism
+# =========================================================================
+
+_clarify_lock = threading.Lock()
+_clarify_queues: dict[str, list] = {}        # session_key → [threading.Event, ...]
+_clarify_results: dict[str, list] = {}       # session_key → [str, ...]
+_clarify_notify_cbs: dict[str, object] = {}  # session_key → callable(question, choices)
+
+
+def register_clarify_callback(session_key: str, cb) -> None:
+    """Register a per-session callback for sending clarify questions to the user."""
+    with _clarify_lock:
+        _clarify_notify_cbs[session_key] = cb
+
+
+def unregister_clarify_callback(session_key: str) -> None:
+    """Unregister the per-session clarify callback and unblock any waiting threads."""
+    with _clarify_lock:
+        _clarify_notify_cbs.pop(session_key, None)
+        events = _clarify_queues.pop(session_key, [])
+        _clarify_results.pop(session_key, None)
+        for event in events:
+            event.set()
+
+
+def resolve_clarify(session_key: str, response: str) -> bool:
+    """Called by the gateway to unblock a waiting clarify callback with the user's response.
+
+    Returns True if a pending clarify was resolved, False if none was pending.
+    """
+    with _clarify_lock:
+        queue = _clarify_queues.get(session_key)
+        if not queue:
+            return False
+        event = queue.pop(0)
+        if not queue:
+            _clarify_queues.pop(session_key, None)
+        _clarify_results.setdefault(session_key, []).append(response)
+    event.set()
+    return True
+
+
+def has_pending_clarify(session_key: str) -> bool:
+    """Check if a session has a pending clarify question waiting for a response."""
+    with _clarify_lock:
+        return bool(_clarify_queues.get(session_key))
+
+
+def _blocking_gateway_clarify(session_key: str, question: str, choices: Optional[List[str]],
+                               timeout: int = 120) -> str:
+    """Blocking clarify for gateway platforms — mirrors approval.py's pattern.
+
+    Sends the question via the registered callback, then blocks on a threading.Event
+    until the gateway resolves it via resolve_clarify() or timeout.
+    """
+    from hermes_constants import get_hermes_home
+    from pathlib import Path
+
+    event = threading.Event()
+
+    with _clarify_lock:
+        _clarify_queues.setdefault(session_key, []).append(event)
+        cb = _clarify_notify_cbs.get(session_key)
+
+    if cb is None:
+        return (
+            "The user is not available for interactive questions. "
+            "Use your best judgement to make the choice and proceed."
+        )
+
+    try:
+        cb(question, choices)
+    except Exception as exc:
+        logger.warning("clarify callback failed: %s", exc)
+        return (
+            "Failed to present the question to the user. "
+            "Use your best judgement to make the choice and proceed."
+        )
+
+    # Wait for the user's response or timeout
+    signaled = event.wait(timeout=timeout)
+
+    with _clarify_lock:
+        results = _clarify_results.get(session_key, [])
+        if results:
+            return results.pop(0)
+
+    if not signaled:
+        # Timed out
+        return (
+            f"The user did not provide a response within {timeout}s. "
+            "Use your best judgement to make the choice and proceed."
+        )
+
+    # Event was set but no result — callback was unregistered (session ended)
+    return (
+        "The session ended before the user could respond. "
+        "Use your best judgement to make the choice and proceed."
+    )
 
 
 def clarify_tool(
     question: str,
     choices: Optional[List[str]] = None,
     callback: Optional[Callable] = None,
+    session_key: Optional[str] = None,
 ) -> str:
     """
     Ask the user a question, optionally with multiple-choice options.
@@ -35,6 +140,8 @@ def clarify_tool(
         callback: Platform-provided function that handles the actual UI
                   interaction. Signature: callback(question, choices) -> str.
                   Injected by the agent runner (cli.py / gateway).
+        session_key: Gateway session key for blocking clarify (used when
+                     callback is None but a gateway session is active).
 
     Returns:
         JSON string with the user's response.
@@ -54,25 +161,35 @@ def clarify_tool(
         if not choices:
             choices = None  # empty list → open-ended
 
-    if callback is None:
-        return json.dumps(
-            {"error": "Clarify tool is not available in this execution context."},
-            ensure_ascii=False,
-        )
+    # Path 1: Direct callback (CLI mode)
+    if callback is not None:
+        try:
+            user_response = callback(question, choices)
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"Failed to get user input: {exc}"},
+                ensure_ascii=False,
+            )
+        return json.dumps({
+            "question": question,
+            "choices_offered": choices,
+            "user_response": str(user_response).strip(),
+        }, ensure_ascii=False)
 
-    try:
-        user_response = callback(question, choices)
-    except Exception as exc:
-        return json.dumps(
-            {"error": f"Failed to get user input: {exc}"},
-            ensure_ascii=False,
-        )
+    # Path 2: Gateway blocking clarify (messaging platforms)
+    if session_key:
+        user_response = _blocking_gateway_clarify(session_key, question, choices)
+        return json.dumps({
+            "question": question,
+            "choices_offered": choices,
+            "user_response": str(user_response).strip(),
+        }, ensure_ascii=False)
 
-    return json.dumps({
-        "question": question,
-        "choices_offered": choices,
-        "user_response": str(user_response).strip(),
-    }, ensure_ascii=False)
+    # Path 3: No callback and no session — cannot interact
+    return json.dumps(
+        {"error": "Clarify tool is not available in this execution context."},
+        ensure_ascii=False,
+    )
 
 
 def check_clarify_requirements() -> bool:

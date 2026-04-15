@@ -7574,6 +7574,7 @@ class AIAgent:
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
+                session_key=getattr(self, '_gateway_session_key', None) or self.session_id,
             )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task

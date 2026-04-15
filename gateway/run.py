@@ -3394,6 +3394,23 @@ class GatewayRunner:
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
 
+        # Pending clarify — if this session has a clarify question waiting,
+        # intercept the message and route it as the clarify response.
+        from tools.clarify_tool import has_pending_clarify, resolve_clarify
+        if has_pending_clarify(_quick_key):
+            user_text = (event.text or "").strip()
+            # Try to parse as a numbered choice
+            if user_text.isdigit():
+                choice_num = int(user_text)
+                # The number is 1-based, but we just pass it through as-is
+                # The agent will interpret it based on the choices offered
+                resolve_clarify(_quick_key, user_text)
+            else:
+                # Free-form response
+                resolve_clarify(_quick_key, user_text)
+            logger.info("Clarify response captured for session %s: %r", _quick_key[:20], user_text)
+            return None  # Don't process as a normal message
+
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
         # are numerous await points (hooks, vision enrichment, STT,
@@ -9204,6 +9221,42 @@ class GatewayRunner:
                 if _pdc is not None:
                     _pdc[session_key] = _release_bg_review_messages
 
+            # Clarify tool — bridge sync→async for interactive questions on messaging platforms
+            from tools.clarify_tool import (
+                register_clarify_callback,
+                unregister_clarify_callback,
+            )
+            _clarify_session_key = session_key
+            def _clarify_notify(question: str, choices) -> None:
+                """Send a clarify question to the user from the agent thread."""
+                if not _status_adapter:
+                    return
+                try:
+                    # Build the clarify message
+                    if choices:
+                        lines = [f"❓ {question}", ""]
+                        for i, choice in enumerate(choices, 1):
+                            lines.append(f"  {i}. {choice}")
+                        lines.append(f"  5. Other (type your answer)")
+                        lines.append("")
+                        lines.append("Reply with a number (1-5) or type your own answer.")
+                        msg_text = "\n".join(lines)
+                    else:
+                        msg_text = f"❓ {question}"
+
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            msg_text,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    )
+                except Exception as _e:
+                    logger.debug("clarify_callback error: %s", _e)
+
+            register_clarify_callback(_clarify_session_key, _clarify_notify)
+
             # Store agent reference for interrupt support
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
@@ -9381,6 +9434,7 @@ class GatewayRunner:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                unregister_clarify_callback(_clarify_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 

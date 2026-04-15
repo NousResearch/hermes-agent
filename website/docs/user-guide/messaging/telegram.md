@@ -228,6 +228,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - replies to one of the bot's messages
   - `@botusername` mentions
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
+- Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
 ### Example group trigger configuration
@@ -239,9 +240,13 @@ telegram:
   require_mention: true
   mention_patterns:
     - "^\\s*chompy\\b"
+  ignored_threads:
+    - 31
+    - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
 
 ### Notes on `mention_patterns`
 

@@ -214,14 +214,12 @@ def _create_song(
     music_config: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Submit a song creation request. Returns the SenseAudio task_id."""
-    # custom_mode=True: model uses `lyrics` field as a free-form prompt.
-    # custom_mode=False: model treats `lyrics` as structured lyrics with section tags.
-    custom_mode = lyrics is None
-
+    # custom_mode=True causes a 400 "无效的歌词格式" from the SenseAudio API.
+    # Always use custom_mode=False with structured lyrics from lyrics/create.
     body: Dict[str, Any] = {
         "model": _model_name(music_config),
-        "lyrics": lyrics if lyrics is not None else prompt,
-        "custom_mode": custom_mode,
+        "lyrics": lyrics,
+        "custom_mode": False,
         "instrumental": instrumental,
     }
     if style:

@@ -301,6 +301,8 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
     
+    from hermes_constants import display_hermes_home
+
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
@@ -309,9 +311,11 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
-    
+
     # Local always available
-    lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")
+    lines.append(
+        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
+    )
     
     # Platform home channels
     for platform, home in context.home_channels.items():

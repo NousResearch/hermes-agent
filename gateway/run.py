@@ -9231,15 +9231,11 @@ class GatewayRunner:
                                 pass
                         except Exception as e:
                             logger.debug("Stream consumer wait before queued message failed: %s", e)
-                    _response_previewed = bool(result.get("response_previewed"))
                     _already_streamed = bool(
                         _sc
                         and (
                             getattr(_sc, "final_response_sent", False)
-                            or (
-                                _response_previewed
-                                and getattr(_sc, "already_sent", False)
-                            )
+                            or getattr(_sc, "already_sent", False)
                         )
                     )
                     first_response = result.get("final_response", "")
@@ -9323,13 +9319,9 @@ class GatewayRunner:
         # them even if streaming had sent earlier partial output.
         _sc = stream_consumer_holder[0]
         if _sc and isinstance(response, dict) and not response.get("failed"):
-            _response_previewed = bool(response.get("response_previewed"))
             if (
                 getattr(_sc, "final_response_sent", False)
-                or (
-                    _response_previewed
-                    and getattr(_sc, "already_sent", False)
-                )
+                or getattr(_sc, "already_sent", False)
             ):
                 response["already_sent"] = True
         

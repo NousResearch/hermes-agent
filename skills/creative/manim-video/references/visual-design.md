@@ -60,40 +60,35 @@ BG="#0A0A0A"; PRIMARY="#00F5FF"; SECONDARY="#FF00FF"; ACCENT="#39FF14"
 
 ## Font Selection
 
-**Use monospace fonts for all text.** Manim's Pango text renderer produces broken kerning with proportional fonts (Helvetica, Inter, SF Pro, Arial) at all sizes and resolutions. Characters overlap and spacing is inconsistent. This is a fundamental Pango limitation, not a Manim bug.
-
-Monospace fonts have fixed character widths — zero kerning issues by design.
+Manim's default `Text()` uses the system's default sans-serif font, which often renders with poor kerning. Always specify a font explicitly.
 
 ### Recommended Fonts
 
 | Use case | Font | Fallback |
 |----------|------|----------|
-| **All text (default)** | `"Menlo"` | `"Courier New"`, `"DejaVu Sans Mono"` |
-| Code, labels | `"JetBrains Mono"`, `"SF Mono"` | `"Menlo"` |
-| Math | Use `MathTex` (renders via LaTeX, not Pango) | — |
+| Body text, titles | `"Inter"`, `"SF Pro Display"` | `"Helvetica Neue"`, `"Arial"` |
+| Code, terminal | `"JetBrains Mono"`, `"SF Mono"` | `"Menlo"`, `"Courier New"` |
+| Math labels | Use `MathTex` (renders via LaTeX, not system fonts) | — |
 
 ```python
-MONO = "Menlo"  # define once at top of file
+# Clean body text
+title = Text("Gradient Descent", font_size=48, font="Inter", weight=BOLD)
 
-title = Text("Fourier Series", font_size=48, color=PRIMARY, weight=BOLD, font=MONO)
-label = Text("n=1: (4/pi) sin(x)", font_size=20, color=BLUE, font=MONO)
-note = Text("Convergence at discontinuities", font_size=18, color=DIM, font=MONO)
+# Monospaced code
+code_label = Text("loss.backward()", font_size=24, font="JetBrains Mono")
 
 # Math — always use MathTex, not Text
 equation = MathTex(r"\nabla L = \frac{\partial L}{\partial w}")
 ```
 
-### When Proportional Fonts Are Acceptable
-
-Large title text (font_size >= 48) with short strings (1-3 words) can use proportional fonts without visible kerning issues. For anything else — labels, descriptions, multi-word text, small sizes — use monospace.
-
 ### Font Availability
 
-- **macOS**: Menlo (pre-installed), SF Mono
-- **Linux**: DejaVu Sans Mono (pre-installed), Liberation Mono
-- **Cross-platform**: JetBrains Mono (install from jetbrains.com)
+Not all fonts are installed on all systems. Manim falls back silently to a default if the font is missing. Use widely available fonts:
+- **macOS**: SF Pro Display, SF Mono, Menlo, Helvetica Neue
+- **Linux**: DejaVu Sans, Liberation Sans, Ubuntu, Noto Sans
+- **Cross-platform**: Inter (install via Google Fonts), JetBrains Mono (install from jetbrains.com)
 
-`"Menlo"` is the safest default — pre-installed on macOS, and Linux systems fall back to DejaVu Sans Mono.
+For maximum portability, use `"Helvetica Neue"` (body) and `"Menlo"` (code) — both available on macOS and have Linux equivalents.
 
 ### Fine-Grained Text Control
 
@@ -104,15 +99,15 @@ Large title text (font_size >= 48) with short strings (1-3 words) can use propor
 MarkupText('<span letter_spacing="6000">HERMES</span>', font_size=18, font="Menlo")
 
 # Bold specific words
-MarkupText('This is <b>important</b>', font_size=24, font="Menlo")
+MarkupText('This is <b>important</b>', font_size=24)
 
 # Color specific words
-MarkupText('Red <span foreground="#FF6B6B">warning</span>', font_size=24, font="Menlo")
+MarkupText('Red <span foreground="#FF6B6B">warning</span>', font_size=24)
 ```
 
-### Minimum Font Size
+### Text Rendering Quality
 
-`font_size=18` is the minimum for readable text at any resolution. Below 18, characters become blurry at `-ql` and barely readable even at `-qh`.
+Manim's text rendering quality depends heavily on output resolution. At `-ql` (480p), text kerning looks noticeably poor. Always preview text-heavy scenes at `-qm` (720p) or higher. See `references/rendering.md` for quality preset guidance.
 
 ## Visual Hierarchy Checklist
 

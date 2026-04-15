@@ -24,7 +24,7 @@ This is educational cinema. Every frame teaches. Every animation reveals structu
 
 ## Prerequisites
 
-Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
+Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg.
 
 ## Modes
 
@@ -108,17 +108,13 @@ project-name/
 
 ### Fonts
 
-**Use monospace fonts for all text.** Manim's Pango renderer produces broken kerning with proportional fonts at all sizes. See `references/visual-design.md` for full recommendations.
+Always specify fonts explicitly — the default renders poorly. See `references/visual-design.md` for full recommendations.
 
 ```python
-MONO = "Menlo"  # define once at top of file
-
-Text("Fourier Series", font_size=48, font=MONO, weight=BOLD)  # titles
-Text("n=1: sin(x)", font_size=20, font=MONO)                  # labels
-MathTex(r"\nabla L")                                            # math (uses LaTeX)
+Text("Title", font_size=48, font="Inter", weight=BOLD)       # body text
+Text("code()", font_size=24, font="JetBrains Mono")           # monospaced
+MathTex(r"\nabla L")                                           # math (uses LaTeX)
 ```
-
-Minimum `font_size=18` for readability.
 
 ### Per-Scene Variation
 
@@ -145,12 +141,11 @@ BG = "#1C1C1C"
 PRIMARY = "#58C4DD"
 SECONDARY = "#83C167"
 ACCENT = "#FFFF00"
-MONO = "Menlo"
 
 class Scene1_Introduction(Scene):
     def construct(self):
         self.camera.background_color = BG
-        title = Text("Why Does This Work?", font_size=48, color=PRIMARY, weight=BOLD, font=MONO)
+        title = Text("Why Does This Work?", font_size=48, color=PRIMARY)
         self.add_subcaption("Why does this work?", duration=2)
         self.play(Write(title), run_time=1.5)
         self.wait(1.0)
@@ -234,31 +229,3 @@ Always iterate at `-ql`. Only render `-qh` for final output.
 | `references/scene-planning.md` | Narrative arcs, layout templates, scene transitions, planning template |
 | `references/rendering.md` | CLI reference, quality presets, ffmpeg, voiceover workflow, GIF export |
 | `references/troubleshooting.md` | LaTeX errors, animation errors, common mistakes, debugging |
-| `references/animation-design-thinking.md` | When to animate vs show static, decomposition, pacing, narration sync |
-| `references/updaters-and-trackers.md` | ValueTracker, add_updater, always_redraw, time-based updaters, patterns |
-| `references/paper-explainer.md` | Turning research papers into animations — workflow, templates, domain patterns |
-| `references/decorations.md` | SurroundingRectangle, Brace, arrows, DashedLine, Angle, annotation lifecycle |
-| `references/production-quality.md` | Pre-code, pre-render, post-render checklists, spatial layout, color, tempo |
-
----
-
-## Creative Divergence (use only when user requests experimental/creative/unique output)
-
-If the user asks for creative, experimental, or unconventional explanatory approaches, select a strategy and reason through it BEFORE designing the animation.
-
-- **SCAMPER** — when the user wants a fresh take on a standard explanation
-- **Assumption Reversal** — when the user wants to challenge how something is typically taught
-
-### SCAMPER Transformation
-Take a standard mathematical/technical visualization and transform it:
-- **Substitute**: replace the standard visual metaphor (number line → winding path, matrix → city grid)
-- **Combine**: merge two explanation approaches (algebraic + geometric simultaneously)
-- **Reverse**: derive backward — start from the result and deconstruct to axioms
-- **Modify**: exaggerate a parameter to show why it matters (10x the learning rate, 1000x the sample size)
-- **Eliminate**: remove all notation — explain purely through animation and spatial relationships
-
-### Assumption Reversal
-1. List what's "standard" about how this topic is visualized (left-to-right, 2D, discrete steps, formal notation)
-2. Pick the most fundamental assumption
-3. Reverse it (right-to-left derivation, 3D embedding of a 2D concept, continuous morphing instead of steps, zero notation)
-4. Explore what the reversal reveals that the standard approach hides

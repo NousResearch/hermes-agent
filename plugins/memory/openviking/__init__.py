@@ -85,6 +85,7 @@ class _VikingClient:
         self._api_key = api_key
         self._account = account or os.environ.get("OPENVIKING_ACCOUNT", "default")
         self._user = user or os.environ.get("OPENVIKING_USER", "default")
+        self._agent = user or os.environ.get("OPENVIKING_AGENT", "hermes")
         self._httpx = _get_httpx()
         if self._httpx is None:
             raise ImportError("httpx is required for OpenViking: pip install httpx")
@@ -94,6 +95,7 @@ class _VikingClient:
             "Content-Type": "application/json",
             "X-OpenViking-Account": self._account,
             "X-OpenViking-User": self._user,
+            "X-OpenViking-Agent": self._agent,
         }
         if self._api_key:
             h["X-API-Key"] = self._api_key
@@ -288,15 +290,21 @@ class OpenVikingMemoryProvider(MemoryProvider):
             },
             {
                 "key": "account",
-                "description": "OpenViking tenant account ID (default, used when local mode, OPENVIKING_API_KEY is empty)",
+                "description": "OpenViking tenant account ID ([default], used when local mode, OPENVIKING_API_KEY is empty)",
                 "default": "default",
                 "env_var": "OPENVIKING_ACCOUNT",
             },
             {
                 "key": "user",
-                "description": "OpenViking user ID within the account (default, used when local mode, OPENVIKING_API_KEY is empty)",
+                "description": "OpenViking user ID within the account ([default], used when local mode, OPENVIKING_API_KEY is empty)",
                 "default": "default",
                 "env_var": "OPENVIKING_USER",
+            },
+            {
+                "key": "agent",
+                "description": "OpenViking agent ID within the account ([hermes], useful in multi-agent mode)",
+                "default": "hermes",
+                "env_var": "OPENVIKING_AGENT",
             },
         ]
 

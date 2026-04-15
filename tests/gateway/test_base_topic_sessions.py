@@ -48,6 +48,12 @@ class DummyTelegramAdapter(BasePlatformAdapter):
         self.processing_hooks.append(("complete", event.message_id, outcome))
 
 
+class DummySlackAdapter(DummyTelegramAdapter):
+    def __init__(self):
+        super().__init__()
+        self.platform = Platform.SLACK
+
+
 def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageEvent:
     return MessageEvent(
         text="hello",
@@ -143,6 +149,49 @@ class TestBasePlatformTopicSessions:
         assert adapter.processing_hooks == [
             ("start", "1"),
             ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_process_message_background_adds_slack_parent_summary_for_top_level_channel(self):
+        adapter = DummySlackAdapter()
+        typing_calls = []
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "結論：已開新 lane。\n現況：主工作會留在 thread。\n下一步：我會繼續在 thread 推進。"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            typing_calls.append({"chat_id": _chat_id, "metadata": metadata})
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = MessageEvent(
+            text="<@bot> 幫我開一條新 lane",
+            source=SessionSource(
+                platform=Platform.SLACK,
+                chat_id="C123",
+                chat_type="group",
+                thread_id="1712345678.000100",
+            ),
+            message_id="1712345678.000100",
+        )
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert adapter.sent == [
+            {
+                "chat_id": "C123",
+                "content": "結論：已開新 lane。\n現況：主工作會留在 thread。\n下一步：我會繼續在 thread 推進。",
+                "reply_to": "1712345678.000100",
+                "metadata": {"thread_id": "1712345678.000100", "slack_parent_summary": True},
+            }
+        ]
+        assert typing_calls == [
+            {
+                "chat_id": "C123",
+                "metadata": {"thread_id": "1712345678.000100", "slack_parent_summary": True},
+            }
         ]
 
     @pytest.mark.asyncio

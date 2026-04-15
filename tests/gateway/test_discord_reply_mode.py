@@ -311,7 +311,11 @@ def reply_text_adapter(monkeypatch):
     """DiscordAdapter wired for _handle_message → handle_message capture."""
     import gateway.platforms.discord as discord_platform
 
+    if discord_platform.discord is None:
+        monkeypatch.setattr(discord_platform, "discord", SimpleNamespace(), raising=False)
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)

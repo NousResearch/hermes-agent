@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import {
   BarChart3,
+  Coins,
   Cpu,
+  Database,
   Hash,
   TrendingUp,
 } from "lucide-react";
@@ -23,6 +25,22 @@ function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
   return String(n);
+}
+
+function formatCost(n: number): string {
+  if (n <= 0) return "—";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
+function bestCost(entry: { estimated_cost: number; actual_cost?: number }): number {
+  if (entry.actual_cost && entry.actual_cost > 0) return entry.actual_cost;
+  return entry.estimated_cost;
+}
+
+function cacheHitPct(entry: { input_tokens: number; cache_read_tokens: number }): number {
+  if (entry.input_tokens <= 0 || entry.cache_read_tokens <= 0) return 0;
+  return Math.round((entry.cache_read_tokens / entry.input_tokens) * 100);
 }
 
 function formatDate(day: string): string {
@@ -89,6 +107,8 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
             const total = d.input_tokens + d.output_tokens;
             const inputH = Math.round((d.input_tokens / maxTokens) * CHART_HEIGHT_PX);
             const outputH = Math.round((d.output_tokens / maxTokens) * CHART_HEIGHT_PX);
+            const hitRate = cacheHitPct(d);
+            const cost = bestCost(d);
             return (
               <div
                 key={d.day}
@@ -101,7 +121,9 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <div className="font-medium">{formatDate(d.day)}</div>
                     <div>{t.analytics.input}: {formatTokens(d.input_tokens)}</div>
                     <div>{t.analytics.output}: {formatTokens(d.output_tokens)}</div>
+                    {hitRate > 0 && <div>{t.analytics.cacheHitRate}: {hitRate}%</div>}
                     <div>{t.analytics.total}: {formatTokens(total)}</div>
+                    {cost > 0 && <div>{t.analytics.cost}: {formatCost(cost)}</div>}
                   </div>
                 </div>
                 {/* Input bar */}
@@ -153,11 +175,15 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <th className="text-left py-2 pr-4 font-medium">{t.analytics.date}</th>
                 <th className="text-right py-2 px-4 font-medium">{t.sessions.title}</th>
                 <th className="text-right py-2 px-4 font-medium">{t.analytics.input}</th>
-                <th className="text-right py-2 pl-4 font-medium">{t.analytics.output}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.output}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.cacheHitRate}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t.analytics.cost}</th>
               </tr>
             </thead>
             <tbody>
               {sorted.map((d) => {
+                const hitRate = cacheHitPct(d);
+                const cost = bestCost(d);
                 return (
                   <tr key={d.day} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
                     <td className="py-2 pr-4 font-medium">{formatDate(d.day)}</td>
@@ -165,8 +191,14 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                     <td className="text-right py-2 px-4">
                       <span className="text-[#ffe6cb]">{formatTokens(d.input_tokens)}</span>
                     </td>
-                    <td className="text-right py-2 pl-4">
+                    <td className="text-right py-2 px-4">
                       <span className="text-emerald-400">{formatTokens(d.output_tokens)}</span>
+                    </td>
+                    <td className="text-right py-2 px-4 text-muted-foreground">
+                      {hitRate > 0 ? `${hitRate}%` : "—"}
+                    </td>
+                    <td className="text-right py-2 pl-4 text-muted-foreground">
+                      {formatCost(cost)}
                     </td>
                   </tr>
                 );
@@ -202,7 +234,8 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <th className="text-left py-2 pr-4 font-medium">{t.analytics.model}</th>
                 <th className="text-right py-2 px-4 font-medium">{t.sessions.title}</th>
-                <th className="text-right py-2 pl-4 font-medium">{t.analytics.tokens}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.tokens}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t.analytics.cost}</th>
               </tr>
             </thead>
             <tbody>
@@ -212,10 +245,13 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                     <span className="font-mono-ui text-xs">{m.model}</span>
                   </td>
                   <td className="text-right py-2 px-4 text-muted-foreground">{m.sessions}</td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-right py-2 px-4">
                     <span className="text-[#ffe6cb]">{formatTokens(m.input_tokens)}</span>
                     {" / "}
                     <span className="text-emerald-400">{formatTokens(m.output_tokens)}</span>
+                  </td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {formatCost(m.estimated_cost)}
                   </td>
                 </tr>
               ))}
@@ -283,12 +319,20 @@ export default function AnalyticsPage() {
       {data && (
         <>
           {/* Summary cards */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <SummaryCard
               icon={Hash}
               label={t.analytics.totalTokens}
               value={formatTokens(data.totals.total_input + data.totals.total_output)}
               sub={t.analytics.inOut.replace("{input}", formatTokens(data.totals.total_input)).replace("{output}", formatTokens(data.totals.total_output))}
+            />
+            <SummaryCard
+              icon={Database}
+              label={t.analytics.cacheHit}
+              value={data.totals.total_cache_read > 0 && data.totals.total_input > 0
+                ? `${Math.round((data.totals.total_cache_read / data.totals.total_input) * 100)}%`
+                : "—"}
+              sub={t.analytics.cacheTokens.replace("{count}", formatTokens(data.totals.total_cache_read))}
             />
             <SummaryCard
               icon={BarChart3}
@@ -301,6 +345,16 @@ export default function AnalyticsPage() {
               label={t.analytics.apiCalls}
               value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
               sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
+            />
+            <SummaryCard
+              icon={Coins}
+              label={t.analytics.cost}
+              value={formatCost(
+                data.totals.total_actual_cost > 0
+                  ? data.totals.total_actual_cost
+                  : data.totals.total_estimated_cost,
+              )}
+              sub={data.totals.total_actual_cost > 0 ? t.analytics.actual : `${t.analytics.estimated} · ${PERIODS.find((p) => p.days === days)?.label ?? `${days}d`}`}
             />
           </div>
 

@@ -102,6 +102,7 @@ class TestAppMentionHandler:
 
         # Track which events get registered
         registered_events = []
+        registered_handlers = {}
         registered_commands = []
 
         mock_app = MagicMock()
@@ -109,6 +110,7 @@ class TestAppMentionHandler:
         def mock_event(event_type):
             def decorator(fn):
                 registered_events.append(event_type)
+                registered_handlers[event_type] = fn
                 return fn
             return decorator
 
@@ -148,6 +150,11 @@ class TestAppMentionHandler:
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         assert "/hermes" in registered_commands
+
+        event = {"text": "<@U_BOT> hi", "channel": "C123", "ts": "1.23", "user": "U_USER"}
+        with patch.object(adapter, "_handle_slack_message", new=AsyncMock()) as mock_handle:
+            asyncio.run(registered_handlers["app_mention"](event, None))
+        mock_handle.assert_awaited_once_with(event)
 
 
 # ---------------------------------------------------------------------------
@@ -1353,6 +1360,35 @@ class TestSlashCommands:
     """Test slash command routing."""
 
     @pytest.mark.asyncio
+    async def test_slash_command_preserves_channel_thread_context(self, adapter):
+        command = {
+            "text": "status",
+            "user_id": "U1",
+            "channel_id": "C1",
+            "channel_type": "channel",
+            "thread_ts": "1712345678.000100",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/status"
+        assert msg.source.chat_type == "group"
+        assert msg.source.thread_id == "1712345678.000100"
+
+    @pytest.mark.asyncio
+    async def test_slash_command_keeps_dm_context_without_thread(self, adapter):
+        command = {
+            "text": "status",
+            "user_id": "U1",
+            "channel_id": "D1",
+            "channel_type": "im",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/status"
+        assert msg.source.chat_type == "dm"
+        assert msg.source.thread_id is None
+
+    @pytest.mark.asyncio
     async def test_compact_maps_to_compress(self, adapter):
         command = {"text": "compact", "user_id": "U1", "channel_id": "C1"}
         await adapter._handle_slash_command(command)
@@ -1466,6 +1502,47 @@ class TestMessageSplitting:
 
 class TestReplyBroadcast:
     """Test reply_broadcast config option."""
+
+    @pytest.mark.asyncio
+    async def test_parent_summary_posts_short_top_level_message_before_thread_reply(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[{"ts": "summary_ts"}, {"ts": "thread_ts"}]
+        )
+        result = await adapter.send(
+            "C123",
+            "結論：已開新 lane。\n現況：詳細內容我會留在 thread。\n下一步：先做第一版驗證。\n補充：更多細節在 thread。",
+            metadata={"thread_id": "parent_ts", "slack_parent_summary": True},
+        )
+        assert result.success is True
+        assert adapter._app.client.chat_postMessage.await_count == 2
+        first_call = adapter._app.client.chat_postMessage.await_args_list[0].kwargs
+        second_call = adapter._app.client.chat_postMessage.await_args_list[1].kwargs
+        assert first_call == {
+            "channel": "C123",
+            "text": "結論：已開新 lane。\n現況：詳細內容我會留在 thread。\n下一步：先做第一版驗證。",
+            "mrkdwn": True,
+        }
+        assert second_call["channel"] == "C123"
+        assert second_call["thread_ts"] == "parent_ts"
+        assert second_call["text"].startswith("結論：已開新 lane。")
+
+    @pytest.mark.asyncio
+    async def test_parent_summary_prefers_boss_mode_headings_over_first_three_lines(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(
+            side_effect=[{"ts": "summary_ts"}, {"ts": "thread_ts"}]
+        )
+        result = await adapter.send(
+            "C123",
+            "標題：這是一段很長的背景說明\n補充：這一行不應該進主頻道摘要\n結論：先開 thread 繼續做\n現況：主頻道只保留短摘要\n下一步：我會在 thread 繼續推進\n更多細節：後面都留在 thread。",
+            metadata={"thread_id": "parent_ts", "slack_parent_summary": True},
+        )
+        assert result.success is True
+        first_call = adapter._app.client.chat_postMessage.await_args_list[0].kwargs
+        assert first_call == {
+            "channel": "C123",
+            "text": "結論：先開 thread 繼續做\n現況：主頻道只保留短摘要\n下一步：我會在 thread 繼續推進",
+            "mrkdwn": True,
+        }
 
     @pytest.mark.asyncio
     async def test_broadcast_disabled_by_default(self, adapter):

@@ -84,6 +84,8 @@ class FakeThread:
 
 @pytest.fixture
 def adapter(monkeypatch):
+    if discord_platform.discord is None:
+        monkeypatch.setattr(discord_platform, "discord", SimpleNamespace(), raising=False)
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
     monkeypatch.setattr(discord_platform.discord, "ForumChannel", FakeForumChannel, raising=False)

@@ -336,4 +336,4 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     assert result is None
     assert adapter.send.await_count == 1
     sent_text = adapter.send.await_args.args[1]
-    assert "don't recognize you" in sent_text
+    assert "還沒認出你" in sent_text

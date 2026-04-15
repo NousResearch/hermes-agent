@@ -2696,9 +2696,9 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
-                            f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
+                            f"嗨，我這邊還沒認出你，所以先幫你建立配對碼。\n\n"
+                            f"你的配對碼是：`{code}`\n\n"
+                            f"請機器人擁有者執行這行指令完成授權：\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
@@ -2706,8 +2706,7 @@ class GatewayRunner:
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            "Too many pairing requests right now~ "
-                            "Please try again later!"
+                            "目前配對請求太多，先稍等一下再試一次。"
                         )
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)

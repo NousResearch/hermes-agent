@@ -222,8 +222,30 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Slack" in prompt
-        assert "cannot search" in prompt.lower()
+        assert "do not have access" in prompt.lower()
         assert "pin" in prompt.lower()
+
+    def test_slack_prompt_includes_boss_mode_and_thread_first_rules(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="general",
+            chat_type="group",
+            thread_id="1712345678.000100",
+            user_name="Brian",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Slack response style" in prompt
+        assert "Slack thread-first rule" in prompt
+        assert "Slack kickoff formatting" in prompt
+        assert "Slack decision formatting" in prompt
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""

@@ -34,9 +34,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
 
 # aiohttp/websockets are independent optional deps — import outside lark_oapi
 # so they remain available for tests and webhook mode even if lark_oapi is missing.
@@ -72,10 +69,7 @@ try:
         UpdateMessageRequestBody,
     )
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
-    from lark_oapi.event.callback.model.p2_card_action_trigger import (
-        CallBackCard,
-        P2CardActionTriggerResponse,
-    )
+    from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
     from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
     from lark_oapi.ws import Client as FeishuWSClient
 
@@ -83,12 +77,33 @@ try:
 except ImportError:
     FEISHU_AVAILABLE = False
     lark = None  # type: ignore[assignment]
-    CallBackCard = None  # type: ignore[assignment]
     P2CardActionTriggerResponse = None  # type: ignore[assignment]
     EventDispatcherHandler = None  # type: ignore[assignment]
     FeishuWSClient = None  # type: ignore[assignment]
     FEISHU_DOMAIN = None  # type: ignore[assignment]
     LARK_DOMAIN = None  # type: ignore[assignment]
+
+# CardKit imports — separated so that an older lark_oapi without cardkit.v1
+# doesn't break the entire Feishu adapter; only streaming cards are disabled.
+try:
+    from lark_oapi.api.cardkit.v1 import (
+        CreateCardRequest,
+        CreateCardRequestBody,
+        ContentCardElementRequest,
+        ContentCardElementRequestBody,
+        SettingsCardRequest,
+        SettingsCardRequestBody,
+    )
+
+    FEISHU_CARDKIT_AVAILABLE = True
+except ImportError:
+    FEISHU_CARDKIT_AVAILABLE = False
+    CreateCardRequest = None  # type: ignore[assignment]
+    CreateCardRequestBody = None  # type: ignore[assignment]
+    ContentCardElementRequest = None  # type: ignore[assignment]
+    ContentCardElementRequestBody = None  # type: ignore[assignment]
+    SettingsCardRequest = None  # type: ignore[assignment]
+    SettingsCardRequestBody = None  # type: ignore[assignment]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -122,6 +137,22 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_HERMES_STATUS_RE = re.compile(r"^\[\[HERMES_STATUS:(thinking|completed|ended)\]\]\s*", re.IGNORECASE)
+_HERMES_REASONING_SECTION_RE = re.compile(r"\[\[HERMES_REASONING\]\]\s*([\s\S]*?)\s*\[\[/HERMES_REASONING\]\]", re.IGNORECASE)
+_HERMES_TOOLS_SECTION_RE = re.compile(r"\[\[HERMES_TOOLS\]\]\s*([\s\S]*?)\s*\[\[/HERMES_TOOLS\]\]", re.IGNORECASE)
+_HERMES_FOOTER_SECTION_RE = re.compile(r"\[\[HERMES_FOOTER\]\]\s*([\s\S]*?)\s*\[\[/HERMES_FOOTER\]\]", re.IGNORECASE)
+_THINK_BLOCK_RE = re.compile(r"<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>[\s\S]*?</(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>", re.IGNORECASE)
+_THINK_TAG_RE = re.compile(r"</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>", re.IGNORECASE)
+_COMMENT_THINK_BLOCK_RE = re.compile(r"/\*\*[\s\S]*?\*/")
+_MARKDOWN_TABLE_BLOCK_RE = re.compile(
+    r"(?ms)(^ *\|.+\|\s*$\n^ *\|(?:[-: ]+\|)+\s*$\n(?:^ *\|.+\|\s*$\n?)*)"
+)
+_MARKDOWN_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$")
+# Heading: ## Text (level 1-6, multiline)
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
+# Horizontal rule: --- or *** or ___ (standalone lines)
+_MARKDOWN_HR_RE = re.compile(r"^\s*[-*_]{3,}\s*$", re.MULTILINE)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -173,35 +204,16 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
-
-_APPROVAL_CHOICE_MAP: Dict[str, str] = {
-    "approve_once": "once",
-    "approve_session": "session",
-    "approve_always": "always",
-    "deny": "deny",
-}
-_APPROVAL_LABEL_MAP: Dict[str, str] = {
-    "once": "Approved once",
-    "session": "Approved for session",
-    "always": "Approved permanently",
-    "deny": "Denied",
-}
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
-
-# QR onboarding constants
-_ONBOARD_ACCOUNTS_URLS = {
-    "feishu": "https://accounts.feishu.cn",
-    "lark": "https://accounts.larksuite.com",
-}
-_ONBOARD_OPEN_URLS = {
-    "feishu": "https://open.feishu.cn",
-    "lark": "https://open.larksuite.com",
-}
-_REGISTRATION_PATH = "/oauth/v1/app/registration"
-_ONBOARD_REQUEST_TIMEOUT_S = 10
-
+# ---------------------------------------------------------------------------
+# Streaming card constants
+# ---------------------------------------------------------------------------
+_STREAMING_CARD_ELEMENT_ID = "streaming_md_1"
+_STREAMING_CARD_PRINT_FREQUENCY_MS = 50
+_STREAMING_CARD_PRINT_STEP = 2
+_STREAMING_CARD_PRINT_STRATEGY = "fast"
 # ---------------------------------------------------------------------------
 # Fallback display strings
 # ---------------------------------------------------------------------------
@@ -329,6 +341,16 @@ class FeishuBatchState:
     counts: Dict[str, int] = field(default_factory=dict)
 
 
+@dataclass
+class _FeishuStreamingCard:
+    """Tracks state for a single streaming card session."""
+
+    card_id: str
+    element_id: str
+    message_id: str
+    sequence: int = 1  # Strictly increasing across all card operations
+
+
 # ---------------------------------------------------------------------------
 # Markdown rendering helpers
 # ---------------------------------------------------------------------------
@@ -400,6 +422,7 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     horizontal rules, \\r\\n normalisation).
     """
     from gateway.platforms.helpers import strip_markdown
+    _, text = _extract_status_marker(text)
     plain = text.replace("\r\n", "\n")
     plain = _MARKDOWN_LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2).strip()})", plain)
     plain = re.sub(r"^>\s?", "", plain, flags=re.MULTILINE)
@@ -429,7 +452,21 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _convert_markdown_tables_to_code_blocks(text: str) -> str:
+    """Convert any remaining standard markdown tables to code blocks for safe display."""
+    if "|" not in (text or ""):
+        return text or ""
+
+    def _wrap(match: re.Match[str]) -> str:
+        table = match.group(0).rstrip("\n")
+        return f"```\n{table}\n```"
+
+    return _MARKDOWN_TABLE_BLOCK_RE.sub(_wrap, text)
+
+
 def _build_markdown_post_payload(content: str) -> str:
+    _, content = _extract_status_marker(_render_markdown_tables_for_feishu(_strip_reasoning_for_display(content)))
+    content = _convert_markdown_tables_to_code_blocks(content)
     return json.dumps(
         {
             "zh_cn": {
@@ -445,6 +482,424 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _extract_status_marker(content: str) -> tuple[str, str]:
+    text = content or ""
+    match = _HERMES_STATUS_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).lower(), text[match.end():]
+
+
+def _status_presentation(status: str) -> tuple[str, str, str]:
+    normalized = (status or "").strip().lower()
+    if normalized == "thinking":
+        return "思考中", "blue", ""
+    if normalized == "completed":
+        return "已完成", "green", "已完成"
+    if normalized == "ended":
+        return "已结束", "grey", "已结束"
+    return "", "blue", ""
+
+
+def _strip_reasoning_for_display(text: str) -> str:
+    cleaned = text or ""
+    cleaned = _HERMES_REASONING_SECTION_RE.sub("", cleaned)
+    cleaned = _HERMES_TOOLS_SECTION_RE.sub("", cleaned)
+    cleaned = _HERMES_FOOTER_SECTION_RE.sub("", cleaned)
+    cleaned = _THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = _THINK_TAG_RE.sub("", cleaned)
+    cleaned = _COMMENT_THINK_BLOCK_RE.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def _extract_marker_section(text: str, pattern: re.Pattern[str]) -> str:
+    cleaned = text or ""
+    matches = [match.strip() for match in pattern.findall(cleaned) if match and match.strip()]
+    return "\n\n".join(matches).strip()
+
+
+def _extract_reasoning_content(text: str) -> str:
+    """Extract reasoning content from explicit sections or think tags."""
+    section_reasoning = _extract_marker_section(text, _HERMES_REASONING_SECTION_RE)
+    if section_reasoning:
+        return section_reasoning
+
+    cleaned = text or ""
+    matches = _THINK_BLOCK_RE.findall(cleaned)
+    if not matches:
+        return ""
+
+    reasoning_parts = []
+    for match in matches:
+        content = _THINK_TAG_RE.sub("", match).strip()
+        if content:
+            reasoning_parts.append(content)
+    return "\n\n".join(reasoning_parts)
+
+
+def _extract_tool_content(text: str) -> str:
+    return _extract_marker_section(text, _HERMES_TOOLS_SECTION_RE)
+
+
+def _extract_footer_content(text: str) -> str:
+    return _extract_marker_section(text, _HERMES_FOOTER_SECTION_RE)
+
+
+def _build_footer_elements(footer_content: str, status_line: str) -> List[Dict[str, Any]]:
+    """Build footer elements with a single markdown block to avoid extra gaps."""
+    lines = [
+        line.strip()
+        for line in str(footer_content or "").splitlines()
+        if line and line.strip()
+    ]
+    if not lines and status_line:
+        return [{
+            "tag": "markdown",
+            "content": status_line,
+            "text_size": "notation",
+        }]
+    if not lines:
+        return []
+
+    return [
+        {"tag": "hr"},
+        {
+            "tag": "markdown",
+            "content": "\n".join(lines),
+            "text_size": "notation",
+        },
+    ]
+
+
+def _parse_markdown_table(md_text):
+    """解析 Markdown 表格，返回 (headers, rows) 或 None"""
+    lines = md_text.strip().split('\n')
+    
+    # 找表格行（包含 | 的行）
+    table_lines = []
+    for line in lines:
+        if '|' in line and not line.strip().startswith('```'):
+            table_lines.append(line.strip())
+    
+    if len(table_lines) < 2:
+        return None
+    
+    # 第一行是表头
+    header_line = table_lines[0]
+    headers = [h.strip() for h in header_line.split('|') if h.strip()]
+    
+    # 第二行是分隔符（跳过）
+    # 剩余是数据行
+    rows = []
+    for line in table_lines[2:]:
+        cells = [c.strip() for c in line.split('|') if c.strip()]
+        if len(cells) == len(headers):
+            rows.append(cells)
+    
+    return headers, rows
+
+def _build_table_element(headers, rows):
+    """构建飞书 Schema 2.0 table 元素 JSON"""
+    columns = []
+    for i, h in enumerate(headers):
+        columns.append({
+            "name": f"c{i}",
+            "display_name": h
+        })
+
+    table_rows = []
+    for row in rows:
+        row_data = {}
+        for i, cell in enumerate(row):
+            row_data[f"c{i}"] = cell  # Schema 2.0: 直接字符串，不用 {data: ...}
+        table_rows.append(row_data)
+
+    return {
+        "tag": "table",
+        "columns": columns,
+        "rows": table_rows
+    }
+
+def _convert_content_with_tables(md_text):
+    """将 Markdown 文本转为飞书 Schema 2.0 元素列表。
+
+    处理：tables → native table, headings → emoji+bold markdown, HRs → native hr,
+    图片 → img 元素（需调用方上传到 Feishu 获取 img_key），
+    其余内容 → markdown 元素。
+
+    注意：Feishu Schema 2.0 markdown 不支持：
+    - heading 标签/hierarchy（用 emoji+bold 模拟层级）
+    - <u> 下划线（直接去掉标签）
+    - 图片 URL（需上传到 Feishu 获取 img_key）
+    """
+    if not md_text:
+        return [{"tag": "markdown", "content": " "}]
+
+    # Check for markdown table first
+    has_table = bool(_MARKDOWN_TABLE_BLOCK_RE.search(md_text))
+
+    elements: List[Dict[str, Any]] = []
+    pending_markdown_lines: List[str] = []
+
+    def _flush_markdown():
+        nonlocal pending_markdown_lines
+        stripped = "\n".join(pending_markdown_lines).strip()
+        if stripped:
+            # Feishu markdown does not support <u> underline tags — strip them
+            stripped = re.sub(r"</?u[^>]*>", "", stripped)
+            elements.append({"tag": "markdown", "content": stripped})
+        pending_markdown_lines = []
+
+    # Split text by headings, HRs, and tables
+    # We'll iterate line by line and detect special constructs
+    lines = md_text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Check for HR first (before heading since HR pattern matches ---)
+        if _MARKDOWN_HR_RE.match(line):
+            _flush_markdown()
+            elements.append({"tag": "hr"})
+            i += 1
+            continue
+
+        # Check for heading - use emoji + bold to simulate hierarchy
+        # Feishu markdown has no heading size/hierarchy, so we use:
+        # H1 -> ◆ **text**, H2 -> ● **text**, H3 -> ▷ **text**
+        heading_match = _MARKDOWN_HEADING_RE.match(line)
+        if heading_match:
+            _flush_markdown()
+            level = len(heading_match.group(1))
+            content = heading_match.group(2).strip()
+            # Strip <u> from heading content
+            content = re.sub(r"</?u[^>]*>", "", content)
+            # Emoji prefix for visual hierarchy (Feishu markdown lacks heading levels)
+            prefixes = {1: "◆", 2: "●", 3: "▷", 4: "▶", 5: "○", 6: "△"}
+            prefix = prefixes.get(level, "●")
+            elements.append({"tag": "markdown", "content": f"{prefix} **{content}**"})
+            i += 1
+            continue
+
+        # Check for markdown table block (multiline)
+        table_match = _MARKDOWN_TABLE_BLOCK_RE.match(md_text[i:] if i == 0 else "\n".join(lines[i:]))
+        if table_match and i == 0:
+            # Table at start - parse it
+            parsed = _parse_markdown_table(md_text)
+            if parsed:
+                headers, rows = parsed
+                if headers and rows:
+                    _flush_markdown()
+                    elements.append(_build_table_element(headers, rows))
+                    # Table block consumed - done
+                    return elements
+        elif has_table and _MARKDOWN_TABLE_ROW_RE.match(line):
+            # We're in a table section - collect raw lines for table parser
+            # Actually, let the table parser handle it
+            pass
+
+        # Regular line - accumulate for markdown
+        pending_markdown_lines.append(line)
+        i += 1
+
+    _flush_markdown()
+
+    if not elements:
+        return [{"tag": "markdown", "content": md_text or " "}]
+
+    return elements
+
+
+def _parse_markdown_table_block(text: str):
+    """Parse a single markdown table block from text. Returns (headers, rows) or None."""
+    return _parse_markdown_table(text)
+
+
+def _render_markdown_tables_for_feishu(text: str) -> str:
+    """Render markdown tables into stable row-based markdown for Feishu cards."""
+    if "|" not in (text or ""):
+        return text or ""
+
+    def _replace(match: re.Match[str]) -> str:
+        block = match.group(1).strip("\n")
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if len(lines) < 2:
+            return block
+
+        header_cells = [cell.strip() for cell in lines[0].strip("|").split("|")]
+        if not header_cells:
+            return block
+
+        body_rows = [
+            [cell.strip() for cell in row.strip("|").split("|")]
+            for row in lines[2:]
+        ]
+        header_line = " ｜ ".join(f"**{cell or '-'}**" for cell in header_cells)
+        rendered = [header_line]
+        for row in body_rows:
+            padded = list(row) + [""] * (len(header_cells) - len(row))
+            rendered.append(" ｜ ".join(cell or "-" for cell in padded[: len(header_cells)]))
+        return "\n".join(rendered).rstrip()
+
+    return _MARKDOWN_TABLE_BLOCK_RE.sub(_replace, text)
+
+
+def _contains_status_marker(content: str) -> bool:
+    status, _ = _extract_status_marker(content or "")
+    return bool(status)
+
+
+def _extract_card_title(content: str) -> str:
+    _, content = _extract_status_marker(content)
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = _strip_markdown_to_plain_text(line)
+        return line[:60] if line else "Hermes"
+    return "Hermes"
+
+
+def _build_simple_card_payload(content: str) -> str:
+    """Build a minimal interactive card: white background, markdown body only, no header/collapsible/footer.
+
+    HERMES_STATUS markers are stripped from the markdown body — status is
+    conveyed through the card template, not displayed as body text.
+    """
+    # Strip HERMES_STATUS markers so they don't appear as body text
+    body_content = _HERMES_STATUS_RE.sub("", content)
+    stripped = _strip_reasoning_for_display(body_content)
+    rendered = _render_markdown_tables_for_feishu(stripped)
+
+    card = {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "body": {
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": rendered,
+                }
+            ]
+        },
+    }
+    return json.dumps(card, ensure_ascii=False)
+
+
+def _build_interactive_card_payload(content: str) -> str:
+    reasoning_content = _extract_reasoning_content(content)
+    tool_content = _extract_tool_content(content)
+    footer_content = _extract_footer_content(content)
+
+    stripped_body = _strip_reasoning_for_display(content)
+    status, body_content_raw = _extract_status_marker(stripped_body)
+    body_content = _render_markdown_tables_for_feishu(body_content_raw)
+    status_title, template, status_line = _status_presentation(status)
+    title = _extract_card_title(body_content_raw)
+    if status_title:
+        title = f"{status_title} | {title}"
+    
+    card = {
+        "schema": "2.0",
+        "config": {
+            "wide_screen_mode": True,
+        },
+        "header": {
+            "title": {"content": title, "tag": "plain_text"},
+            "template": template,
+        },
+        "body": {"elements": []},
+    }
+    elements = card["body"]["elements"]
+
+    elements.extend(_convert_content_with_tables(body_content_raw or ""))
+
+    if reasoning_content:
+        display_reasoning = reasoning_content[:500]
+        if len(reasoning_content) > 500:
+            display_reasoning += "..."
+
+        elements.append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                "content": "💭 思考过程",
+                    "text_color": "grey",
+                    "text_size": "notation",
+                },
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "color": "grey",
+                    "size": "16px 16px",
+                },
+                "icon_position": "right",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "vertical_spacing": "4px",
+            "padding": "8px 8px 8px 8px",
+            "elements": [{
+                "tag": "markdown",
+                "content": display_reasoning,
+                "text_size": "notation",
+            }],
+        })
+
+    if tool_content:
+        display_tools = tool_content[:1000]
+        if len(tool_content) > 1000:
+            display_tools += "..."
+        elements.append({
+            "tag": "collapsible_panel",
+            "expanded": False,
+            "header": {
+                "title": {
+                    "tag": "plain_text",
+                    "content": "🛠️ 工具调用",
+                    "text_color": "grey",
+                    "text_size": "notation",
+                },
+                "vertical_align": "center",
+                "icon": {
+                    "tag": "standard_icon",
+                    "token": "down-small-ccm_outlined",
+                    "color": "grey",
+                    "size": "16px 16px",
+                },
+                "icon_position": "right",
+                "icon_expanded_angle": -180,
+            },
+            "border": {"color": "grey", "corner_radius": "5px"},
+            "vertical_spacing": "4px",
+            "padding": "8px 8px 8px 8px",
+            "elements": [{
+                "tag": "markdown",
+                "content": display_tools,
+                "text_size": "notation",
+            }],
+        })
+
+    elements.extend(_build_footer_elements(footer_content, status_line))
+
+    return json.dumps(card, ensure_ascii=False)
+
+
+def parse_feishu_post_content(raw_content: str) -> FeishuPostParseResult:
+    try:
+        parsed = json.loads(raw_content) if raw_content else {}
+    except json.JSONDecodeError:
+        return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
+    return parse_feishu_post_payload(parsed)
 
 
 def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
@@ -1086,9 +1541,12 @@ class FeishuAdapter(BasePlatformAdapter):
         self._media_batch_state = FeishuBatchState()
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
+        self._ack_reaction_ids: Dict[str, str] = {}
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
         self._approval_state: Dict[int, Dict[str, str]] = {}
         self._approval_counter = itertools.count(1)
+        # CardKit streaming card state (message_id → _FeishuStreamingCard)
+        self._streaming_cards: Dict[str, _FeishuStreamingCard] = {}
         self._load_seen_message_ids()
 
     @staticmethod
@@ -1405,6 +1863,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1436,6 +1895,216 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("[Feishu] Failed to edit message %s: %s", message_id, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    def streaming_cards_enabled(self) -> bool:
+        """Return *True* if the CardKit streaming API is usable."""
+        return bool(FEISHU_CARDKIT_AVAILABLE and self._client)
+
+    async def send_streaming_card(
+        self,
+        chat_id: str,
+        content: str = "",
+        *,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Create a streaming card entity and send it as a message.
+
+        Returns a :class:`SendResult` whose *message_id* can be used with
+        :meth:`edit_message` (which will route through the CardKit streaming
+        text update API) and finally :meth:`stop_streaming_card`.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        if not FEISHU_CARDKIT_AVAILABLE:
+            return SendResult(success=False, error="CardKit SDK not available")
+
+        try:
+            # 1. Create card entity with streaming_mode enabled
+            card_json = self._build_streaming_card_json(content)
+            create_body = (
+                CreateCardRequestBody.builder()
+                .type("card_json")
+                .data(json.dumps(card_json, ensure_ascii=False))
+                .build()
+            )
+            create_req = (
+                CreateCardRequest.builder()
+                .request_body(create_body)
+                .build()
+            )
+            create_resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card.create, create_req,
+            )
+            if not create_resp or create_resp.code != 0:
+                err_msg = getattr(create_resp, "msg", "unknown error") if create_resp else "no response"
+                logger.warning("[Feishu] CardKit card.create failed: code=%s msg=%s",
+                               getattr(create_resp, "code", "?"), err_msg)
+                return SendResult(success=False, error=f"CardKit create failed: {err_msg}")
+
+            card_id = create_resp.data.card_id
+            logger.debug("[Feishu] Created streaming card: %s", card_id)
+
+            # 2. Send the card as a message via IM API
+            card_content = json.dumps(
+                {"type": "card", "data": {"card_id": card_id}},
+                ensure_ascii=False,
+            )
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=card_content,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
+            result = self._finalize_send_result(response, "send streaming card failed")
+            if not result.success:
+                return result
+
+            message_id = result.message_id
+            # 3. Track the streaming card state
+            sc = _FeishuStreamingCard(
+                card_id=card_id,
+                element_id=_STREAMING_CARD_ELEMENT_ID,
+                message_id=message_id,
+                sequence=1,
+            )
+            self._streaming_cards[message_id] = sc
+            logger.debug("[Feishu] Streaming card %s linked to message %s", card_id, message_id)
+            return result
+
+        except Exception as exc:
+            logger.error("[Feishu] send_streaming_card error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def _update_streaming_card_content(
+        self,
+        sc: "_FeishuStreamingCard",
+        content: str,
+    ) -> SendResult:
+        """Push a streaming text update to a card element.
+
+        *content* should be the **full accumulated text** — the Feishu platform
+        diffs it against the previous value and renders the delta with a
+        typewriter effect.
+        """
+        try:
+            sc.sequence += 1
+            body = (
+                ContentCardElementRequestBody.builder()
+                .uuid(str(uuid.uuid4()))
+                .sequence(sc.sequence)
+                .content(content)
+                .build()
+            )
+            req = (
+                ContentCardElementRequest.builder()
+                .card_id(sc.card_id)
+                .element_id(sc.element_id)
+                .request_body(body)
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card_element.content, req,
+            )
+            if resp and resp.code == 0:
+                return SendResult(success=True, message_id=sc.message_id)
+            err_msg = getattr(resp, "msg", "unknown") if resp else "no response"
+            logger.warning("[Feishu] Streaming card content update failed: code=%s msg=%s",
+                           getattr(resp, "code", "?"), err_msg)
+            return SendResult(success=False, error=f"streaming update failed: {err_msg}")
+        except Exception as exc:
+            logger.error("[Feishu] _update_streaming_card_content error: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+    async def stop_streaming_card(
+        self, message_id: str, final_content: Optional[str] = None,
+    ) -> bool:
+        """Disable streaming mode on a card and clean up tracking state.
+
+        If *final_content* is provided, the card content is updated with the
+        final interactive card payload before stopping streaming mode.
+        Returns *True* on success.
+        """
+        sc = self._streaming_cards.get(message_id)
+        if sc is None:
+            return True
+        if not self._client:
+            return False
+        try:
+            # 1. Optionally update with final content (interactive card)
+            if final_content:
+                sc.sequence += 1
+                body = (
+                    ContentCardElementRequestBody.builder()
+                    .uuid(str(uuid.uuid4()))
+                    .sequence(sc.sequence)
+                    .content(final_content)
+                    .build()
+                )
+                req = (
+                    ContentCardElementRequest.builder()
+                    .card_id(sc.card_id)
+                    .element_id(sc.element_id)
+                    .request_body(body)
+                    .build()
+                )
+                await asyncio.to_thread(
+                    self._client.cardkit.v1.card_element.content, req,
+                )
+            # 2. Stop streaming mode
+            sc.sequence += 1
+            settings_json = json.dumps({"config": {"streaming_mode": False}}, ensure_ascii=False)
+            body = (
+                SettingsCardRequestBody.builder()
+                .settings(settings_json)
+                .sequence(sc.sequence)
+                .build()
+            )
+            req = (
+                SettingsCardRequest.builder()
+                .card_id(sc.card_id)
+                .request_body(body)
+                .build()
+            )
+            resp = await asyncio.to_thread(
+                self._client.cardkit.v1.card.settings, req,
+            )
+            if resp and resp.code == 0:
+                self._streaming_cards.pop(message_id, None)
+                logger.debug("[Feishu] Stopped streaming card %s", sc.card_id)
+                return True
+            logger.warning("[Feishu] Failed to stop streaming card %s: code=%s msg=%s",
+                           sc.card_id, getattr(resp, "code", "?"), getattr(resp, "msg", "?"))
+            return False
+        except Exception as exc:
+            logger.error("[Feishu] stop_streaming_card error: %s", exc, exc_info=True)
+            return False
+
+    @staticmethod
+    def _build_streaming_card_json(initial_content: str = "") -> dict:
+        """Build a Card JSON 2.0 structure with streaming mode enabled."""
+        return {
+            "schema": "2.0",
+            "config": {
+                "streaming_mode": True,
+                "summary": {"content": ""},
+                "streaming_config": {
+                    "print_frequency_ms": {"default": _STREAMING_CARD_PRINT_FREQUENCY_MS},
+                    "print_step": {"default": _STREAMING_CARD_PRINT_STEP},
+                    "print_strategy": _STREAMING_CARD_PRINT_STRATEGY,
+                },
+            },
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": initial_content,
+                        "element_id": _STREAMING_CARD_ELEMENT_ID,
+                    }
+                ],
+            },
+        }
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -1507,12 +2176,14 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
             return SendResult(success=False, error=str(exc))
 
-    @staticmethod
-    def _build_resolved_approval_card(*, choice: str, user_name: str) -> Dict[str, Any]:
-        """Build raw card JSON for a resolved approval action."""
+    async def _update_approval_card(
+        self, message_id: str, label: str, user_name: str, choice: str,
+    ) -> None:
+        """Replace the approval card with a resolved status card."""
+        if not self._client or not message_id:
+            return
         icon = "❌" if choice == "deny" else "✅"
-        label = _APPROVAL_LABEL_MAP.get(choice, "Resolved")
-        return {
+        card = {
             "config": {"wide_screen_mode": True},
             "header": {
                 "title": {"content": f"{icon} {label}", "tag": "plain_text"},
@@ -1525,6 +2196,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 },
             ],
         }
+        try:
+            payload = json.dumps(card, ensure_ascii=False)
+            body = self._build_update_message_body(msg_type="interactive", content=payload)
+            request = self._build_update_message_request(message_id=message_id, request_body=body)
+            await asyncio.to_thread(self._client.im.v1.message.update, request)
+        except Exception as exc:
+            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
     async def send_voice(
         self,
@@ -1750,7 +2428,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        return _render_markdown_tables_for_feishu(_strip_reasoning_for_display(content))
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return
+        reaction_id = self._ack_reaction_ids.pop(message_id, None)
+        if reaction_id:
+            await self._remove_ack_reaction(message_id, reaction_id)
 
     # =========================================================================
     # Inbound event handlers
@@ -1853,81 +2539,19 @@ class FeishuAdapter(BasePlatformAdapter):
         future.add_done_callback(self._log_background_failure)
 
     def _on_card_action_trigger(self, data: Any) -> Any:
-        """Handle card-action callback from the Feishu SDK (synchronous).
-
-        For approval actions: parses the event once, returns the resolved card
-        inline (the only reliable way to sync all clients), and schedules a
-        lightweight async method to actually unblock the agent.
-
-        For other card actions: delegates to ``_handle_card_action_event``.
-        """
+        """Schedule Feishu card actions on the adapter loop and acknowledge immediately."""
         loop = self._loop
-        if not self._loop_accepts_callbacks(loop):
+        if loop is None or bool(getattr(loop, "is_closed", lambda: False)()):
             logger.warning("[Feishu] Dropping card action before adapter loop is ready")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        event = getattr(data, "event", None)
-        action = getattr(event, "action", None)
-        action_value = getattr(action, "value", {}) or {}
-        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
-
-        if hermes_action:
-            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
-
-        self._submit_on_loop(loop, self._handle_card_action_event(data))
+        else:
+            future = asyncio.run_coroutine_threadsafe(
+                self._handle_card_action_event(data),
+                loop,
+            )
+            future.add_done_callback(self._log_background_failure)
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
-
-    @staticmethod
-    def _loop_accepts_callbacks(loop: Any) -> bool:
-        """Return True when the adapter loop can accept thread-safe submissions."""
-        return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
-
-    def _submit_on_loop(self, loop: Any, coro: Any) -> None:
-        """Schedule background work on the adapter loop with shared failure logging."""
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        future.add_done_callback(self._log_background_failure)
-
-    def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
-        """Schedule approval resolution and build the synchronous callback response."""
-        approval_id = action_value.get("approval_id")
-        if approval_id is None:
-            logger.debug("[Feishu] Card action missing approval_id, ignoring")
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        choice = _APPROVAL_CHOICE_MAP.get(action_value.get("hermes_action"), "deny")
-
-        operator = getattr(event, "operator", None)
-        open_id = str(getattr(operator, "open_id", "") or "")
-        user_name = self._get_cached_sender_name(open_id) or open_id
-
-        self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name))
-
-        if P2CardActionTriggerResponse is None:
-            return None
-        response = P2CardActionTriggerResponse()
-        if CallBackCard is not None:
-            card = CallBackCard()
-            card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
-            response.card = card
-        return response
-
-    async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.pop(approval_id, None)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return
-        try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
-            logger.info(
-                "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
-            )
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -2020,6 +2644,51 @@ class FeishuAdapter(BasePlatformAdapter):
         action_tag = str(getattr(action, "tag", "") or "button")
         action_value = getattr(action, "value", {}) or {}
 
+        # --- Exec approval button intercept ---
+        hermes_action = action_value.get("hermes_action") if isinstance(action_value, dict) else None
+        if hermes_action:
+            approval_id = action_value.get("approval_id")
+            state = self._approval_state.pop(approval_id, None)
+            if not state:
+                logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
+                return
+
+            choice_map = {
+                "approve_once": "once",
+                "approve_session": "session",
+                "approve_always": "always",
+                "deny": "deny",
+            }
+            choice = choice_map.get(hermes_action, "deny")
+
+            label_map = {
+                "once": "Approved once",
+                "session": "Approved for session",
+                "always": "Approved permanently",
+                "deny": "Denied",
+            }
+            label = label_map.get(choice, "Resolved")
+
+            # Resolve sender name for the status card
+            sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
+            sender_profile = await self._resolve_sender_profile(sender_id)
+            user_name = sender_profile.get("user_name") or open_id
+
+            # Resolve the approval — unblocks the agent thread
+            try:
+                from tools.approval import resolve_gateway_approval
+                count = resolve_gateway_approval(state["session_key"], choice)
+                logger.info(
+                    "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                    count, state["session_key"], choice, user_name,
+                )
+            except Exception as exc:
+                logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+
+            # Update the card to show the decision
+            await self._update_approval_card(state.get("message_id", ""), label, user_name, choice)
+            return
+
         synthetic_text = f"/card {action_tag}"
         if action_value:
             try:
@@ -2076,7 +2745,9 @@ class FeishuAdapter(BasePlatformAdapter):
         async with chat_lock:
             message_id = event.message_id
             if message_id:
-                await self._add_ack_reaction(message_id)
+                reaction_id = await self._add_ack_reaction(message_id)
+                if reaction_id:
+                    self._ack_reaction_ids[message_id] = reaction_id
             await self.handle_message(event)
 
     async def _add_ack_reaction(self, message_id: str) -> Optional[str]:
@@ -2112,6 +2783,37 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
         return None
+
+    async def _remove_ack_reaction(self, message_id: str, reaction_id: str) -> None:
+        if not self._client or not message_id or not reaction_id:
+            return
+        try:
+            from lark_oapi.api.im.v1 import DeleteMessageReactionRequest
+
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.delete, request)
+            if response and getattr(response, "success", lambda: False)():
+                logger.info("[Feishu] Removed ack reaction %s from %s", reaction_id, message_id)
+                return
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s: code=%s msg=%s",
+                reaction_id,
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to remove ack reaction %s from %s",
+                reaction_id,
+                message_id,
+                exc_info=True,
+            )
 
     # =========================================================================
     # Webhook server and security
@@ -2705,6 +3407,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return self._resolve_media_message_type(media_types[0] if media_types else "", default=MessageType.DOCUMENT)
         return MessageType.TEXT
 
+    def _normalize_inbound_text(self, text: str) -> str:
+        """Strip Feishu mention placeholders from inbound text."""
+        text = _MENTION_RE.sub(" ", text or "")
+        text = _MULTISPACE_RE.sub(" ", text)
+        return text.strip()
+
     async def _maybe_extract_text_document(self, cached_path: str, media_type: str) -> str:
         if not cached_path or not media_type.startswith("text/"):
             return ""
@@ -2922,19 +3630,6 @@ class FeishuAdapter(BasePlatformAdapter):
             "user_id_alt": union_id,
         }
 
-    def _get_cached_sender_name(self, sender_id: Optional[str]) -> Optional[str]:
-        """Return a cached sender name only while its TTL is still valid."""
-        if not sender_id:
-            return None
-        cached = self._sender_name_cache.get(sender_id)
-        if cached is None:
-            return None
-        name, expire_at = cached
-        if time.time() < expire_at:
-            return name
-        self._sender_name_cache.pop(sender_id, None)
-        return None
-
     async def _resolve_sender_name_from_api(self, sender_id: Optional[str]) -> Optional[str]:
         """Fetch the sender's display name from the Feishu contact API with a 10-minute cache.
 
@@ -2947,9 +3642,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not trimmed:
             return None
         now = time.time()
-        cached_name = self._get_cached_sender_name(trimmed)
-        if cached_name is not None:
-            return cached_name
+        cached = self._sender_name_cache.get(trimmed)
+        if cached is not None:
+            name, expire_at = cached
+            if now < expire_at:
+                return name
         try:
             from lark_oapi.api.contact.v3 import GetUserRequest  # lazy import
             if trimmed.startswith("ou_"):
@@ -3659,328 +4356,3 @@ class FeishuAdapter(BasePlatformAdapter):
             return _FEISHU_FILE_UPLOAD_TYPE, "file"
 
         return _FEISHU_FILE_UPLOAD_TYPE, "file"
-
-
-# =============================================================================
-# QR scan-to-create onboarding
-#
-# Device-code flow: user scans a QR code with Feishu/Lark mobile app and the
-# platform creates a fully configured bot application automatically.
-# Called by `hermes gateway setup` via _setup_feishu() in hermes_cli/gateway.py.
-# =============================================================================
-
-
-def _accounts_base_url(domain: str) -> str:
-    return _ONBOARD_ACCOUNTS_URLS.get(domain, _ONBOARD_ACCOUNTS_URLS["feishu"])
-
-
-def _onboard_open_base_url(domain: str) -> str:
-    return _ONBOARD_OPEN_URLS.get(domain, _ONBOARD_OPEN_URLS["feishu"])
-
-
-def _post_registration(base_url: str, body: Dict[str, str]) -> dict:
-    """POST form-encoded data to the registration endpoint, return parsed JSON.
-
-    The registration endpoint returns JSON even on 4xx (e.g. poll returns
-    authorization_pending as a 400). We always parse the body regardless of
-    HTTP status.
-    """
-    url = f"{base_url}{_REGISTRATION_PATH}"
-    data = urlencode(body).encode("utf-8")
-    req = Request(url, data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
-    try:
-        with urlopen(req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            return json.loads(resp.read().decode("utf-8"))
-    except HTTPError as exc:
-        body_bytes = exc.read()
-        if body_bytes:
-            try:
-                return json.loads(body_bytes.decode("utf-8"))
-            except (ValueError, json.JSONDecodeError):
-                raise exc from None
-        raise
-
-
-def _init_registration(domain: str = "feishu") -> None:
-    """Verify the environment supports client_secret auth.
-
-    Raises RuntimeError if not supported.
-    """
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {"action": "init"})
-    methods = res.get("supported_auth_methods") or []
-    if "client_secret" not in methods:
-        raise RuntimeError(
-            f"Feishu / Lark registration environment does not support client_secret auth. "
-            f"Supported: {methods}"
-        )
-
-
-def _begin_registration(domain: str = "feishu") -> dict:
-    """Start the device-code flow. Returns device_code, qr_url, user_code, interval, expire_in."""
-    base_url = _accounts_base_url(domain)
-    res = _post_registration(base_url, {
-        "action": "begin",
-        "archetype": "PersonalAgent",
-        "auth_method": "client_secret",
-        "request_user_info": "open_id",
-    })
-    device_code = res.get("device_code")
-    if not device_code:
-        raise RuntimeError("Feishu / Lark registration did not return a device_code")
-    qr_url = res.get("verification_uri_complete", "")
-    if "?" in qr_url:
-        qr_url += "&from=hermes&tp=hermes"
-    else:
-        qr_url += "?from=hermes&tp=hermes"
-    return {
-        "device_code": device_code,
-        "qr_url": qr_url,
-        "user_code": res.get("user_code", ""),
-        "interval": res.get("interval") or 5,
-        "expire_in": res.get("expire_in") or 600,
-    }
-
-
-def _poll_registration(
-    *,
-    device_code: str,
-    interval: int,
-    expire_in: int,
-    domain: str = "feishu",
-) -> Optional[dict]:
-    """Poll until the user scans the QR code, or timeout/denial.
-
-    Returns dict with app_id, app_secret, domain, open_id on success.
-    Returns None on failure.
-    """
-    deadline = time.time() + expire_in
-    current_domain = domain
-    domain_switched = False
-    poll_count = 0
-
-    while time.time() < deadline:
-        base_url = _accounts_base_url(current_domain)
-        try:
-            res = _post_registration(base_url, {
-                "action": "poll",
-                "device_code": device_code,
-                "tp": "ob_app",
-            })
-        except (URLError, OSError, json.JSONDecodeError):
-            time.sleep(interval)
-            continue
-
-        poll_count += 1
-        if poll_count == 1:
-            print("  Fetching configuration results...", end="", flush=True)
-        elif poll_count % 6 == 0:
-            print(".", end="", flush=True)
-
-        # Domain auto-detection
-        user_info = res.get("user_info") or {}
-        tenant_brand = user_info.get("tenant_brand")
-        if tenant_brand == "lark" and not domain_switched:
-            current_domain = "lark"
-            domain_switched = True
-            # Fall through — server may return credentials in this same response.
-
-        # Success
-        if res.get("client_id") and res.get("client_secret"):
-            if poll_count > 0:
-                print()  # newline after "Fetching configuration results..." dots
-            return {
-                "app_id": res["client_id"],
-                "app_secret": res["client_secret"],
-                "domain": current_domain,
-                "open_id": user_info.get("open_id"),
-            }
-
-        # Terminal errors
-        error = res.get("error", "")
-        if error in ("access_denied", "expired_token"):
-            if poll_count > 0:
-                print()
-            logger.warning("[Feishu onboard] Registration %s", error)
-            return None
-
-        # authorization_pending or unknown — keep polling
-        time.sleep(interval)
-
-    if poll_count > 0:
-        print()
-    logger.warning("[Feishu onboard] Poll timed out after %ds", expire_in)
-    return None
-
-
-try:
-    import qrcode as _qrcode_mod
-except (ImportError, TypeError):
-    _qrcode_mod = None  # type: ignore[assignment]
-
-
-def _render_qr(url: str) -> bool:
-    """Try to render a QR code in the terminal. Returns True if successful."""
-    if _qrcode_mod is None:
-        return False
-    try:
-        qr = _qrcode_mod.QRCode()
-        qr.add_data(url)
-        qr.make(fit=True)
-        qr.print_ascii(invert=True)
-        return True
-    except Exception:
-        return False
-
-
-def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Verify bot connectivity via /open-apis/bot/v3/info.
-
-    Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
-    Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
-    """
-    if FEISHU_AVAILABLE:
-        return _probe_bot_sdk(app_id, app_secret, domain)
-    return _probe_bot_http(app_id, app_secret, domain)
-
-
-def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
-    """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
-    return (
-        lark.Client.builder()
-        .app_id(app_id)
-        .app_secret(app_secret)
-        .domain(sdk_domain)
-        .log_level(lark.LogLevel.WARNING)
-        .build()
-    )
-
-
-def _parse_bot_response(data: dict) -> Optional[dict]:
-    """Extract bot_name and bot_open_id from a /bot/v3/info response."""
-    if data.get("code") != 0:
-        return None
-    bot = data.get("bot") or data.get("data", {}).get("bot") or {}
-    return {
-        "bot_name": bot.get("bot_name"),
-        "bot_open_id": bot.get("open_id"),
-    }
-
-
-def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Probe bot info using lark_oapi SDK."""
-    try:
-        client = _build_onboard_client(app_id, app_secret, domain)
-        resp = client.request(
-            method="GET",
-            url="/open-apis/bot/v3/info",
-            body=None,
-            raw_response=True,
-        )
-        return _parse_bot_response(json.loads(resp.content))
-    except Exception as exc:
-        logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
-        return None
-
-
-def _probe_bot_http(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
-    """Fallback probe using raw HTTP (when lark_oapi is not installed)."""
-    base_url = _onboard_open_base_url(domain)
-    try:
-        token_data = json.dumps({"app_id": app_id, "app_secret": app_secret}).encode("utf-8")
-        token_req = Request(
-            f"{base_url}/open-apis/auth/v3/tenant_access_token/internal",
-            data=token_data,
-            headers={"Content-Type": "application/json"},
-        )
-        with urlopen(token_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            token_res = json.loads(resp.read().decode("utf-8"))
-
-        access_token = token_res.get("tenant_access_token")
-        if not access_token:
-            return None
-
-        bot_req = Request(
-            f"{base_url}/open-apis/bot/v3/info",
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urlopen(bot_req, timeout=_ONBOARD_REQUEST_TIMEOUT_S) as resp:
-            bot_res = json.loads(resp.read().decode("utf-8"))
-
-        return _parse_bot_response(bot_res)
-    except (URLError, OSError, KeyError, json.JSONDecodeError) as exc:
-        logger.debug("[Feishu onboard] HTTP probe failed: %s", exc)
-        return None
-
-
-def qr_register(
-    *,
-    initial_domain: str = "feishu",
-    timeout_seconds: int = 600,
-) -> Optional[dict]:
-    """Run the Feishu / Lark scan-to-create QR registration flow.
-
-    Returns on success::
-
-        {
-            "app_id": str,
-            "app_secret": str,
-            "domain": "feishu" | "lark",
-            "open_id": str | None,
-            "bot_name": str | None,
-            "bot_open_id": str | None,
-        }
-
-    Returns None on expected failures (network, auth denied, timeout).
-    Unexpected errors (bugs, protocol regressions) propagate to the caller.
-    """
-    try:
-        return _qr_register_inner(initial_domain=initial_domain, timeout_seconds=timeout_seconds)
-    except (RuntimeError, URLError, OSError, json.JSONDecodeError) as exc:
-        logger.warning("[Feishu onboard] Registration failed: %s", exc)
-        return None
-
-
-def _qr_register_inner(
-    *,
-    initial_domain: str,
-    timeout_seconds: int,
-) -> Optional[dict]:
-    """Run init → begin → poll → probe. Raises on network/protocol errors."""
-    print("  Connecting to Feishu / Lark...", end="", flush=True)
-    _init_registration(initial_domain)
-    begin = _begin_registration(initial_domain)
-    print(" done.")
-
-    print()
-    qr_url = begin["qr_url"]
-    if _render_qr(qr_url):
-        print(f"\n  Scan the QR code above, or open this URL directly:\n  {qr_url}")
-    else:
-        print(f"  Open this URL in Feishu / Lark on your phone:\n\n  {qr_url}\n")
-        print("  Tip: pip install qrcode  to display a scannable QR code here next time")
-    print()
-
-    result = _poll_registration(
-        device_code=begin["device_code"],
-        interval=begin["interval"],
-        expire_in=min(begin["expire_in"], timeout_seconds),
-        domain=initial_domain,
-    )
-    if not result:
-        return None
-
-    # Probe bot — best-effort, don't fail the registration
-    bot_info = probe_bot(result["app_id"], result["app_secret"], result["domain"])
-    if bot_info:
-        result["bot_name"] = bot_info.get("bot_name")
-        result["bot_open_id"] = bot_info.get("bot_open_id")
-    else:
-        result["bot_name"] = None
-        result["bot_open_id"] = None
-
-    return result

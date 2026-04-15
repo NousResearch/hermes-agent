@@ -55,6 +55,7 @@ The following scenarios are **not** considered security breaches:
 - **Trusted State Access:** Reports that require pre-existing write access to `~/.hermes/`, `.env`, or `config.yaml` (these are operator-owned files).
 - **Default Behavior:** Host-level command execution when `terminal.backend` is set to `local` — this is the documented default, not a vulnerability.
 - **Configuration Trade-offs:** Intentional break-glass settings such as `approvals.mode: "off"` or `terminal.backend: local` in production.
+- **Tool-level read/access restrictions:** The agent has unrestricted shell access via the `terminal` tool by design. Reports that a specific tool (e.g., `read_file`) can access a resource are not vulnerabilities if the same access is available through `terminal`. Tool-level deny lists only constitute a meaningful security boundary when paired with equivalent restrictions on the terminal side (as with write operations, where `WRITE_DENIED_PATHS` is paired with the dangerous command approval system).
 
 ---
 

@@ -4,6 +4,7 @@ import json
 import pytest
 from pathlib import Path
 
+import tools.memory_tool as memory_tool_module
 from tools.memory_tool import (
     MemoryStore,
     memory_tool,
@@ -201,11 +202,106 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry", encoding="utf-8")
 
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+    def test_windows_lock_fallback_uses_msvcrt(self, store, monkeypatch):
+        calls = []
+
+        class FakeMSVCRT:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fileno, mode, size):
+                calls.append((mode, size))
+
+        monkeypatch.setattr("tools.memory_tool._HAS_FCNTL", False)
+        monkeypatch.setattr("tools.memory_tool._HAS_MSVCRT", True)
+        monkeypatch.setattr("tools.memory_tool._msvcrt", FakeMSVCRT)
+
+        result = store.add("memory", "Windows lock fallback")
+
+        assert result["success"] is True
+        assert calls == [(FakeMSVCRT.LK_LOCK, 1), (FakeMSVCRT.LK_UNLCK, 1)]
+
+    def test_windows_lock_retries_with_integer_fd(self, tmp_path, monkeypatch):
+        calls = []
+        sleeps = []
+        attempts = {"count": 0}
+
+        class FakeMSVCRT:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fileno, mode, size):
+                calls.append((fileno, mode, size))
+                if mode == FakeMSVCRT.LK_LOCK:
+                    attempts["count"] += 1
+                    if attempts["count"] < 3:
+                        raise OSError("lock busy")
+
+        monkeypatch.setattr("tools.memory_tool._HAS_FCNTL", False)
+        monkeypatch.setattr("tools.memory_tool._HAS_MSVCRT", True)
+        monkeypatch.setattr("tools.memory_tool._msvcrt", FakeMSVCRT)
+        monkeypatch.setattr("tools.memory_tool.time.sleep", sleeps.append)
+
+        with MemoryStore._file_lock(tmp_path / "MEMORY.md"):
+            pass
+
+        assert sleeps == [
+            memory_tool_module._WINDOWS_LOCK_RETRY_DELAY_SECONDS,
+            memory_tool_module._WINDOWS_LOCK_RETRY_DELAY_SECONDS,
+        ]
+        assert all(isinstance(fileno, int) for fileno, _, _ in calls)
+        assert [mode for _, mode, _ in calls] == [1, 1, 1, 2]
+
+    def test_windows_lock_timeout_raises(self, tmp_path, monkeypatch):
+        sleeps = []
+
+        class FakeMSVCRT:
+            LK_LOCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def locking(fileno, mode, size):
+                if mode == FakeMSVCRT.LK_LOCK:
+                    raise OSError("still busy")
+
+        monkeypatch.setattr("tools.memory_tool._HAS_FCNTL", False)
+        monkeypatch.setattr("tools.memory_tool._HAS_MSVCRT", True)
+        monkeypatch.setattr("tools.memory_tool._msvcrt", FakeMSVCRT)
+        monkeypatch.setattr("tools.memory_tool.time.sleep", sleeps.append)
+
+        with pytest.raises(TimeoutError):
+            with MemoryStore._file_lock(tmp_path / "MEMORY.md"):
+                pass
+
+        assert len(sleeps) == memory_tool_module._WINDOWS_LOCK_RETRY_ATTEMPTS
+
+    def test_unix_lock_path_uses_fcntl(self, tmp_path, monkeypatch):
+        calls = []
+
+        class FakeFCNTL:
+            LOCK_EX = 1
+            LOCK_UN = 2
+
+            @staticmethod
+            def flock(fileobj, mode):
+                calls.append((fileobj, mode))
+
+        monkeypatch.setattr("tools.memory_tool._HAS_FCNTL", True)
+        monkeypatch.setattr("tools.memory_tool._HAS_MSVCRT", False)
+        monkeypatch.setattr("tools.memory_tool._fcntl", FakeFCNTL)
+
+        with MemoryStore._file_lock(tmp_path / "MEMORY.md"):
+            pass
+
+        assert [mode for _, mode in calls] == [FakeFCNTL.LOCK_EX, FakeFCNTL.LOCK_UN]
 
 
 class TestMemoryStoreSnapshot:

@@ -28,21 +28,26 @@ import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
-# fcntl is Unix-only; on Windows use msvcrt for file locking
-msvcrt = None
 try:
-    import fcntl
+    import fcntl as _fcntl
 except ImportError:
-    fcntl = None
-    try:
-        import msvcrt
-    except ImportError:
-        pass
+    _fcntl = None
+
+try:
+    import msvcrt as _msvcrt
+except ImportError:
+    _msvcrt = None
+
+_HAS_FCNTL = _fcntl is not None
+_HAS_MSVCRT = _msvcrt is not None
+_WINDOWS_LOCK_RETRY_ATTEMPTS = 100
+_WINDOWS_LOCK_RETRY_DELAY_SECONDS = 0.1
 
 logger = logging.getLogger(__name__)
 
@@ -145,36 +150,58 @@ class MemoryStore:
         """Acquire an exclusive file lock for read-modify-write safety.
 
         Uses a separate .lock file so the memory file itself can still be
-        atomically replaced via os.replace().
+        atomically replaced via os.replace(). On Unix we use flock(); on
+        Windows we use msvcrt.locking() with a short retry loop.
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if fcntl is None and msvcrt is None:
+        if not _HAS_FCNTL and not _HAS_MSVCRT:
             yield
             return
 
-        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-            lock_path.write_text(" ", encoding="utf-8")
-
-        fd = open(lock_path, "r+" if msvcrt else "a+")
+        lock_file = open(lock_path, "a+b")
         try:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+            if _HAS_FCNTL:
+                _fcntl.flock(lock_file, _fcntl.LOCK_EX)
             else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                MemoryStore._acquire_windows_lock(lock_file, lock_path)
             yield
         finally:
-            if fcntl:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            elif msvcrt:
+            if _HAS_FCNTL:
+                _fcntl.flock(lock_file, _fcntl.LOCK_UN)
+            elif _HAS_MSVCRT:
                 try:
-                    fd.seek(0)
-                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
+                    MemoryStore._release_windows_lock(lock_file)
+                except OSError:
                     pass
-            fd.close()
+            lock_file.close()
+
+    @staticmethod
+    def _acquire_windows_lock(lock_file, lock_path: Path):
+        """Acquire a Windows file lock, retrying briefly for concurrent writers."""
+        lock_file.seek(0)
+        lock_file.write(b"0")
+        lock_file.flush()
+        lock_file.seek(0)
+
+        last_error = None
+        for _ in range(_WINDOWS_LOCK_RETRY_ATTEMPTS):
+            try:
+                _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_LOCK, 1)
+                return
+            except OSError as exc:
+                last_error = exc
+                time.sleep(_WINDOWS_LOCK_RETRY_DELAY_SECONDS)
+                lock_file.seek(0)
+
+        raise TimeoutError(f"Timed out acquiring memory lock for {lock_path}") from last_error
+
+    @staticmethod
+    def _release_windows_lock(lock_file):
+        """Release the Windows file lock if it was successfully acquired."""
+        lock_file.seek(0)
+        _msvcrt.locking(lock_file.fileno(), _msvcrt.LK_UNLCK, 1)
 
     @staticmethod
     def _path_for(target: str) -> Path:

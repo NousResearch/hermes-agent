@@ -1403,11 +1403,25 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = explicit_base_url.strip()
-            custom_key = (
-                (explicit_api_key or "").strip()
-                or os.getenv("OPENAI_API_KEY", "").strip()
-                or "no-key-required"  # local servers don't need auth
-            )
+            # Resolve API key: explicit → OPENAI_API_KEY → known provider env vars
+            custom_key = (explicit_api_key or "").strip()
+            if not custom_key:
+                custom_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if not custom_key:
+                # Try known provider API keys when base_url matches their endpoint
+                cb_lower = custom_base.lower()
+                if "dashscope" in cb_lower:
+                    custom_key = os.getenv("DASHSCOPE_API_KEY", "").strip()
+                elif "deepseek" in cb_lower:
+                    custom_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+                elif "z.ai" in cb_lower or "bigmodel" in cb_lower:
+                    custom_key = os.getenv("ZHIPU_API_KEY", "").strip() or os.getenv("GLM_API_KEY", "").strip()
+                elif "kimi" in cb_lower or "moonshot" in cb_lower:
+                    custom_key = os.getenv("KIMI_API_KEY", "").strip() or os.getenv("MOONSHOT_API_KEY", "").strip()
+                elif "minimax" in cb_lower:
+                    custom_key = os.getenv("MINIMAX_API_KEY", "").strip()
+            if not custom_key:
+                custom_key = "no-key-required"  # local servers don't need auth
             if not custom_base:
                 logger.warning(
                     "resolve_provider_client: explicit custom endpoint requested "

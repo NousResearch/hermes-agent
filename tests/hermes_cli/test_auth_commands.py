@@ -397,6 +397,57 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_pat
     assert fake_proc.killed is False
 
 
+def test_auth_browser_command_bootstraps_chatgpt_web_from_windows_browser(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+
+    class _FakeProc:
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    fake_proc = _FakeProc()
+
+    monkeypatch.setattr(auth_commands_mod, "_is_termux", lambda: False)
+    monkeypatch.setattr(auth_commands_mod, "_is_windows", lambda: True)
+    monkeypatch.setattr(auth_commands_mod, "_is_wsl", lambda: False)
+    monkeypatch.setattr(auth_commands_mod, "_find_desktop_browser_command", lambda: "C:/Program Files/Microsoft/Edge/Application/msedge.exe")
+    monkeypatch.setattr(auth_commands_mod, "_launch_chatgpt_web_desktop_browser", lambda *args, **kwargs: (fake_proc, ["http://127.0.0.1:9222"]))
+    monkeypatch.setattr(auth_commands_mod, "_wait_for_any_debugger", lambda *args, **kwargs: "http://127.0.0.1:9222")
+    monkeypatch.setattr(auth_commands_mod, "_wait_for_chatgpt_web_session_token", lambda *args, **kwargs: "session-cookie")
+    monkeypatch.setattr(auth_commands_mod, "auth_add_command", lambda args: captured.setdefault("args", args))
+
+    class _Args:
+        provider = "chatgpt-web"
+        label = None
+        timeout = 30
+        debug_port = 9222
+        keep_open = False
+
+    auth_commands_mod.auth_browser_command(_Args())
+    output = capsys.readouterr().out
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].token_mode == "session_token"
+    assert captured["args"].api_key == "session-cookie"
+    assert captured["args"].label == "windows-browser"
+    assert "Stored chatgpt-web credential from Windows browser" in output
+    assert fake_proc.terminated is True
+    assert fake_proc.killed is False
+
+
 def test_auth_browser_command_rejects_unsupported_provider():
     from hermes_cli import auth_commands as auth_commands_mod
 

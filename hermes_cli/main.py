@@ -3750,6 +3750,36 @@ def cmd_update(args):
             print("✓ Already up to date!")
             return
 
+        # --check mode: report available updates without installing
+        if getattr(args, "check", False):
+            print(f"→ {commit_count} update(s) available")
+            # Show the latest commit message(s)
+            log_result = subprocess.run(
+                git_cmd + ["log", f"HEAD..origin/{branch}", "--oneline", "-5"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            if log_result.stdout.strip():
+                print()
+                print("Recent changes:")
+                for line in log_result.stdout.strip().splitlines():
+                    print(f"  {line}")
+            # Restore stash and switch back without pulling
+            if auto_stash_ref is not None:
+                _restore_stashed_changes(
+                    git_cmd, PROJECT_ROOT, auto_stash_ref,
+                    prompt_user=prompt_for_restore,
+                    input_fn=gw_input_fn,
+                )
+            if current_branch not in ("main", "HEAD"):
+                subprocess.run(
+                    git_cmd + ["checkout", current_branch],
+                    cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+                )
+            return
+
         print(f"→ Found {commit_count} new commit(s)")
 
         print("→ Pulling updates...")
@@ -5846,6 +5876,10 @@ Examples:
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
+    update_parser.add_argument(
+        "--check", action="store_true", default=False,
+        help="Check for available updates without installing them"
+    )
     update_parser.set_defaults(func=cmd_update)
     
     # =========================================================================
@@ -6068,8 +6102,11 @@ Examples:
             sys.stderr = _io.StringIO()
             args = parser.parse_args(_processed_argv)
             sys.stderr = _saved_stderr
-        except SystemExit:
+        except SystemExit as e:
             sys.stderr = _saved_stderr
+            # Re-raise SystemExit(0) from --help or --version to avoid double output
+            if e.code == 0:
+                raise
             # Subcommand name was consumed as a flag value (e.g. -c model).
             # Fall back to optional subparsers so argparse handles it normally.
             subparsers.required = False

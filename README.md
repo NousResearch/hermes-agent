@@ -88,6 +88,16 @@ For the full command lists, see the [CLI guide](https://hermes-agent.nousresearc
 
 All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
 
+### Brokerage paper-trading subsystem
+
+An in-repo guide for the Telegram -> Hermes -> IBKR paper-trading workflow lives at:
+
+- [docs/brokerage/README.md](docs/brokerage/README.md)
+- [docs/brokerage/openapi.md](docs/brokerage/openapi.md)
+
+It covers local FastAPI service startup, Hermes configuration, IBKR paper setup, current v1 limitations, and safety notes.
+
+
 | Section | What's Covered |
 |---------|---------------|
 | [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |

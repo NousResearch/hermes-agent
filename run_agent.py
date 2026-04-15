@@ -937,9 +937,13 @@ class AIAgent:
                     # message instead of silently routing through OpenRouter.
                     _explicit = (self.provider or "").strip().lower()
                     if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        # Provider-specific env var mappings for providers with non-obvious key names
+                        _provider_env_var_hint = {
+                            "alibaba": "DASHSCOPE_API_KEY (or ALIBABA_API_KEY)",
+                        }.get(_explicit, f"{_explicit.upper()}_API_KEY")
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"was found. Set the {_provider_env_var_hint} environment "
                             f"variable, or switch to a different provider with `hermes model`."
                         )
                     # Final fallback: try raw OpenRouter key

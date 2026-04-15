@@ -126,6 +126,18 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert result["/gstack"]["zh_description"].startswith("做什麼：Garry Tan 的 AI software factory 方法包")
 
+    def test_self_improving_agent_has_curated_hint(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "self-improving-agent",
+                body="",
+                frontmatter_extra="description: Some generic description.\n",
+                category="openclaw-transfer",
+            )
+            result = scan_skill_commands()
+        assert result["/self-improving-agent"]["zh_description"].startswith("做什麼：來自 peterskoett/self-improving-agent 的自我進化方法")
+
     def test_generates_traditional_chinese_hint_from_english_description(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

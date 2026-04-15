@@ -116,6 +116,65 @@ def test_list_authenticated_providers_fallback_to_default_only(monkeypatch):
     assert user_prov["models"] == ["single-model"]
 
 
+def test_list_authenticated_providers_skips_user_provider_when_builtin_exists(monkeypatch):
+    """Built-in overlay providers should not be duplicated by providers: entries."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+
+    user_providers = {
+        "copilot": {
+            "name": "Copilot Mirror",
+            "api": "https://example.invalid/v1",
+            "default_model": "gpt-5",
+        }
+    }
+
+    monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "fake-ghu")
+    providers = list_authenticated_providers(
+        current_provider="copilot",
+        user_providers=user_providers,
+        custom_providers=[],
+        max_models=50,
+    )
+
+    copilot_rows = [p for p in providers if p["slug"] == "copilot"]
+    assert len(copilot_rows) == 1
+    assert copilot_rows[0]["source"] == "hermes"
+
+
+def test_list_authenticated_providers_reserves_compatibility_custom_slug(monkeypatch):
+    """providers: entries should not reappear through the custom-provider compatibility view."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    user_providers = {
+        "local-ollama": {
+            "name": "Local Ollama",
+            "api": "http://localhost:11434/v1",
+            "default_model": "llama3",
+            "models": ["llama3", "mistral"],
+        }
+    }
+    custom_providers = [
+        {
+            "name": "Local Ollama",
+            "base_url": "http://localhost:11434/v1",
+            "model": "llama3",
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="local-ollama",
+        user_providers=user_providers,
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    local_row = next((p for p in providers if p["slug"] == "local-ollama"), None)
+    assert local_row is not None
+    assert local_row["models"] == ["llama3", "mistral"]
+    assert not any(p["slug"] == "custom:local-ollama" for p in providers)
+
+
 # =============================================================================
 # Tests for _get_named_custom_provider with providers: dict
 # =============================================================================

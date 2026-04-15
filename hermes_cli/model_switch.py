@@ -1003,6 +1003,10 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
+            normalized_slug = str(ep_name).strip().lower()
+            compatibility_slug = custom_provider_slug(display_name)
+            if normalized_slug in seen_slugs or compatibility_slug in seen_slugs:
+                continue
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
@@ -1029,6 +1033,8 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(normalized_slug)
+            seen_slugs.add(compatibility_slug)
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named
@@ -1086,5 +1092,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

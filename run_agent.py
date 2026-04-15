@@ -3039,7 +3039,265 @@ class AIAgent:
                 )
             except Exception:
                 pass
-    
+        # Auto Session Summary — generate structured summary in background
+        self._spawn_auto_summary(messages or [])
+        # Auto Memory Extraction — extract facts/preferences from conversation
+        self._spawn_auto_extraction(messages or [])
+
+    def _spawn_auto_summary(self, messages: list) -> None:
+        """Generate a structured session summary in a background thread.
+
+        Uses the current provider (via call_llm) to produce a compact summary
+        of the conversation, then stores it in the session DB. The summary is
+        injected into future sessions' system prompts for cross-session context.
+
+        Only runs when:
+        - There is a session DB and session ID
+        - The conversation has meaningful content (>= 2 user/assistant turns)
+        - Auto-summary is not disabled via config
+        """
+        if not self._session_db or not self.session_id:
+            return
+
+        # Check config — allow disabling via memory.auto_summary: false
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if not cfg.get("memory", {}).get("auto_summary", True):
+                return
+        except Exception:
+            pass
+
+        # Only summarize if there's meaningful content
+        user_assistant_msgs = [
+            m for m in messages
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and m.get("content") and isinstance(m.get("content"), str)
+            and len(m["content"].strip()) > 10
+        ]
+        if len(user_assistant_msgs) < 2:
+            return
+
+        session_id = self.session_id
+        session_db = self._session_db
+
+        # Build a compact conversation digest for summarization
+        digest_parts = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system" or not content or not isinstance(content, str):
+                continue
+            # Truncate individual messages to keep digest reasonable
+            text = content.strip()
+            if len(text) > 1500:
+                text = text[:1500] + "..."
+            if role == "tool":
+                tool_name = m.get("tool_name", "tool")
+                digest_parts.append(f"[{tool_name} result]: {text[:500]}")
+            elif role in ("user", "assistant"):
+                digest_parts.append(f"[{role}]: {text}")
+        # Cap total digest
+        digest = "\n".join(digest_parts)
+        if len(digest) > 15000:
+            digest = digest[:15000] + "\n...(truncated)"
+
+        def _generate_summary():
+            try:
+                from agent.auxiliary_client import call_llm
+                summary_prompt = (
+                    "You are a session summarizer. Produce a concise structured summary "
+                    "of this conversation in the SAME LANGUAGE the user spoke. Keep it under "
+                    "500 characters. Format:\n"
+                    "Topic: (1-line topic)\n"
+                    "Key Actions: (bullet list of what was done)\n"
+                    "Decisions: (important decisions made)\n"
+                    "Open Items: (unfinished tasks, if any)\n\n"
+                    "Conversation:\n"
+                ) + digest
+
+                response = call_llm(
+                    task="compression",  # reuse compression task's provider config
+                    messages=[{"role": "user", "content": summary_prompt}],
+                    max_tokens=400,
+                    temperature=0.0,
+                )
+                summary_text = response.choices[0].message.content
+                if summary_text and summary_text.strip():
+                    session_db.save_summary(session_id, summary_text.strip()[:1000])
+                    logger.info("Auto session summary saved for %s", session_id)
+            except Exception as e:
+                logger.debug("Auto session summary failed: %s", e)
+
+        t = threading.Thread(target=_generate_summary, daemon=True, name="auto-summary")
+        t.start()
+
+    def _spawn_auto_extraction(self, messages: list) -> None:
+        """Extract durable facts from conversation and write to memory.
+
+        Runs in a background thread after session ends. Uses a cheap LLM to
+        analyze the conversation and identify new facts, preferences, corrections,
+        and environment details worth persisting. Outputs structured JSON
+        operations that are applied to the MemoryStore.
+
+        Only runs when:
+        - Memory store is available and enabled
+        - The conversation has meaningful content (>= 3 user/assistant turns)
+        - Auto-extraction is not disabled via config (memory.auto_extraction)
+        """
+        if not self._memory_store or not self._memory_enabled:
+            return
+
+        # Check config — allow disabling via memory.auto_extraction: false
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            if not cfg.get("memory", {}).get("auto_extraction", True):
+                return
+        except Exception:
+            pass
+
+        # Only extract if there's meaningful content (need enough context)
+        user_assistant_msgs = [
+            m for m in messages
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and m.get("content") and isinstance(m.get("content"), str)
+            and len(m["content"].strip()) > 10
+        ]
+        if len(user_assistant_msgs) < 3:
+            return
+
+        memory_store = self._memory_store
+
+        # Read current memory state for dedup context
+        _delim = "\n§\n"
+        current_memory = _delim.join(memory_store.memory_entries) if memory_store.memory_entries else "(empty)"
+        current_user = _delim.join(memory_store.user_entries) if memory_store.user_entries else "(empty)"
+        mem_limit = memory_store._char_limit("memory")
+        user_limit = memory_store._char_limit("user")
+        mem_used = memory_store._char_count("memory")
+        user_used = memory_store._char_count("user")
+
+        # Build conversation digest (same pattern as auto_summary)
+        digest_parts = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if role == "system" or not content or not isinstance(content, str):
+                continue
+            text = content.strip()
+            if len(text) > 1500:
+                text = text[:1500] + "..."
+            if role == "tool":
+                tool_name = m.get("tool_name", "tool")
+                digest_parts.append(f"[{tool_name} result]: {text[:500]}")
+            elif role in ("user", "assistant"):
+                digest_parts.append(f"[{role}]: {text}")
+        digest = "\n".join(digest_parts)
+        if len(digest) > 15000:
+            digest = digest[:15000] + "\n...(truncated)"
+
+        def _run_extraction():
+            try:
+                from agent.auxiliary_client import call_llm
+
+                extraction_prompt = (
+                    "You are a memory extraction system. Analyze this conversation and identify "
+                    "information worth persisting to long-term memory. Focus on:\n"
+                    "1. User preferences, corrections, or behavioral instructions\n"
+                    "2. Environment/system facts discovered (tools, configs, versions)\n"
+                    "3. Project details, decisions, or conventions established\n"
+                    "4. Corrections the user made (things the agent got wrong)\n\n"
+                    "RULES:\n"
+                    "- Do NOT extract task progress, session outcomes, or temporary state\n"
+                    "- Do NOT duplicate information already in existing memory\n"
+                    "- Each entry must be a compact, self-contained fact (1-2 lines)\n"
+                    "- If existing memory has outdated info, suggest a replace operation\n"
+                    "- If nothing new is worth remembering, return empty operations array\n"
+                    "- Respect capacity limits shown below\n\n"
+                    f"=== EXISTING MEMORY (agent notes) [{mem_used}/{mem_limit} chars] ===\n"
+                    f"{current_memory}\n\n"
+                    f"=== EXISTING USER PROFILE [{user_used}/{user_limit} chars] ===\n"
+                    f"{current_user}\n\n"
+                    "=== CONVERSATION ===\n"
+                    f"{digest}\n\n"
+                    "Output ONLY a JSON array of operations. Each operation:\n"
+                    '{"action": "add|replace|remove", "target": "memory|user", '
+                    '"content": "new entry text", "old_text": "substring to match for replace/remove"}\n'
+                    "For add: content required. For replace: old_text + content. For remove: old_text only.\n"
+                    "Return [] if nothing new to extract. Output raw JSON only, no markdown fences."
+                )
+
+                response = call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": extraction_prompt}],
+                    max_tokens=1000,
+                    temperature=0.0,
+                )
+                result_text = response.choices[0].message.content
+                if not result_text or not result_text.strip():
+                    return
+
+                # Parse JSON operations
+                import json as _json
+                text = result_text.strip()
+                # Strip markdown fences if model added them
+                if text.startswith("```"):
+                    text = text.split("\n", 1)[-1]
+                    if text.endswith("```"):
+                        text = text[:-3]
+                    text = text.strip()
+
+                try:
+                    operations = _json.loads(text)
+                except _json.JSONDecodeError:
+                    logger.debug("Auto extraction: failed to parse JSON: %s", text[:200])
+                    return
+
+                if not isinstance(operations, list) or not operations:
+                    return
+
+                applied = 0
+                for op in operations[:10]:  # cap at 10 operations per session
+                    if not isinstance(op, dict):
+                        continue
+                    action = op.get("action", "")
+                    target = op.get("target", "memory")
+                    content = op.get("content", "")
+                    old_text = op.get("old_text", "")
+
+                    if target not in ("memory", "user"):
+                        continue
+
+                    try:
+                        if action == "add" and content:
+                            result = memory_store.add(target, content)
+                            if result.get("success"):
+                                applied += 1
+                        elif action == "replace" and old_text and content:
+                            result = memory_store.replace(target, old_text, content)
+                            if result.get("success"):
+                                applied += 1
+                        elif action == "remove" and old_text:
+                            result = memory_store.remove(target, old_text)
+                            if result.get("success"):
+                                applied += 1
+                    except Exception as e:
+                        logger.debug("Auto extraction op failed: %s %s: %s", action, target, e)
+
+                if applied > 0:
+                    logger.info("Auto memory extraction: %d operations applied", applied)
+
+            except Exception as e:
+                logger.debug("Auto memory extraction failed: %s", e)
+
+        t = threading.Thread(target=_run_extraction, daemon=True, name="auto-extraction")
+        t.start()
+
     def close(self) -> None:
         """Release all resources held by this agent instance.
 
@@ -3244,6 +3502,30 @@ class AIAgent:
                 _ext_mem_block = self._memory_manager.build_system_prompt()
                 if _ext_mem_block:
                     prompt_parts.append(_ext_mem_block)
+            except Exception:
+                pass
+
+        # Auto Session Summaries — inject recent session summaries for cross-session context
+        if self._session_db and self.session_id:
+            try:
+                recent_summaries = self._session_db.get_recent_summaries(
+                    limit=3,
+                    exclude_session_id=self.session_id,
+                )
+                if recent_summaries:
+                    from datetime import datetime as _dt, timezone as _tz
+                    summary_lines = ["## Recent Session Context\n"]
+                    for s in recent_summaries:
+                        ts = s.get("started_at", 0)
+                        try:
+                            time_str = _dt.fromtimestamp(ts, tz=_tz.utc).strftime("%Y-%m-%d %H:%M UTC")
+                        except Exception:
+                            time_str = "unknown"
+                        title = s.get("title") or "Untitled"
+                        summary_lines.append(f"### {title} ({time_str})")
+                        summary_lines.append(s["summary"])
+                        summary_lines.append("")
+                    prompt_parts.append("\n".join(summary_lines))
             except Exception:
                 pass
 

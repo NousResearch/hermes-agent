@@ -1128,7 +1128,62 @@ def systemd_restart(system: bool = False):
 
     pid = get_running_pid()
     if pid is not None and _request_gateway_self_restart(pid):
-        print(f"✓ {_service_scope_label(system).capitalize()} service restart requested")
+        # SIGUSR1 sent — the gateway will drain active agents, exit with
+        # code 75, and systemd will restart it after RestartSec (30s).
+        # Wait for the old process to die and the new one to become active
+        # so the CLI doesn't return while the service is still restarting.
+        import time
+        scope_label = _service_scope_label(system).capitalize()
+        svc = get_service_name()
+        scope_cmd = _systemctl_cmd(system)
+
+        # Phase 1: wait for old process to exit (drain + shutdown)
+        print(f"⏳ {scope_label} service draining active work...")
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(1)
+            except (ProcessLookupError, PermissionError):
+                break  # old process is gone
+        else:
+            print(f"⚠ Old process (PID {pid}) still alive after 90s")
+
+        # Phase 2: wait for systemd to start the new process
+        print(f"⏳ Waiting for {svc} to restart...")
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            try:
+                result = subprocess.run(
+                    scope_cmd + ["is-active", svc],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.stdout.strip() == "active":
+                    # Verify it's a NEW process, not the old one somehow
+                    new_pid = get_running_pid()
+                    if new_pid and new_pid != pid:
+                        print(f"✓ {scope_label} service restarted (PID {new_pid})")
+                        return
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+            time.sleep(2)
+
+        # Timed out — check final state
+        try:
+            result = subprocess.run(
+                scope_cmd + ["is-active", svc],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.stdout.strip() == "active":
+                print(f"✓ {scope_label} service restarted")
+                return
+        except Exception:
+            pass
+        print(
+            f"⚠ {scope_label} service did not become active within 60s.\n"
+            f"  Check status: {'sudo ' if system else ''}hermes gateway status\n"
+            f"  Check logs:   journalctl {'--user ' if not system else ''}-u {svc} --since '2 min ago'"
+        )
         return
     _run_systemctl(["reload-or-restart", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")

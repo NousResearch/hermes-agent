@@ -1021,6 +1021,27 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def _send_message_with_thread_fallback(self, **kwargs):
+        """Send a Telegram message, retrying once without thread_id if needed."""
+        if not self._bot:
+            raise RuntimeError("Not connected")
+
+        message_thread_id = kwargs.get("message_thread_id")
+        try:
+            return await self._bot.send_message(**kwargs)
+        except Exception as send_err:
+            err_lower = str(send_err).lower()
+            if message_thread_id is not None and "thread not found" in err_lower:
+                logger.warning(
+                    "[%s] Thread %s not found for inline/control message, retrying without message_thread_id",
+                    self.name,
+                    message_thread_id,
+                )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("message_thread_id", None)
+                return await self._bot.send_message(**retry_kwargs)
+            raise
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1106,7 +1127,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if thread_id:
                 kwargs["message_thread_id"] = int(thread_id)
 
-            msg = await self._bot.send_message(**kwargs)
+            msg = await self._send_message_with_thread_fallback(**kwargs)
 
             # Store session_key keyed by approval_id for the callback handler
             self._approval_state[approval_id] = session_key
@@ -1166,7 +1187,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             thread_id = metadata.get("thread_id") if metadata else None
-            msg = await self._bot.send_message(
+            msg = await self._send_message_with_thread_fallback(
                 chat_id=int(chat_id),
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
@@ -2714,9 +2735,16 @@ class TelegramAdapter(BasePlatformAdapter):
         elif chat.type == ChatType.CHANNEL:
             chat_type = "channel"
 
-        # Resolve DM topic name and skill binding
+        # Resolve DM topic name and skill binding.
+        # In private chats, only preserve thread ids for real topic messages.
         thread_id_raw = message.message_thread_id
-        thread_id_str = str(thread_id_raw) if thread_id_raw else None
+        is_topic_message = bool(getattr(message, "is_topic_message", False))
+        thread_id_str = None
+        if thread_id_raw:
+            if chat_type == "group":
+                thread_id_str = str(thread_id_raw)
+            elif chat_type == "dm" and is_topic_message:
+                thread_id_str = str(thread_id_raw)
         chat_topic = None
         topic_skill = None
 

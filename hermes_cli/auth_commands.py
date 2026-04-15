@@ -161,9 +161,12 @@ def auth_add_command(args) -> None:
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
+            import sys
             if sys.stdin.isatty():
                 label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
             else:
+                # Non-interactive environment (CI, pipes, scripts) — use the
+                # default label silently instead of blocking on input().
                 label = default_label
         entry = PooledCredential(
             provider=provider,

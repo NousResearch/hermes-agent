@@ -247,8 +247,8 @@ def cmd_mcp_add(args):
 
     # Validate transport
     if not url and not command:
-        _error("Must specify --url <endpoint>, --command <cmd>, or --preset <name>")
-        _info("Examples:")
+        _error("--url <endpoint>, --command <cmd>, 또는 --preset <name> 중 하나를 지정해야 해요")
+        _info("예시:")
         _info('  hermes mcp add ink --url "https://mcp.ml.ink/mcp"')
         _info('  hermes mcp add github --command npx --args @modelcontextprotocol/server-github')
         _info('  hermes mcp add myserver --preset mypreset')
@@ -257,8 +257,8 @@ def cmd_mcp_add(args):
     # Check if server already exists
     existing = _get_mcp_servers()
     if name in existing:
-        if not _confirm(f"Server '{name}' already exists. Overwrite?", default=False):
-            _info("Cancelled.")
+        if not _confirm(f"서버 '{name}'이(가) 이미 있어요. 덮어쓸까요?", default=False):
+            _info("취소했어요.")
             return
 
     # Build initial config
@@ -276,46 +276,46 @@ def cmd_mcp_add(args):
 
     if url and auth_type == "oauth":
         print()
-        _info(f"Starting OAuth flow for '{name}'...")
+        _info(f"'{name}'의 OAuth 흐름을 시작하는 중...")
         oauth_ok = False
         try:
             from tools.mcp_oauth import build_oauth_auth
             oauth_auth = build_oauth_auth(name, url)
             if oauth_auth:
                 server_config["auth"] = "oauth"
-                _success("OAuth configured (tokens will be acquired on first connection)")
+                _success("OAuth를 설정했어요 (토큰은 첫 연결 시 받아와요)")
                 oauth_ok=True
             else:
-                _warning("OAuth setup failed — MCP SDK auth module not available")
+                _warning("OAuth 설정에 실패했어요 — MCP SDK auth 모듈을 사용할 수 없어요")
         except Exception as exc:
-            _warning(f"OAuth error: {exc}")
+            _warning(f"OAuth 오류: {exc}")
 
         if not oauth_ok:
-            _info("This server may not support OAuth.")
-            if _confirm("Continue without authentication?", default=True):
+            _info("이 서버는 OAuth를 지원하지 않을 수도 있어요.")
+            if _confirm("인증 없이 계속할까요?", default=True):
                 # Don't store auth: oauth — server doesn't support it
                 pass
             else:
-                _info("Cancelled.")
+                _info("취소했어요.")
                 return
 
     elif url:
         # Prompt for API key / Bearer token for HTTP servers
         print()
-        _info(f"Connecting to {url}")
-        needs_auth = _confirm("Does this server require authentication?", default=True)
+        _info(f"{url}에 연결하는 중")
+        needs_auth = _confirm("이 서버에 인증이 필요한가요?", default=True)
         if needs_auth:
             if auth_type == "header" or not auth_type:
                 env_key = _env_key_for_server(name)
                 existing_key = get_env_value(env_key)
                 if existing_key:
-                    _success(f"{env_key}: already configured")
+                    _success(f"{env_key}: 이미 설정되어 있어요")
                     api_key = existing_key
                 else:
                     api_key = _prompt("API key / Bearer token", password=True)
                     if api_key:
                         save_env_value(env_key, api_key)
-                        _success(f"Saved to {display_hermes_home()}/.env as {env_key}")
+                        _success(f"{display_hermes_home()}/.env에 {env_key}로 저장했어요")
 
                 # Set header with env var interpolation
                 if api_key or existing_key:
@@ -326,30 +326,30 @@ def cmd_mcp_add(args):
     # ── Discovery: connect and list tools ─────────────────────────────
 
     print()
-    print(color(f"  Connecting to '{name}'...", Colors.CYAN))
+    print(color(f"  '{name}'에 연결하는 중...", Colors.CYAN))
 
     try:
         tools = _probe_single_server(name, server_config)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
-        if _confirm("Save config anyway (you can test later)?", default=False):
+        _error(f"연결하지 못했어요: {exc}")
+        if _confirm("그래도 config에 저장할까요? (나중에 테스트할 수 있어요)", default=False):
             server_config["enabled"] = False
             _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config (disabled)")
-            _info("Fix the issue, then: hermes mcp test " + name)
+            _success(f"'{name}'을(를) config에 저장했어요 (비활성화됨)")
+            _info("문제를 해결한 뒤 다음을 실행하세요: hermes mcp test " + name)
         return
 
     if not tools:
-        _warning("Server connected but reported no tools.")
-        if _confirm("Save config anyway?", default=True):
+        _warning("서버에는 연결됐지만 보고된 도구가 없어요.")
+        if _confirm("그래도 config에 저장할까요?", default=True):
             _save_mcp_server(name, server_config)
-            _success(f"Saved '{name}' to config")
+            _success(f"'{name}'을(를) config에 저장했어요")
         return
 
     # ── Tool selection ────────────────────────────────────────────────
 
     print()
-    _success(f"Connected! Found {len(tools)} tool(s) from '{name}':")
+    _success(f"연결됐어요! '{name}'에서 도구 {len(tools)}개를 찾았어요:")
     print()
     for tool_name, desc in tools:
         short = desc[:60] + "..." if len(desc) > 60 else desc
@@ -359,15 +359,15 @@ def cmd_mcp_add(args):
     # Ask: enable all, select, or cancel
     try:
         choice = input(
-            color(f"  Enable all {len(tools)} tools? [Y/n/select]: ", Colors.YELLOW)
+            color(f"  도구 {len(tools)}개를 모두 활성화할까요? [Y/n/select]: ", Colors.YELLOW)
         ).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
-        _info("Cancelled.")
+        _info("취소했어요.")
         return
 
     if choice in ("n", "no"):
-        _info("Cancelled — server not saved.")
+        _info("취소했어요 — 서버를 저장하지 않았어요.")
         return
 
     if choice in ("s", "select"):
@@ -378,13 +378,13 @@ def cmd_mcp_add(args):
         pre_selected = set(range(len(tools)))
 
         chosen = curses_checklist(
-            f"Select tools for '{name}'",
+            f"'{name}'에서 사용할 도구 선택",
             labels,
             pre_selected,
         )
 
         if not chosen:
-            _info("No tools selected — server not saved.")
+            _info("선택한 도구가 없어서 서버를 저장하지 않았어요.")
             return
 
         chosen_names = [tools[i][0] for i in sorted(chosen)]
@@ -403,8 +403,8 @@ def cmd_mcp_add(args):
     _save_mcp_server(name, server_config)
 
     print()
-    _success(f"Saved '{name}' to {display_hermes_home()}/config.yaml ({tool_count}/{total} tools enabled)")
-    _info("Start a new session to use these tools.")
+    _success(f"'{name}'을(를) {display_hermes_home()}/config.yaml에 저장했어요 ({tool_count}/{total}개 도구 활성화)")
+    _info("이 도구를 사용하려면 새 세션을 시작하세요.")
 
 
 # ─── hermes mcp remove ───────────────────────────────────────────────────────
@@ -415,24 +415,24 @@ def cmd_mcp_remove(args):
     existing = _get_mcp_servers()
 
     if name not in existing:
-        _error(f"Server '{name}' not found in config.")
+        _error(f"config에서 서버 '{name}'을(를) 찾지 못했어요.")
         servers = list(existing.keys())
         if servers:
-            _info(f"Available servers: {', '.join(servers)}")
+            _info(f"사용 가능한 서버: {', '.join(servers)}")
         return
 
-    if not _confirm(f"Remove server '{name}'?", default=True):
-        _info("Cancelled.")
+    if not _confirm(f"서버 '{name}'을(를) 제거할까요?", default=True):
+        _info("취소했어요.")
         return
 
     _remove_mcp_server(name)
-    _success(f"Removed '{name}' from config")
+    _success(f"config에서 '{name}'을(를) 제거했어요")
 
     # Clean up OAuth tokens if they exist
     try:
         from tools.mcp_oauth import remove_oauth_tokens
         remove_oauth_tokens(name)
-        _success("Cleaned up OAuth tokens")
+        _success("OAuth 토큰도 정리했어요")
     except Exception:
         pass
 
@@ -445,20 +445,20 @@ def cmd_mcp_list(args=None):
 
     if not servers:
         print()
-        _info("No MCP servers configured.")
+        _info("설정된 MCP 서버가 없어요.")
         print()
-        _info("Add one with:")
+        _info("추가하려면:")
         _info('  hermes mcp add <name> --url <endpoint>')
         _info('  hermes mcp add <name> --command <cmd> --args <args...>')
         print()
         return
 
     print()
-    print(color("  MCP Servers:", Colors.CYAN + Colors.BOLD))
+    print(color("  MCP 서버:", Colors.CYAN + Colors.BOLD))
     print()
 
     # Table header
-    print(f"  {'Name':<16} {'Transport':<30} {'Tools':<12} {'Status':<10}")
+    print(f"  {'이름':<16} {'전송 방식':<30} {'도구':<12} {'상태':<10}")
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
@@ -487,19 +487,19 @@ def cmd_mcp_list(args=None):
             include = tools_cfg.get("include")
             exclude = tools_cfg.get("exclude")
             if include and isinstance(include, list):
-                tools_str = f"{len(include)} selected"
+                tools_str = f"{len(include)}개 선택"
             elif exclude and isinstance(exclude, list):
-                tools_str = f"-{len(exclude)} excluded"
+                tools_str = f"-{len(exclude)}개 제외"
             else:
-                tools_str = "all"
+                tools_str = "전체"
         else:
-            tools_str = "all"
+            tools_str = "전체"
 
         # Enabled status
         enabled = cfg.get("enabled", True)
         if isinstance(enabled, str):
             enabled = enabled.lower() in ("true", "1", "yes")
-        status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
+        status = color("✓ 활성화", Colors.GREEN) if enabled else color("✗ 비활성화", Colors.DIM)
 
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
 
@@ -514,28 +514,28 @@ def cmd_mcp_test(args):
     servers = _get_mcp_servers()
 
     if name not in servers:
-        _error(f"Server '{name}' not found in config.")
+        _error(f"config에서 서버 '{name}'을(를) 찾지 못했어요.")
         available = list(servers.keys())
         if available:
-            _info(f"Available: {', '.join(available)}")
+            _info(f"사용 가능: {', '.join(available)}")
         return
 
     cfg = servers[name]
     print()
-    print(color(f"  Testing '{name}'...", Colors.CYAN))
+    print(color(f"  '{name}' 연결을 테스트하는 중...", Colors.CYAN))
 
     # Show transport info
     if "url" in cfg:
-        _info(f"Transport: HTTP → {cfg['url']}")
+        _info(f"전송 방식: HTTP → {cfg['url']}")
     else:
         cmd = cfg.get("command", "?")
-        _info(f"Transport: stdio → {cmd}")
+        _info(f"전송 방식: stdio → {cmd}")
 
     # Show auth info (masked)
     auth_type = cfg.get("auth", "")
     headers = cfg.get("headers", {})
     if auth_type == "oauth":
-        _info("Auth: OAuth 2.1 PKCE")
+        _info("인증: OAuth 2.1 PKCE")
     elif headers:
         for k, v in headers.items():
             if isinstance(v, str) and ("key" in k.lower() or "auth" in k.lower()):
@@ -547,7 +547,7 @@ def cmd_mcp_test(args):
                     masked = "***"
                 print(f"    {k}: {masked}")
     else:
-        _info("Auth: none")
+        _info("인증: 없음")
 
     # Attempt connection
     start = time.monotonic()
@@ -556,11 +556,11 @@ def cmd_mcp_test(args):
         elapsed_ms = (time.monotonic() - start) * 1000
     except Exception as exc:
         elapsed_ms = (time.monotonic() - start) * 1000
-        _error(f"Connection failed ({elapsed_ms:.0f}ms): {exc}")
+        _error(f"연결 테스트 실패 ({elapsed_ms:.0f}ms): {exc}")
         return
 
-    _success(f"Connected ({elapsed_ms:.0f}ms)")
-    _success(f"Tools discovered: {len(tools)}")
+    _success(f"연결 성공 ({elapsed_ms:.0f}ms)")
+    _success(f"발견한 도구 수: {len(tools)}")
 
     if tools:
         print()
@@ -583,32 +583,32 @@ def cmd_mcp_configure(args):
     """Reconfigure which tools are enabled for an existing MCP server."""
     import sys as _sys
     if not _sys.stdin.isatty():
-        print("Error: 'hermes mcp configure' requires an interactive terminal.", file=_sys.stderr)
+        print("오류: 'hermes mcp configure'는 대화형 터미널이 필요해요.", file=_sys.stderr)
         _sys.exit(1)
     name = args.name
     servers = _get_mcp_servers()
 
     if name not in servers:
-        _error(f"Server '{name}' not found in config.")
+        _error(f"config에서 서버 '{name}'을(를) 찾지 못했어요.")
         available = list(servers.keys())
         if available:
-            _info(f"Available: {', '.join(available)}")
+            _info(f"사용 가능: {', '.join(available)}")
         return
 
     cfg = servers[name]
 
     # Discover all available tools
     print()
-    print(color(f"  Connecting to '{name}' to discover tools...", Colors.CYAN))
+    print(color(f"  도구를 찾기 위해 '{name}'에 연결하는 중...", Colors.CYAN))
 
     try:
         all_tools = _probe_single_server(name, cfg)
     except Exception as exc:
-        _error(f"Failed to connect: {exc}")
+        _error(f"연결하지 못했어요: {exc}")
         return
 
     if not all_tools:
-        _warning("Server reports no tools.")
+        _warning("서버가 보고한 도구가 없어요.")
         return
 
     # Determine which are currently enabled
@@ -637,7 +637,7 @@ def cmd_mcp_configure(args):
 
     currently = len(pre_selected)
     total = len(all_tools)
-    _info(f"Currently {currently}/{total} tools enabled for '{name}'.")
+    _info(f"현재 '{name}'에서는 도구 {currently}/{total}개가 활성화되어 있어요.")
     print()
 
     # Interactive checklist
@@ -646,13 +646,13 @@ def cmd_mcp_configure(args):
     labels = [f"{t[0]}  —  {t[1]}" for t in all_tools]
 
     chosen = curses_checklist(
-        f"Select tools for '{name}'",
+        f"'{name}'에서 사용할 도구 선택",
         labels,
         pre_selected,
     )
 
     if chosen == pre_selected:
-        _info("No changes made.")
+        _info("변경된 내용이 없어요.")
         return
 
     # Update config
@@ -672,8 +672,8 @@ def cmd_mcp_configure(args):
     save_config(config)
 
     new_count = len(chosen)
-    _success(f"Updated config: {new_count}/{total} tools enabled")
-    _info("Start a new session for changes to take effect.")
+    _success(f"config를 업데이트했어요: {new_count}/{total}개 도구 활성화")
+    _info("변경 사항을 적용하려면 새 세션을 시작하세요.")
 
 
 # ─── Dispatcher ───────────────────────────────────────────────────────────────
@@ -704,13 +704,13 @@ def mcp_command(args):
     else:
         # No subcommand — show list
         cmd_mcp_list()
-        print(color("  Commands:", Colors.CYAN))
-        _info("hermes mcp serve                              Run as MCP server")
-        _info("hermes mcp add <name> --url <endpoint>        Add an MCP server")
-        _info("hermes mcp add <name> --command <cmd>         Add a stdio server")
-        _info("hermes mcp add <name> --preset <preset>       Add from a known preset")
-        _info("hermes mcp remove <name>                      Remove a server")
-        _info("hermes mcp list                               List servers")
-        _info("hermes mcp test <name>                        Test connection")
-        _info("hermes mcp configure <name>                   Toggle tools")
+        print(color("  명령어:", Colors.CYAN))
+        _info("hermes mcp serve                              MCP 서버로 실행")
+        _info("hermes mcp add <name> --url <endpoint>        MCP 서버 추가")
+        _info("hermes mcp add <name> --command <cmd>         stdio 서버 추가")
+        _info("hermes mcp add <name> --preset <preset>       알려진 preset으로 추가")
+        _info("hermes mcp remove <name>                      서버 제거")
+        _info("hermes mcp list                               서버 목록 표시")
+        _info("hermes mcp test <name>                        연결 테스트")
+        _info("hermes mcp configure <name>                   도구 설정 전환")
         print()

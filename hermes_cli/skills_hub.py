@@ -580,20 +580,20 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
     c = console or _console
     results = check_for_skill_updates(name=name)
     if not results:
-        c.print("[dim]No hub-installed skills to check.[/]\n")
+        c.print("[dim]업데이트를 확인할 허브 설치 skill이 없어요.[/]\n")
         return
 
-    table = Table(title="Skill Updates")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Source", style="dim")
-    table.add_column("Status", style="dim")
+    table = Table(title="skill 업데이트")
+    table.add_column("이름", style="bold cyan")
+    table.add_column("출처", style="dim")
+    table.add_column("상태", style="dim")
 
     for entry in results:
         table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
 
     c.print(table)
     update_count = sum(1 for entry in results if entry.get("status") == "update_available")
-    c.print(f"[dim]{update_count} update(s) available across {len(results)} checked skill(s)[/]\n")
+    c.print(f"[dim]확인한 skill {len(results)}개 중 업데이트 가능 {update_count}개[/]\n")
 
 
 def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -604,16 +604,16 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
     lock = HubLockFile()
     updates = [entry for entry in check_for_skill_updates(name=name) if entry.get("status") == "update_available"]
     if not updates:
-        c.print("[dim]No updates available.[/]\n")
+        c.print("[dim]사용 가능한 업데이트가 없어요.[/]\n")
         return
 
     for entry in updates:
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
-        c.print(f"[bold]Updating:[/] {entry['name']}")
+        c.print(f"[bold]업데이트 중:[/] {entry['name']}")
         do_install(entry["identifier"], category=category, force=True, console=c)
 
-    c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+    c.print(f"[bold green]skill {len(updates)}개를 업데이트했어요.[/]\n")
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -659,13 +659,13 @@ def do_uninstall(name: str, console: Optional[Console] = None,
 
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not skip_confirm:
-        c.print(f"\n[bold]Uninstall '{name}'?[/]")
+        c.print(f"\n[bold]'{name}'을(를) 제거할까요?[/]")
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             answer = "n"
         if answer not in ("y", "yes"):
-            c.print("[dim]Cancelled.[/]\n")
+            c.print("[dim]취소했어요.[/]\n")
             return
 
     success, msg = uninstall_skill(name)
@@ -678,8 +678,8 @@ def do_uninstall(name: str, console: Optional[Console] = None,
             except Exception:
                 pass
         else:
-            c.print("[dim]Change will take effect in your next session.[/]")
-            c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
+            c.print("[dim]변경 사항은 다음 세션부터 적용돼요.[/]")
+            c.print("[dim]지금 새 세션을 시작하려면 /reset, 바로 적용하려면 --now를 사용하세요 (prompt cache 무효화).[/]\n")
     else:
         c.print(f"[bold red]Error:[/] {msg}\n")
 
@@ -694,11 +694,11 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
     if action == "list":
         taps = mgr.list_taps()
         if not taps:
-            c.print("[dim]No custom taps configured. Using default sources only.[/]\n")
+            c.print("[dim]설정된 사용자 지정 tap이 없어요. 기본 source만 사용해요.[/]\n")
             return
-        table = Table(title="Configured Taps")
-        table.add_column("Repo", style="bold cyan")
-        table.add_column("Path", style="dim")
+        table = Table(title="설정된 tap")
+        table.add_column("저장소", style="bold cyan")
+        table.add_column("경로", style="dim")
         for t in taps:
             label = t.get("repo") or t.get("name") or t.get("path", "unknown")
             table.add_row(label, t.get("path", "skills/"))
@@ -707,24 +707,24 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
 
     elif action == "add":
         if not repo:
-            c.print("[bold red]Error:[/] Repo required. Usage: hermes skills tap add owner/repo\n")
+            c.print("[bold red]오류:[/] 저장소가 필요해요. 사용법: hermes skills tap add owner/repo\n")
             return
         if mgr.add(repo):
-            c.print(f"[bold green]Added tap:[/] {repo}\n")
+            c.print(f"[bold green]tap을 추가했어요:[/] {repo}\n")
         else:
-            c.print(f"[yellow]Tap already exists:[/] {repo}\n")
+            c.print(f"[yellow]이미 있는 tap이에요:[/] {repo}\n")
 
     elif action == "remove":
         if not repo:
-            c.print("[bold red]Error:[/] Repo required. Usage: hermes skills tap remove owner/repo\n")
+            c.print("[bold red]오류:[/] 저장소가 필요해요. 사용법: hermes skills tap remove owner/repo\n")
             return
         if mgr.remove(repo):
-            c.print(f"[bold green]Removed tap:[/] {repo}\n")
+            c.print(f"[bold green]tap을 제거했어요:[/] {repo}\n")
         else:
-            c.print(f"[bold red]Error:[/] Tap not found: {repo}\n")
+            c.print(f"[bold red]오류:[/] tap을 찾지 못했어요: {repo}\n")
 
     else:
-        c.print(f"[bold red]Unknown tap action:[/] {action}. Use: list, add, remove\n")
+        c.print(f"[bold red]알 수 없는 tap 작업:[/] {action}. 사용 가능: list, add, remove\n")
 
 
 def do_publish(skill_path: str, target: str = "github", repo: str = "",

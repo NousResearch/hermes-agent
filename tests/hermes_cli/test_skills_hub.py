@@ -168,7 +168,7 @@ def test_do_check_reports_available_updates(monkeypatch):
 def test_do_check_handles_no_installed_updates(monkeypatch):
     output = _capture_check(monkeypatch, [])
 
-    assert "No hub-installed skills to check" in output
+    assert "업데이트를 확인할 허브 설치 skill이 없어요" in output
 
 
 def test_do_update_reinstalls_outdated_skills(monkeypatch):
@@ -178,7 +178,7 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
     ])
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
-    assert "Updated 1 skill" in output
+    assert "skill 1개를 업데이트했어요" in output
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():

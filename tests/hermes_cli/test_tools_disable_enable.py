@@ -93,7 +93,7 @@ class TestToolsDisableMcp:
                 Namespace(tools_action="disable", names=["unknown:tool"], platform="cli")
             )
         out = capsys.readouterr().out
-        assert "MCP server 'unknown' not found in config" in out
+        assert "config에서 MCP 서버 'unknown'을(를) 찾지 못했어요" in out
 
 
 # ── MCP tool enable ──────────────────────────────────────────────────────────
@@ -189,7 +189,7 @@ class TestToolsValidation:
                 Namespace(tools_action="disable", names=["web"], platform="invalid_platform")
             )
         out = capsys.readouterr().out
-        assert "Unknown platform 'invalid_platform'" in out
+        assert "알 수 없는 플랫폼 'invalid_platform'" in out
 
     def test_unknown_toolset_prints_error(self, capsys):
         config = {"platform_toolsets": {"cli": ["web"]}}
@@ -199,7 +199,7 @@ class TestToolsValidation:
                 Namespace(tools_action="disable", names=["nonexistent_toolset"], platform="cli")
             )
         out = capsys.readouterr().out
-        assert "Unknown toolset 'nonexistent_toolset'" in out
+        assert "알 수 없는 toolset 'nonexistent_toolset'" in out
 
     def test_unknown_toolset_does_not_corrupt_config(self):
         config = {"platform_toolsets": {"cli": ["web", "memory"]}}

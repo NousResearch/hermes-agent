@@ -16,7 +16,7 @@ def test_no_mcp_servers_prints_info(capsys):
     config = {}
     _configure_mcp_tools_interactive(config)
     captured = capsys.readouterr()
-    assert "No MCP servers configured" in captured.out
+    assert "설정된 MCP 서버가 없어요" in captured.out
 
 
 def test_all_servers_disabled_prints_info(capsys):
@@ -29,7 +29,7 @@ def test_all_servers_disabled_prints_info(capsys):
     }
     _configure_mcp_tools_interactive(config)
     captured = capsys.readouterr()
-    assert "disabled" in captured.out
+    assert "비활성화" in captured.out
 
 
 def test_probe_failure_shows_warning(capsys):
@@ -38,7 +38,7 @@ def test_probe_failure_shows_warning(capsys):
     with patch(_PROBE, return_value={}):
         _configure_mcp_tools_interactive(config)
     captured = capsys.readouterr()
-    assert "Could not discover" in captured.out
+    assert "도구를 찾지 못했어요" in captured.out
 
 
 def test_probe_exception_shows_error(capsys):
@@ -47,7 +47,7 @@ def test_probe_exception_shows_error(capsys):
     with patch(_PROBE, side_effect=RuntimeError("MCP not installed")):
         _configure_mcp_tools_interactive(config)
     captured = capsys.readouterr()
-    assert "Failed to probe" in captured.out
+    assert "MCP 서버를 확인하지 못했어요" in captured.out
 
 
 def test_no_changes_when_checklist_cancelled(capsys):
@@ -65,7 +65,7 @@ def test_no_changes_when_checklist_cancelled(capsys):
         _configure_mcp_tools_interactive(config)
     mock_save.assert_not_called()
     captured = capsys.readouterr()
-    assert "no changes" in captured.out.lower()
+    assert "변경 사항이 없어요" in captured.out
 
 
 def test_disabling_tool_writes_exclude_list(capsys):
@@ -288,4 +288,4 @@ def test_empty_tools_server_skipped(capsys):
 
     assert len(checklist_calls) == 0
     captured = capsys.readouterr()
-    assert "no tools found" in captured.out
+    assert "찾은 도구가 없어요" in captured.out

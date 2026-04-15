@@ -82,7 +82,7 @@ class TestMcpList:
 
         cmd_mcp_list()
         out = capsys.readouterr().out
-        assert "No MCP servers configured" in out
+        assert "설정된 MCP 서버가 없어요" in out
 
     def test_list_with_servers(self, tmp_path, capsys):
         _seed_config(tmp_path, {
@@ -103,8 +103,8 @@ class TestMcpList:
         out = capsys.readouterr().out
         assert "ink" in out
         assert "github" in out
-        assert "2 selected" in out  # ink has 2 in include
-        assert "disabled" in out  # github is disabled
+        assert "2개 선택" in out  # ink has 2 in include
+        assert "비활성화" in out  # github is disabled
 
     def test_list_enabled_default_true(self, tmp_path, capsys):
         """Server without explicit enabled key defaults to enabled."""
@@ -116,7 +116,7 @@ class TestMcpList:
         cmd_mcp_list()
         out = capsys.readouterr().out
         assert "myserver" in out
-        assert "enabled" in out
+        assert "활성화" in out
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +134,7 @@ class TestMcpRemove:
         cmd_mcp_remove(_make_args(name="myserver"))
 
         out = capsys.readouterr().out
-        assert "Removed" in out
+        assert "제거했어요" in out
 
         # Verify config updated
         from hermes_cli.config import load_config
@@ -148,7 +148,7 @@ class TestMcpRemove:
 
         cmd_mcp_remove(_make_args(name="ghost"))
         out = capsys.readouterr().out
-        assert "not found" in out
+        assert "찾지 못했어요" in out
 
     def test_remove_cleans_oauth_tokens(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {
@@ -183,7 +183,7 @@ class TestMcpAdd:
 
         cmd_mcp_add(_make_args(name="bad"))
         out = capsys.readouterr().out
-        assert "Must specify" in out
+        assert "지정해야 해요" in out
 
     def test_add_http_server_all_tools(self, tmp_path, capsys, monkeypatch):
         """Add an HTTP server, accept all tools."""
@@ -206,8 +206,8 @@ class TestMcpAdd:
 
         cmd_mcp_add(_make_args(name="ink", url="https://mcp.ml.ink/mcp"))
         out = capsys.readouterr().out
-        assert "Saved" in out
-        assert "2/2 tools" in out
+        assert "저장했어요" in out
+        assert "2/2개 도구 활성화" in out
 
         # Verify config written
         from hermes_cli.config import load_config
@@ -237,7 +237,7 @@ class TestMcpAdd:
             args=["@mcp/github"],
         ))
         out = capsys.readouterr().out
-        assert "Saved" in out
+        assert "저장했어요" in out
 
         from hermes_cli.config import load_config
 
@@ -264,7 +264,7 @@ class TestMcpAdd:
 
         cmd_mcp_add(_make_args(name="broken", url="https://bad.host/mcp"))
         out = capsys.readouterr().out
-        assert "disabled" in out
+        assert "비활성화됨" in out
 
         from hermes_cli.config import load_config
 
@@ -296,7 +296,7 @@ class TestMcpAdd:
             env=["MY_API_KEY=secret123", "DEBUG=true"],
         ))
         out = capsys.readouterr().out
-        assert "Saved" in out
+        assert "저장했어요" in out
 
         from hermes_cli.config import load_config
 
@@ -357,7 +357,7 @@ class TestMcpAdd:
 
         cmd_mcp_add(_make_args(name="myserver", preset="testmcp"))
         out = capsys.readouterr().out
-        assert "Saved" in out
+        assert "저장했어요" in out
 
         config = read_raw_config()
         srv = config["mcp_servers"]["myserver"]
@@ -394,7 +394,7 @@ class TestMcpAdd:
             args=["custom-server"],
         ))
         out = capsys.readouterr().out
-        assert "Saved" in out
+        assert "저장했어요" in out
 
         config = read_raw_config()
         srv = config["mcp_servers"]["custom"]
@@ -422,7 +422,7 @@ class TestMcpTest:
 
         cmd_mcp_test(_make_args(name="ghost"))
         out = capsys.readouterr().out
-        assert "not found" in out
+        assert "찾지 못했어요" in out
 
     def test_test_success(self, tmp_path, capsys, monkeypatch):
         _seed_config(tmp_path, {
@@ -439,8 +439,8 @@ class TestMcpTest:
 
         cmd_mcp_test(_make_args(name="ink"))
         out = capsys.readouterr().out
-        assert "Connected" in out
-        assert "Tools discovered: 2" in out
+        assert "연결 성공" in out
+        assert "발견한 도구 수: 2" in out
 
 
 # ---------------------------------------------------------------------------
@@ -538,4 +538,4 @@ class TestDispatcher:
         _seed_config(tmp_path, {})
         mcp_command(_make_args(mcp_action=None))
         out = capsys.readouterr().out
-        assert "Commands:" in out or "No MCP servers" in out
+        assert "명령어:" in out or "설정된 MCP 서버가 없어요" in out

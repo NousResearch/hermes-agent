@@ -848,7 +848,7 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         # Multiple providers - let user choose
         print()
         # Use custom title if provided (e.g. "Select Search Provider")
-        title = cat.get("setup_title", "Choose a provider")
+        title = cat.get("setup_title", "provider 선택")
         print(color(f"  --- {icon} {name} - {title} ---", Colors.CYAN))
         if cat.get("setup_note"):
             _print_info(f"  {cat['setup_note']}")
@@ -1084,13 +1084,13 @@ def _reconfigure_tool(config: dict):
                 configurable.append((ts_key, ts_label))
 
     if not configurable:
-        _print_info("No configured tools to reconfigure.")
+        _print_info("다시 설정할 구성 도구가 없어요.")
         return
 
     choices = [label for _, label in configurable]
-    choices.append("Cancel")
+    choices.append("취소")
 
-    idx = _prompt_choice("  Which tool would you like to reconfigure?", choices, len(choices) - 1)
+    idx = _prompt_choice("  어떤 도구를 다시 설정할까요?", choices, len(choices) - 1)
 
     if idx >= len(configurable):
         return  # Cancel
@@ -1119,7 +1119,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
         _reconfigure_provider(provider, config)
     else:
         print()
-        print(color(f"  --- {icon} {name} - Choose a provider ---", Colors.CYAN))
+        print(color(f"  --- {icon} {name} - provider 선택 ---", Colors.CYAN))
         print()
 
         provider_choices = []
@@ -1139,7 +1139,7 @@ def _configure_tool_category_for_reconfig(ts_key: str, cat: dict, config: dict):
 
         default_idx = _detect_active_provider_index(providers, config)
 
-        provider_idx = _prompt_choice("  Select provider:", provider_choices, default_idx)
+        provider_idx = _prompt_choice("  provider 선택:", provider_choices, default_idx)
         _reconfigure_provider(providers[provider_idx], config)
 
 
@@ -1478,7 +1478,7 @@ def _configure_mcp_tools_interactive(config: dict):
 
     mcp_servers = config.get("mcp_servers") or {}
     if not mcp_servers:
-        _print_info("No MCP servers configured.")
+        _print_info("설정된 MCP 서버가 없어요.")
         return
 
     # Count enabled servers
@@ -1487,40 +1487,40 @@ def _configure_mcp_tools_interactive(config: dict):
         if v.get("enabled", True) not in (False, "false", "0", "no", "off")
     ]
     if not enabled_names:
-        _print_info("All MCP servers are disabled.")
+        _print_info("모든 MCP 서버가 비활성화되어 있어요.")
         return
 
     print()
-    print(color("  Discovering tools from MCP servers...", Colors.YELLOW))
-    print(color(f"  Connecting to {len(enabled_names)} server(s): {', '.join(enabled_names)}", Colors.DIM))
+    print(color("  MCP 서버에서 도구를 찾는 중...", Colors.YELLOW))
+    print(color(f"  서버 {len(enabled_names)}개에 연결하는 중: {', '.join(enabled_names)}", Colors.DIM))
 
     try:
         from tools.mcp_tool import probe_mcp_server_tools
         server_tools = probe_mcp_server_tools()
     except Exception as exc:
-        _print_error(f"Failed to probe MCP servers: {exc}")
+        _print_error(f"MCP 서버를 확인하지 못했어요: {exc}")
         return
 
     if not server_tools:
-        _print_warning("Could not discover tools from any MCP server.")
-        _print_info("Check that server commands/URLs are correct and dependencies are installed.")
+        _print_warning("어느 MCP 서버에서도 도구를 찾지 못했어요.")
+        _print_info("서버 명령/URL이 올바른지, 필요한 의존성이 설치되어 있는지 확인하세요.")
         return
 
     # Report discovery results
     failed = [n for n in enabled_names if n not in server_tools]
     if failed:
         for name in failed:
-            _print_warning(f"  Could not connect to '{name}'")
+            _print_warning(f"  '{name}'에 연결하지 못했어요")
 
     total_tools = sum(len(tools) for tools in server_tools.values())
-    print(color(f"  Found {total_tools} tool(s) across {len(server_tools)} server(s)", Colors.GREEN))
+    print(color(f"  서버 {len(server_tools)}개에서 도구 {total_tools}개를 찾았어요", Colors.GREEN))
     print()
 
     any_changes = False
 
     for server_name, tools in server_tools.items():
         if not tools:
-            _print_info(f"  {server_name}: no tools found")
+            _print_info(f"  {server_name}: 찾은 도구가 없어요")
             continue
 
         srv_cfg = mcp_servers.get(server_name, {})
@@ -1554,14 +1554,14 @@ def _configure_mcp_tools_interactive(config: dict):
                 pre_selected.add(i)
 
         chosen = curses_checklist(
-            f"MCP Server: {server_name}  ({len(tools)} tools)",
+            f"MCP 서버: {server_name}  ({len(tools)}개 도구)",
             labels,
             pre_selected,
             cancel_returns=pre_selected,
         )
 
         if chosen == pre_selected:
-            _print_info(f"  {server_name}: no changes")
+            _print_info(f"  {server_name}: 변경 사항이 없어요")
             continue
 
         # Compute new exclude list based on unchecked tools
@@ -1583,16 +1583,16 @@ def _configure_mcp_tools_interactive(config: dict):
         enabled_count = len(chosen)
         disabled_count = len(tools) - enabled_count
         _print_success(
-            f"  {server_name}: {enabled_count} enabled, {disabled_count} disabled"
+            f"  {server_name}: 활성화 {enabled_count}개, 비활성화 {disabled_count}개"
         )
         any_changes = True
 
     if any_changes:
         save_config(config)
         print()
-        print(color("  ✓ MCP tool configuration saved", Colors.GREEN))
+        print(color("  ✓ MCP 도구 설정을 저장했어요", Colors.GREEN))
     else:
-        print(color("  No changes to MCP tools", Colors.DIM))
+        print(color("  MCP 도구에서 변경된 내용이 없어요", Colors.DIM))
 
 
 # ─── Non-interactive disable/enable ──────────────────────────────────────────
@@ -1682,7 +1682,7 @@ def tools_disable_enable_command(args):
     config = load_config()
 
     if platform not in PLATFORMS:
-        _print_error(f"Unknown platform '{platform}'. Valid: {', '.join(PLATFORMS)}")
+        _print_error(f"알 수 없는 플랫폼 '{platform}'이에요. 사용 가능: {', '.join(PLATFORMS)}")
         return
 
     if action == "list":
@@ -1698,7 +1698,7 @@ def tools_disable_enable_command(args):
     unknown_toolsets = [t for t in toolset_targets if t not in valid_toolsets]
     if unknown_toolsets:
         for name in unknown_toolsets:
-            _print_error(f"Unknown toolset '{name}'")
+            _print_error(f"알 수 없는 toolset '{name}'이에요")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
 
     if toolset_targets:
@@ -1708,7 +1708,7 @@ def tools_disable_enable_command(args):
     if mcp_targets:
         failed_servers = _apply_mcp_change(config, mcp_targets, action)
         for srv in failed_servers:
-            _print_error(f"MCP server '{srv}' not found in config")
+            _print_error(f"config에서 MCP 서버 '{srv}'을(를) 찾지 못했어요")
 
     save_config(config)
 
@@ -1717,5 +1717,5 @@ def tools_disable_enable_command(args):
         if t not in unknown_toolsets and (":" not in t or t.split(":")[0] not in failed_servers)
     ]
     if successful:
-        verb = "Disabled" if action == "disable" else "Enabled"
+        verb = "비활성화" if action == "disable" else "활성화"
         _print_success(f"{verb}: {', '.join(successful)}")

@@ -154,12 +154,19 @@ class DingTalkAdapter(BasePlatformAdapter):
         self._running = False
         self._mark_disconnected()
 
+        websocket = getattr(self._stream_client, "websocket", None)
+        if websocket is not None:
+            try:
+                await websocket.close()
+            except Exception as e:
+                logger.debug("[%s] websocket close during disconnect failed: %s", self.name, e)
+
         if self._stream_task:
             self._stream_task.cancel()
             try:
-                await self._stream_task
-            except asyncio.CancelledError:
-                pass
+                await asyncio.wait_for(self._stream_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                logger.debug("[%s] stream task did not exit cleanly during disconnect", self.name)
             self._stream_task = None
 
         if self._http_client:

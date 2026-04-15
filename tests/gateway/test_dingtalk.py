@@ -2,6 +2,7 @@
 import asyncio
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
@@ -229,6 +230,29 @@ class TestSend:
 
 
 class TestConnect:
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_session_websocket(self):
+        from gateway.platforms.dingtalk import DingTalkAdapter
+
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        websocket = AsyncMock()
+        blocker = asyncio.Event()
+
+        async def _run_forever():
+            try:
+                await blocker.wait()
+            except asyncio.CancelledError:
+                return
+
+        adapter._stream_client = SimpleNamespace(websocket=websocket)
+        adapter._stream_task = asyncio.create_task(_run_forever())
+        adapter._running = True
+
+        await adapter.disconnect()
+
+        websocket.close.assert_awaited_once()
+        assert adapter._stream_task is None
 
     @pytest.mark.asyncio
     async def test_connect_fails_without_sdk(self, monkeypatch):

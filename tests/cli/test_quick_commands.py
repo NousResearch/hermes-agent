@@ -245,3 +245,35 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+
+class TestExecQuickCommandArgs:
+    """Test that exec quick commands receive user arguments."""
+
+    def test_exec_command_receives_args(self):
+        """Exec quick commands should pass user arguments to the shell command."""
+        from unittest.mock import patch
+        import subprocess
+
+        cli = TestCLIQuickCommands()._make_cli({
+            "search": {"type": "exec", "command": "echo"}
+        })
+
+        # Process command with arguments
+        result = cli.process_command("/search hello world")
+        assert result is True
+
+        # Verify the command was called with arguments
+        printed = TestCLIQuickCommands._printed_plain(cli.console.print.call_args[0][0])
+        assert "hello world" in printed
+
+    def test_exec_command_no_args_still_works(self):
+        """Exec quick commands without arguments should still execute."""
+        cli = TestCLIQuickCommands()._make_cli({
+            "test": {"type": "exec", "command": "echo ok"}
+        })
+
+        result = cli.process_command("/test")
+        assert result is True
+        printed = TestCLIQuickCommands._printed_plain(cli.console.print.call_args[0][0])
+        assert "ok" in printed

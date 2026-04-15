@@ -8956,6 +8956,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Append user arguments to the command
+                            from hermes_cli._subprocess_compat import shell_quote
+                            user_args = cmd_original[len(base_cmd):].strip()
+                            if user_args:
+                                exec_cmd = f"{exec_cmd} {shell_quote(user_args)}"
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.
                             # Sanitize env to prevent credential leakage —

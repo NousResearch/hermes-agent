@@ -38,6 +38,7 @@ __all__ = [
     "windows_detach_flags_without_breakaway",
     "windows_hide_flags",
     "windows_detach_popen_kwargs",
+    "shell_quote",
 ]
 
 
@@ -232,3 +233,35 @@ def windows_detach_popen_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": windows_detach_flags()}
     return {"start_new_session": True}
+
+
+# -----------------------------------------------------------------------------
+# Cross-platform shell quoting
+# -----------------------------------------------------------------------------
+
+
+def shell_quote(value: str) -> str:
+    """Shell-quote a string for the current platform's default shell.
+
+    Uses ``mslex.quote`` on Windows (cmd.exe-compatible) and
+    ``shlex.quote`` on POSIX.  Falls back to a minimal double-quote
+    escape if ``mslex`` is not installed on Windows.
+
+    This is intended for quoting a single blob of user-supplied arguments
+    that will be appended to a user-defined shell command and executed via
+    ``shell=True`` / ``create_subprocess_shell``.
+    """
+    import shlex
+
+    if IS_WINDOWS:
+        try:
+            import mslex  # type: ignore[import-not-found]
+
+            return mslex.quote(value)
+        except ImportError:
+            # Minimal cmd.exe escape: wrap in double quotes, escape embedded
+            # double quotes.  Not as robust as mslex but better than
+            # shlex's single-quote style which cmd.exe doesn't understand.
+            return '"' + value.replace('"', '\\"') + '"'
+
+    return shlex.quote(value)

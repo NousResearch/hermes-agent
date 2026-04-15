@@ -10422,6 +10422,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            # Append user arguments to the command
+                            from hermes_cli._subprocess_compat import shell_quote
+                            user_args = event.get_command_args().strip()
+                            if user_args:
+                                exec_cmd = f"{exec_cmd} {shell_quote(user_args)}"
                             # Sanitize env to prevent credential leakage —
                             # quick commands run in the gateway process which
                             # has all API keys in os.environ.

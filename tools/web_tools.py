@@ -46,6 +46,7 @@ import os
 import re
 import asyncio
 from typing import List, Dict, Any, Optional
+from urllib.parse import quote_plus
 import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import (
@@ -80,6 +81,16 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
+
+_ALL_WEB_BACKENDS = ("exa", "parallel", "firecrawl", "tavily", "custom")
+_CUSTOM_WEB_REQUIRED_KEYS = (
+    "url_template",
+    "results_path",
+    "title_field",
+    "url_field",
+    "description_field",
+)
+
 def _get_backend() -> str:
     """Determine which web backend to use.
 
@@ -88,7 +99,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in _ALL_WEB_BACKENDS:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -107,6 +118,46 @@ def _get_backend() -> str:
     return "firecrawl"  # default (backward compat)
 
 
+def _load_custom_web_search_config() -> dict:
+    """Return validated config for the custom JSON search backend."""
+    config = _load_web_config().get("custom", {})
+    if not isinstance(config, dict):
+        raise ValueError("web.custom must be a mapping")
+
+    missing = [key for key in _CUSTOM_WEB_REQUIRED_KEYS if not str(config.get(key, "")).strip()]
+    if missing:
+        raise ValueError(f"Missing required web.custom config keys: {', '.join(missing)}")
+
+    url_template = str(config["url_template"])
+    if "%s" not in url_template:
+        raise ValueError("web.custom.url_template must contain %s for the encoded query")
+
+    headers = config.get("headers")
+    if headers is not None and not isinstance(headers, dict):
+        raise ValueError("web.custom.headers must be a mapping when provided")
+
+    timeout = config.get("timeout")
+    if timeout is not None:
+        try:
+            timeout_value = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("web.custom.timeout must be a number") from exc
+        if timeout_value <= 0:
+            raise ValueError("web.custom.timeout must be greater than 0")
+    else:
+        timeout_value = 30.0
+
+    return {
+        "url_template": url_template,
+        "results_path": str(config["results_path"]),
+        "title_field": str(config["title_field"]),
+        "url_field": str(config["url_field"]),
+        "description_field": str(config["description_field"]),
+        "headers": headers or None,
+        "timeout": timeout_value,
+    }
+
+
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
     if backend == "exa":
@@ -117,6 +168,12 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "custom":
+        try:
+            _load_custom_web_search_config()
+        except ValueError:
+            return False
+        return True
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -395,6 +452,89 @@ def _normalize_result_list(values: Any) -> List[Dict[str, Any]]:
         if isinstance(plain, dict):
             normalized.append(plain)
     return normalized
+
+
+def _get_nested_value(data: Any, path: str) -> Any:
+    """Resolve dotted paths through nested dict/list JSON payloads."""
+    value = data
+    for part in path.split('.'):
+        if isinstance(value, dict):
+            if part not in value:
+                raise ValueError(f"web.custom.results_path not found: {path}")
+            value = value[part]
+            continue
+        if isinstance(value, list):
+            try:
+                index = int(part)
+            except ValueError as exc:
+                raise ValueError(f"web.custom.results_path not found: {path}") from exc
+            try:
+                value = value[index]
+            except IndexError as exc:
+                raise ValueError(f"web.custom.results_path not found: {path}") from exc
+            continue
+        raise ValueError(f"web.custom.results_path not found: {path}")
+    return value
+
+
+def _normalize_custom_web_results(items: Any, config: dict, limit: int) -> dict:
+    """Map arbitrary JSON search results into the Hermes web result schema."""
+    if not isinstance(items, list):
+        raise ValueError("web.custom.results_path must point to a list")
+
+    title_field = str(config["title_field"])
+    url_field = str(config["url_field"])
+    description_field = str(config["description_field"])
+
+    web_results = []
+    for item in items:
+        plain = _to_plain_object(item)
+        if not isinstance(plain, dict):
+            continue
+
+        title = plain.get(title_field)
+        url = plain.get(url_field)
+        if not isinstance(title, str) or not title.strip():
+            continue
+        if not isinstance(url, str) or not url.strip():
+            continue
+
+        description = plain.get(description_field, "")
+        if description is None:
+            description = ""
+        elif not isinstance(description, str):
+            description = str(description)
+
+        web_results.append({
+            "title": title.strip(),
+            "url": url.strip(),
+            "description": description,
+            "position": len(web_results) + 1,
+        })
+
+        if len(web_results) >= limit:
+            break
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _custom_web_search(query: str, limit: int = 5) -> dict:
+    """Search using a config-driven custom JSON endpoint."""
+    config = _load_custom_web_search_config()
+    encoded_query = quote_plus(query)
+    url = config["url_template"].replace("%s", encoded_query)
+
+    logger.info("Custom web search: '%s' (limit=%d)", query, limit)
+    response = httpx.get(url, headers=config["headers"], timeout=config["timeout"])
+    response.raise_for_status()
+
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise ValueError("Custom backend returned invalid JSON") from exc
+
+    items = _get_nested_value(payload, config["results_path"])
+    return _normalize_custom_web_results(items, config, limit)
 
 
 def _extract_web_search_results(response: Any) -> List[Dict[str, Any]]:
@@ -1110,6 +1250,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "custom":
+            response_data = _custom_web_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)
@@ -1921,9 +2070,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in _ALL_WEB_BACKENDS:
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in _ALL_WEB_BACKENDS)
 
 
 def check_auxiliary_model() -> bool:
@@ -2042,7 +2191,8 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+# Imported here intentionally so tool schemas stay next to registration.
+from tools.registry import registry, tool_error  # noqa: E402
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",

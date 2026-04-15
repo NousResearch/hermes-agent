@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import types
+import httpx
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
@@ -367,6 +368,12 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_custom(self):
+        """web.backend=custom in config → 'custom'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "custom"}):
+            assert _get_backend() == "custom"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -491,6 +498,214 @@ class TestParallelClientConfig:
             assert client1 is client2
 
 
+class TestCustomWebSearch:
+    """Tests for the config-driven custom JSON web_search backend."""
+
+    @staticmethod
+    def _custom_config(**overrides):
+        config = {
+            "backend": "custom",
+            "custom": {
+                "url_template": "https://example.com/search?q=%s&format=json&engines=google,duckduckgo",
+                "results_path": "data.items",
+                "title_field": "headline",
+                "url_field": "link",
+                "description_field": "summary",
+                "headers": {
+                    "Accept": "application/json",
+                },
+                "timeout": 20,
+            },
+        }
+        config["custom"].update(overrides)
+        return config
+
+    @staticmethod
+    def _make_response(*, payload=None, json_side_effect=None, raise_for_status_side_effect=None):
+        response = MagicMock()
+        if raise_for_status_side_effect is None:
+            response.raise_for_status.return_value = None
+        else:
+            response.raise_for_status.side_effect = raise_for_status_side_effect
+
+        if json_side_effect is None:
+            response.json.return_value = payload
+        else:
+            response.json.side_effect = json_side_effect
+        return response
+
+    def _run_search(self, response, *, config=None, query="test query", limit=3):
+        import tools.web_tools
+
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value=config or self._custom_config(),
+        ), patch("tools.web_tools.httpx.get", return_value=response) as mock_get, \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool(query, limit=limit))
+        return result, mock_get
+
+    def test_custom_backend_happy_path(self):
+        result, _ = self._run_search(
+            self._make_response(payload={
+                "data": {
+                    "items": [
+                        {"headline": "First", "link": "https://one.example", "summary": "Alpha"},
+                        {"headline": "Second", "link": "https://two.example", "summary": None},
+                    ]
+                }
+            }),
+            query="C++ tools",
+            limit=2,
+        )
+
+        assert result == {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "First",
+                        "url": "https://one.example",
+                        "description": "Alpha",
+                        "position": 1,
+                    },
+                    {
+                        "title": "Second",
+                        "url": "https://two.example",
+                        "description": "",
+                        "position": 2,
+                    },
+                ]
+            },
+        }
+
+    def test_custom_backend_sends_headers_and_preserves_template_params(self):
+        result, mock_get = self._run_search(
+            self._make_response(payload={
+                "data": {
+                    "items": [
+                        {"headline": "First", "link": "https://one.example", "summary": "Alpha"},
+                    ]
+                }
+            }),
+            query="C++ tools",
+            limit=5,
+        )
+
+        assert result["success"] is True
+        mock_get.assert_called_once_with(
+            "https://example.com/search?q=C%2B%2B+tools&format=json&engines=google,duckduckgo",
+            headers={"Accept": "application/json"},
+            timeout=20.0,
+        )
+
+    def test_custom_backend_limit_truncation_and_skip_malformed_items(self):
+        result, _ = self._run_search(
+            self._make_response(payload={
+                "data": {
+                    "items": [
+                        {"headline": "", "link": "https://skip-title.example", "summary": "bad"},
+                        {"headline": "Missing URL", "summary": "bad"},
+                        {"headline": "First", "link": "https://one.example", "summary": "Alpha"},
+                        {"headline": "Second", "link": "https://two.example", "summary": 123},
+                        {"headline": "Third", "link": "https://three.example", "summary": "Gamma"},
+                    ]
+                }
+            }),
+            limit=2,
+        )
+
+        assert result == {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "First",
+                        "url": "https://one.example",
+                        "description": "Alpha",
+                        "position": 1,
+                    },
+                    {
+                        "title": "Second",
+                        "url": "https://two.example",
+                        "description": "123",
+                        "position": 2,
+                    },
+                ]
+            },
+        }
+
+    def test_custom_backend_invalid_config_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(payload={"items": []}),
+            config={
+                "backend": "custom",
+                "custom": {
+                    "url_template": "https://example.com/search?q=%s",
+                    "results_path": "items",
+                    "title_field": "title",
+                },
+            },
+        )
+
+        assert result == {
+            "error": "Error searching web: Missing required web.custom config keys: url_field, description_field"
+        }
+
+    def test_custom_backend_missing_template_placeholder_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(payload={"items": []}),
+            config=self._custom_config(url_template="https://example.com/search?q=query"),
+        )
+
+        assert result == {
+            "error": "Error searching web: web.custom.url_template must contain %s for the encoded query"
+        }
+
+    def test_custom_backend_http_error_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(
+                raise_for_status_side_effect=httpx.HTTPStatusError(
+                    "502 Bad Gateway",
+                    request=httpx.Request("GET", "https://example.com/search?q=test"),
+                    response=httpx.Response(502),
+                )
+            ),
+        )
+
+        assert result["error"].startswith("Error searching web: 502 Bad Gateway")
+
+    def test_custom_backend_invalid_json_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(json_side_effect=ValueError("not json")),
+        )
+
+        assert result == {
+            "error": "Error searching web: Custom backend returned invalid JSON"
+        }
+
+    def test_custom_backend_missing_results_path_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(payload={"data": {}}),
+        )
+
+        assert result == {
+            "error": "Error searching web: web.custom.results_path not found: data.items"
+        }
+
+    def test_custom_backend_non_list_results_path_returns_error(self):
+        result, _ = self._run_search(
+            self._make_response(payload={"data": {"items": {"headline": "not a list"}}}),
+        )
+
+        assert result == {
+            "error": "Error searching web: web.custom.results_path must point to a list"
+        }
+
+
+
 class TestWebSearchErrorHandling:
     """Test suite for web_search_tool() error responses."""
 
@@ -547,28 +762,82 @@ class TestCheckWebApiKey:
 
     def test_parallel_key_only(self):
         with patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
+            with patch("tools.web_tools._load_web_config", return_value={}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
 
     def test_exa_key_only(self):
         with patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
+            with patch("tools.web_tools._load_web_config", return_value={}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
 
     def test_firecrawl_key_only(self):
         with patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
+            with patch("tools.web_tools._load_web_config", return_value={}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
 
     def test_firecrawl_url_only(self):
         with patch.dict(os.environ, {"FIRECRAWL_API_URL": "http://localhost:3002"}):
-            from tools.web_tools import check_web_api_key
-            assert check_web_api_key() is True
+            with patch("tools.web_tools._load_web_config", return_value={}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            with patch("tools.web_tools._load_web_config", return_value={}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
+    def test_configured_custom_backend_with_complete_config_returns_true(self):
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={
+                "backend": "custom",
+                "custom": {
+                    "url_template": "https://example.com/search?q=%s",
+                    "results_path": "items",
+                    "title_field": "title",
+                    "url_field": "url",
+                    "description_field": "snippet",
+                },
+            },
+        ):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
+
+    def test_configured_custom_backend_with_incomplete_config_returns_false(self):
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={
+                "backend": "custom",
+                "custom": {
+                    "url_template": "https://example.com/search?q=%s",
+                    "results_path": "items",
+                    "title_field": "title",
+                },
+            },
+        ):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
+
+    def test_configured_custom_backend_without_template_placeholder_returns_false(self):
+        with patch(
+            "tools.web_tools._load_web_config",
+            return_value={
+                "backend": "custom",
+                "custom": {
+                    "url_template": "https://example.com/search?q=query",
+                    "results_path": "items",
+                    "title_field": "title",
+                    "url_field": "url",
+                    "description_field": "snippet",
+                },
+            },
+        ):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is False
 
     def test_no_keys_returns_false(self):
         from tools.web_tools import check_web_api_key

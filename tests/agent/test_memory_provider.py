@@ -396,6 +396,108 @@ class TestPluginMemoryDiscovery:
         assert load_memory_provider("nonexistent_provider") is None
 
 
+class TestUserInstalledProviderDiscovery:
+    """Memory providers installed to $HERMES_HOME/plugins/ should be found.
+
+    Regression test for issues #4956 and #9099: load_memory_provider() and
+    discover_memory_providers() only scanned the bundled plugins/memory/
+    directory, ignoring user-installed plugins.
+    """
+
+    def _make_user_memory_plugin(self, tmp_path, name="myprovider"):
+        """Create a minimal user memory provider plugin."""
+        plugin_dir = tmp_path / "plugins" / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class MyProvider(MemoryProvider):\n"
+            f"    @property\n"
+            f"    def name(self): return {name!r}\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        (plugin_dir / "plugin.yaml").write_text(
+            f"name: {name}\ndescription: Test user provider\n"
+        )
+        return plugin_dir
+
+    def test_discover_finds_user_plugins(self, tmp_path, monkeypatch):
+        """discover_memory_providers() includes user-installed plugins."""
+        from plugins.memory import discover_memory_providers, _get_user_plugins_dir
+        self._make_user_memory_plugin(tmp_path, "myexternal")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "myexternal" in names
+        assert "holographic" in names  # bundled still found
+
+    def test_load_user_plugin(self, tmp_path, monkeypatch):
+        """load_memory_provider() can load from $HERMES_HOME/plugins/."""
+        from plugins.memory import load_memory_provider
+        self._make_user_memory_plugin(tmp_path, "myexternal")
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        p = load_memory_provider("myexternal")
+        assert p is not None
+        assert p.name == "myexternal"
+        assert p.is_available()
+
+    def test_bundled_takes_precedence(self, tmp_path, monkeypatch):
+        """Bundled provider wins when user plugin has the same name."""
+        from plugins.memory import load_memory_provider, discover_memory_providers
+        # Create user plugin named "holographic" (same as bundled)
+        plugin_dir = tmp_path / "plugins" / "holographic"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "from agent.memory_provider import MemoryProvider\n"
+            "class Fake(MemoryProvider):\n"
+            "    @property\n"
+            "    def name(self): return 'holographic-FAKE'\n"
+            "    def is_available(self): return True\n"
+            "    def initialize(self, **kw): pass\n"
+            "    def sync_turn(self, *a, **kw): pass\n"
+            "    def get_tool_schemas(self): return []\n"
+            "    def handle_tool_call(self, *a, **kw): return '{}'\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        # Load should return bundled (name "holographic"), not user (name "holographic-FAKE")
+        p = load_memory_provider("holographic")
+        assert p is not None
+        assert p.name == "holographic"  # bundled wins
+
+        # discover should not duplicate
+        providers = discover_memory_providers()
+        holo_count = sum(1 for n, _, _ in providers if n == "holographic")
+        assert holo_count == 1
+
+    def test_non_memory_user_plugins_excluded(self, tmp_path, monkeypatch):
+        """User plugins that don't reference MemoryProvider are skipped."""
+        from plugins.memory import discover_memory_providers
+        plugin_dir = tmp_path / "plugins" / "notmemory"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.register_tool('foo', 'bar', {}, lambda: None)\n"
+        )
+        monkeypatch.setattr(
+            "plugins.memory._get_user_plugins_dir",
+            lambda: tmp_path / "plugins",
+        )
+        providers = discover_memory_providers()
+        names = [n for n, _, _ in providers]
+        assert "notmemory" not in names
+
+
 # ---------------------------------------------------------------------------
 # Sequential dispatch routing tests
 # ---------------------------------------------------------------------------
